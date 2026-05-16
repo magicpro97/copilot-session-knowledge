@@ -6894,6 +6894,22 @@ def cmd_goal(args):
         sys.exit(1)
 
 
+def _discover_spec_artifacts(repo_root: Path | None = None) -> list[str]:
+    """Return repo-relative structured planning artifacts, if any exist."""
+    resolved_root = (repo_root or find_git_root()).resolve()
+    specs_root = resolved_root / "specs"
+    if not specs_root.exists():
+        return []
+
+    artifacts: list[str] = []
+    for bundle in sorted(path for path in specs_root.iterdir() if path.is_dir()):
+        for filename in ("spec.md", "plan.md", "tasks.md"):
+            artifact = bundle / filename
+            if artifact.exists():
+                artifacts.append(artifact.relative_to(resolved_root).as_posix())
+    return artifacts
+
+
 def cmd_create(args):
     """Create a new tentacle with CONTEXT.md and todo.md."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -6936,12 +6952,16 @@ def cmd_create(args):
     if args.scope:
         paths = [s.strip() for s in args.scope.split(",")]
         scope_section = "\n## Scope\n\n" + "\n".join(f"- `{p}`" for p in paths) + "\n"
+    spec_artifacts = _discover_spec_artifacts(find_git_root())
+    spec_artifacts_section = ""
+    if spec_artifacts:
+        spec_artifacts_section = "\n## Spec Artifacts\n\n" + "\n".join(f"- `{path}`" for path in spec_artifacts) + "\n"
 
     context_content = textwrap.dedent(f"""\
         # {args.name}
 
         {desc}
-        {scope_section}{briefing_section}
+        {scope_section}{spec_artifacts_section}{briefing_section}
         ## What exists
 
         <!-- Describe what already exists in this area -->
@@ -6975,6 +6995,7 @@ def cmd_create(args):
         "status": "idle",
         "tentacle_id": tentacle_id,
         "skills": skills,
+        "spec_artifacts": spec_artifacts,
     }
     # Goal-aware fields: link to a goal if --goal-id provided
     goal_id_arg = getattr(args, "goal_id", None)
@@ -7001,6 +7022,8 @@ def cmd_create(args):
     print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
     print("   📄 CONTEXT.md — edit to add area-specific context")
     print("   📋 todo.md    — add checkbox items for delegation")
+    if spec_artifacts:
+        print(f"   📚 Spec artifacts: {', '.join(spec_artifacts)}")
     if skills:
         print(f"   🔧 Skills: {', '.join(skills)}")
     if goal_id_arg:

@@ -10,6 +10,9 @@ Usage:
     sk query    [<args>...]       Run query-session.py
     sk learn    [<args>...]       Run learn.py
     sk clarify  [<args>...]       Run clarify.py
+    sk specify  [<args>...]       Run specify.py
+    sk plan     [<args>...]       Run specify.py plan ...
+    sk tasks    [<args>...]       Run specify.py tasks ...
     sk constitution init|check|amend [<args>...]  Run constitution.py
     sk task     [<args>...]       Run task.py
     sk tentacle [<args>...]       Run tentacle.py
@@ -73,6 +76,9 @@ _DIRECT: dict[str, str] = {
     "query": "query-session.py",
     "learn": "learn.py",
     "clarify": "clarify.py",
+    "specify": "specify.py",
+    "plan": "specify.py",
+    "tasks": "specify.py",
     "task": "task.py",
     "tentacle": "tentacle.py",
     "install": "install.py",
@@ -272,6 +278,11 @@ def _run_constitution(extra_args: list[str]) -> int:
     return _run("constitution.py", extra_args)
 
 
+def _run_spec_phase(phase: str, extra_args: list[str]) -> int:
+    """Dispatch ``sk plan`` / ``sk tasks`` through specify.py."""
+    return _run("specify.py", [phase] + extra_args)
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
     print(
@@ -306,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_project(rest)
     if cmd == "constitution":
         return _run_constitution(rest)
+    if cmd in {"plan", "tasks"}:
+        return _run_spec_phase(cmd, rest)
     if cmd == "doctor":
         return _run("install.py", ["--doctor"] + rest)
     if cmd in _DIRECT:

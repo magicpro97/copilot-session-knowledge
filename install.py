@@ -192,6 +192,7 @@ TOOL_FILES = [
     "briefing.py",
     "clarify.py",
     "constitution.py",
+    "specify.py",
     "task.py",
     "watch-sessions.py",
     "learn.py",
