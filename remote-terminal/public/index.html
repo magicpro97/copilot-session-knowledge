@@ -10,6 +10,31 @@
         color-scheme: dark;
         font-family:
           Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --accent: #7dd3fc;
+        --app-bg: #050816;
+        --button-bg: rgba(15, 23, 42, 0.92);
+        --button-border: rgba(125, 211, 252, 0.28);
+        --button-text: #e2e8f0;
+        --danger: #f87171;
+        --keyboard-bg: rgba(15, 23, 42, 0.95);
+        --muted-text: #94a3b8;
+        --panel-bg: rgba(15, 23, 42, 0.92);
+        --panel-border: rgba(148, 163, 184, 0.18);
+        --shadow: 0 18px 40px rgba(2, 6, 23, 0.35);
+        --status-info: #7dd3fc;
+        --status-offline: #fda4af;
+        --status-online: #86efac;
+        --status-warning: #facc15;
+        --surface-bg: #020617;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
       }
 
       body {
@@ -17,57 +42,294 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        background: #050816;
-        color: #e2e8f0;
+        background:
+          radial-gradient(circle at top right, rgba(125, 211, 252, 0.12), transparent 32%),
+          var(--app-bg);
+        color: var(--button-text);
       }
 
       header {
-        padding: 1rem 1.25rem 0.75rem;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-        background: rgba(15, 23, 42, 0.92);
+        display: grid;
+        gap: 0.9rem;
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid var(--panel-border);
+        background: var(--panel-bg);
         backdrop-filter: blur(12px);
       }
 
       h1 {
         margin: 0 0 0.35rem;
-        font-size: 1.2rem;
+        font-size: clamp(1.15rem, 2vw, 1.35rem);
       }
 
       p {
         margin: 0;
       }
 
+      .hero-copy {
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .hero-copy p {
+        color: var(--muted-text);
+        line-height: 1.5;
+      }
+
+      .hero-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: end;
+      }
+
+      .control-group {
+        display: grid;
+        gap: 0.35rem;
+        min-width: 12rem;
+      }
+
+      .control-group label {
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: var(--muted-text);
+        text-transform: uppercase;
+      }
+
+      select,
+      button {
+        appearance: none;
+        border: 1px solid var(--button-border);
+        background: var(--button-bg);
+        color: var(--button-text);
+        border-radius: 0.9rem;
+        min-height: 2.75rem;
+        padding: 0.7rem 0.95rem;
+        font: inherit;
+        box-shadow: var(--shadow);
+      }
+
+      button {
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      select:focus,
+      button:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
       #status {
-        margin-top: 0.5rem;
-        color: #7dd3fc;
-        font-size: 0.92rem;
+        font-size: 0.94rem;
+        font-weight: 600;
+      }
+
+      #status[data-tone="info"] {
+        color: var(--status-info);
+      }
+
+      #status[data-tone="success"] {
+        color: var(--status-online);
+      }
+
+      #status[data-tone="warning"] {
+        color: var(--status-warning);
+      }
+
+      #status[data-tone="error"] {
+        color: var(--status-offline);
+      }
+
+      main {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        padding: 1rem 1.25rem;
+      }
+
+      .terminal-card {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        border: 1px solid var(--panel-border);
+        border-radius: 1.25rem;
+        overflow: hidden;
+        background: var(--surface-bg);
+        box-shadow: var(--shadow);
       }
 
       #terminal {
         flex: 1;
-        padding: 0.75rem;
         min-height: 0;
-      }
-
-      footer {
-        padding: 0.7rem 1.25rem 1rem;
-        font-size: 0.9rem;
-        color: #94a3b8;
+        padding: 0.8rem;
       }
 
       .xterm {
         height: 100%;
       }
+
+      .keyboard-panel {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        display: grid;
+        gap: 0.75rem;
+        padding: 0.9rem;
+        border: 1px solid var(--panel-border);
+        border-radius: 1.1rem;
+        background: var(--keyboard-bg);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(14px);
+      }
+
+      .keyboard-panel[hidden] {
+        display: none;
+      }
+
+      .keyboard-header {
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .keyboard-header strong {
+        font-size: 0.96rem;
+      }
+
+      #keyboard-hint {
+        color: var(--muted-text);
+        font-size: 0.9rem;
+      }
+
+      .keyboard-grid {
+        display: grid;
+        gap: 0.55rem;
+      }
+
+      .keyboard-row {
+        display: grid;
+        gap: 0.55rem;
+        grid-template-columns: repeat(auto-fit, minmax(4rem, 1fr));
+      }
+
+      .keyboard-key {
+        min-height: 3rem;
+        padding: 0.7rem 0.5rem;
+        border-radius: 0.95rem;
+        background: var(--button-bg);
+        border: 1px solid var(--button-border);
+        color: var(--button-text);
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+
+      .keyboard-key--wide {
+        grid-column: span 2;
+      }
+
+      .keyboard-key--modifier[aria-pressed="true"] {
+        background: var(--accent);
+        border-color: transparent;
+        color: #020617;
+      }
+
+      footer {
+        padding: 0 1.25rem 1rem;
+        color: var(--muted-text);
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+
+      @media (min-width: 920px) {
+        header {
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: end;
+        }
+
+        #status {
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (max-width: 720px) {
+        header,
+        main,
+        footer {
+          padding-left: 0.95rem;
+          padding-right: 0.95rem;
+        }
+
+        .control-group,
+        .hero-controls > button {
+          width: 100%;
+        }
+
+        select,
+        button {
+          width: 100%;
+        }
+
+        .keyboard-key {
+          min-height: 3.15rem;
+        }
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>Remote Terminal</h1>
-      <p>Token-authenticated terminal session powered by node-pty, Socket.IO, and xterm.js.</p>
-      <p id="status">Connecting…</p>
+      <div class="hero-copy">
+        <h1>Remote Terminal</h1>
+        <p>
+          Token-authenticated terminal access with six persistent themes, touch shortcuts,
+          and Cloudflare Quick Tunnel progress states.
+        </p>
+      </div>
+      <div class="hero-controls">
+        <div class="control-group">
+          <label for="theme-select">Terminal theme</label>
+          <select id="theme-select" aria-label="Terminal theme"></select>
+        </div>
+        <button
+          id="keyboard-toggle"
+          type="button"
+          aria-controls="mobile-keyboard"
+          aria-expanded="false"
+        >
+          Show keyboard
+        </button>
+      </div>
+      <p id="status" data-tone="info">Connecting...</p>
     </header>
-    <main id="terminal" aria-label="Terminal session"></main>
-    <footer>Use the browser like a normal terminal: resize the window, press Ctrl+C, Ctrl+D, and use tab completion.</footer>
+
+    <main>
+      <section class="terminal-card">
+        <div id="terminal" aria-label="Terminal session"></div>
+      </section>
+
+      <section
+        id="mobile-keyboard"
+        class="keyboard-panel"
+        hidden
+        aria-label="On-screen terminal keyboard"
+      >
+        <div class="keyboard-header">
+          <strong>Touch keyboard</strong>
+          <p id="keyboard-hint">
+            Touch shortcuts stay focused on the real PTY. Modifiers apply to the next tap.
+          </p>
+        </div>
+        <div id="keyboard-rows" class="keyboard-grid"></div>
+      </section>
+    </main>
+
+    <footer>
+      Use the browser like a normal terminal. The active theme is saved in this browser, and
+      the touch keyboard adds Ctrl/Alt/Shift, arrows, Tab, and F1-F12 without leaving the PTY.
+    </footer>
+
     <script src="/socket.io/socket.io.js"></script>
     <script src="/vendor/xterm.js"></script>
     <script src="/vendor/xterm-addon-fit.js"></script>

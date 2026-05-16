@@ -6,6 +6,7 @@ This package adds a token-gated browser terminal backed by:
 - `node-pty` for the PTY session
 - `Socket.IO` for bidirectional streaming
 - `xterm.js` for the browser terminal
+- `systray2` for an optional native system tray menu without Electron
 - `cloudflared` for zero-config Cloudflare Quick Tunnel URLs
 - `qrcode-terminal` for scannable QR codes in the operator console
 
@@ -26,6 +27,9 @@ By default the server:
 5. retries tunnel setup after disconnects / tunnel errors with exponential backoff
 6. keeps the PTY session inside a detached daemon so active shells survive server restarts
 7. prints a public QR code once the tunnel URL is verified
+8. lets the browser switch between six terminal themes that persist in local storage
+9. exposes a touch-friendly on-screen keyboard for Ctrl / Alt / Shift, arrows, Tab, and F1-F12
+10. enables a desktop system tray menu when the host has a local GUI session
 
 ## Tunnel states
 
@@ -45,6 +49,8 @@ STOPPED → PREPARING → CONNECTING → TUNNELING → VERIFYING → READY
 | `REMOTE_TERMINAL_ACCESS_HOST` | Override the QR code host/IP | first non-loopback IPv4 |
 | `REMOTE_TERMINAL_SHELL` | Override the spawned shell executable | `powershell.exe` on Windows, `$SHELL` or `/bin/bash` elsewhere |
 | `REMOTE_TERMINAL_DISABLE_TUNNEL` | Skip Cloudflare Quick Tunnel startup | unset / `false` |
+| `REMOTE_TERMINAL_ENABLE_TRAY` | Force-enable the native tray integration even outside the default desktop detection | unset |
+| `REMOTE_TERMINAL_DISABLE_TRAY` | Force-disable the native tray integration | unset / `false` |
 
 ## PTY daemon IPC
 
@@ -69,13 +75,16 @@ The HTTP / Socket.IO server talks to `pty-daemon.js` over newline-delimited JSON
 ## Notes
 
 - Open the printed URL directly if you already have the token; the HTML page and the WebSocket both require the same token.
+- The browser UI ships with six themes: Default, Light, Dracula, Monokai, Solarized Dark, and Solarized Light. The selected theme persists in the current browser via `localStorage`.
+- Phones and tablets can toggle a touch keyboard that adds modifier keys, arrows, Tab, Enter, Backspace, and F1-F12 without stealing focus from the PTY session.
 - Generated QR tokens are one-time session keys: after 30 minutes they stop authorizing new page loads and new Socket.IO connections, but existing terminal sessions are left alone until they disconnect.
 - Failed HTTP and WebSocket auth attempts are rate limited to 5 tries per 60 seconds per client IP to make token guessing noisy and self-limiting.
 - When traffic is relayed through a local `cloudflared` process, the rate limiter prefers `CF-Connecting-IP` / `X-Forwarded-For` over the loopback relay address so different remote clients do not share one auth bucket.
 - `REMOTE_TERMINAL_TOKEN` is the supported trusted-device flow for operators who want a stable QR code or a bookmarkable fixed URL.
 - The PTY daemon is a detached subprocess: restarting the HTTP / Socket.IO server reattaches to the existing shell session instead of killing it.
 - If the PTY daemon crashes, the server respawns it after 1 second and reconnects over the same local IPC endpoint.
+- When the host has a desktop session, the operator gets a native `systray2` menu with live tunnel status, a copy-URL action, and a "Regenerate QR code" shortcut. macOS uses a template tray icon so the menu bar adapts to light/dark appearance automatically.
 - `Ctrl+C`, `Ctrl+D`, tab completion, and resize handling are delegated to the real PTY-backed shell, so shell behavior stays native instead of being emulated in JavaScript.
 - For LAN-only smoke tests, start with `REMOTE_TERMINAL_DISABLE_TUNNEL=1 npm start`.
-- `/health` exposes the tunnel state machine (`tunnelState`, `tunnelRetryDelayMs`, `tunnelError`), daemon state (`backendMode`, `daemonConnected`, `daemonEndpoint`, `daemonPid`), and auth metadata (`persistentToken`, `tokenExpiresAt`) without leaking the access token.
+- `/health` exposes the tunnel state machine (`tunnelState`, `tunnelRetryDelayMs`, `tunnelError`), daemon state (`backendMode`, `daemonConnected`, `daemonEndpoint`, `daemonPid`), tray state (`trayEnabled`, `trayReady`, `trayStatus`, `trayError`), and auth metadata (`persistentToken`, `tokenExpiresAt`) without leaking the access token.
 - If your local Windows environment has a custom `cmd.exe` / PATH setup that prevents npm lifecycle scripts from seeing `node`, run `npm --script-shell pwsh <command>` for local verification. That is an environment workaround, not a package requirement.
