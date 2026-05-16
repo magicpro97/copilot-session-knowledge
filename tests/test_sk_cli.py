@@ -258,6 +258,26 @@ class TestSkDirectCommands(unittest.TestCase):
             "audit-hooks.py not found — sk audit-hooks would break",
         )
 
+    def test_audit_instructions(self):
+        self._assert_routes("audit-instructions", "audit-instructions.py")
+
+    def test_audit_instructions_json(self):
+        self._assert_routes("audit-instructions", "audit-instructions.py", ["--json"])
+
+    def test_audit_instructions_repo_root(self):
+        self._assert_routes(
+            "audit-instructions",
+            "audit-instructions.py",
+            ["--repo-root", "/some/repo", "--top", "5"],
+        )
+
+    def test_audit_instructions_script_exists(self):
+        """audit-instructions.py must exist in the tools directory."""
+        self.assertTrue(
+            (TOOLS_DIR / "audit-instructions.py").exists(),
+            "audit-instructions.py not found — sk audit-instructions would break",
+        )
+
     def test_improvement_signals(self):
         self._assert_routes("improvement-signals", "improvement-signals.py")
 
