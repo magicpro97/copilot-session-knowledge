@@ -573,6 +573,145 @@ class TestSwarmBriefingFlag(unittest.TestCase):
         mock_brief.assert_called_once()
 
 
+class TestAgentProfiles(unittest.TestCase):
+    """Tests for specialist agent profile loading and dispatch injection."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "agent_profiles"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.repo = self.base / "repo"
+        (self.repo / ".github" / "agents").mkdir(parents=True, exist_ok=True)
+        self.profile_path = self.repo / ".github" / "agents" / "backend-python-specialist.agent.md"
+        self.profile_path.write_text(
+            """---
+name: 'Backend Python Specialist'
+description: 'Use for Python backend work.'
+tools: ['grep', 'read', 'edit', 'bash']
+model: 'claude-sonnet-4.6'
+profile_id: 'backend-python-specialist'
+agent_type: 'general-purpose'
+role: 'Backend Python Specialist'
+domain: 'backend-python'
+model_tier: 'code'
+goal: |
+  Implement tested Python changes.
+expertise:
+  - 'Parameterized SQLite'
+  - 'Atomic locks'
+triggers:
+  - '*.py'
+quality_gates:
+  - 'py_compile succeeds'
+  - 'relevant tests pass'
+escalation_rules:
+  - 'Use BLOCKED for baseline failures'
+anti_patterns:
+  - 'String-formatted SQL'
+evidence_required:
+  - 'test output'
+tools_denied:
+  - 'git commit'
+---
+# Backend Python Specialist
+""",
+            encoding="utf-8",
+        )
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    def test_load_agent_profile_from_project_agents(self):
+        profile = T._load_agent_profile("backend-python-specialist", self.repo)
+        self.assertEqual(profile["profile_id"], "backend-python-specialist")
+        self.assertEqual(profile["role"], "Backend Python Specialist")
+        self.assertEqual(profile["expertise"], ["Parameterized SQLite", "Atomic locks"])
+        self.assertEqual(profile["quality_gates"], ["py_compile succeeds", "relevant tests pass"])
+
+    def test_cmd_create_profile_injects_context_and_meta(self):
+        args = fake_args(
+            name="profiled",
+            scope="src/*.py",
+            desc="Implement profiled backend work",
+            briefing=False,
+            skill=[],
+            goal_id=None,
+            iteration=None,
+            depends_on=None,
+            profile="backend-python-specialist",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo):
+                with patch("builtins.print"):
+                    T.cmd_create(args)
+        tentacle_dir = self.base / "profiled"
+        context = (tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
+        meta = json.loads((tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertIn("## Agent Profile", context)
+        self.assertIn("Backend Python Specialist", context)
+        self.assertIn("### Quality Gates", context)
+        self.assertEqual(meta["agent_profile_id"], "backend-python-specialist")
+        self.assertEqual(meta["specialist_role"], "Backend Python Specialist")
+        self.assertEqual(meta["agent_profile"]["evidence_required"], ["test output"])
+
+    def test_cmd_swarm_profile_supplies_defaults_and_prompt_section(self):
+        d = make_tentacle("profile-swarm", self.base)
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        meta["agent_profile"] = T._agent_profile_meta(T._load_agent_profile("backend-python-specialist", self.repo))
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        args = fake_args(
+            name="profile-swarm",
+            agent_type=None,
+            model=None,
+            output="prompt",
+            briefing=False,
+            bundle=False,
+            worktree=False,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_swarm(args)
+        combined = "\n".join(captured)
+        self.assertIn("Agent: general-purpose | Model: claude-sonnet-4.6", combined)
+        self.assertIn("### Specialist Profile", combined)
+        self.assertIn("### Evidence Required in Handoff", combined)
+
+    def test_cmd_swarm_json_includes_agent_profile(self):
+        d = make_tentacle("profile-json", self.base)
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        meta["agent_profile"] = T._agent_profile_meta(T._load_agent_profile("backend-python-specialist", self.repo))
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        args = fake_args(
+            name="profile-json",
+            agent_type=None,
+            model=None,
+            output="json",
+            briefing=False,
+            bundle=False,
+            worktree=False,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_swarm(args)
+        combined = "\n".join(captured)
+        json_start = combined.find("{")
+        parsed = json.loads(combined[json_start:])
+        self.assertEqual(parsed["agent_profile"]["profile_id"], "backend-python-specialist")
+        self.assertEqual(parsed["agent_type"], "general-purpose")
+        self.assertEqual(parsed["model"], "claude-sonnet-4.6")
+
+
 class TestExistingBehaviorUnchanged(unittest.TestCase):
     """Smoke tests to confirm pre-existing commands still work after changes."""
 

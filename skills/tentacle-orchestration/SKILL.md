@@ -220,12 +220,16 @@ Each code tentacle must declare:
 ```bash
 sk tentacle create <module-name> \
   --scope "<file-patterns>" \
+  --profile "<profile-id>" \
   --desc "<short description>" \
   --briefing
 # fallback: python3 ~/.copilot/tools/tentacle.py create <module-name> ...
 ```
 
-The `--briefing` flag injects past mistakes and patterns from session-knowledge into CONTEXT.md — use it every time.
+The `--profile` flag loads a specialist `.agent.md` contract (role, domain,
+quality gates, escalation rules, and evidence requirements) into CONTEXT.md and
+meta.json. The `--briefing` flag injects past mistakes and patterns from
+session-knowledge into CONTEXT.md — use both when a suitable profile exists.
 
 #### Plan E: Add todos
 
@@ -257,8 +261,11 @@ sk tentacle dispatch <name> --agent-type <type> --model <model> --briefing
 # fallback: python3 ~/.copilot/tools/tentacle.py swarm/dispatch <name> ...
 ```
 
-`swarm` and `dispatch` materialize a runtime bundle by default. The dispatch prompt stays
-token-lean and points agents at `.octogent/tentacles/<name>/bundle/manifest.json` first.
+`swarm` and `dispatch` materialize a runtime bundle by default. If the tentacle
+was created with `--profile`, dispatch also injects a compact Specialist Profile
+section before the task list so the worker sees the expert role, gates, escalation
+rules, and evidence requirements. The dispatch prompt stays token-lean and points
+agents at `.octogent/tentacles/<name>/bundle/manifest.json` first.
 The bundle carries the full `CONTEXT.md`, todos, latest checkpoint, instruction snippets,
 skills catalogue, and `recall-pack.json`.
 

@@ -28,6 +28,57 @@ model: 'Claude Sonnet 4'       # optional — specify for consistency
 | `github` | Optional | GitHub-specific settings |
 | `skills` | Optional | Skills this agent can use |
 
+## Specialist Profile Fields (Optional, Recommended for Tentacles)
+
+Tentacle orchestration can load `.agent.md` files as specialist profiles with
+`sk tentacle create <name> --profile <profile_id>`. These fields are additive:
+Copilot can ignore unknown keys, while `tentacle.py` mirrors them into `meta.json`
+and injects them into CONTEXT.md and dispatch prompts.
+
+```yaml
+---
+name: 'Security Reviewer'
+description: 'Use for auth, secrets, injection, CORS, OWASP, ASVS, threat model.'
+tools: ['grep', 'glob', 'read', 'bash']
+model: 'claude-opus-4.6'
+profile_id: 'security-reviewer'
+agent_type: 'code-review'
+role: 'Security Reviewer'
+domain: 'security'
+model_tier: 'security'
+goal: |
+  Find exploitable vulnerabilities before code ships.
+expertise:
+  - 'OWASP Top 10 and ASVS'
+triggers:
+  - 'auth, secrets, CORS, PNA, injection, threat model'
+quality_gates:
+  - 'No unresolved HIGH or CRITICAL finding is marked safe'
+escalation_rules:
+  - 'Use BLOCKED when a high-risk issue lacks mitigation or risk acceptance'
+anti_patterns:
+  - 'Approving security-sensitive code without exploit-path analysis'
+evidence_required:
+  - 'Findings with severity, file:line, impact, and remediation'
+tools_denied:
+  - 'git commit'
+  - 'git push'
+---
+```
+
+| Field | Purpose |
+|-------|---------|
+| `profile_id` | Stable slug used by `--profile` and stored in `meta.json` |
+| `agent_type` | Default Copilot agent type when dispatching a profiled tentacle |
+| `role` / `goal` / `domain` | Specialist identity and ownership injected into prompts |
+| `expertise` | Concrete domains the agent should reason from |
+| `triggers` | Keywords, paths, or events that indicate the profile should own the work |
+| `quality_gates` | Role-specific pass/fail checks before handoff |
+| `escalation_rules` | Exact conditions for BLOCKED, AMBIGUOUS, REGRESSED, or scope escalation |
+| `anti_patterns` | Behaviors that make the agent superficial or unsafe |
+| `evidence_required` | Artifacts required before a DONE handoff is accepted |
+| `tools_denied` | Explicit prompt-level boundaries in addition to platform hooks |
+
 > **⚠️ Deprecated:** `infer` is deprecated. Use `user-invocable` + `disable-model-invocation` instead.
 
 ### Valid Tool Names (Copilot CLI)

@@ -7,7 +7,7 @@ Each tentacle is a scoped work context with CONTEXT.md + todo.md + handoff.md.
 Integrates with session-knowledge (briefing.py/learn.py) for long-term memory.
 
 Usage:
-    python3 ~/.copilot/tools/tentacle.py create <name> [--scope <paths>] [--desc <desc>] [--briefing] [--goal-id <id>] [--iteration <n>]
+    python3 ~/.copilot/tools/tentacle.py create <name> [--scope <paths>] [--desc <desc>] [--profile <agent-profile>] [--briefing] [--goal-id <id>] [--iteration <n>]
     python3 ~/.copilot/tools/tentacle.py list
     python3 ~/.copilot/tools/tentacle.py status
     python3 ~/.copilot/tools/tentacle.py show <name>
@@ -50,6 +50,7 @@ Environment:
 """
 
 import argparse
+import ast
 import difflib
 import hashlib
 import hmac
@@ -100,6 +101,7 @@ SKILL_METRICS_DB = Path.home() / ".copilot" / "session-state" / "skill-metrics.d
 
 # Root directory for per-tentacle git worktrees
 _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
+AGENT_PROFILE_REFERENCE_DIR = TOOLS_DIR / "skills" / "agent-creator" / "references"
 
 # ---------------------------------------------------------------------------
 # Structured handoff contract constants
@@ -671,6 +673,259 @@ def _bundle_enabled(args) -> bool:
     return bool(getattr(args, "bundle", False))
 
 
+def _normalize_agent_profile_id(profile_id: str) -> str:
+    """Return a safe profile slug for .agent.md lookup."""
+    slug = str(profile_id or "").strip()
+    if slug.endswith(".agent.md"):
+        slug = slug[: -len(".agent.md")]
+    elif slug.endswith(".md"):
+        slug = slug[: -len(".md")]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", slug or ""):
+        raise ValueError(
+            "Agent profile id must be a slug containing only letters, numbers, underscores, and hyphens."
+        )
+    return slug
+
+
+def _parse_frontmatter_scalar(value: str):
+    """Parse the scalar subset used by .agent.md frontmatter."""
+    raw = value.strip()
+    if raw == "":
+        return ""
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            parsed = ast.literal_eval(raw)
+        except (SyntaxError, ValueError):
+            return raw
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+        return raw
+    if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')):
+        return raw[1:-1]
+    lower = raw.lower()
+    if lower == "true":
+        return True
+    if lower == "false":
+        return False
+    return raw
+
+
+def _parse_agent_frontmatter(path: Path) -> dict:
+    """Parse the YAML-frontmatter subset used by bundled agent profiles."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    end_index = None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            end_index = idx
+            break
+    if end_index is None:
+        return {}
+
+    data: dict = {}
+    frontmatter = lines[1:end_index]
+    i = 0
+    while i < len(frontmatter):
+        line = frontmatter[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or line.startswith((" ", "\t")):
+            i += 1
+            continue
+        if ":" not in line:
+            i += 1
+            continue
+
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if not key:
+            i += 1
+            continue
+
+        if value in {"|", ">"}:
+            block_lines: list[str] = []
+            i += 1
+            while i < len(frontmatter):
+                block_line = frontmatter[i]
+                if block_line.strip() and not block_line.startswith((" ", "\t")):
+                    break
+                block_lines.append(block_line[2:] if block_line.startswith("  ") else block_line.lstrip())
+                i += 1
+            data[key] = "\n".join(block_lines).rstrip()
+            continue
+
+        if value == "":
+            items: list = []
+            i += 1
+            while i < len(frontmatter):
+                item_line = frontmatter[i]
+                if item_line.strip() and not item_line.startswith((" ", "\t")):
+                    break
+                item_stripped = item_line.strip()
+                if item_stripped.startswith("- "):
+                    items.append(_parse_frontmatter_scalar(item_stripped[2:]))
+                i += 1
+            data[key] = items if items else ""
+            continue
+
+        data[key] = _parse_frontmatter_scalar(value)
+        i += 1
+
+    return data
+
+
+def _agent_profile_candidates(profile_id: str, git_root: Path | None = None) -> list[Path]:
+    """Return profile lookup candidates in project-first order."""
+    slug = _normalize_agent_profile_id(profile_id)
+    candidates: list[Path] = []
+    if git_root:
+        candidates.extend(
+            [
+                git_root / ".github" / "agents" / f"{slug}.agent.md",
+                git_root / ".github" / "agents" / f"{slug}.md",
+            ]
+        )
+    candidates.extend(
+        [
+            AGENT_PROFILE_REFERENCE_DIR / f"{slug}.agent.md",
+            AGENT_PROFILE_REFERENCE_DIR / f"{slug}.md",
+        ]
+    )
+    return candidates
+
+
+def _load_agent_profile(profile_id: str, git_root: Path | None = None) -> dict:
+    """Load a project or bundled agent profile from .agent.md frontmatter."""
+    slug = _normalize_agent_profile_id(profile_id)
+    candidates = _agent_profile_candidates(slug, git_root)
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        profile = _parse_agent_frontmatter(candidate)
+        if not profile:
+            raise ValueError(f"Agent profile file has no YAML frontmatter: {candidate}")
+        profile["profile_id"] = str(profile.get("profile_id") or slug)
+        profile["role"] = str(profile.get("role") or profile.get("name") or profile["profile_id"])
+        profile["agent_type"] = str(profile.get("agent_type") or profile["profile_id"])
+        profile["profile_path"] = str(candidate)
+        return profile
+
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Agent profile '{slug}' not found. Searched: {searched}")
+
+
+def _agent_profile_meta(profile: dict) -> dict:
+    """Return the JSON-safe subset stored in tentacle meta.json."""
+    allowed = (
+        "profile_id",
+        "name",
+        "role",
+        "goal",
+        "domain",
+        "expertise",
+        "triggers",
+        "quality_gates",
+        "escalation_rules",
+        "anti_patterns",
+        "evidence_required",
+        "tools_denied",
+        "model",
+        "model_tier",
+        "agent_type",
+        "profile_path",
+    )
+    return {key: profile[key] for key in allowed if key in profile and profile[key] not in ("", [], None)}
+
+
+def _resolve_agent_profile_from_meta(meta: dict) -> dict:
+    """Resolve an embedded or referenced profile from tentacle metadata."""
+    embedded = meta.get("agent_profile")
+    if isinstance(embedded, dict) and embedded.get("profile_id"):
+        profile = dict(embedded)
+        profile["profile_id"] = str(profile["profile_id"])
+        profile["role"] = str(profile.get("role") or profile.get("name") or profile["profile_id"])
+        profile["agent_type"] = str(profile.get("agent_type") or profile["profile_id"])
+        return profile
+    profile_id = meta.get("agent_profile_id")
+    if profile_id:
+        return _load_agent_profile(str(profile_id), find_git_root())
+    return {}
+
+
+def _profile_list(profile: dict, key: str) -> list[str]:
+    """Return a profile field as a clean list of strings."""
+    value = profile.get(key)
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        lines = []
+        for raw_line in value.splitlines():
+            line = raw_line.strip()
+            if line.startswith("- "):
+                line = line[2:].strip()
+            if line:
+                lines.append(line)
+        return lines
+    return []
+
+
+def _render_profile_list(title: str, items: list[str], *, limit: int | None = None) -> list[str]:
+    """Render a titled bullet list when profile data is present."""
+    if not items:
+        return []
+    shown = items[:limit] if limit else items
+    lines = [f"### {title}", ""]
+    lines.extend(f"- {item}" for item in shown)
+    if limit and len(items) > limit:
+        lines.append(f"- ... plus {len(items) - limit} more")
+    lines.append("")
+    return lines
+
+
+def _render_agent_profile_section(profile: dict | None, *, prompt: bool = False) -> str:
+    """Render a specialist profile section for CONTEXT.md or dispatch prompts."""
+    if not profile:
+        return ""
+
+    heading = "### Specialist Profile" if prompt else "## Agent Profile"
+    lines = [heading, ""]
+    profile_id = profile.get("profile_id")
+    role = profile.get("role") or profile.get("name")
+    if profile_id:
+        lines.append(f"**Profile:** `{profile_id}`")
+    if role:
+        lines.append(f"**Role:** {role}")
+    if profile.get("domain"):
+        lines.append(f"**Domain:** {profile['domain']}")
+    if profile.get("model_tier") or profile.get("model"):
+        model_bits = []
+        if profile.get("model_tier"):
+            model_bits.append(f"tier `{profile['model_tier']}`")
+        if profile.get("model"):
+            model_bits.append(f"model `{profile['model']}`")
+        lines.append(f"**Runtime preference:** {', '.join(model_bits)}")
+    if profile.get("goal"):
+        goal = " ".join(str(profile["goal"]).split()) if prompt else str(profile["goal"]).strip()
+        lines.append("")
+        lines.append("**Goal:**")
+        lines.append(goal)
+    lines.append("")
+
+    list_limit = 6 if prompt else None
+    lines.extend(_render_profile_list("Expertise", _profile_list(profile, "expertise"), limit=list_limit))
+    lines.extend(_render_profile_list("Lifecycle Triggers", _profile_list(profile, "triggers"), limit=list_limit))
+    lines.extend(_render_profile_list("Quality Gates", _profile_list(profile, "quality_gates"), limit=list_limit))
+    lines.extend(_render_profile_list("Escalation Rules", _profile_list(profile, "escalation_rules"), limit=list_limit))
+    lines.extend(_render_profile_list("Anti-patterns", _profile_list(profile, "anti_patterns"), limit=list_limit))
+    lines.extend(
+        _render_profile_list("Evidence Required in Handoff", _profile_list(profile, "evidence_required"), limit=list_limit)
+    )
+    lines.extend(_render_profile_list("Tools Denied", _profile_list(profile, "tools_denied"), limit=list_limit))
+    return "\n" + "\n".join(lines).rstrip() + "\n"
+
+
 def _scope_items(meta: dict) -> list[str]:
     raw_scope = meta.get("scope") or []
     if isinstance(raw_scope, str):
@@ -765,6 +1020,7 @@ def _render_swarm_prompt(
     pending: list[dict],
     context_for_prompt: str,
     *,
+    specialist_profile_section: str = "",
     live_briefing_section: str = "",
     dispatch_mode_section: str = "",
     prompt_size_section: str = "",
@@ -776,7 +1032,7 @@ def _render_swarm_prompt(
 
 ### Context
 {context_for_prompt}
-{live_briefing_section}{dispatch_mode_section}{prompt_size_section}{bundle_section}{worktree_section}
+{specialist_profile_section}{live_briefing_section}{dispatch_mode_section}{prompt_size_section}{bundle_section}{worktree_section}
 ### Your Tasks (complete ALL)
 """
     for t in pending:
@@ -821,12 +1077,15 @@ def _dispatch_prompt_size_stats(
     worktree_section: str,
     bundle_dir: Path | None,
     bundle_section: str,
+    agent_profile: dict | None = None,
 ) -> dict:
     """Compare pointer-mode prompt size against the full-context fallback."""
+    specialist_profile_section = _render_agent_profile_section(agent_profile, prompt=True)
     full_context_prompt = _render_swarm_prompt(
         name,
         pending,
         _render_dispatch_context(context, meta, None),
+        specialist_profile_section=specialist_profile_section,
         live_briefing_section=inline_live_briefing_section,
         worktree_section=worktree_section,
     )
@@ -844,6 +1103,7 @@ def _dispatch_prompt_size_stats(
         name,
         pending,
         _render_dispatch_context(context, meta, bundle_dir),
+        specialist_profile_section=specialist_profile_section,
         live_briefing_section=bundled_live_briefing_section,
         bundle_section=bundle_section,
         worktree_section=worktree_section,
@@ -6932,6 +7192,14 @@ def cmd_create(args):
     tentacle_dir.mkdir(parents=True)
 
     desc = args.desc or f"Context for {args.name} work area"
+    agent_profile: dict = {}
+    profile_id_arg = getattr(args, "profile", None)
+    if profile_id_arg:
+        try:
+            agent_profile = _load_agent_profile(profile_id_arg, find_git_root())
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     # Auto-briefing: fetch relevant past knowledge
     briefing_section = ""
@@ -6956,12 +7224,13 @@ def cmd_create(args):
     spec_artifacts_section = ""
     if spec_artifacts:
         spec_artifacts_section = "\n## Spec Artifacts\n\n" + "\n".join(f"- `{path}`" for path in spec_artifacts) + "\n"
+    agent_profile_section = _render_agent_profile_section(agent_profile)
 
     context_content = textwrap.dedent(f"""\
         # {args.name}
 
         {desc}
-        {scope_section}{spec_artifacts_section}{briefing_section}
+        {scope_section}{agent_profile_section}{spec_artifacts_section}{briefing_section}
         ## What exists
 
         <!-- Describe what already exists in this area -->
@@ -6997,6 +7266,16 @@ def cmd_create(args):
         "skills": skills,
         "spec_artifacts": spec_artifacts,
     }
+    if agent_profile:
+        profile_meta = _agent_profile_meta(agent_profile)
+        meta["agent_profile_id"] = profile_meta["profile_id"]
+        meta["specialist_role"] = profile_meta.get("role")
+        meta["domain"] = profile_meta.get("domain")
+        meta["model_tier"] = profile_meta.get("model_tier")
+        meta["agent_type"] = profile_meta.get("agent_type") or profile_meta["profile_id"]
+        if profile_meta.get("model"):
+            meta["model"] = profile_meta["model"]
+        meta["agent_profile"] = profile_meta
     # Goal-aware fields: link to a goal if --goal-id provided
     goal_id_arg = getattr(args, "goal_id", None)
     iteration_arg = getattr(args, "iteration", None)
@@ -7026,6 +7305,8 @@ def cmd_create(args):
         print(f"   📚 Spec artifacts: {', '.join(spec_artifacts)}")
     if skills:
         print(f"   🔧 Skills: {', '.join(skills)}")
+    if agent_profile:
+        print(f"   🧑‍🔬 Agent profile: {agent_profile['profile_id']} ({agent_profile.get('role', 'specialist')})")
     if goal_id_arg:
         print(f"   🎯 Goal: {goal_id_arg} (iteration {iteration_value})")
     if meta.get("todo_deps"):
@@ -8101,11 +8382,28 @@ def cmd_swarm(args):
     context = context_path.read_text(encoding="utf-8") if context_path.exists() else ""
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
-    agent_type = args.agent_type or "general-purpose"
-    model = args.model or "claude-sonnet-4.6"
+    try:
+        agent_profile = _resolve_agent_profile_from_meta(meta)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    requested_agent_type = getattr(args, "agent_type", None)
+    requested_model = getattr(args, "model", None)
+    agent_type = (
+        requested_agent_type
+        or meta.get("agent_type")
+        or agent_profile.get("agent_type")
+        or agent_profile.get("profile_id")
+        or "general-purpose"
+    )
+    model = requested_model or meta.get("model") or agent_profile.get("model") or "claude-sonnet-4.6"
+    specialist_profile_section = _render_agent_profile_section(agent_profile, prompt=True)
 
     print(f"🐙 Swarm plan for '{args.name}' — {len(pending)} pending todos\n")
     print(f"Agent: {agent_type} | Model: {model}\n")
+    if agent_profile:
+        print(f"Profile: {agent_profile.get('profile_id')} | Role: {agent_profile.get('role')}\n")
 
     # Live briefing injection at dispatch time
     briefing_text = ""
@@ -8209,6 +8507,7 @@ def cmd_swarm(args):
         worktree_section=worktree_section,
         bundle_dir=bundle_dir,
         bundle_section=bundle_section,
+        agent_profile=agent_profile,
     )
     dispatch_mode_section = _render_dispatch_mode_section(dispatch_context_mode)
     prompt_size_section = _render_dispatch_prompt_size_section(prompt_size)
@@ -8236,6 +8535,7 @@ def cmd_swarm(args):
             args.name,
             pending,
             context_for_prompt,
+            specialist_profile_section=specialist_profile_section,
             live_briefing_section=active_live_briefing_section,
             dispatch_mode_section=dispatch_mode_section,
             prompt_size_section=prompt_size_section,
@@ -8286,6 +8586,8 @@ def cmd_swarm(args):
             print("### Context")
             context_for_prompt = _render_dispatch_context(context, meta, bundle_dir)
             print(f"{context_for_prompt[:900]}")
+            if specialist_profile_section:
+                print(specialist_profile_section.strip())
             if active_live_briefing_section:
                 print(active_live_briefing_section.strip())
             print(dispatch_mode_section.strip())
@@ -8343,6 +8645,8 @@ def cmd_swarm(args):
             "prompt_size": prompt_size,
             "marker_state": _get_marker_state(),
         }
+        if agent_profile:
+            dispatch["agent_profile"] = _agent_profile_meta(agent_profile)
         if bundle_dir is not None:
             dispatch["bundle_path"] = str(bundle_dir)
             dispatch["context_packet_path"] = str(bundle_dir / "context-packet.md")
@@ -9401,6 +9705,12 @@ def main():
     p_create.add_argument("name", help="Tentacle name (kebab-case)")
     p_create.add_argument("--scope", help="Comma-separated file paths/patterns")
     p_create.add_argument("--desc", help="Short description")
+    p_create.add_argument(
+        "--profile",
+        metavar="PROFILE_ID",
+        default=None,
+        help="Specialist agent profile slug from .github/agents/ or bundled references",
+    )
     p_create.add_argument("--depends-on", dest="depends_on", help="Comma-separated tentacle dependencies")
     p_create.add_argument(
         "--briefing",
@@ -9544,8 +9854,12 @@ def main():
     # swarm
     p_swarm = sub.add_parser("swarm", help="Generate dispatch from pending todos")
     p_swarm.add_argument("name", help="Tentacle name")
-    p_swarm.add_argument("--agent-type", default="general-purpose", help="Agent type for workers")
-    p_swarm.add_argument("--model", default="claude-sonnet-4.6", help="Model for workers")
+    p_swarm.add_argument(
+        "--agent-type",
+        default=None,
+        help="Agent type for workers (default: profile agent_type, then general-purpose)",
+    )
+    p_swarm.add_argument("--model", default=None, help="Model for workers (default: profile model, then claude-sonnet-4.6)")
     p_swarm.add_argument(
         "--output",
         choices=["prompt", "parallel", "json"],
@@ -9579,8 +9893,8 @@ def main():
     # dispatch (alias for swarm --output prompt)
     p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
     p_dispatch.add_argument("name", help="Tentacle name")
-    p_dispatch.add_argument("--agent-type", default="general-purpose", help="Agent type")
-    p_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
+    p_dispatch.add_argument("--agent-type", default=None, help="Agent type (default: profile agent_type, then general-purpose)")
+    p_dispatch.add_argument("--model", default=None, help="Model (default: profile model, then claude-sonnet-4.6)")
     p_dispatch.add_argument(
         "--briefing",
         action="store_true",

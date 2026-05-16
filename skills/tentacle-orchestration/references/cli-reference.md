@@ -12,8 +12,8 @@ Do not create tentacles until accepted/edited/rejected steps, dependencies, and 
 ```
 
 ```bash
-# Create a tentacle (--briefing injects past knowledge into CONTEXT.md)
-sk tentacle create <name> --scope "<paths>" --desc "<desc>" --briefing
+# Create a tentacle (--profile injects specialist contract; --briefing injects past knowledge)
+sk tentacle create <name> --scope "<paths>" --desc "<desc>" --profile <profile_id> --briefing
 
 # Add todo items
 sk tentacle todo <name> add "<task>"
@@ -69,6 +69,7 @@ sk tentacle delete <name>
 
 | Flag | When | Effect |
 |------|------|--------|
+| `create --profile PROFILE` | Creating tentacle | Loads `.github/agents/<profile>.agent.md` (fallback: bundled agent-creator references), mirrors `agent_profile` into `meta.json`, and injects role/gates/evidence into CONTEXT.md |
 | `create --briefing` | Creating tentacle | Fetches past mistakes/patterns → injects into CONTEXT.md |
 | `swarm/dispatch` | Dispatching agent | Materializes bundle/ by default and surfaces `bundle_path` |
 | `swarm/dispatch --no-bundle` | Tiny/manual dispatch | Opts out of file-backed context and uses inline prompt context |
@@ -156,19 +157,41 @@ sk tentacle handoff my-feature "Updated config docs" --learn
 - Avoid modifying files outside your scope — overlapping changes cause agent conflicts
 - <project-specific conventions>
 
+## Agent Profile
+**Profile:** `<profile_id>`
+**Role:** <real-world specialist role>
+**Goal:** <specialist success criterion>
+
+### Quality Gates
+- <role-specific gate and evidence>
+
+### Escalation Rules
+- <when to write BLOCKED/AMBIGUOUS/REGRESSED/SCOPE_ESCALATION>
+
+### Evidence Required in Handoff
+- <logs, traces, scans, citations, screenshots, or command output>
+
 ## Key files
 - `<path/to/reference-file>` — <why it matters>
 ```
 
 ## Agent Selection Guidance
 
-Map module types to agent types based on what's available in your project (check AGENTS.md). Default mapping if no custom agents exist:
+Map module types to specialist profiles and agent types based on what's available
+in your project (check `.github/agents/` and AGENTS.md). Prefer profiles over bare
+agent labels: a profile carries role, domain, gates, escalations, and evidence
+requirements.
 
-| Module type | agent-type | model |
-|-------------|-----------|-------|
-| Backend logic | `general-purpose` | `claude-sonnet-4.6` |
-| Frontend UI | `general-purpose` | `claude-sonnet-4.6` |
-| Tests | `general-purpose` | `claude-sonnet-4.6` |
-| Code review | `code-review` | `claude-sonnet-4.6` |
+| Module type | profile_id | agent-type | model |
+|-------------|------------|-----------|-------|
+| Architecture/design | `staff-engineer` | `general-purpose` | `claude-sonnet-4.6` |
+| Python/backend logic | `backend-python-specialist` | `general-purpose` | `claude-sonnet-4.6` |
+| Frontend UI | `browse-ui-specialist` | `general-purpose` | `claude-sonnet-4.6` |
+| Verification / QA | `qa-specialist` | `general-purpose` | `claude-sonnet-4.6` |
+| Security review | `security-reviewer` | `code-review` | `claude-opus-4.6` |
+| Documentation | `docs-writer` | `general-purpose` | `claude-sonnet-4.6` |
+| Research spike | `research-planner` | `research` | `claude-haiku-4.5` |
 
-If the project has custom agents (e.g., `lambda-developer`, `frontend-developer`), prefer those — they carry domain knowledge.
+If no custom profile exists, use a bundled reference profile from
+`skills/agent-creator/references/` or fall back to `general-purpose` only for
+small, low-risk work.

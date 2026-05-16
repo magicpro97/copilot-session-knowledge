@@ -32,9 +32,11 @@ producing ready-to-use agents from battle-tested templates.
 Analyze project → Select relevant templates → Customize → Write .agent.md files
 ```
 
-Templates live in `references/` — each one captures a universal development workflow
-(planning, TDD, debugging, verification, research). The skill adapts them to the
-project's specific toolchain, conventions, and directory structure.
+Templates live in `references/`. Some capture universal development workflows
+(planning, TDD, debugging, verification, research); specialist-profile templates
+also carry expert contracts (`profile_id`, role, domain, triggers, quality gates,
+escalation rules, and evidence requirements). The skill adapts them to the
+project's toolchain, conventions, and directory structure.
 
 ## When to Create Agents
 
@@ -71,9 +73,19 @@ Choose from the bundled templates based on project needs:
 | `debug.agent.md` | Every project — systematic bug investigation | `references/debug.agent.md` |
 | `doublecheck.agent.md` | Projects needing verification — fact-check AI output | `references/doublecheck.agent.md` |
 | `research-spike.agent.md` | Technical exploration — exhaustive spike research | `references/research-spike.agent.md` |
+| `staff-engineer.agent.md` | Architecture/design ownership — ADRs, trade-offs, hard-to-reverse decisions | `references/staff-engineer.agent.md` |
+| `backend-python-specialist.agent.md` | Python/stdlib/SQLite/TDD work — backend scripts, hooks, regression fixes | `references/backend-python-specialist.agent.md` |
+| `security-reviewer.agent.md` | Security review — OWASP/ASVS/STRIDE, auth, secrets, injection, CORS/PNA | `references/security-reviewer.agent.md` |
+| `browse-ui-specialist.agent.md` | browse-ui React/TypeScript work — host state, pnpm gates, Playwright | `references/browse-ui-specialist.agent.md` |
+| `qa-specialist.agent.md` | Independent verification — evidence ledger, scope audit, test quality | `references/qa-specialist.agent.md` |
+| `docs-writer.agent.md` | Documentation — Diataxis, README/API/runbook/changelog accuracy | `references/docs-writer.agent.md` |
+| `research-planner.agent.md` | Evidence-first research orchestration with source-backed findings | `references/research-planner.agent.md` |
 
 For most projects, start with **spec-clarifier + plan + debug + tdd-red/green/refactor** (6 agents).
-Add doublecheck and research-spike for teams that value verification rigor.
+Add doublecheck and research-spike for teams that value verification rigor. For
+tentacle orchestration, also install the specialist profiles that match the stack
+so `sk tentacle create --profile <profile_id>` can inject expert behavior into
+CONTEXT.md, meta.json, and dispatch prompts.
 
 ### Step 3: Customize Each Template
 
@@ -84,9 +96,13 @@ Read the selected template from `references/`, then adapt:
 3. **File patterns** — reference actual directories (`src/`, `tests/`, etc.)
 4. **Conventions** — incorporate naming patterns, linting rules, commit formats from project docs
 5. **Issue integration** — configure branch-to-issue mapping for the project's tracker
+6. **Profile contract** — preserve or add `profile_id`, `role`, `domain`,
+   `triggers`, `quality_gates`, `escalation_rules`, `anti_patterns`, and
+   `evidence_required` so tentacle dispatch can treat the agent as a real expert
 
-Keep customizations minimal — the templates are intentionally general so they adapt
-to different contexts. Only add project-specific details that meaningfully change behavior.
+Keep customizations focused. Workflow templates should stay general, but specialist
+profiles must include enough project-specific gates and evidence to change behavior.
+Do not ship a specialist profile that is only a title plus a generic checklist.
 
 <example>
 **Before** (generic template `tdd-red.agent.md`):
@@ -120,6 +136,9 @@ Place generated agents in `.github/agents/` (GitHub Copilot convention):
 ├── tdd-green.agent.md
 ├── tdd-refactor.agent.md
 ├── debug.agent.md
+├── backend-python-specialist.agent.md
+├── security-reviewer.agent.md
+├── qa-specialist.agent.md
 ├── doublecheck.agent.md          # optional
 └── research-spike.agent.md       # optional
 ```
@@ -131,6 +150,8 @@ After creating agents, confirm:
 - Descriptions are "pushy" — include trigger phrases so the agent activates reliably (Copilot uses description text for trigger matching; vague descriptions cause agents to never activate)
 - Commands referenced in agents actually exist in the project
 - File paths referenced in agents match the real directory structure
+- Specialist profiles include role/domain/triggers/gates/escalations/evidence
+- `sk tentacle create <name> --profile <profile_id>` can load the profile
 
 ## .agent.md Format Reference
 
@@ -142,6 +163,13 @@ name: 'Human-Readable Agent Name'
 description: 'What it does. Use when [specific triggers]. Activates for [keywords].'
 tools: ['list', 'of', 'available', 'tools']
 model: 'Claude Sonnet 4'  # optional but recommended
+profile_id: 'backend-specialist'  # optional but recommended for tentacle profiles
+role: 'Backend Specialist'
+domain: 'backend'
+quality_gates:
+  - 'Relevant tests pass with output attached'
+evidence_required:
+  - 'Changed-file receipts and verification logs'
 ---
 
 # Agent Title
