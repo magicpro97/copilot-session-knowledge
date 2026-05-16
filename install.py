@@ -200,6 +200,7 @@ TOOL_FILES = [
     "agent_adapters.py",
     "claude-adapter.py",
     "context-blocks.py",
+    "cron-tasks.py",
     "sync-knowledge.py",
     "sync-config.py",
     "sync-daemon.py",

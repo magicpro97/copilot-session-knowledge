@@ -331,6 +331,7 @@ test("TOOL_FILES contains specify.py", "specify.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains task.py", "task.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains context-blocks.py", "context-blocks.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains agent_adapters.py", "agent_adapters.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains cron-tasks.py", "cron-tasks.py" in _install.TOOL_FILES)
 test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
 test("SUPPORT_DIRS contains skills", "skills" in _install.SUPPORT_DIRS)
 
@@ -815,9 +816,7 @@ try:
     _install._current_path_has_launcher_dir = lambda path_value=None, delimiter=None: False
     _install._read_windows_user_path = lambda: (str(_doctor_launcher.parent), None)
     _install._which_command = lambda name: (
-        r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe"
-        if name == "python3"
-        else None
+        r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe" if name == "python3" else None
     )
 
     _doctor_buf = io.StringIO()
