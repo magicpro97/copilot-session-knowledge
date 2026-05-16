@@ -82,6 +82,55 @@ function createSpinnerRecorder(events = []) {
   };
 }
 
+class FakeTray {
+  constructor(conf) {
+    this.clickHandler = null;
+    this.conf = conf;
+    this.killed = false;
+    this.readyCalled = false;
+    this.sentActions = [];
+  }
+
+  ready() {
+    this.readyCalled = true;
+    return Promise.resolve();
+  }
+
+  onClick(listener) {
+    this.clickHandler = listener;
+    return Promise.resolve(this);
+  }
+
+  onError() {}
+
+  sendAction(action) {
+    this.sentActions.push(action);
+    if (action.type === "update-menu") {
+      this.conf.menu = action.menu;
+    }
+    return Promise.resolve(this);
+  }
+
+  async clickItem(titleMatcher) {
+    const item = this.conf.menu.items.find((entry) =>
+      titleMatcher instanceof RegExp ? titleMatcher.test(entry.title) : entry.title === titleMatcher,
+    );
+    assert.ok(item, `missing tray item: ${titleMatcher}`);
+    await this.clickHandler({
+      __id: 1,
+      item,
+      seq_id: 1,
+      type: "clicked",
+    });
+  }
+
+  kill(exitNode = true) {
+    this.killed = true;
+    this.exitNode = exitNode;
+    return Promise.resolve();
+  }
+}
+
 async function connectClient(remoteTerminal, token) {
   const socket = io(`http://127.0.0.1:${remoteTerminal.port}`, {
     auth: { token },
@@ -125,7 +174,11 @@ test("health endpoint is public but the terminal page stays token gated", async 
 
   const allowed = await fetch(remoteTerminal.localUrl);
   assert.equal(allowed.status, 200);
-  assert.match(await allowed.text(), /Remote Terminal/);
+  const html = await allowed.text();
+  assert.match(html, /Remote Terminal/);
+  assert.match(html, /id="theme-select"/);
+  assert.match(html, /id="keyboard-toggle"/);
+  assert.match(html, /id="mobile-keyboard"/);
   assert.deepEqual(qrCodes, [{ label: "Local access QR", url: remoteTerminal.localUrl }]);
 });
 
@@ -314,6 +367,166 @@ test("forwarded tunnel client IPs keep auth rate limiting scoped per client", as
     headers: allowedHeaders,
   });
   assert.equal(differentForwardedClient.status, 401);
+});
+
+test("system tray exposes local URL actions and LAN-only status", async (t) => {
+  const copiedUrls = [];
+  const qrCodes = [];
+  let fakeTray = null;
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    copyText: async (value) => copiedUrls.push(value),
+    disableTunnel: true,
+    enableTray: true,
+    logger: () => {},
+    port: 0,
+    qrWriter: (label, url) => qrCodes.push({ label, url }),
+    token: "issue81-tray-local-token",
+    trayFactory: async (conf) => {
+      fakeTray = new FakeTray(conf);
+      return fakeTray;
+    },
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.trayEnabled, true);
+  assert.equal(payload.trayReady, true);
+  assert.match(payload.trayStatus, /Connected/);
+  assert.match(fakeTray.conf.menu.items[0].title, /Connected/);
+  assert.match(fakeTray.conf.menu.items[1].title, /Copy local URL/);
+
+  await fakeTray.clickItem("Copy local URL");
+  assert.deepEqual(copiedUrls, [remoteTerminal.localUrl]);
+
+  await fakeTray.clickItem("Regenerate QR code");
+  assert.deepEqual(qrCodes.at(-1), {
+    label: "Local access QR (tray)",
+    url: remoteTerminal.localUrl,
+  });
+
+  await remoteTerminal.stop();
+  assert.equal(fakeTray.killed, true);
+  assert.equal(fakeTray.exitNode, false);
+});
+
+test("system tray switches to the public URL once the tunnel is ready", async (t) => {
+  const tunnel = new EventEmitter();
+  tunnel.stop = () => true;
+  let fakeTray = null;
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    enableTray: true,
+    logger: () => {},
+    port: 0,
+    spinnerFactory: () => createSpinnerRecorder(),
+    token: "issue81-tray-public-token",
+    trayFactory: async (conf) => {
+      fakeTray = new FakeTray(conf);
+      return fakeTray;
+    },
+    tunnelFactory: () => tunnel,
+    verifyTunnel: async (_url, options) => {
+      options.onProgress(1, 1);
+    },
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  tunnel.emit("connected", { location: "tray-edge" });
+  tunnel.emit("url", "https://issue81.trycloudflare.com");
+
+  await waitFor(
+    () =>
+      fakeTray.conf.menu.items.some((item) => /Copy public URL/.test(item.title)) &&
+      /Connected/.test(fakeTray.conf.menu.items[0].title),
+    "tray never updated to the public connected state",
+  );
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.trayReady, true);
+  assert.match(payload.trayStatus, /Connected/);
+  assert.equal(payload.publicOrigin, stripTokenFromUrl(remoteTerminal.publicUrl));
+  assert.match(fakeTray.conf.menu.items[1].title, /Copy public URL/);
+});
+
+test("tray startup failures clean up the spawned tray subprocess", async (t) => {
+  const logs = [];
+  const fakeTray = {
+    killed: false,
+    onClick() {
+      return Promise.resolve(this);
+    },
+    onError() {},
+    ready() {
+      return Promise.reject(new Error("tray ready failed"));
+    },
+    kill(exitNode = true) {
+      this.killed = true;
+      this.exitNode = exitNode;
+      return Promise.resolve();
+    },
+  };
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    disableTunnel: true,
+    enableTray: true,
+    logger: (message) => logs.push(message),
+    port: 0,
+    token: "issue81-tray-failure-token",
+    trayFactory: async () => fakeTray,
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.trayEnabled, true);
+  assert.equal(payload.trayReady, false);
+  assert.match(payload.trayError, /tray ready failed/);
+  assert.equal(fakeTray.killed, true);
+  assert.equal(fakeTray.exitNode, false);
+  assert.match(logs.join("\n"), /System tray unavailable: tray ready failed/);
+});
+
+test("tray action sync errors are logged instead of escaping", async (t) => {
+  let fakeTray = null;
+  let qrRenders = 0;
+  const logs = [];
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    disableTunnel: true,
+    enableTray: true,
+    logger: (message) => logs.push(message),
+    port: 0,
+    qrWriter: () => {
+      qrRenders += 1;
+      if (qrRenders > 1) {
+        throw new Error("tray qr failed");
+      }
+    },
+    token: "issue81-tray-sync-token",
+    trayFactory: async (conf) => {
+      fakeTray = new FakeTray(conf);
+      return fakeTray;
+    },
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  await fakeTray.clickItem("Regenerate QR code");
+  assert.match(logs.join("\n"), /Tray action failed: tray qr failed/);
 });
 
 test("server restart reattaches to the same PTY daemon session", async (t) => {

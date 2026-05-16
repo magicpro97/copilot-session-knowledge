@@ -1,11 +1,12 @@
 const crypto = require("node:crypto");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const zlib = require("node:zlib");
 
 const express = require("express");
 const pty = require("node-pty");
@@ -31,6 +32,7 @@ const DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const DEFAULT_DAEMON_RESTART_DELAY_MS = 1000;
 const DEFAULT_DAEMON_SESSION_ID = "default";
+const DEFAULT_TRAY_TITLE = "Remote Terminal";
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PTY_DAEMON_SCRIPT = path.join(__dirname, "pty-daemon.js");
 const XTERM_DIR = path.dirname(require.resolve("@xterm/xterm/package.json"));
@@ -325,6 +327,443 @@ function formatRetryDelay(delayMs) {
   }
 
   return `${delayMs}ms`;
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) === 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+function writePixel(buffer, size, x, y, color) {
+  if (x < 0 || y < 0 || x >= size || y >= size) {
+    return;
+  }
+
+  const offset = (y * size + x) * 4;
+  buffer[offset] = color[0];
+  buffer[offset + 1] = color[1];
+  buffer[offset + 2] = color[2];
+  buffer[offset + 3] = color[3];
+}
+
+function fillRect(buffer, size, x, y, width, height, color) {
+  for (let row = y; row < y + height; row += 1) {
+    for (let column = x; column < x + width; column += 1) {
+      writePixel(buffer, size, column, row, color);
+    }
+  }
+}
+
+function createTrayPixelBuffer(template = false) {
+  const size = 16;
+  const pixels = Buffer.alloc(size * size * 4);
+  const shellFill = template ? [0, 0, 0, 255] : [5, 8, 22, 255];
+  const shellBorder = template ? [0, 0, 0, 255] : [125, 211, 252, 255];
+  const prompt = template ? [0, 0, 0, 255] : [34, 197, 94, 255];
+  const cursor = template ? [0, 0, 0, 255] : [226, 232, 240, 255];
+
+  fillRect(pixels, size, 2, 2, 12, 12, shellFill);
+  fillRect(pixels, size, 2, 2, 12, 1, shellBorder);
+  fillRect(pixels, size, 2, 13, 12, 1, shellBorder);
+  fillRect(pixels, size, 2, 2, 1, 12, shellBorder);
+  fillRect(pixels, size, 13, 2, 1, 12, shellBorder);
+  fillRect(pixels, size, 4, 4, 2, 1, shellBorder);
+  fillRect(pixels, size, 7, 4, 2, 1, shellBorder);
+  fillRect(pixels, size, 10, 4, 2, 1, shellBorder);
+
+  writePixel(pixels, size, 5, 7, prompt);
+  writePixel(pixels, size, 6, 8, prompt);
+  writePixel(pixels, size, 5, 9, prompt);
+  fillRect(pixels, size, 8, 10, 3, 1, cursor);
+
+  return {
+    pixels,
+    size,
+  };
+}
+
+function computeCrc32(buffer) {
+  let crc = 0xffffffff;
+  for (const value of buffer) {
+    crc = CRC32_TABLE[(crc ^ value) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createPngChunk(type, data) {
+  const chunkType = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(computeCrc32(Buffer.concat([chunkType, data])), 0);
+  return Buffer.concat([length, chunkType, data, crc]);
+}
+
+function createPngIconBuffer(template = false) {
+  const { pixels, size } = createTrayPixelBuffer(template);
+  const scanlines = Buffer.alloc((size * 4 + 1) * size);
+
+  for (let row = 0; row < size; row += 1) {
+    const rowOffset = row * (size * 4 + 1);
+    scanlines[rowOffset] = 0;
+    pixels.copy(scanlines, rowOffset + 1, row * size * 4, (row + 1) * size * 4);
+  }
+
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0);
+  header.writeUInt32BE(size, 4);
+  header[8] = 8;
+  header[9] = 6;
+  header[10] = 0;
+  header[11] = 0;
+  header[12] = 0;
+
+  return Buffer.concat([
+    signature,
+    createPngChunk("IHDR", header),
+    createPngChunk("IDAT", zlib.deflateSync(scanlines)),
+    createPngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function createIcoBufferFromPng(pngBuffer, size = 16) {
+  const header = Buffer.alloc(22);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(1, 4);
+  header[6] = size;
+  header[7] = size;
+  header[8] = 0;
+  header[9] = 0;
+  header.writeUInt16LE(1, 10);
+  header.writeUInt16LE(32, 12);
+  header.writeUInt32LE(pngBuffer.length, 14);
+  header.writeUInt32LE(22, 18);
+  return Buffer.concat([header, pngBuffer]);
+}
+
+async function createTrayIconAssets() {
+  const iconDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remote-terminal-tray-"));
+  const pngBuffer = createPngIconBuffer(false);
+  const templatePngBuffer = createPngIconBuffer(true);
+  const icoBuffer = createIcoBufferFromPng(pngBuffer);
+
+  const pngPath = path.join(iconDirectory, "remote-terminal-tray.png");
+  const templatePngPath = path.join(iconDirectory, "remote-terminal-tray-template.png");
+  const icoPath = path.join(iconDirectory, "remote-terminal-tray.ico");
+
+  await Promise.all([
+    fs.promises.writeFile(pngPath, pngBuffer),
+    fs.promises.writeFile(templatePngPath, templatePngBuffer),
+    fs.promises.writeFile(icoPath, icoBuffer),
+  ]);
+
+  return {
+    icoPath,
+    iconDirectory,
+    pngPath,
+    templatePngPath,
+  };
+}
+
+function getClipboardCommands(platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    return [{ command: "clip", args: [] }];
+  }
+
+  if (platform === "darwin") {
+    return [{ command: "pbcopy", args: [] }];
+  }
+
+  const candidates = [];
+  if (env.WAYLAND_DISPLAY) {
+    candidates.push({ command: "wl-copy", args: [] });
+  }
+  candidates.push(
+    { command: "xclip", args: ["-selection", "clipboard"] },
+    { command: "xsel", args: ["--clipboard", "--input"] },
+  );
+  if (!env.WAYLAND_DISPLAY) {
+    candidates.push({ command: "wl-copy", args: [] });
+  }
+  return candidates;
+}
+
+function runClipboardCommand(command, args, text, runner = spawnSync) {
+  const result = runner(command, args, {
+    encoding: "utf8",
+    input: text,
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    const stderr = (result.stderr || "").trim();
+    throw new Error(stderr || `${command} exited with code ${result.status}`);
+  }
+}
+
+async function copyTextToClipboard(text, options = {}) {
+  const commands = options.commands || getClipboardCommands(options.platform, options.env);
+  const runner = options.runCommand || runClipboardCommand;
+  const failures = [];
+
+  for (const { command, args } of commands) {
+    try {
+      runner(command, args, text);
+      return command;
+    } catch (error) {
+      failures.push(`${command}: ${error.message}`);
+    }
+  }
+
+  throw new Error(
+    failures.length > 0 ? failures.join("; ") : "no clipboard command available for this platform",
+  );
+}
+
+function hasDesktopSession(platform = process.platform, env = process.env) {
+  if (platform === "linux") {
+    return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+  }
+
+  return platform === "darwin" || platform === "win32";
+}
+
+function shouldEnableTray(options = {}, env = process.env, platform = process.platform) {
+  if (typeof options.enableTray === "boolean") {
+    return options.enableTray;
+  }
+
+  if (options.trayFactory) {
+    return true;
+  }
+
+  if (env.REMOTE_TERMINAL_ENABLE_TRAY !== undefined) {
+    return parseBoolean(env.REMOTE_TERMINAL_ENABLE_TRAY);
+  }
+
+  if (parseBoolean(env.REMOTE_TERMINAL_DISABLE_TRAY) || parseBoolean(env.CI)) {
+    return false;
+  }
+
+  return hasDesktopSession(platform, env);
+}
+
+function getPreferredAccessUrl(localUrl, publicUrl, tunnelState = TUNNEL_STATES.STOPPED) {
+  if (publicUrl && tunnelState === TUNNEL_STATES.READY) {
+    return publicUrl;
+  }
+
+  return localUrl || publicUrl || null;
+}
+
+function describeTrayConnectionState(snapshot = {}) {
+  if (!snapshot.shellRunning) {
+    return {
+      copyTitle: "Copy last URL",
+      copyTooltip: "Copy the most recent terminal URL to the clipboard",
+      title: "🔴 Disconnected",
+      tooltip: "The terminal session has stopped.",
+    };
+  }
+
+  if (!snapshot.tunnelEnabled) {
+    return {
+      copyTitle: "Copy local URL",
+      copyTooltip: "Copy the LAN access URL to the clipboard",
+      title: "🟢 Connected (LAN only)",
+      tooltip: "LAN access is ready without a Cloudflare Quick Tunnel.",
+    };
+  }
+
+  if (snapshot.publicUrl && snapshot.tunnelState === TUNNEL_STATES.READY) {
+    return {
+      copyTitle: "Copy public URL",
+      copyTooltip: "Copy the verified public tunnel URL to the clipboard",
+      title: "🟢 Connected",
+      tooltip: `Public URL ready: ${stripTokenFromUrl(snapshot.publicUrl)}`,
+    };
+  }
+
+  if (
+    [
+      TUNNEL_STATES.PREPARING,
+      TUNNEL_STATES.CONNECTING,
+      TUNNEL_STATES.TUNNELING,
+      TUNNEL_STATES.VERIFYING,
+    ].includes(snapshot.tunnelState)
+  ) {
+    return {
+      copyTitle: "Copy local URL",
+      copyTooltip: "Copy the local fallback URL while the public tunnel is starting",
+      title: "🟡 Connecting",
+      tooltip: snapshot.tunnelState === TUNNEL_STATES.VERIFYING ? "Verifying public URL…" : "Creating public tunnel…",
+    };
+  }
+
+  return {
+    copyTitle: "Copy local URL",
+    copyTooltip: "Copy the local fallback URL to the clipboard",
+    title: "🔴 Disconnected",
+    tooltip: snapshot.tunnelError
+      ? `Tunnel unavailable: ${snapshot.tunnelError}`
+      : "The public tunnel is unavailable.",
+  };
+}
+
+async function createTrayController(options = {}) {
+  const iconAssets = await createTrayIconAssets();
+  const snapshot = () => options.getSnapshot();
+  const initialState = describeTrayConnectionState(snapshot());
+  const statusItem = {
+    checked: false,
+    enabled: false,
+    title: initialState.title,
+    tooltip: initialState.tooltip,
+  };
+  const copyItem = {
+    checked: false,
+    click: async () => {
+      const current = snapshot();
+      const activeUrl = getPreferredAccessUrl(current.localUrl, current.publicUrl, current.tunnelState);
+      if (!activeUrl) {
+        throw new Error("No access URL is available yet.");
+      }
+      await (options.copyText || copyTextToClipboard)(activeUrl);
+      options.logger(
+        `Tray copied ${
+          current.publicUrl && current.tunnelState === TUNNEL_STATES.READY ? "public" : "local"
+        } access URL to the clipboard.`,
+      );
+    },
+    enabled: true,
+    title: initialState.copyTitle,
+    tooltip: initialState.copyTooltip,
+  };
+  const qrItem = {
+    checked: false,
+    click: () => {
+      const current = snapshot();
+      const activeUrl = getPreferredAccessUrl(current.localUrl, current.publicUrl, current.tunnelState);
+      if (!activeUrl) {
+        throw new Error("No access URL is available yet.");
+      }
+      const usingPublicUrl = current.publicUrl && current.tunnelState === TUNNEL_STATES.READY;
+      options.renderQr(usingPublicUrl ? "Quick tunnel QR (tray)" : "Local access QR (tray)", activeUrl);
+      options.logger(`Tray reprinted the ${usingPublicUrl ? "public" : "local"} QR code in the operator console.`);
+    },
+    enabled: true,
+    title: "Regenerate QR code",
+    tooltip: "Reprint the active QR code in the operator console",
+  };
+
+  const menu = {
+    icon:
+      process.platform === "win32"
+        ? iconAssets.icoPath
+        : process.platform === "darwin"
+          ? iconAssets.templatePngPath
+          : iconAssets.pngPath,
+    isTemplateIcon: process.platform === "darwin",
+    items: [statusItem, copyItem, qrItem],
+    title: DEFAULT_TRAY_TITLE,
+    tooltip: `${DEFAULT_TRAY_TITLE} — ${initialState.title}`,
+  };
+
+  const trayFactory =
+    options.trayFactory ||
+    (async (config) => {
+      const moduleValue = await import("systray2");
+      const SysTray = moduleValue.default || moduleValue;
+      return new SysTray(config);
+    });
+
+  let tray = null;
+
+  async function updateMenuState() {
+    if (!tray) {
+      return;
+    }
+
+    const nextState = describeTrayConnectionState(snapshot());
+    statusItem.title = nextState.title;
+    statusItem.tooltip = nextState.tooltip;
+    copyItem.title = nextState.copyTitle;
+    copyItem.tooltip = nextState.copyTooltip;
+    menu.tooltip = `${DEFAULT_TRAY_TITLE} — ${nextState.title}`;
+
+    await tray.sendAction({
+      type: "update-menu",
+      menu,
+    });
+  }
+
+  try {
+    tray = await trayFactory({
+      copyDir: false,
+      debug: false,
+      menu,
+    });
+
+    if (typeof tray.onError === "function") {
+      tray.onError((error) => {
+        options.logger(`System tray error: ${error.message}`);
+      });
+    }
+
+    if (typeof tray.onClick === "function") {
+      await tray.onClick((action) => {
+        if (!action.item || typeof action.item.click !== "function") {
+          return;
+        }
+
+        try {
+          Promise.resolve(action.item.click()).catch((error) => {
+            options.logger(`Tray action failed: ${error.message}`);
+          });
+        } catch (error) {
+          options.logger(`Tray action failed: ${error.message}`);
+        }
+      });
+    }
+
+    if (typeof tray.ready === "function") {
+      await tray.ready();
+    }
+  } catch (error) {
+    if (tray && typeof tray.kill === "function" && !tray.killed) {
+      await tray.kill(false);
+    }
+    await fs.promises.rm(iconAssets.iconDirectory, { force: true, recursive: true });
+    throw error;
+  }
+
+  return {
+    async close() {
+      try {
+        if (tray && typeof tray.kill === "function" && !tray.killed) {
+          await tray.kill(false);
+        }
+      } finally {
+        await fs.promises.rm(iconAssets.iconDirectory, { force: true, recursive: true });
+      }
+    },
+    async sync() {
+      await updateMenuState();
+    },
+  };
 }
 
 function sleep(delayMs) {
@@ -849,7 +1288,12 @@ async function startRemoteTerminal(options = {}) {
   let pendingVerification = null;
   let stopping = false;
   let activePort = null;
+  let localUrl = null;
   let ptyBackend = null;
+  let trayController = null;
+  let trayError = null;
+  let trayReady = false;
+  const trayEnabled = shouldEnableTray(options);
   const closed = new Promise((resolve) => {
     closedResolve = resolve;
   });
@@ -864,12 +1308,41 @@ async function startRemoteTerminal(options = {}) {
   });
   const spinner = tunnelEnabled ? await createSpinner(options.spinnerFactory) : createNoopSpinner();
 
+  function getTraySnapshot() {
+    return {
+      localUrl,
+      publicUrl,
+      shellRunning,
+      tunnelEnabled,
+      tunnelError,
+      tunnelState,
+    };
+  }
+
+  function syncTray() {
+    if (!trayController || !trayReady) {
+      return;
+    }
+
+    void trayController
+      .sync()
+      .then(() => {
+        trayError = null;
+      })
+      .catch((error) => {
+        trayError = error.message;
+        logger(`System tray update failed: ${error.message}`);
+      });
+  }
+
   function setPublicUrl(url) {
     publicUrl = url;
+    syncTray();
   }
 
   function setTunnelError(message) {
     tunnelError = message;
+    syncTray();
   }
 
   function updateSpinner(text, terminalAction) {
@@ -906,6 +1379,7 @@ async function startRemoteTerminal(options = {}) {
     const text = `[${nextState}] ${detail}`;
     logger(text);
     updateSpinner(text, terminalAction);
+    syncTray();
   }
 
   function clearRetryTimer() {
@@ -1118,6 +1592,17 @@ async function startRemoteTerminal(options = {}) {
         new Promise((resolve) => server.close(() => resolve())),
       ]);
 
+      if (trayController) {
+        trayReady = false;
+        try {
+          await trayController.close();
+        } catch (error) {
+          logger(`System tray shutdown failed: ${error.message}`);
+        } finally {
+          trayController = null;
+        }
+      }
+
       if (spinner && typeof spinner.stop === "function") {
         spinner.stop();
       }
@@ -1151,6 +1636,10 @@ async function startRemoteTerminal(options = {}) {
       tokenExpiresAt: accessToken.expiresAt === null ? null : new Date(accessToken.expiresAt).toISOString(),
       authRateLimitMaxAttempts,
       authRateLimitWindowMs,
+      trayEnabled,
+      trayReady,
+      trayStatus: trayEnabled ? describeTrayConnectionState(getTraySnapshot()).title : null,
+      trayError,
     });
   });
 
@@ -1292,12 +1781,13 @@ async function startRemoteTerminal(options = {}) {
       exitCode,
       signal,
     };
+    syncTray();
     io.emit("session-exit", shellExit);
     logger(`Shell exited (code=${exitCode ?? "null"}, signal=${signal ?? "none"}).`);
     void stop();
   });
 
-  const localUrl = buildAccessUrl(`http://${accessHost}:${activePort}/`, token);
+  localUrl = buildAccessUrl(`http://${accessHost}:${activePort}/`, token);
   logger(`Remote terminal listening on http://${host}:${activePort}`);
   logger(`Shell: ${shell.command}${shell.args.length ? ` ${shell.args.join(" ")}` : ""}`);
   if (accessToken.persistent) {
@@ -1310,6 +1800,28 @@ async function startRemoteTerminal(options = {}) {
     logger,
     qrWriter,
   });
+
+  if (trayEnabled) {
+    try {
+      trayController = await createTrayController({
+        copyText: options.copyText,
+        getSnapshot: getTraySnapshot,
+        logger,
+        renderQr: (label, url) => {
+          renderQrCode(url, { label, logger, qrWriter });
+        },
+        trayFactory: options.trayFactory,
+      });
+      trayReady = true;
+      trayError = null;
+      syncTray();
+      logger("System tray ready.");
+    } catch (error) {
+      trayReady = false;
+      trayError = error.message;
+      logger(`System tray unavailable: ${error.message}`);
+    }
+  }
 
   if (tunnelEnabled) {
     await connectTunnel();
@@ -1329,6 +1841,12 @@ async function startRemoteTerminal(options = {}) {
     },
     get tokenExpiresAt() {
       return accessToken.expiresAt;
+    },
+    get trayEnabled() {
+      return trayEnabled;
+    },
+    get trayReady() {
+      return trayReady;
     },
     get tunnelState() {
       return tunnelState;
@@ -1379,11 +1897,15 @@ module.exports = {
   DEFAULT_TUNNEL_VERIFY_DELAY_MS,
   TUNNEL_STATES,
   buildAccessUrl,
+  copyTextToClipboard,
   defaultVerifyTunnel,
+  describeTrayConnectionState,
   formatRetryDelay,
+  getPreferredAccessUrl,
   isValidToken,
   pickAccessHost,
   resolvePort,
+  shouldEnableTray,
   stripTokenFromUrl,
   startRemoteTerminal,
 };
