@@ -75,19 +75,28 @@ def _rmtree(path: Path) -> None:
     shutil.rmtree(path, onerror=_handle_readonly)
 
 
-def make_tentacle(name: str, base: Path, desc: str = "Test tentacle") -> Path:
+def make_tentacle(
+    name: str,
+    base: Path,
+    desc: str = "Test tentacle",
+    *,
+    scope: list[str] | None = None,
+    context_text: str | None = None,
+    **extra,
+) -> Path:
     """Create a minimal tentacle directory for testing."""
     d = base / name
     d.mkdir(parents=True, exist_ok=True)
     meta = {
         "name": name,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "scope": ["src/foo.py"],
+        "scope": scope or ["src/foo.py"],
         "description": desc,
         "status": "idle",
+        **extra,
     }
     (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-    (d / "CONTEXT.md").write_text(f"# {name}\n\n{desc}\n", encoding="utf-8")
+    (d / "CONTEXT.md").write_text(context_text or f"# {name}\n\n{desc}\n", encoding="utf-8")
     (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n- [x] Task B\n", encoding="utf-8")
     return d
 
@@ -1126,6 +1135,95 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
         self.assertIn("Lesson: test first", context)
         self.assertIn(T.AUTO_RECALL_START, context)
         self.assertIn("checkpoint overview", context)
+
+
+class TestCmdSplit(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "split"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        self._orig_markers_dir = T.MARKERS_DIR
+        T._DISPATCHED_MARKER_PATH = self.base / "dispatched-subagent-active"
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    def test_split_creates_children_with_inherited_scope_context_and_parent_tracking(self):
+        make_tentacle(
+            "root",
+            self.base,
+            scope=["tentacle.py", "tests/test_tentacle_runtime.py"],
+            context_text="# root\n\nParent context line\n",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_split(fake_args(name="root", into=["child-a", "child-b"], desc=None))
+
+        child_meta = json.loads((self.base / "child-a" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(child_meta["parent_tentacle"], "root")
+        self.assertEqual(child_meta["scope"], ["tentacle.py", "tests/test_tentacle_runtime.py"])
+        child_context = (self.base / "child-a" / "CONTEXT.md").read_text(encoding="utf-8")
+        self.assertIn("Inherited Parent Context", child_context)
+        self.assertIn("Parent context line", child_context)
+
+        parent_meta = json.loads((self.base / "root" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(parent_meta["children"], ["child-a", "child-b"])
+
+    def test_split_supports_three_level_depth(self):
+        make_tentacle("root", self.base, context_text="# root\n\nRoot context\n")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_split(fake_args(name="root", into=["mid"], desc=None))
+            T.cmd_split(fake_args(name="mid", into=["leaf"], desc=None))
+
+        mid_meta = json.loads((self.base / "mid" / "meta.json").read_text(encoding="utf-8"))
+        leaf_meta = json.loads((self.base / "leaf" / "meta.json").read_text(encoding="utf-8"))
+        root_meta = json.loads((self.base / "root" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(mid_meta["parent_tentacle"], "root")
+        self.assertEqual(leaf_meta["parent_tentacle"], "mid")
+        self.assertEqual(root_meta["children"], ["mid"])
+        self.assertEqual(mid_meta["children"], ["leaf"])
+
+    def test_complete_recursively_auto_completes_parent_chain(self):
+        make_tentacle("root", self.base, children=["mid"])
+        make_tentacle("mid", self.base, parent_tentacle="root", children=["leaf"])
+        make_tentacle("leaf", self.base, parent_tentacle="mid")
+
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(fake_args(name="leaf", no_learn=True))
+
+        mid_meta = json.loads((self.base / "mid" / "meta.json").read_text(encoding="utf-8"))
+        root_meta = json.loads((self.base / "root" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(mid_meta["status"], "completed")
+        self.assertEqual(root_meta["status"], "completed")
+        self.assertIn("completed_at", mid_meta)
+        self.assertIn("completed_at", root_meta)
+
+    def test_complete_clears_stale_blocked_terminal_state_on_auto_completed_parent(self):
+        make_tentacle("root", self.base, children=["mid"])
+        make_tentacle(
+            "mid",
+            self.base,
+            parent_tentacle="root",
+            children=["leaf"],
+            terminal_status="BLOCKED",
+            quota_reason="rate-limit",
+            retry_hint="wait",
+        )
+        make_tentacle("leaf", self.base, parent_tentacle="mid")
+
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(fake_args(name="leaf", no_learn=True))
+
+        mid_meta = json.loads((self.base / "mid" / "meta.json").read_text(encoding="utf-8"))
+        root_meta = json.loads((self.base / "root" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(mid_meta["status"], "completed")
+        self.assertNotIn("terminal_status", mid_meta)
+        self.assertNotIn("quota_reason", mid_meta)
+        self.assertNotIn("retry_hint", mid_meta)
+        self.assertEqual(root_meta["status"], "completed")
 
 
 class TestCmdNextStep(unittest.TestCase):

@@ -8,6 +8,7 @@ Integrates with session-knowledge (briefing.py/learn.py) for long-term memory.
 
 Usage:
     python3 ~/.copilot/tools/tentacle.py create <name> [--scope <paths>] [--desc <desc>] [--profile <agent-profile>] [--briefing] [--goal-id <id>] [--iteration <n>]
+    python3 ~/.copilot/tools/tentacle.py split <parent-name> --into <child-1> <child-2> [<child-n>...]
     python3 ~/.copilot/tools/tentacle.py list
     python3 ~/.copilot/tools/tentacle.py status
     python3 ~/.copilot/tools/tentacle.py show <name>
@@ -4245,6 +4246,208 @@ def _tentacle_meta(tentacles: Path, name: str) -> dict:
         return {}
 
 
+def _write_tentacle_meta(meta_path: Path, meta: dict) -> None:
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+
+def _tentacle_items(value: "str | list[str] | None") -> list[str]:
+    """Normalize comma-separated or list inputs into a stripped string list."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = str(value).split(",")
+    return [str(item).strip() for item in raw_items if str(item).strip()]
+
+
+def _render_inherited_context(parent_name: str | None, parent_context: str | None) -> str:
+    """Render a quoted parent-context block for child tentacles."""
+    if not parent_name or not parent_context or not parent_context.strip():
+        return ""
+    quoted = "\n".join(f"> {line}" if line else ">" for line in parent_context.strip().splitlines())
+    return f"\n## Inherited Parent Context\n\nFrom `{parent_name}`:\n\n{quoted}\n"
+
+
+def _create_tentacle_record(
+    tentacles: Path,
+    *,
+    name: str,
+    desc: str | None = None,
+    scope: "str | list[str] | None" = None,
+    briefing: bool = False,
+    skills: "list[str] | None" = None,
+    goal_id: str | None = None,
+    iteration: int | None = None,
+    depends_on: "str | list[str] | None" = None,
+    parent_tentacle: str | None = None,
+    inherited_context: str | None = None,
+    agent_profile: dict | None = None,
+    spec_artifacts: "list[str] | None" = None,
+) -> dict:
+    """Create tentacle files/metadata and return the resolved directory + meta."""
+    tentacle_dir = _validate_tentacle_name(name, tentacles)
+
+    # Generate a stable per-instance identity used for dedup/clear in marker operations.
+    tentacle_id = str(uuid.uuid4())
+
+    actual_dir_name = name
+    if tentacle_dir.exists():
+        actual_dir_name = f"{name}-{tentacle_id[:8]}"
+        tentacle_dir = tentacles / actual_dir_name
+        print(
+            f"ℹ️  Tentacle '{name}' dir already exists — creating as '{actual_dir_name}'",
+            file=sys.stderr,
+        )
+
+    tentacle_dir.mkdir(parents=True)
+
+    desc_text = desc or f"Context for {name} work area"
+    scope_items = _tentacle_items(scope)
+    depends_items = _tentacle_items(depends_on)
+    agent_profile = agent_profile or {}
+    spec_artifacts_list = list(spec_artifacts or _discover_spec_artifacts(find_git_root()))
+
+    briefing_section = ""
+    if briefing:
+        query = desc_text if desc else name.replace("-", " ")
+        print(f"🧠 Fetching relevant knowledge for '{query}'...")
+        briefing_text = _run_briefing(query)
+        if briefing_text:
+            briefing_section = (
+                f"\n## Past Knowledge (auto-injected)\n\n<!-- From session-knowledge briefing -->\n\n{briefing_text}\n"
+            )
+            print(f"   ✅ Injected {len(briefing_text)} chars of past knowledge")
+        else:
+            print("   ℹ️  No relevant past knowledge found")
+
+    scope_section = ""
+    if scope_items:
+        scope_section = "\n## Scope\n\n" + "\n".join(f"- `{path}`" for path in scope_items) + "\n"
+
+    spec_artifacts_section = ""
+    if spec_artifacts_list:
+        spec_artifacts_section = (
+            "\n## Spec Artifacts\n\n" + "\n".join(f"- `{path}`" for path in spec_artifacts_list) + "\n"
+        )
+    agent_profile_section = _render_agent_profile_section(agent_profile)
+    inherited_section = _render_inherited_context(parent_tentacle, inherited_context)
+    context_content = textwrap.dedent(
+        f"""\
+        # {name}
+
+        {desc_text}
+        {scope_section}{agent_profile_section}{spec_artifacts_section}{briefing_section}{inherited_section}
+        ## What exists
+
+        <!-- Describe what already exists in this area -->
+
+        ## Constraints
+
+        - DO NOT modify files outside your scope
+        - Follow existing patterns in nearby code
+
+        ## Key files
+
+        <!-- List the important files for this area -->
+
+        ---
+        *Created: {datetime.now(timezone.utc).isoformat()}*
+    """
+    )
+    (tentacle_dir / "CONTEXT.md").write_text(context_content, encoding="utf-8")
+    (tentacle_dir / "todo.md").write_text("# Todo\n\n", encoding="utf-8")
+
+    skill_items = list(skills or [])
+    meta = {
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scope": scope_items,
+        "description": desc_text,
+        "status": "idle",
+        "tentacle_id": tentacle_id,
+        "skills": skill_items,
+        "spec_artifacts": spec_artifacts_list,
+    }
+    if agent_profile:
+        profile_meta = _agent_profile_meta(agent_profile)
+        meta["agent_profile_id"] = profile_meta["profile_id"]
+        meta["specialist_role"] = profile_meta.get("role")
+        meta["domain"] = profile_meta.get("domain")
+        meta["model_tier"] = profile_meta.get("model_tier")
+        meta["agent_type"] = profile_meta.get("agent_type") or profile_meta["profile_id"]
+        if profile_meta.get("model"):
+            meta["model"] = profile_meta["model"]
+        meta["agent_profile"] = profile_meta
+    if goal_id:
+        meta["goal_id"] = goal_id
+        goal_state = _goal_load(tentacles)
+        if goal_state.get("goal_id") == goal_id and goal_state.get("title"):
+            meta["goal_name"] = goal_state["title"]
+    if iteration is not None:
+        meta["iteration"] = iteration
+        meta["goal_iteration"] = iteration
+    if depends_items:
+        meta["todo_deps"] = depends_items
+    if parent_tentacle:
+        meta["parent_tentacle"] = parent_tentacle
+    if actual_dir_name != name:
+        meta["dir_name"] = actual_dir_name
+
+    meta_path = tentacle_dir / "meta.json"
+    _write_tentacle_meta(meta_path, meta)
+    return {
+        "actual_dir_name": actual_dir_name,
+        "tentacle_dir": tentacle_dir,
+        "meta": meta,
+    }
+
+
+def _mark_all_tentacle_todos_done(todo_path: Path) -> None:
+    """Force-mark every todo in a tentacle as done."""
+    if not todo_path.exists():
+        return
+    with file_locked(todo_path):
+        todos = parse_todos(todo_path.read_text(encoding="utf-8"))
+        for todo in todos:
+            todo["done"] = True
+        todo_path.write_text(render_todos(todos), encoding="utf-8")
+
+
+def _auto_complete_parent_tentacles(tentacles: Path, parent_name: str | None) -> list[str]:
+    """Auto-complete parent tentacles when every tracked child resolves successfully."""
+    completed: list[str] = []
+    seen: set[str] = set()
+    current = parent_name
+    while current and current not in seen:
+        seen.add(current)
+        parent_dir = tentacles / current
+        if not parent_dir.exists():
+            break
+
+        parent_meta = _tentacle_meta(tentacles, current)
+        children = [child for child in parent_meta.get("children", []) if isinstance(child, str) and child.strip()]
+        if not children:
+            break
+        if not all(
+            (tentacles / child).exists() and _tentacle_goal_resolved_success(_tentacle_meta(tentacles, child))
+            for child in children
+        ):
+            break
+
+        _mark_all_tentacle_todos_done(parent_dir / "todo.md")
+        parent_meta["status"] = "completed"
+        parent_meta.pop("terminal_status", None)
+        parent_meta.pop("quota_reason", None)
+        parent_meta.pop("retry_hint", None)
+        parent_meta.setdefault("completed_at", datetime.now(timezone.utc).isoformat())
+        _write_tentacle_meta(parent_dir / "meta.json", parent_meta)
+        _remove_quota_retry_entry(current, tentacles)
+        completed.append(current)
+        current = parent_meta.get("parent_tentacle")
+    return completed
+
+
 def _tentacle_pending_todo_count(tentacles: Path, name: str) -> int:
     """Return the number of unchecked todos for a tentacle."""
     todo_path = tentacles / name / "todo.md"
@@ -7173,25 +7376,6 @@ def _discover_spec_artifacts(repo_root: Path | None = None) -> list[str]:
 def cmd_create(args):
     """Create a new tentacle with CONTEXT.md and todo.md."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
-
-    # Generate a stable per-instance identity used for dedup/clear in marker operations.
-    tentacle_id = str(uuid.uuid4())
-
-    # Phase-5 collision avoidance: if the requested name dir already exists (e.g. two
-    # orchestrators in the same session), use a unique slug instead of hard-erroring.
-    actual_dir_name = args.name
-    if tentacle_dir.exists():
-        actual_dir_name = f"{args.name}-{tentacle_id[:8]}"
-        tentacle_dir = tentacles / actual_dir_name
-        print(
-            f"ℹ️  Tentacle '{args.name}' dir already exists — creating as '{actual_dir_name}'",
-            file=sys.stderr,
-        )
-
-    tentacle_dir.mkdir(parents=True)
-
-    desc = args.desc or f"Context for {args.name} work area"
     agent_profile: dict = {}
     profile_id_arg = getattr(args, "profile", None)
     if profile_id_arg:
@@ -7200,117 +7384,98 @@ def cmd_create(args):
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
-
-    # Auto-briefing: fetch relevant past knowledge
-    briefing_section = ""
-    if args.briefing:
-        query = args.desc or args.name.replace("-", " ")
-        print(f"🧠 Fetching relevant knowledge for '{query}'...")
-        briefing = _run_briefing(query)
-        if briefing:
-            briefing_section = (
-                f"\n## Past Knowledge (auto-injected)\n\n<!-- From session-knowledge briefing -->\n\n{briefing}\n"
-            )
-            print(f"   ✅ Injected {len(briefing)} chars of past knowledge")
-        else:
-            print("   ℹ️  No relevant past knowledge found")
-
-    # Create CONTEXT.md
-    scope_section = ""
-    if args.scope:
-        paths = [s.strip() for s in args.scope.split(",")]
-        scope_section = "\n## Scope\n\n" + "\n".join(f"- `{p}`" for p in paths) + "\n"
-    spec_artifacts = _discover_spec_artifacts(find_git_root())
-    spec_artifacts_section = ""
-    if spec_artifacts:
-        spec_artifacts_section = "\n## Spec Artifacts\n\n" + "\n".join(f"- `{path}`" for path in spec_artifacts) + "\n"
-    agent_profile_section = _render_agent_profile_section(agent_profile)
-
-    context_content = textwrap.dedent(f"""\
-        # {args.name}
-
-        {desc}
-        {scope_section}{agent_profile_section}{spec_artifacts_section}{briefing_section}
-        ## What exists
-
-        <!-- Describe what already exists in this area -->
-
-        ## Constraints
-
-        - DO NOT modify files outside your scope
-        - Follow existing patterns in nearby code
-
-        ## Key files
-
-        <!-- List the important files for this area -->
-
-        ---
-        *Created: {datetime.now(timezone.utc).isoformat()}*
-    """)
-
-    (tentacle_dir / "CONTEXT.md").write_text(context_content, encoding="utf-8")
-
-    # Create empty todo.md
-    todo_content = "# Todo\n\n"
-    (tentacle_dir / "todo.md").write_text(todo_content, encoding="utf-8")
-
-    # Create metadata
-    skills = list(args.skill) if getattr(args, "skill", None) else []
-    meta = {
-        "name": args.name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "scope": [s.strip() for s in args.scope.split(",")] if args.scope else [],
-        "description": desc,
-        "status": "idle",
-        "tentacle_id": tentacle_id,
-        "skills": skills,
-        "spec_artifacts": spec_artifacts,
-    }
-    if agent_profile:
-        profile_meta = _agent_profile_meta(agent_profile)
-        meta["agent_profile_id"] = profile_meta["profile_id"]
-        meta["specialist_role"] = profile_meta.get("role")
-        meta["domain"] = profile_meta.get("domain")
-        meta["model_tier"] = profile_meta.get("model_tier")
-        meta["agent_type"] = profile_meta.get("agent_type") or profile_meta["profile_id"]
-        if profile_meta.get("model"):
-            meta["model"] = profile_meta["model"]
-        meta["agent_profile"] = profile_meta
-    # Goal-aware fields: link to a goal if --goal-id provided
     goal_id_arg = getattr(args, "goal_id", None)
     iteration_arg = getattr(args, "iteration", None)
     iteration_value = iteration_arg
     if goal_id_arg and iteration_value is None:
         iteration_value = 1
-    if goal_id_arg:
-        meta["goal_id"] = goal_id_arg
-        goal_state = _goal_load(tentacles)
-        if goal_state.get("goal_id") == goal_id_arg and goal_state.get("title"):
-            meta["goal_name"] = goal_state["title"]
-    if iteration_value is not None:
-        meta["iteration"] = iteration_value
-        meta["goal_iteration"] = iteration_value
-    depends_on_arg = getattr(args, "depends_on", None)
-    if depends_on_arg:
-        meta["todo_deps"] = [item.strip() for item in depends_on_arg.split(",") if item.strip()]
-    # When dir_name differs from name (collision case), record it explicitly.
-    if actual_dir_name != args.name:
-        meta["dir_name"] = actual_dir_name
-    (tentacle_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    result = _create_tentacle_record(
+        tentacles,
+        name=args.name,
+        desc=args.desc,
+        scope=args.scope,
+        briefing=args.briefing,
+        skills=list(args.skill) if getattr(args, "skill", None) else [],
+        goal_id=goal_id_arg,
+        iteration=iteration_value,
+        depends_on=getattr(args, "depends_on", None),
+        agent_profile=agent_profile,
+    )
+    tentacle_dir = result["tentacle_dir"]
+    actual_dir_name = result["actual_dir_name"]
+    meta = result["meta"]
 
     print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
     print("   📄 CONTEXT.md — edit to add area-specific context")
     print("   📋 todo.md    — add checkbox items for delegation")
-    if spec_artifacts:
-        print(f"   📚 Spec artifacts: {', '.join(spec_artifacts)}")
-    if skills:
-        print(f"   🔧 Skills: {', '.join(skills)}")
-    if agent_profile:
-        print(f"   🧑‍🔬 Agent profile: {agent_profile['profile_id']} ({agent_profile.get('role', 'specialist')})")
+    if meta.get("spec_artifacts"):
+        print(f"   📚 Spec artifacts: {', '.join(meta['spec_artifacts'])}")
+    if meta.get("skills"):
+        print(f"   🔧 Skills: {', '.join(meta['skills'])}")
+    if meta.get("agent_profile"):
+        profile_meta = meta["agent_profile"]
+        print(f"   🧑‍🔬 Agent profile: {profile_meta['profile_id']} ({profile_meta.get('role', 'specialist')})")
     if goal_id_arg:
         print(f"   🎯 Goal: {goal_id_arg} (iteration {iteration_value})")
     if meta.get("todo_deps"):
         print(f"   ⛓️  Depends on: {', '.join(meta['todo_deps'])}")
+
+
+def cmd_split(args):
+    """Create child tentacles that inherit a parent's scope and context."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    parent_dir = _validate_tentacle_name(args.name, tentacles)
+    if not parent_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    requested_children = list(getattr(args, "into", None) or [])
+    if not requested_children:
+        print("ERROR: Provide at least one child name with --into", file=sys.stderr)
+        sys.exit(1)
+
+    seen_requested: set[str] = set()
+    for child_name in requested_children:
+        _validate_tentacle_name(child_name, tentacles)
+        if child_name == parent_dir.name or child_name == args.name:
+            print("ERROR: Child tentacle name must differ from the parent name", file=sys.stderr)
+            sys.exit(1)
+        if child_name in seen_requested:
+            print(f"ERROR: Duplicate child tentacle name '{child_name}'", file=sys.stderr)
+            sys.exit(1)
+        seen_requested.add(child_name)
+
+    parent_meta_path = parent_dir / "meta.json"
+    parent_meta = json.loads(parent_meta_path.read_text(encoding="utf-8")) if parent_meta_path.exists() else {}
+    parent_context_path = parent_dir / "CONTEXT.md"
+    parent_context = parent_context_path.read_text(encoding="utf-8") if parent_context_path.exists() else ""
+    parent_name = parent_dir.name
+    goal_id = parent_meta.get("goal_id")
+    iteration = parent_meta.get("goal_iteration", parent_meta.get("iteration"))
+
+    created_children: list[str] = []
+    for child_name in requested_children:
+        child_desc = args.desc or f"Sub-tentacle of {parent_name}"
+        result = _create_tentacle_record(
+            tentacles,
+            name=child_name,
+            desc=child_desc,
+            scope=parent_meta.get("scope", []),
+            goal_id=goal_id,
+            iteration=iteration,
+            parent_tentacle=parent_name,
+            inherited_context=parent_context,
+        )
+        created_children.append(result["actual_dir_name"])
+        print(f"✅ Split child '{result['actual_dir_name']}' created at {result['tentacle_dir']}")
+
+    existing_children = [child for child in parent_meta.get("children", []) if isinstance(child, str) and child.strip()]
+    for child_name in created_children:
+        if child_name not in existing_children:
+            existing_children.append(child_name)
+    parent_meta["children"] = existing_children
+    _write_tentacle_meta(parent_meta_path, parent_meta)
+    print(f"🔀 Parent '{parent_name}' now tracks {len(existing_children)} child tentacle(s)")
 
 
 def cmd_list(args):
@@ -8124,7 +8289,11 @@ def cmd_complete(args):
         changed_files=changed_files,
     )
 
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    _write_tentacle_meta(meta_path, meta)
+
+    auto_completed_parents = _auto_complete_parent_tentacles(tentacles, meta.get("parent_tentacle"))
+    for parent_name in auto_completed_parents:
+        print(f"🔁 Auto-completed parent tentacle '{parent_name}'")
 
     # 2b. Upsert quota_retry_queue on quota-BLOCKED; remove entry on recovery.
     if terminal_status == "BLOCKED" and quota_reason:
@@ -9740,6 +9909,22 @@ def main():
     # list
     sub.add_parser("list", help="List all tentacles")
 
+    # split
+    p_split = sub.add_parser("split", help="Split a parent tentacle into child tentacles")
+    p_split.add_argument("name", help="Parent tentacle name")
+    p_split.add_argument(
+        "--into",
+        nargs="+",
+        required=True,
+        metavar="CHILD",
+        help="Child tentacle names to create",
+    )
+    p_split.add_argument(
+        "--desc",
+        default=None,
+        help="Optional description for child tentacles (default: 'Sub-tentacle of <parent>')",
+    )
+
     # status
     sub.add_parser("status", help="Dashboard status of all tentacles")
 
@@ -10605,6 +10790,8 @@ def main():
 
     if args.command == "create":
         cmd_create(args)
+    elif args.command == "split":
+        cmd_split(args)
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "status":
