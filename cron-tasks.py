@@ -246,7 +246,7 @@ def _build_reflection_artifact(task: dict, now: datetime) -> str:
         f"Task Name: {task['name']}\n"
         f"Generated: {now.isoformat()}\n\n"
         "Suggested command:\n"
-        "claude -p \"Review the last week of session activity, summarize recurring mistakes and successful patterns, and propose three concrete improvements for next week.\"\n\n"
+        'claude -p "Review the last week of session activity, summarize recurring mistakes and successful patterns, and propose three concrete improvements for next week."\n\n'
         "Context snapshot:\n"
         f"- Session state path: {SESSION_STATE}\n"
         f"- Knowledge DB size: {_knowledge_db_size()}\n"

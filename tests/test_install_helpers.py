@@ -816,9 +816,7 @@ try:
     _install._current_path_has_launcher_dir = lambda path_value=None, delimiter=None: False
     _install._read_windows_user_path = lambda: (str(_doctor_launcher.parent), None)
     _install._which_command = lambda name: (
-        r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe"
-        if name == "python3"
-        else None
+        r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe" if name == "python3" else None
     )
 
     _doctor_buf = io.StringIO()

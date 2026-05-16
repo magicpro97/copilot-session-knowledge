@@ -570,7 +570,9 @@ class TestSkCronNamespace(unittest.TestCase):
         mock_run.assert_called_once_with("cron-tasks.py", expected)
 
     def test_cron_add(self):
-        self._assert_cron_routes(["add", "reflection", "--every-minutes", "60"], ["add", "reflection", "--every-minutes", "60"])
+        self._assert_cron_routes(
+            ["add", "reflection", "--every-minutes", "60"], ["add", "reflection", "--every-minutes", "60"]
+        )
 
     def test_cron_remove(self):
         self._assert_cron_routes(["remove", "reflection-123"], ["remove", "reflection-123"])

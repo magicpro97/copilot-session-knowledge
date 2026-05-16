@@ -84,14 +84,18 @@ class TestCronTasksCli(CronPathsMixin, unittest.TestCase):
         self.assertEqual(updated["tasks"], [])
 
     def test_run_once_generates_log_and_artifact(self):
-        rc = cron_tasks.main(["add", "cleanup", "--name", "cleanup-weekly", "--every-minutes", "15", "--retention-days", "30"])
+        rc = cron_tasks.main(
+            ["add", "cleanup", "--name", "cleanup-weekly", "--every-minutes", "15", "--retention-days", "30"]
+        )
         self.assertEqual(rc, 0)
 
         rc = cron_tasks.main(["run", "--once"])
         self.assertEqual(rc, 0)
 
         self.assertTrue(self.log_path.exists())
-        log_entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        log_entries = [
+            json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
         self.assertEqual(len(log_entries), 1)
         entry = log_entries[0]
         self.assertEqual(entry["template"], "cleanup")
@@ -103,14 +107,17 @@ class TestCronTasksCli(CronPathsMixin, unittest.TestCase):
 
         rc = cron_tasks.main(["run", "--once"])
         self.assertEqual(rc, 0)
-        log_entries_again = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        log_entries_again = [
+            json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
         self.assertEqual(len(log_entries_again), 1)
 
     def test_run_once_returns_nonzero_on_execution_error(self):
         cron_tasks.main(["add", "cleanup", "--name", "cleanup-weekly", "--every-minutes", "15"])
-        with patch.object(cron_tasks, "_write_artifact", side_effect=OSError("disk full")), patch(
-            "builtins.print"
-        ) as mock_print:
+        with (
+            patch.object(cron_tasks, "_write_artifact", side_effect=OSError("disk full")),
+            patch("builtins.print") as mock_print,
+        ):
             rc = cron_tasks.main(["run", "--once"])
         self.assertEqual(rc, 1)
         printed = " ".join(str(part) for call in mock_print.call_args_list for part in call[0])
@@ -155,13 +162,16 @@ class TestCronScheduling(CronPathsMixin, unittest.TestCase):
 
     def test_run_loop_surfaces_errors_and_stops_cleanly(self):
         args = cron_tasks.build_parser().parse_args(["run", "--interval", "1"])
-        with patch.object(cron_tasks, "_load_config", return_value={"tasks": []}), patch.object(
-            cron_tasks,
-            "_run_due_tasks",
-            side_effect=[OSError("disk full"), 0],
-        ), patch("time.sleep", side_effect=[None, KeyboardInterrupt]), patch(
-            "builtins.print"
-        ) as mock_print:
+        with (
+            patch.object(cron_tasks, "_load_config", return_value={"tasks": []}),
+            patch.object(
+                cron_tasks,
+                "_run_due_tasks",
+                side_effect=[OSError("disk full"), 0],
+            ),
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("builtins.print") as mock_print,
+        ):
             rc = cron_tasks.cmd_run(args)
         self.assertEqual(rc, 0)
         printed = " ".join(str(part) for call in mock_print.call_args_list for part in call[0])
@@ -170,11 +180,16 @@ class TestCronScheduling(CronPathsMixin, unittest.TestCase):
 
     def test_run_loop_stops_cleanly_during_recovery_sleep(self):
         args = cron_tasks.build_parser().parse_args(["run", "--interval", "1"])
-        with patch.object(cron_tasks, "_load_config", return_value={"tasks": []}), patch.object(
-            cron_tasks,
-            "_run_due_tasks",
-            side_effect=OSError("disk full"),
-        ), patch("time.sleep", side_effect=KeyboardInterrupt), patch("builtins.print") as mock_print:
+        with (
+            patch.object(cron_tasks, "_load_config", return_value={"tasks": []}),
+            patch.object(
+                cron_tasks,
+                "_run_due_tasks",
+                side_effect=OSError("disk full"),
+            ),
+            patch("time.sleep", side_effect=KeyboardInterrupt),
+            patch("builtins.print") as mock_print,
+        ):
             rc = cron_tasks.cmd_run(args)
         self.assertEqual(rc, 0)
         printed = " ".join(str(part) for call in mock_print.call_args_list for part in call[0])
