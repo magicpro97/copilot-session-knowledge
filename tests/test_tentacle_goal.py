@@ -1024,6 +1024,27 @@ class TestGoalResume(unittest.TestCase):
         meta = self._read_meta("t-toobig")
         self.assertEqual(meta["terminal_status"], "TOO_BIG")
 
+    def test_reset_failed_resets_scope_escalation_tentacle(self):
+        """--reset-failed must retry a SCOPE_ESCALATION tentacle."""
+        self._link_tentacle_with_meta("t-scope-up", terminal_status=T.SCOPE_ESCALATION_STATUS)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-scope-up")
+        self.assertEqual(meta["status"], "idle")
+        self.assertNotIn("terminal_status", meta)
+
+    def test_reset_failed_preserves_scope_reduction_tentacle(self):
+        """--reset-failed must NOT touch a SCOPE_REDUCTION tentacle."""
+        self._link_tentacle_with_meta("t-scope-down", terminal_status=T.SCOPE_REDUCTION_STATUS)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-scope-down")
+        self.assertEqual(meta["terminal_status"], T.SCOPE_REDUCTION_STATUS)
+
     def test_from_iteration_rewinds_iteration_counter(self):
         """--from-iteration N must set state['iteration'] back to N."""
         # Advance to iteration 3 via two continue evals.

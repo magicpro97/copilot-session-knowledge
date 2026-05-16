@@ -114,6 +114,8 @@ HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset(
 HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset(
     {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED", SCOPE_ESCALATION_STATUS}
 )
+# Narrower subset that `goal resume --reset-failed` is allowed to retry automatically.
+HANDOFF_RESETTABLE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "AMBIGUOUS", SCOPE_ESCALATION_STATUS})
 # Issue #108 heuristic owner: >4 files suggests escalation; 1-2 files suggests reduction.
 SCOPE_ESCALATION_FILE_THRESHOLD = 4
 SCOPE_REDUCTION_FILE_THRESHOLD = 2
@@ -5271,7 +5273,7 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
                     t_iter = 1
                 t_terminal = t_meta.get("terminal_status")
                 needs_rewind = from_iteration is not None and t_iter >= from_iteration
-                needs_reset_failed = reset_failed and t_terminal in HANDOFF_TRIAGE_STATUSES
+                needs_reset_failed = reset_failed and t_terminal in HANDOFF_RESETTABLE_STATUSES
                 if not (needs_rewind or needs_reset_failed):
                     continue
                 t_meta["status"] = "idle"
