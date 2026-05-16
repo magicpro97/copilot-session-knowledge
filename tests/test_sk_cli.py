@@ -103,6 +103,9 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_clarify(self):
         self._assert_routes("clarify", "clarify.py", ["implement auth flow"])
 
+    def test_task(self):
+        self._assert_routes("task", "task.py", ["implement auth flow", "--type", "research"])
+
     def test_tentacle(self):
         self._assert_routes("tentacle", "tentacle.py", ["list"])
 

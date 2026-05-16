@@ -306,6 +306,7 @@ test("TOOL_FILES contains watch-sessions.py", "watch-sessions.py" in _install.TO
 test("TOOL_FILES contains install.py", "install.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains sk.py", "sk.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains clarify.py", "clarify.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains task.py", "task.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains context-blocks.py", "context-blocks.py" in _install.TOOL_FILES)
 test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
 

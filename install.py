@@ -191,6 +191,7 @@ TOOL_FILES = [
     "query-session.py",
     "briefing.py",
     "clarify.py",
+    "task.py",
     "watch-sessions.py",
     "learn.py",
     "embed.py",

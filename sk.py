@@ -10,6 +10,7 @@ Usage:
     sk query    [<args>...]       Run query-session.py
     sk learn    [<args>...]       Run learn.py
     sk clarify  [<args>...]       Run clarify.py
+    sk task     [<args>...]       Run task.py
     sk tentacle [<args>...]       Run tentacle.py
     sk install  [<args>...]       Run install.py
     sk setup    [<args>...]       Run setup-project.py
@@ -71,6 +72,7 @@ _DIRECT: dict[str, str] = {
     "query": "query-session.py",
     "learn": "learn.py",
     "clarify": "clarify.py",
+    "task": "task.py",
     "tentacle": "tentacle.py",
     "install": "install.py",
     "setup": "setup-project.py",
