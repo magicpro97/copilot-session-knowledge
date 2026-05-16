@@ -20,6 +20,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
     python3 ~/.copilot/tools/tentacle.py next-step <name> [--briefing] [--no-checkpoint] [--all] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
+    python3 ~/.copilot/tools/tentacle.py review-loop <name> [<verify-command>] [--max-iterations N] [--timeout SECONDS]
     python3 ~/.copilot/tools/tentacle.py delete <name>
     python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
     python3 ~/.copilot/tools/tentacle.py goal create --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] [--criterion JSON] ...
@@ -104,6 +105,24 @@ _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset({"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
 # Statuses that require visible orchestrator triage (all non-DONE statuses)
 HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
+REVIEW_LOOP_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {"PRE_EXISTING", "FLAKY", "BUILD_ERROR", "NEW_TEST_WRONG", "REGRESSION"}
+)
+REVIEW_LOOP_ACTIONABLE_CLASSIFICATIONS: frozenset[str] = frozenset({"BUILD_ERROR", "NEW_TEST_WRONG", "REGRESSION"})
+REVIEW_LOOP_BUILD_ERROR_COMMAND_TOKENS: tuple[str, ...] = ("py_compile", "ruff", "mypy", "compileall")
+REVIEW_LOOP_BUILD_ERROR_PATTERNS: tuple[str, ...] = (
+    r"\bSyntaxError\b",
+    r"\bIndentationError\b",
+    r"\bImportError\b",
+    r"\bModuleNotFoundError\b",
+    r"No module named",
+)
+REVIEW_LOOP_TEST_FAILURE_PATTERNS: tuple[str, ...] = (
+    r"\bAssertionError\b",
+    r"\bFAILED\b",
+    r"\bassert\b",
+    r"\bexpected\b",
+)
 
 # ---------------------------------------------------------------------------
 # Goal state model constants
@@ -1845,6 +1864,489 @@ def cmd_verify(args) -> None:
 
     if exit_code != 0:
         sys.exit(exit_code if exit_code > 0 else 1)
+
+
+def _review_loop_read_output(log_path: str | None) -> str:
+    """Best-effort read of a verification log file."""
+    if not log_path:
+        return ""
+    try:
+        return Path(log_path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _review_loop_failure_hash(exit_code: int, output: str) -> str:
+    """Return a stable signature for one failing verification result."""
+    payload = f"{exit_code}:{output}".encode("utf-8", errors="replace")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _review_loop_output_excerpt(output: str, *, max_lines: int = 5, max_chars: int = 400) -> str:
+    """Return a short deterministic excerpt for status output and child context."""
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return "No output captured."
+    excerpt = "\n".join(lines[:max_lines]).strip()
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[: max_chars - 3].rstrip() + "..."
+    return excerpt
+
+
+def _review_loop_latest_verify_command(meta: dict) -> str:
+    """Return the latest recorded verification command, or an empty string."""
+    verifications = list(meta.get("verifications") or [])
+    for record in reversed(verifications):
+        command = str(record.get("command") or "").strip()
+        if command:
+            return command
+    return ""
+
+
+def _review_loop_collect_baseline_failures(meta: dict) -> list[dict]:
+    """Snapshot failing verification signatures that existed before the review loop."""
+    baseline: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for record in meta.get("verifications") or []:
+        exit_code = int(record.get("exit_code", 0) or 0)
+        command = str(record.get("command") or "").strip()
+        if exit_code == 0 or not command:
+            continue
+        output = _review_loop_read_output(record.get("log_path"))
+        failure_hash = _review_loop_failure_hash(exit_code, output)
+        key = (command, failure_hash)
+        if key in seen:
+            continue
+        baseline.append({"command": command, "failure_hash": failure_hash})
+        seen.add(key)
+    return baseline
+
+
+def _review_loop_is_preexisting_failure(command: str, failure_hash: str, baseline: list[dict]) -> bool:
+    """Return True when a failure matches the pre-loop baseline for the same command."""
+    for item in baseline:
+        if item.get("command") == command and item.get("failure_hash") == failure_hash:
+            return True
+    return False
+
+
+def _review_loop_is_test_file(path: str) -> bool:
+    """Return True when a path looks like a test file."""
+    normalized = path.replace("\\", "/").lstrip("./").lower()
+    name = normalized.rsplit("/", 1)[-1]
+    return (
+        normalized.startswith("tests/")
+        or "/tests/" in normalized
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
+
+
+def _review_loop_changed_files(tentacle_dir: Path, meta: dict) -> list[str]:
+    """Return changed files from meta and the latest handoff entry."""
+    changed: list[str] = []
+    for path in meta.get("changed_files") or []:
+        candidate = str(path).strip()
+        if candidate and candidate not in changed:
+            changed.append(candidate)
+    handoff_path = tentacle_dir / "handoff.md"
+    if not handoff_path.exists():
+        return changed
+    raw = handoff_path.read_text(encoding="utf-8")
+    for path in _parse_handoff_changed_files(raw):
+        if path and path not in changed:
+            changed.append(path)
+    rich = _parse_rich_handoff_sections(raw)
+    for path in rich.get("files_modified") or []:
+        if path and path not in changed:
+            changed.append(path)
+    return changed
+
+
+def _review_loop_classify_failure(command: str, output: str, changed_files: list[str]) -> tuple[str, str]:
+    """Classify a new actionable review-loop failure."""
+    command_lower = command.lower()
+    for token in REVIEW_LOOP_BUILD_ERROR_COMMAND_TOKENS:
+        if token in command_lower:
+            return "BUILD_ERROR", f"verification command targets build tooling ({token})"
+    for pattern in REVIEW_LOOP_BUILD_ERROR_PATTERNS:
+        if re.search(pattern, output, flags=re.IGNORECASE):
+            return "BUILD_ERROR", f"verification output matched build-error pattern: {pattern}"
+    if changed_files and all(_review_loop_is_test_file(path) for path in changed_files):
+        for pattern in REVIEW_LOOP_TEST_FAILURE_PATTERNS:
+            if re.search(pattern, output, flags=re.IGNORECASE):
+                return "NEW_TEST_WRONG", "only test files changed and the failure looks like a test expectation issue"
+    return "REGRESSION", "new failure does not match the pre-existing, flaky, build-error, or test-only buckets"
+
+
+def _review_loop_history(meta: dict) -> list[dict]:
+    """Return persisted review-loop history records."""
+    review_loop = meta.get("review_loop") or {}
+    history = review_loop.get("history") or []
+    return history if isinstance(history, list) else []
+
+
+def _review_loop_actionable_count(meta: dict) -> int:
+    """Count prior actionable review-loop iterations."""
+    return sum(
+        1
+        for entry in _review_loop_history(meta)
+        if str(entry.get("classification") or "") in REVIEW_LOOP_ACTIONABLE_CLASSIFICATIONS
+    )
+
+
+def _review_loop_next_resolver_name(parent_name: str, tentacles: Path) -> str:
+    """Return a unique short child tentacle name for a blocker resolver."""
+    base = _tentacle_slug(parent_name)[:48].rstrip("-") or "tentacle"
+    index = 1
+    while True:
+        candidate = f"{base}-review-fix-{index}"
+        if not (tentacles / candidate).exists():
+            return candidate
+        index += 1
+
+
+def _review_loop_append_history(
+    meta_path: Path,
+    *,
+    baseline_failures: list[dict],
+    entry: dict,
+    unresolved_blockers: list[str] | None = None,
+) -> dict:
+    """Append one review-loop history record and persist the baseline snapshot."""
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    review_loop = meta.setdefault("review_loop", {})
+    history = list(review_loop.get("history") or [])
+    stored_entry = dict(entry)
+    stored_entry["index"] = len(history) + 1
+    stored_entry["recorded_at"] = datetime.now(timezone.utc).isoformat()
+    history.append(stored_entry)
+    review_loop["history"] = history
+    review_loop["baseline_failures"] = baseline_failures
+    review_loop["last_classification"] = stored_entry.get("classification")
+    review_loop["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if unresolved_blockers:
+        review_loop["unresolved_blockers"] = unresolved_blockers
+    else:
+        review_loop.pop("unresolved_blockers", None)
+    meta["review_loop"] = review_loop
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    return stored_entry
+
+
+def _review_loop_create_resolver_tentacle(
+    *,
+    args,
+    tentacles: Path,
+    parent_name: str,
+    parent_dir: Path,
+    parent_meta: dict,
+    classification: str,
+    verification_command: str,
+    failure_excerpt: str,
+    actionable_iteration: int,
+) -> str:
+    """Create a follow-up blocker-resolver tentacle that inherits parent scope/worktree."""
+    resolver_name = _review_loop_next_resolver_name(parent_name, tentacles)
+    resolver_dir = tentacles / resolver_name
+    resolver_dir.mkdir(parents=True, exist_ok=False)
+
+    parent_scope = [str(item).strip() for item in parent_meta.get("scope") or [] if str(item).strip()]
+    desc = f"Resolve {classification} from review-loop for {parent_name}"
+    context_lines = [
+        f"# {resolver_name}",
+        "",
+        desc,
+        "",
+        "## Parent Tentacle",
+        "",
+        f"- `{parent_name}`",
+        f"- Review-loop iteration: `{actionable_iteration}`",
+        f"- Classification: `{classification}`",
+        f"- Verification command: `{verification_command}`",
+    ]
+    worktree = parent_meta.get("worktree") or {}
+    worktree_path = str(worktree.get("path") or "").strip()
+    if worktree.get("prepared") and worktree_path:
+        context_lines.extend(
+            ["- Reuse inherited worktree path below; do not prepare a new worktree.", f"- `{worktree_path}`"]
+        )
+    if parent_scope:
+        context_lines.extend(["", "## Scope", ""])
+        context_lines.extend([f"- `{path}`" for path in parent_scope])
+    context_lines.extend(
+        [
+            "",
+            "## Failure Excerpt",
+            "",
+            "```text",
+            failure_excerpt,
+            "```",
+            "",
+            "## Constraints",
+            "",
+            "- Stay in the inherited parent scope and worktree.",
+            "- Fix the review-loop failure without widening into unrelated orchestration changes.",
+            "- Rerun the same verification command before writing handoff.",
+            "",
+            "## Key files",
+            "",
+        ]
+    )
+    if parent_scope:
+        context_lines.extend([f"- `{path}`" for path in parent_scope])
+    else:
+        context_lines.append("- Reuse the parent tentacle scope")
+    context_lines.extend(["", "---", f"*Created: {datetime.now(timezone.utc).isoformat()}*"])
+    (resolver_dir / "CONTEXT.md").write_text("\n".join(context_lines) + "\n", encoding="utf-8")
+
+    todos = [
+        {
+            "index": 0,
+            "done": False,
+            "text": f"Diagnose the {classification} review-loop failure from `{parent_name}`.",
+            "line_number": 0,
+        },
+        {
+            "index": 1,
+            "done": False,
+            "text": f"Fix the failure in the inherited worktree and rerun `{verification_command}`.",
+            "line_number": 0,
+        },
+        {
+            "index": 2,
+            "done": False,
+            "text": "Write a structured handoff with changed-file receipts and the rerun result.",
+            "line_number": 0,
+        },
+    ]
+    (resolver_dir / "todo.md").write_text(render_todos(todos), encoding="utf-8")
+
+    resolver_meta = {
+        "name": resolver_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scope": parent_scope,
+        "description": desc,
+        "status": "idle",
+        "tentacle_id": str(uuid.uuid4()),
+        "skills": [],
+        "review_loop_parent": parent_name,
+        "review_loop_classification": classification,
+        "review_loop_verification_command": verification_command,
+        "review_loop_failure_excerpt": failure_excerpt,
+        "review_loop_iteration": actionable_iteration,
+    }
+    goal_id = parent_meta.get("goal_id")
+    iteration = parent_meta.get("goal_iteration") or parent_meta.get("iteration")
+    if goal_id:
+        resolver_meta["goal_id"] = goal_id
+    if iteration is not None:
+        resolver_meta["goal_iteration"] = iteration
+        resolver_meta["iteration"] = iteration
+    (resolver_dir / "meta.json").write_text(json.dumps(resolver_meta, indent=2) + "\n", encoding="utf-8")
+
+    if worktree.get("prepared") and worktree_path and Path(worktree_path).exists():
+        inherited_state = dict(worktree)
+        inherited_state["reused"] = True
+        _update_meta_worktree(resolver_dir, inherited_state)
+
+    if goal_id:
+        try:
+            goal_state = _goal_load(tentacles)
+            if goal_state and goal_state.get("goal_id") == goal_id:
+                _cmd_goal_link(argparse.Namespace(tentacle_name=resolver_name), tentacles)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+
+    return resolver_name
+
+
+def _review_loop_dispatch_resolver(args, resolver_name: str) -> None:
+    """Emit the standard swarm/dispatch prompt for a blocker-resolver tentacle."""
+    dispatch_args = argparse.Namespace(
+        session_dir=args.session_dir,
+        name=resolver_name,
+        agent_type=getattr(args, "agent_type", None) or "general-purpose",
+        model=getattr(args, "model", None) or "claude-sonnet-4.6",
+        output="prompt",
+        briefing=False,
+        bundle=True,
+        worktree=False,
+    )
+    cmd_swarm(dispatch_args)
+
+
+def cmd_review_loop(args) -> None:
+    """Run a tentacle-scoped self-healing review loop."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    handoff_path = tentacle_dir / "handoff.md"
+    if not handoff_path.exists():
+        print("ERROR: review-loop requires a DONE handoff before running.", file=sys.stderr)
+        sys.exit(1)
+    handoff_content = handoff_path.read_text(encoding="utf-8")
+    handoff_status = _parse_handoff_status(handoff_content)
+    if handoff_status != "DONE":
+        print(
+            f"ERROR: review-loop requires the latest handoff status to be DONE (found: {handoff_status or 'None'}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    meta_before = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    verification_command = (getattr(args, "verify_command", None) or "").strip()
+    if not verification_command:
+        verification_command = _review_loop_latest_verify_command(meta_before)
+    if not verification_command:
+        print(
+            "ERROR: No verification command supplied and no prior verification record exists for this tentacle.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    timeout = getattr(args, "timeout", 120) or 120
+    max_iterations = getattr(args, "max_iterations", 5) or 5
+    history_before = _review_loop_history(meta_before)
+    review_loop_state = meta_before.get("review_loop") or {}
+    baseline_failures = review_loop_state.get("baseline_failures")
+    if not isinstance(baseline_failures, list):
+        baseline_failures = _review_loop_collect_baseline_failures(meta_before)
+    existing_actionable = _review_loop_actionable_count(meta_before)
+
+    print(f"🔄 review-loop: '{args.name}'")
+    print(f"   verify: {verification_command}")
+    print(f"   max-iterations: {max_iterations}")
+
+    first_exit, first_record = _run_and_record_verification(
+        tentacle_dir=tentacle_dir,
+        meta=meta_before,
+        meta_path=meta_path,
+        cmd=verification_command,
+        label="review-loop",
+        timeout=timeout,
+    )
+    first_output = _review_loop_read_output(first_record.get("log_path"))
+    first_hash = _review_loop_failure_hash(first_exit, first_output)
+    first_run = {
+        "exit_code": first_exit,
+        "log_path": first_record.get("log_path"),
+        "failure_hash": first_hash,
+        "output_excerpt": _review_loop_output_excerpt(first_output),
+    }
+
+    if first_exit == 0:
+        entry = {
+            "command": verification_command,
+            "classification": "PASS",
+            "outcome": "passed",
+            "verify_runs": [first_run],
+            "history_size_before": len(history_before),
+        }
+        _review_loop_append_history(meta_path, baseline_failures=baseline_failures, entry=entry)
+        print("✅ review-loop passed on the first verification run.")
+        return
+
+    if _review_loop_is_preexisting_failure(verification_command, first_hash, baseline_failures):
+        entry = {
+            "command": verification_command,
+            "classification": "PRE_EXISTING",
+            "outcome": "ignored",
+            "reason": "failure matches the pre-loop verification baseline",
+            "verify_runs": [first_run],
+            "history_size_before": len(history_before),
+        }
+        _review_loop_append_history(meta_path, baseline_failures=baseline_failures, entry=entry)
+        print("⚪ review-loop classified the failure as PRE_EXISTING — no blocker-resolver created.")
+        return
+
+    meta_retry = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    second_exit, second_record = _run_and_record_verification(
+        tentacle_dir=tentacle_dir,
+        meta=meta_retry,
+        meta_path=meta_path,
+        cmd=verification_command,
+        label="review-loop-retry",
+        timeout=timeout,
+    )
+    second_output = _review_loop_read_output(second_record.get("log_path"))
+    second_run = {
+        "exit_code": second_exit,
+        "log_path": second_record.get("log_path"),
+        "failure_hash": _review_loop_failure_hash(second_exit, second_output),
+        "output_excerpt": _review_loop_output_excerpt(second_output),
+    }
+
+    if second_exit == 0:
+        entry = {
+            "command": verification_command,
+            "classification": "FLAKY",
+            "outcome": "passed",
+            "reason": "initial failure disappeared on the immediate retry",
+            "verify_runs": [first_run, second_run],
+            "history_size_before": len(history_before),
+        }
+        _review_loop_append_history(meta_path, baseline_failures=baseline_failures, entry=entry)
+        print("🟡 review-loop classified the failure as FLAKY — retry passed, no blocker-resolver created.")
+        return
+
+    meta_after_retries = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    changed_files = _review_loop_changed_files(tentacle_dir, meta_after_retries)
+    classification, reason = _review_loop_classify_failure(verification_command, second_output, changed_files)
+    failure_excerpt = _review_loop_output_excerpt(second_output)
+    actionable_iteration = existing_actionable + 1
+    entry = {
+        "command": verification_command,
+        "classification": classification,
+        "reason": reason,
+        "outcome": "resolver_created",
+        "verify_runs": [first_run, second_run],
+        "changed_files": changed_files,
+        "actionable_iteration": actionable_iteration,
+        "history_size_before": len(history_before),
+    }
+
+    if existing_actionable >= max_iterations:
+        blockers = [f"{classification}: {failure_excerpt}"]
+        entry["outcome"] = "unresolved"
+        entry["resolver_tentacle"] = None
+        _review_loop_append_history(
+            meta_path,
+            baseline_failures=baseline_failures,
+            entry=entry,
+            unresolved_blockers=blockers,
+        )
+        print("❌ review-loop retry budget exhausted.")
+        print("\n### UNRESOLVED BLOCKERS")
+        for blocker in blockers:
+            print(f"- {blocker}")
+        sys.exit(1)
+
+    resolver_name = _review_loop_create_resolver_tentacle(
+        args=args,
+        tentacles=tentacles,
+        parent_name=args.name,
+        parent_dir=tentacle_dir,
+        parent_meta=meta_after_retries,
+        classification=classification,
+        verification_command=verification_command,
+        failure_excerpt=failure_excerpt,
+        actionable_iteration=actionable_iteration,
+    )
+    entry["resolver_tentacle"] = resolver_name
+    _review_loop_append_history(meta_path, baseline_failures=baseline_failures, entry=entry)
+    print(f"🛠️  review-loop classified the failure as {classification}.")
+    print(f"   Reason: {reason}")
+    print(f"   Resolver tentacle: {resolver_name}")
+    print("")
+    _review_loop_dispatch_resolver(args, resolver_name)
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -8153,6 +8655,42 @@ def main():
         default=120,
         help="Command timeout in seconds (default: 120)",
     )
+
+    # review-loop subcommand
+    p_review_loop = sub.add_parser(
+        "review-loop",
+        help="Re-run tentacle verification, classify failures, and auto-dispatch blocker resolvers",
+    )
+    p_review_loop.add_argument("name", help="Tentacle name")
+    p_review_loop.add_argument(
+        "verify_command",
+        nargs="?",
+        default=None,
+        help="Optional verification command (defaults to the latest recorded verification command)",
+    )
+    p_review_loop.add_argument(
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=5,
+        help="Maximum blocker-resolver iterations before reporting unresolved blockers (default: 5)",
+    )
+    p_review_loop.add_argument(
+        "--timeout",
+        type=_positive_int_arg,
+        default=120,
+        help="Command timeout in seconds for each verification run (default: 120)",
+    )
+    p_review_loop.add_argument(
+        "--agent-type",
+        default="general-purpose",
+        help="Agent type for the auto-dispatched blocker resolver (default: general-purpose)",
+    )
+    p_review_loop.add_argument(
+        "--model",
+        default="claude-sonnet-4.6",
+        help="Model for the auto-dispatched blocker resolver (default: claude-sonnet-4.6)",
+    )
     p_verify.add_argument(
         "--severity",
         choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
@@ -8663,6 +9201,8 @@ def main():
         cmd_worktree(args)
     elif args.command == "verify":
         cmd_verify(args)
+    elif args.command == "review-loop":
+        cmd_review_loop(args)
     elif args.command == "marker-cleanup":
         cmd_marker_cleanup(args)
     elif args.command == "audit":
