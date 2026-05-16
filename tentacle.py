@@ -681,9 +681,7 @@ def _normalize_agent_profile_id(profile_id: str) -> str:
     elif slug.endswith(".md"):
         slug = slug[: -len(".md")]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", slug or ""):
-        raise ValueError(
-            "Agent profile id must be a slug containing only letters, numbers, underscores, and hyphens."
-        )
+        raise ValueError("Agent profile id must be a slug containing only letters, numbers, underscores, and hyphens.")
     return slug
 
 
@@ -920,7 +918,9 @@ def _render_agent_profile_section(profile: dict | None, *, prompt: bool = False)
     lines.extend(_render_profile_list("Escalation Rules", _profile_list(profile, "escalation_rules"), limit=list_limit))
     lines.extend(_render_profile_list("Anti-patterns", _profile_list(profile, "anti_patterns"), limit=list_limit))
     lines.extend(
-        _render_profile_list("Evidence Required in Handoff", _profile_list(profile, "evidence_required"), limit=list_limit)
+        _render_profile_list(
+            "Evidence Required in Handoff", _profile_list(profile, "evidence_required"), limit=list_limit
+        )
     )
     lines.extend(_render_profile_list("Tools Denied", _profile_list(profile, "tools_denied"), limit=list_limit))
     return "\n" + "\n".join(lines).rstrip() + "\n"
@@ -9859,7 +9859,9 @@ def main():
         default=None,
         help="Agent type for workers (default: profile agent_type, then general-purpose)",
     )
-    p_swarm.add_argument("--model", default=None, help="Model for workers (default: profile model, then claude-sonnet-4.6)")
+    p_swarm.add_argument(
+        "--model", default=None, help="Model for workers (default: profile model, then claude-sonnet-4.6)"
+    )
     p_swarm.add_argument(
         "--output",
         choices=["prompt", "parallel", "json"],
@@ -9893,7 +9895,9 @@ def main():
     # dispatch (alias for swarm --output prompt)
     p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
     p_dispatch.add_argument("name", help="Tentacle name")
-    p_dispatch.add_argument("--agent-type", default=None, help="Agent type (default: profile agent_type, then general-purpose)")
+    p_dispatch.add_argument(
+        "--agent-type", default=None, help="Agent type (default: profile agent_type, then general-purpose)"
+    )
     p_dispatch.add_argument("--model", default=None, help="Model (default: profile model, then claude-sonnet-4.6)")
     p_dispatch.add_argument(
         "--briefing",
