@@ -5239,6 +5239,123 @@ class TestGoalContext(unittest.TestCase):
         result = T._goal_collect_prior_handoffs(state, self.tentacles)
         self.assertEqual(result, [])
 
+    # ------------------------------------------------------------------
+    # Context packet — goal-linked bundle tests (issue #111)
+    # ------------------------------------------------------------------
+
+    def test_bundle_includes_context_packet_for_goal_linked_tentacle(self):
+        """Bundle for a goal-linked tentacle must contain context-packet.md."""
+        _make_tentacle("cp-linked", self.tentacles, status="idle")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["cp-linked"]
+        T._goal_write(self.tentacles, state)
+
+        tentacle_dir = self.tentacles / "cp-linked"
+        goal_ctx = T._goal_render_continuation_context(state, self.tentacles)
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="cp-linked",
+            goal_context_text=goal_ctx,
+        )
+        self.assertTrue((bundle_dir / "context-packet.md").exists())
+
+    def test_bundle_context_packet_contains_goal_context_for_linked_tentacle(self):
+        """context-packet.md must embed the goal objective when tentacle is linked."""
+        _make_tentacle("cp-goal-embed", self.tentacles, status="idle")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["cp-goal-embed"]
+        T._goal_write(self.tentacles, state)
+
+        tentacle_dir = self.tentacles / "cp-goal-embed"
+        goal_ctx = T._goal_render_continuation_context(state, self.tentacles)
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="cp-goal-embed",
+            goal_context_text=goal_ctx,
+        )
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("Context Test Goal", content)
+
+    def test_bundle_context_packet_prior_handoffs_from_goal_iterations(self):
+        """context-packet.md must surface prior handoff summaries when passed via prior_handoffs."""
+        _make_tentacle("cp-prior", self.tentacles, status="completed", terminal_status="DONE")
+        (self.tentacles / "cp-prior" / "handoff.md").write_text("## [DONE]\n\nFixed everything.\n", encoding="utf-8")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["cp-prior", "cp-current"]
+        state.setdefault("iterations", {})["1"] = {
+            "tentacles": ["cp-prior"],
+            "eval_decision": "continue",
+        }
+        state["iteration"] = 2
+        T._goal_write(self.tentacles, state)
+
+        _make_tentacle("cp-current", self.tentacles, status="idle")
+        prior = T._goal_collect_prior_handoffs(state, self.tentacles)
+        tentacle_dir = self.tentacles / "cp-current"
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="cp-current",
+            prior_handoffs=prior,
+        )
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("cp-prior", content)
+
+    def test_bundle_context_packet_manifest_has_goal_flags(self):
+        """Bundle manifest must expose has_goal_context and has_prior_handoffs flags."""
+        _make_tentacle("cp-flags", self.tentacles, status="idle")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["cp-flags"]
+        T._goal_write(self.tentacles, state)
+
+        tentacle_dir = self.tentacles / "cp-flags"
+        goal_ctx = T._goal_render_continuation_context(state, self.tentacles)
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="cp-flags",
+            goal_context_text=goal_ctx,
+        )
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        cp = manifest["artifacts"]["context_packet"]
+        self.assertIn("has_goal_context", cp)
+        self.assertIn("has_prior_handoffs", cp)
+        self.assertTrue(cp["has_goal_context"])
+
+    def test_bundle_context_packet_does_not_duplicate_prior_handoff_heading(self):
+        """Goal context and previous-handoffs sections must stay distinct in the packet."""
+        _make_tentacle("cp-prev-distinct", self.tentacles, status="completed", terminal_status="DONE")
+        (self.tentacles / "cp-prev-distinct" / "handoff.md").write_text(
+            "## [DONE]\n\nShipped prior wave.\n",
+            encoding="utf-8",
+        )
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["cp-prev-distinct", "cp-current-distinct"]
+        state.setdefault("iterations", {})["1"] = {
+            "tentacles": ["cp-prev-distinct"],
+            "eval_decision": "continue",
+        }
+        state["iteration"] = 2
+        T._goal_write(self.tentacles, state)
+
+        _make_tentacle("cp-current-distinct", self.tentacles, status="idle")
+        tentacle_dir = self.tentacles / "cp-current-distinct"
+        goal_ctx = T._goal_render_continuation_context(state, self.tentacles)
+        packet_goal_ctx = T._goal_render_continuation_context(
+            state,
+            self.tentacles,
+            include_prior_handoffs=False,
+        )
+        prior = T._goal_collect_prior_handoffs(state, self.tentacles)
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="cp-current-distinct",
+            goal_context_text=goal_ctx,
+            context_packet_goal_context_text=packet_goal_ctx,
+            prior_handoffs=prior,
+        )
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertNotIn("**Prior handoff summaries", content)
+        self.assertIn("cp-prev-distinct", content)
+
 
 # ---------------------------------------------------------------------------
 # Regression: issue #131 — goal --help discoverability for verify-loop
@@ -5643,6 +5760,7 @@ class TestGoalLoop(unittest.TestCase):
 
     def tearDown(self):
         _rmtree(SCRATCH_DIR)
+
     # -- helpers --
 
     def _add_passing_criterion(self, cid: str = "sc-pass") -> None:
@@ -7108,9 +7226,7 @@ class TestCmdGoalResilienceStatus(unittest.TestCase):
         _, empty_tentacles = _make_octogent(SCRATCH_DIR / "empty_rs")
         captured: list[str] = []
         with patch("builtins.print", side_effect=lambda *a, **k: captured.append(str(a[0]))):
-            T._cmd_goal_resilience_status(
-                _fake_args(goal_action="resilience-status", format="text"), empty_tentacles
-            )
+            T._cmd_goal_resilience_status(_fake_args(goal_action="resilience-status", format="text"), empty_tentacles)
         self.assertTrue(any("No active goal" in line for line in captured))
 
     # --- text output: healthy state ---
@@ -7345,7 +7461,9 @@ class TestCmdGoalResilienceStatus(unittest.TestCase):
             quota_retry_queue=queue,
         )
         self.assertEqual(result["health"], "needs-action")
-        self.assertIsNotNone(result.get("retry_queue"), "retry_queue must be surfaced when quota_retry_queue is present")
+        self.assertIsNotNone(
+            result.get("retry_queue"), "retry_queue must be surfaced when quota_retry_queue is present"
+        )
         self.assertEqual(len(result["retry_queue"]), 1, "all queue entries must appear under retry_queue")
 
     def test_text_budget_limited_shows_needs_action(self):
