@@ -77,6 +77,7 @@ INSTALL_ITEMS = {
         {"src": "task-step-generator", "label": "Task Step Generator (structured step-file generation)"},
         {"src": "conductor-creator", "label": "Conductor Creator (task-router generator)"},
         {"src": "project-onboarding", "label": "Project Onboarding (full AI ecosystem setup guide)"},
+        {"src": "detective-investigation", "label": "Detective Investigation (evidence-board RCA workflow)"},
         {"src": "karpathy-guidelines", "label": "Karpathy Guidelines (anti-overcomplication coding rules)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
