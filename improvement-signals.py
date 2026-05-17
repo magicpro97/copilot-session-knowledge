@@ -254,10 +254,18 @@ def cmd_stats(args, db_path: Path) -> int:
 
         fmt = getattr(args, "output_format", "text")
         if fmt == "json":
-            print(json.dumps(
-                {"db_exists": True, "total": total, "unconsumed": unconsumed, "consumed": consumed, "by_type": by_type},
-                indent=2,
-            ))
+            print(
+                json.dumps(
+                    {
+                        "db_exists": True,
+                        "total": total,
+                        "unconsumed": unconsumed,
+                        "consumed": consumed,
+                        "by_type": by_type,
+                    },
+                    indent=2,
+                )
+            )
         else:
             print("\n📊 Improvement Signal Statistics\n")
             print(f"  Total:      {total}")
@@ -289,47 +297,57 @@ Examples:
   python improvement-signals.py stats --format json
         """,
     )
-    parser.add_argument("--db", type=str, default=None, metavar="PATH",
-                        help=f"Path to knowledge.db (default: {DB_PATH})")
+    parser.add_argument(
+        "--db", type=str, default=None, metavar="PATH", help=f"Path to knowledge.db (default: {DB_PATH})"
+    )
 
     subs = parser.add_subparsers(dest="subcommand")
 
     # record
     p_record = subs.add_parser("record", help="Record a new improvement signal.")
-    p_record.add_argument("--query", required=True, metavar="TEXT",
-                          help="The query or scenario that triggered the signal.")
-    p_record.add_argument("--type", required=True, dest="type",
-                          choices=VALID_SIGNAL_TYPES,
-                          help="Signal type: missed_match | wrong_skill | outdated_skill")
-    p_record.add_argument("--skill", default="", metavar="SKILL",
-                          help="Skill name involved (for wrong_skill / outdated_skill).")
-    p_record.add_argument("--session-id", default="", metavar="ID",
-                          help="Session ID to link this signal to (optional).")
+    p_record.add_argument(
+        "--query", required=True, metavar="TEXT", help="The query or scenario that triggered the signal."
+    )
+    p_record.add_argument(
+        "--type",
+        required=True,
+        dest="type",
+        choices=VALID_SIGNAL_TYPES,
+        help="Signal type: missed_match | wrong_skill | outdated_skill",
+    )
+    p_record.add_argument(
+        "--skill", default="", metavar="SKILL", help="Skill name involved (for wrong_skill / outdated_skill)."
+    )
+    p_record.add_argument(
+        "--session-id", default="", metavar="ID", help="Session ID to link this signal to (optional)."
+    )
 
     # list
     p_list = subs.add_parser("list", help="List signals.")
-    p_list.add_argument("--consumed", action="store_true",
-                        help="Show consumed signals instead of unconsumed ones.")
-    p_list.add_argument("--type", dest="type", default=None, choices=VALID_SIGNAL_TYPES,
-                        help="Filter by signal type.")
-    p_list.add_argument("--limit", type=int, default=50, metavar="N",
-                        help="Max rows to return (default: 50).")
-    p_list.add_argument("--format", dest="output_format", choices=["text", "json"], default="text",
-                        help="Output format.")
+    p_list.add_argument("--consumed", action="store_true", help="Show consumed signals instead of unconsumed ones.")
+    p_list.add_argument("--type", dest="type", default=None, choices=VALID_SIGNAL_TYPES, help="Filter by signal type.")
+    p_list.add_argument("--limit", type=int, default=50, metavar="N", help="Max rows to return (default: 50).")
+    p_list.add_argument(
+        "--format", dest="output_format", choices=["text", "json"], default="text", help="Output format."
+    )
 
     # consume
     p_consume = subs.add_parser("consume", help="Mark signal(s) as consumed.")
-    p_consume.add_argument("--id", type=int, default=None, metavar="ID",
-                           help="Signal ID to mark consumed.")
-    p_consume.add_argument("--all", action="store_true",
-                           help="Mark all unconsumed signals as consumed.")
-    p_consume.add_argument("--type", dest="type", default=None, choices=VALID_SIGNAL_TYPES,
-                           help="With --all: only consume signals of this type.")
+    p_consume.add_argument("--id", type=int, default=None, metavar="ID", help="Signal ID to mark consumed.")
+    p_consume.add_argument("--all", action="store_true", help="Mark all unconsumed signals as consumed.")
+    p_consume.add_argument(
+        "--type",
+        dest="type",
+        default=None,
+        choices=VALID_SIGNAL_TYPES,
+        help="With --all: only consume signals of this type.",
+    )
 
     # stats
     p_stats = subs.add_parser("stats", help="Print statistics.")
-    p_stats.add_argument("--format", dest="output_format", choices=["text", "json"], default="text",
-                         help="Output format.")
+    p_stats.add_argument(
+        "--format", dest="output_format", choices=["text", "json"], default="text", help="Output format."
+    )
 
     args = parser.parse_args(argv)
 

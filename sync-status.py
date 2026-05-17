@@ -114,6 +114,7 @@ def _service_manager_watch_status() -> dict:
                 ["systemctl", "--user", "is-active", "copilot-watch-sessions.service"],
                 capture_output=True,
                 text=True,
+                timeout=5,
             )
             out["manager_state"] = "active" if result.returncode == 0 else "inactive"
         elif system == "Darwin":
@@ -122,6 +123,7 @@ def _service_manager_watch_status() -> dict:
                 ["launchctl", "list", "com.copilot.watch-sessions"],
                 capture_output=True,
                 text=True,
+                timeout=5,
             )
             out["manager_state"] = "loaded" if result.returncode == 0 else "inactive"
         elif system == "Windows":
@@ -130,6 +132,7 @@ def _service_manager_watch_status() -> dict:
                 ["schtasks", "/Query", "/TN", "CopilotSessionWatcher"],
                 capture_output=True,
                 text=True,
+                timeout=5,
             )
             out["manager_state"] = "registered" if result.returncode == 0 else "inactive"
     except Exception:

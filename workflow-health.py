@@ -35,7 +35,7 @@ DEFAULT_SCOUT_CONFIG_PATH = _SCRIPT_DIR / "trend-scout-config.json"
 DEFAULT_SKILLS_DIR = Path.home() / ".copilot" / "skills"
 
 # ── Thresholds ─────────────────────────────────────────────────────────────
-HEAVY_SESSION_SIZE_BYTES = 500 * 1024   # 500 KB
+HEAVY_SESSION_SIZE_BYTES = 500 * 1024  # 500 KB
 HEAVY_SESSION_MIN_FILES = 10
 LOW_YIELD_MIN_EVENTS = 20
 STALE_PACK_DAYS = 7
@@ -43,6 +43,7 @@ UNUSED_SKILLS_LOOKBACK_DAYS = 30
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -64,6 +65,7 @@ def _grade(findings: list) -> str:
 
 
 # ── Heuristic 1: Heavy sessions ────────────────────────────────────────────
+
 
 def check_heavy_sessions(db: sqlite3.Connection) -> list:
     """Flag sessions that are very large but have 0 checkpoints and many files.
@@ -111,6 +113,7 @@ def check_heavy_sessions(db: sqlite3.Connection) -> list:
 
 # ── Heuristic 2: Low-yield sessions ───────────────────────────────────────
 
+
 def check_low_yield_sessions(db: sqlite3.Connection) -> list:
     """Flag fully-indexed sessions with many events but 0 extracted knowledge entries."""
     try:
@@ -155,6 +158,7 @@ def check_low_yield_sessions(db: sqlite3.Connection) -> list:
 
 
 # ── Heuristic 3: Stale research packs ─────────────────────────────────────
+
 
 def check_stale_research_packs(
     scout_config_path: Path | None = None,
@@ -212,6 +216,7 @@ def check_stale_research_packs(
 
 
 # ── Heuristic 4: Unused skills ─────────────────────────────────────────────
+
 
 def check_unused_skills(
     skills_dir: Path | None = None,
@@ -281,6 +286,7 @@ def check_unused_skills(
 
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
+
 def run_health(
     db_path: Path | None = None,
     scout_config_path: Path | None = None,
@@ -335,6 +341,7 @@ def run_health(
 
 # ── Text renderer ──────────────────────────────────────────────────────────
 
+
 def _print_text(result: dict) -> None:
     grade = result.get("health_grade", "?")
     findings = result.get("findings", [])
@@ -354,6 +361,7 @@ def _print_text(result: dict) -> None:
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     import argparse

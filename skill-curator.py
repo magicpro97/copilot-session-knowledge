@@ -151,9 +151,7 @@ def _discover_skills(skills_dir: Path) -> list[str]:
     if not skills_dir.is_dir():
         return []
     return sorted(
-        p.name
-        for p in skills_dir.iterdir()
-        if p.is_dir() and p.name != ARCHIVE_DIR_NAME and not p.name.startswith(".")
+        p.name for p in skills_dir.iterdir() if p.is_dir() and p.name != ARCHIVE_DIR_NAME and not p.name.startswith(".")
     )
 
 
@@ -167,11 +165,7 @@ def _archived_skills(skills_dir: Path) -> list[str]:
     archive_dir = skills_dir / ARCHIVE_DIR_NAME
     if not archive_dir.is_dir():
         return []
-    return sorted(
-        p.name
-        for p in archive_dir.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    )
+    return sorted(p.name for p in archive_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +214,7 @@ def _archive_skill(skills_dir: Path, skill_name: str, dry_run: bool) -> tuple[Pa
     # Check for destination collision before any backup I/O so a failed archive
     # leaves no orphaned backup directory behind.
     if not dry_run and archive_path.exists():
-        raise RuntimeError(
-            f"archive destination '{archive_path}' already exists — remove it first"
-        )
+        raise RuntimeError(f"archive destination '{archive_path}' already exists — remove it first")
     backup_path = _backup_skill(skills_dir, skill_name, dry_run)
     if not dry_run:
         archive_dir = skills_dir / ARCHIVE_DIR_NAME
@@ -404,7 +396,11 @@ def cmd_pin(args, _db, _now: datetime) -> int:
         marker = _pin_skill(skills_dir, skill_name, dry_run)
         prefix = "[DRY RUN] " if dry_run else ""
         if args.json:
-            print(json.dumps({"skill": skill_name, "action": "pinned" if not dry_run else "would-pin", "marker": str(marker)}))
+            print(
+                json.dumps(
+                    {"skill": skill_name, "action": "pinned" if not dry_run else "would-pin", "marker": str(marker)}
+                )
+            )
         else:
             print(f"{prefix}Pinned '{skill_name}' ({marker})")
         return 0
@@ -425,7 +421,11 @@ def cmd_unpin(args, _db, _now: datetime) -> int:
         removed = _unpin_skill(skills_dir, skill_name, dry_run)
         prefix = "[DRY RUN] " if dry_run else ""
         if args.json:
-            print(json.dumps({"skill": skill_name, "action": "unpinned" if not dry_run else "would-unpin", "was_pinned": removed}))
+            print(
+                json.dumps(
+                    {"skill": skill_name, "action": "unpinned" if not dry_run else "would-unpin", "was_pinned": removed}
+                )
+            )
         else:
             if removed:
                 print(f"{prefix}Unpinned '{skill_name}'")
@@ -449,7 +449,11 @@ def cmd_restore(args, _db, _now: datetime) -> int:
         dest = _restore_skill(skills_dir, skill_name, dry_run)
         prefix = "[DRY RUN] " if dry_run else ""
         if args.json:
-            print(json.dumps({"skill": skill_name, "action": "restored" if not dry_run else "would-restore", "dest": str(dest)}))
+            print(
+                json.dumps(
+                    {"skill": skill_name, "action": "restored" if not dry_run else "would-restore", "dest": str(dest)}
+                )
+            )
         else:
             print(f"{prefix}Restored '{skill_name}' → {dest}")
         return 0

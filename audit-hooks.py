@@ -147,13 +147,15 @@ def _classify(decision: str) -> str:
 
 def _per_hook_metrics(entries: list[dict], top_n: int = 15) -> list[dict]:
     """Compute per-rule effectiveness metrics, sorted by fire count descending."""
-    rule_stats: dict[str, dict] = defaultdict(lambda: {
-        "fire_count": 0,
-        "useful_block": 0,
-        "dry_run": 0,
-        "allow": 0,
-        "other": 0,
-    })
+    rule_stats: dict[str, dict] = defaultdict(
+        lambda: {
+            "fire_count": 0,
+            "useful_block": 0,
+            "dry_run": 0,
+            "allow": 0,
+            "other": 0,
+        }
+    )
     total = len(entries)
 
     for e in entries:
@@ -180,16 +182,18 @@ def _per_hook_metrics(entries: list[dict], top_n: int = 15) -> list[dict]:
         block_rate = round(ub / fc * 100, 1) if fc > 0 else 0.0
         ub_denom = ub + dr
         useful_block_rate: float | None = round(ub / ub_denom * 100, 1) if ub_denom > 0 else None
-        rows.append({
-            "rule": rule,
-            "fire_count": fc,
-            "fire_rate_pct": fire_rate,
-            "block_count": ub,
-            "dry_run_count": dr,
-            "allow_count": st["allow"],
-            "block_rate_pct": block_rate,
-            "useful_block_rate": useful_block_rate,
-        })
+        rows.append(
+            {
+                "rule": rule,
+                "fire_count": fc,
+                "fire_rate_pct": fire_rate,
+                "block_count": ub,
+                "dry_run_count": dr,
+                "allow_count": st["allow"],
+                "block_rate_pct": block_rate,
+                "useful_block_rate": useful_block_rate,
+            }
+        )
 
     rows.sort(key=lambda r: -r["fire_count"])
     return rows[:top_n]
@@ -219,9 +223,7 @@ def _global_summary(entries: list[dict]) -> dict:
 
 def _trend_analysis(entries: list[dict]) -> list[dict]:
     """Bucket entries by calendar day (UTC) and compute per-day metrics."""
-    day_stats: dict[str, dict] = defaultdict(lambda: {
-        "total": 0, "deny": 0, "deny_dry": 0, "allow": 0
-    })
+    day_stats: dict[str, dict] = defaultdict(lambda: {"total": 0, "deny": 0, "deny_dry": 0, "allow": 0})
 
     for e in entries:
         ts = e.get("ts", 0)
@@ -243,14 +245,16 @@ def _trend_analysis(entries: list[dict]) -> list[dict]:
     for day, st in sorted(day_stats.items()):
         total = st["total"]
         deny = st["deny"]
-        rows.append({
-            "date": day,
-            "total": total,
-            "deny": deny,
-            "deny_dry": st["deny_dry"],
-            "allow": st["allow"],
-            "deny_rate_pct": round(deny / total * 100, 1) if total > 0 else 0.0,
-        })
+        rows.append(
+            {
+                "date": day,
+                "total": total,
+                "deny": deny,
+                "deny_dry": st["deny_dry"],
+                "allow": st["allow"],
+                "deny_rate_pct": round(deny / total * 100, 1) if total > 0 else 0.0,
+            }
+        )
     return rows
 
 
@@ -319,8 +323,7 @@ def _never_fired_hooks(entries: list[dict], inventory: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _render_text(summary: dict, per_hook: list[dict], trend: list[dict],
-                 never_fired: list[str] | None = None) -> None:
+def _render_text(summary: dict, per_hook: list[dict], trend: list[dict], never_fired: list[str] | None = None) -> None:
     """Print a human-readable audit report to stdout."""
     print("=" * 66)
     print("  sk audit-hooks — Hook Effectiveness Audit")
@@ -377,8 +380,7 @@ def _render_text(summary: dict, per_hook: list[dict], trend: list[dict],
     print()
 
 
-def _render_json(summary: dict, per_hook: list[dict], trend: list[dict],
-                 never_fired: list[str] | None = None) -> None:
+def _render_json(summary: dict, per_hook: list[dict], trend: list[dict], never_fired: list[str] | None = None) -> None:
     """Print JSON payload to stdout.
 
     ``never_fired`` encoding:
@@ -410,23 +412,37 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Hook effectiveness audit — parses audit.jsonl and reports metrics.",
     )
     parser.add_argument(
-        "--json", action="store_true", dest="json_out",
+        "--json",
+        action="store_true",
+        dest="json_out",
         help="Emit JSON instead of text",
     )
     parser.add_argument(
-        "--days", type=int, default=None, metavar="N",
+        "--days",
+        type=int,
+        default=None,
+        metavar="N",
         help="Restrict analysis to the last N days (default: all)",
     )
     parser.add_argument(
-        "--audit-file", type=Path, default=DEFAULT_AUDIT_JSONL, metavar="PATH",
+        "--audit-file",
+        type=Path,
+        default=DEFAULT_AUDIT_JSONL,
+        metavar="PATH",
         help="Override path to audit.jsonl",
     )
     parser.add_argument(
-        "--top", type=int, default=15, metavar="N",
+        "--top",
+        type=int,
+        default=15,
+        metavar="N",
         help="Show top-N rules in per-hook table (default 15)",
     )
     parser.add_argument(
-        "--hooks-dir", type=Path, default=DEFAULT_HOOKS_DIR, metavar="DIR",
+        "--hooks-dir",
+        type=Path,
+        default=DEFAULT_HOOKS_DIR,
+        metavar="DIR",
         help="Override hooks directory for never-fired inventory scan (default: hooks/ sibling)",
     )
     return parser.parse_args(argv)

@@ -408,10 +408,12 @@ def collect_scout_signals(
     # Compute elapsed / remaining hours using stdlib only (no dateutil)
     try:
         import time as _time
+
         # Parse ISO-8601 with optional timezone suffix
         ts_str = last_run_str.strip().replace("Z", "+00:00")
         # Python 3.7+ fromisoformat handles "+00:00" but not "Z" directly
-        from datetime import datetime, timezone as _tz
+        from datetime import datetime
+        from datetime import timezone as _tz
 
         last_run_dt = datetime.fromisoformat(ts_str)
         if last_run_dt.tzinfo is None:
@@ -445,12 +447,7 @@ def collect_session_behavior_signals(db_path) -> "dict | None":
     try:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            tables = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type=?"
-                , ("table",)).fetchall()
-            }
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type=?", ("table",)).fetchall()}
             if "sessions" not in tables or "documents" not in tables:
                 return None
 
@@ -482,13 +479,9 @@ def collect_session_behavior_signals(db_path) -> "dict | None":
 
             completion_rate = sessions_with_checkpoints / total_sessions
             knowledge_yield = total_entries / total_sessions
-            efficiency_ratio = (
-                min(total_entries / total_events, 1.0) if total_events > 0 else 0.0
-            )
+            efficiency_ratio = min(total_entries / total_events, 1.0) if total_events > 0 else 0.0
             one_shot_rate = (
-                sessions_with_one_checkpoint / sessions_with_checkpoints
-                if sessions_with_checkpoints > 0
-                else 0.0
+                sessions_with_one_checkpoint / sessions_with_checkpoints if sessions_with_checkpoints > 0 else 0.0
             )
 
             return {
@@ -614,12 +607,14 @@ def _compute_toward_100(
     def _add(section: str, score: float, barriers: list) -> None:
         gap = round(100.0 - score, 1)
         if gap > 0 and section in subscores:
-            items.append({
-                "section": section,
-                "score": round(score, 1),
-                "gap": gap,
-                "barriers": barriers if barriers else [f"score={score:.1f}"],
-            })
+            items.append(
+                {
+                    "section": section,
+                    "score": round(score, 1),
+                    "gap": gap,
+                    "barriers": barriers if barriers else [f"score={score:.1f}"],
+                }
+            )
 
     # knowledge
     if "knowledge" in subscores:
@@ -680,7 +675,7 @@ def _compute_toward_100(
         if commits < days:
             barriers.append(f"commit_cadence={commits}/{days}d (below 1/day target)")
         if py_files > 0 and (test_files / py_files) < 0.5:
-            barriers.append(f"test_file_ratio={test_files}/{py_files} ({test_files/py_files:.0%} below 50%)")
+            barriers.append(f"test_file_ratio={test_files}/{py_files} ({test_files / py_files:.0%} below 50%)")
         if distinct < 20:
             barriers.append(f"file_breadth={distinct} distinct (below 20 target)")
         _add("git", sc, barriers)
@@ -783,17 +778,14 @@ def compute_retro(
             f"{deny_dry} deny-dry entries excluded from hook deny rate "
             "(test/dry-run noise — not real enforcement denials)"
         )
-        improvement_actions.append(
-            "Filter synthetic deny-dry entries from audit.jsonl to keep hook stats clean"
-        )
+        improvement_actions.append("Filter synthetic deny-dry entries from audit.jsonl to keep hook stats clean")
 
     # Parse errors are legitimate (informational only)
     if hooks.get("available"):
         parse_count = int(hooks.get("decisions", {}).get("parse-error", 0))
         if parse_count > 0:
             accuracy_notes.append(
-                f"{parse_count} parse-error entries remain penalising "
-                "(indicate malformed input or runtime drift)"
+                f"{parse_count} parse-error entries remain penalising (indicate malformed input or runtime drift)"
             )
 
     # Skills verification evidence gap
@@ -829,7 +821,7 @@ def compute_retro(
     else:
         score_confidence = "high"
 
-    flag_str = (f" — distortions: {', '.join(distortion_flags)}" if distortion_flags else "")
+    flag_str = f" — distortions: {', '.join(distortion_flags)}" if distortion_flags else ""
     summary = f"Retro score {composite}/100 ({grade}), mode={mode}{flag_str}"
 
     subscores_payload = {

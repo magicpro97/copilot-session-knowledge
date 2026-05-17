@@ -26,8 +26,8 @@ import importlib.util
 import json
 import os
 import shlex
-import statistics
 import sqlite3
+import statistics
 import subprocess
 import sys
 import time
@@ -209,8 +209,8 @@ def cmd_record(db_path: Path, commit_sha: str, mode: str) -> int:
     retro_score = float(retro_data.get("retro_score", 0.0)) if retro_data.get("available") else 0.0
     score_confidence = retro_data.get("score_confidence", "") if retro_data.get("available") else ""
     subscores = retro_data.get("subscores", {}) if retro_data.get("available") else {}
-    health_score_val: "float | None" = None
-    health_stored: "dict | None" = None
+    health_score_val: float | None = None
+    health_stored: dict | None = None
     if health_data.get("available"):
         raw = health_data.get("score")
         if raw is not None:
@@ -352,9 +352,7 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
     def _fetch_snapshot(ref: str) -> "sqlite3.Row | None":
         # Try numeric row id first
         if ref.isdigit():
-            return conn.execute(
-                "SELECT * FROM benchmark_snapshots WHERE id = ?", (int(ref),)
-            ).fetchone()
+            return conn.execute("SELECT * FROM benchmark_snapshots WHERE id = ?", (int(ref),)).fetchone()
         # Then commit sha prefix
         return conn.execute(
             "SELECT * FROM benchmark_snapshots WHERE commit_sha LIKE ? ORDER BY recorded_at DESC LIMIT 1",
@@ -371,7 +369,7 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
             (limit,),
         ).fetchall()
         if len(rows) < 2:
-            print("benchmark: need at least 2 snapshots to compare (got {}).".format(len(rows)))
+            print(f"benchmark: need at least 2 snapshots to compare (got {len(rows)}).")
             conn.close()
             return 1
         snap_b, snap_a = rows[0], rows[1]  # b=newer, a=older
@@ -385,7 +383,7 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
     def _row_label(r: sqlite3.Row) -> str:
         return f"#{r['id']} {(r['commit_sha'] or '?')[:12]} @ {r['recorded_at'][:19]}"
 
-    print(f"\nbenchmark compare")
+    print("\nbenchmark compare")
     print(f"  baseline : {_row_label(snap_a)}")
     print(f"  current  : {_row_label(snap_b)}")
     print()
@@ -434,7 +432,9 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
 
     print()
     print("  proof summary:")
-    print(f"    retro  : {snap_a['retro_score']:.1f} → {snap_b['retro_score']:.1f}  gap {_fmt_g(gap_a_retro)} → {_fmt_g(gap_b_retro)}  {gp_retro}")
+    print(
+        f"    retro  : {snap_a['retro_score']:.1f} → {snap_b['retro_score']:.1f}  gap {_fmt_g(gap_a_retro)} → {_fmt_g(gap_b_retro)}  {gp_retro}"
+    )
     print(f"    health : {h_a} → {h_b}  gap {_fmt_g(gap_a_health)} → {_fmt_g(gap_b_health)}  {gp_health}")
     print()
     return 0
@@ -664,7 +664,7 @@ def _parse_args(argv: list) -> dict:
         if a in ("record", "compare", "list", "startup"):
             args["cmd"] = a
         elif a == "--":
-            args["startup_command"] = argv[i + 1:]
+            args["startup_command"] = argv[i + 1 :]
             break
         elif a == "--db" and i + 1 < len(argv):
             i += 1

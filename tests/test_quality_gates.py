@@ -705,9 +705,11 @@ def test_pre_commit_out_of_surface_ruff_advisory():
         )
         env = _isolated_path_env(bin_dir)
         git_init = _git_ok(repo, "init")
-        staged = repo / "outside_surface.py"
+        tests_dir = repo / "tests"
+        tests_dir.mkdir()
+        staged = tests_dir / "outside_surface.py"
         staged.write_text("import os\n")
-        git_add = _git_ok(repo, "add", "outside_surface.py")
+        git_add = _git_ok(repo, "add", "tests/outside_surface.py")
         result = _run_pre_commit_hook(repo, hook, home, env)
         output = result.stdout + result.stderr
         test(
@@ -789,13 +791,13 @@ def test_pre_commit_out_of_surface_ruff_exception_fail_open():
             return "ruff"
 
     def raising_run(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd="ruff check outside_surface.py", timeout=60)
+        raise subprocess.TimeoutExpired(cmd="ruff check tests/outside_surface.py", timeout=60)
 
     module.shutil = FakeShutil
     module.run = raising_run
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
-        result = module.check_ruff(["outside_surface.py"])
+        result = module.check_ruff(["tests/outside_surface.py"])
     output = stdout.getvalue()
     test(
         "pre-commit out-of-surface Ruff exception stays fail-open",
@@ -831,33 +833,9 @@ REMOTE_TERMINAL_ESLINT_CONFIG = REPO / "remote-terminal" / "eslint.config.mjs"
 REMOTE_TERMINAL_PACKAGE = REPO / "remote-terminal" / "package.json"
 
 # CI Ruff surface (extracted from ci.yml)
-CI_RUFF_FILES = [
-    "embed.py",
-    "scout-config.py",
-    "scout-status.py",
-    "sync-config.py",
-    "sync-daemon.py",
-    "sync-status.py",
-    "migrate.py",
-    "generate-summary.py",
-    "briefing.py",
-    "learn.py",
-    "query-session.py",
-    "extract-knowledge.py",
-    "build-session-index.py",
-    "tentacle.py",
-    "_tentacle_core.py",
-    "_tentacle_goal.py",
-    "_tentacle_pr.py",
-    "_tentacle_dispatch.py",
-    "_tentacle_review.py",
-    "checkpoint-diff.py",
-    "checkpoint-restore.py",
-    "checkpoint-save.py",
-    "tests/test_browse_search_v2.py",
-]
+CI_RUFF_ROOT_GLOB = "*.py"
 CI_RUFF_DIRS = ["browse/", "hooks/", "scripts/"]
-CI_RUFF_SURFACE = CI_RUFF_FILES + CI_RUFF_DIRS
+CI_RUFF_SURFACE = [CI_RUFF_ROOT_GLOB] + CI_RUFF_DIRS
 RUFF_COMPLEXITY_SELECT = "C90,PLR0911,PLR0912,PLR0913,PLR0915"
 
 
@@ -905,12 +883,11 @@ def test_ruff_surface_in_pre_commit():
         bool(surface_body),
         "hooks/pre-commit missing in_python_cleanliness_surface()",
     )
-    for fname in CI_RUFF_FILES:
-        test(
-            f"pre-commit covers CI file: {fname}",
-            fname in surface_body,
-            f"'{fname}' not found in pre-commit _py_in_surface()",
-        )
+    test(
+        "pre-commit covers root Python files",
+        'path.endswith(".py")' in surface_body and '"/" not in path' in surface_body,
+        "hooks/pre-commit should include staged root *.py files in the blocking Ruff surface",
+    )
     for dirname in CI_RUFF_DIRS:
         test(
             f"pre-commit covers CI directory: {dirname}",
@@ -1303,16 +1280,11 @@ def test_contributing_md_local_vs_ci():
         "CONTRIBUTING.md should document the non-blocking RustSec cargo audit advisory",
     )
     test(
-        "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
-        "briefing.py" in content,
-        "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py",
+        "CONTRIBUTING.md mentions root Ruff scope",
+        "*.py" in content and "root" in content.lower(),
+        "CONTRIBUTING.md Ruff scope is incomplete — missing root *.py coverage",
     )
-    test(
-        "CONTRIBUTING.md mentions full Ruff scope (tentacle.py)",
-        "tentacle.py" in content,
-        "CONTRIBUTING.md Ruff scope is incomplete — missing tentacle.py",
-    )
-    for fname in ("tests/test_browse_search_v2.py", "scripts/"):
+    for fname in ("browse/", "hooks/", "scripts/"):
         test(
             f"CONTRIBUTING.md mentions full Ruff scope ({fname})",
             fname in content,
@@ -1337,9 +1309,9 @@ def test_architecture_md_ruff_surface():
         "docs/ARCHITECTURE.md should define the canonical lint surface inventory",
     )
     test(
-        "ARCHITECTURE.md explains uncovered root script policy",
-        "outside the blocking Ruff lint surface" in content,
-        "docs/ARCHITECTURE.md should explain coverage policy for unlisted root scripts",
+        "ARCHITECTURE.md explains root script Ruff policy",
+        "Root `*.py` files are now inside the blocking Ruff lint surface" in content,
+        "docs/ARCHITECTURE.md should explain that root scripts are inside Ruff coverage",
     )
     test(
         "ARCHITECTURE.md documents Ruff complexity advisory",
@@ -1367,14 +1339,7 @@ def test_architecture_md_ruff_surface():
         "docs/ARCHITECTURE.md should document the non-blocking RustSec cargo audit advisory",
     )
     for fname in (
-        "briefing.py",
-        "tentacle.py",
-        "_tentacle_core.py",
-        "_tentacle_goal.py",
-        "_tentacle_pr.py",
-        "_tentacle_dispatch.py",
-        "_tentacle_review.py",
-        "tests/test_browse_search_v2.py",
+        "*.py",
         "browse/",
         "hooks/",
         "scripts/",

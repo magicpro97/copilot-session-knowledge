@@ -36,6 +36,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -43,6 +44,7 @@ if os.name == "nt":
 
 if os.name == "nt":
     import io
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
@@ -60,8 +62,7 @@ def load_profile(name: str, presets_dir: Path) -> dict:
     if not path.exists():
         available = sorted(p.stem for p in presets_dir.glob("*.json"))
         raise FileNotFoundError(
-            f"Profile '{name}' not found in {presets_dir}. "
-            f"Available: {', '.join(available) or '(none)'}"
+            f"Profile '{name}' not found in {presets_dir}. Available: {', '.join(available) or '(none)'}"
         )
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -137,21 +138,23 @@ Examples:
 """,
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--profile", metavar="NAME",
-                       help="Export a single named profile")
-    group.add_argument("--all", action="store_true",
-                       help="Export all profiles")
+    group.add_argument("--profile", metavar="NAME", help="Export a single named profile")
+    group.add_argument("--all", action="store_true", help="Export all profiles")
 
-    parser.add_argument("--output", metavar="PATH",
-                        help="Output file path (for single profile or --all + --format bundle)")
-    parser.add_argument("--output-dir", metavar="DIR",
-                        help="Output directory for --all (one file per profile)")
-    parser.add_argument("--format", choices=["plain", "bundle"], default="plain",
-                        help="plain = raw JSON (default), bundle = metadata wrapper")
-    parser.add_argument("--presets-dir", default=None, metavar="DIR",
-                        help=f"Presets directory (default: {PRESETS_DIR})")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be written without writing")
+    parser.add_argument(
+        "--output", metavar="PATH", help="Output file path (for single profile or --all + --format bundle)"
+    )
+    parser.add_argument("--output-dir", metavar="DIR", help="Output directory for --all (one file per profile)")
+    parser.add_argument(
+        "--format",
+        choices=["plain", "bundle"],
+        default="plain",
+        help="plain = raw JSON (default), bundle = metadata wrapper",
+    )
+    parser.add_argument(
+        "--presets-dir", default=None, metavar="DIR", help=f"Presets directory (default: {PRESETS_DIR})"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be written without writing")
     args = parser.parse_args()
 
     presets_dir = Path(args.presets_dir).resolve() if args.presets_dir else PRESETS_DIR
@@ -174,7 +177,7 @@ Examples:
         print(f"📦 Exporting profile '{args.profile}' → {args.output}")
         export_single(profile, Path(args.output), args.format, args.dry_run)
         if not args.dry_run:
-            print(f"\n✅ Done. Import with:")
+            print("\n✅ Done. Import with:")
             print(f"   python3 profile-import.py --file {args.output}")
         return
 
@@ -187,13 +190,12 @@ Examples:
     if args.output:
         # All → single bundle file
         if args.format != "bundle":
-            print("✗ --output with --all requires --format bundle "
-                  "(use --output-dir for plain per-profile export)")
+            print("✗ --output with --all requires --format bundle (use --output-dir for plain per-profile export)")
             sys.exit(1)
         print(f"📦 Exporting {len(profiles)} profile(s) → {args.output}")
         export_all_to_bundle(profiles, Path(args.output), args.dry_run)
         if not args.dry_run:
-            print(f"\n✅ Done. Import with:")
+            print("\n✅ Done. Import with:")
             print(f"   python3 profile-import.py --file {args.output}")
     else:
         # All → directory
@@ -201,7 +203,7 @@ Examples:
         print(f"📦 Exporting {len(profiles)} profile(s) → {out_dir}/")
         export_all_to_dir(profiles, out_dir, args.format, args.dry_run)
         if not args.dry_run:
-            print(f"\n✅ Done.")
+            print("\n✅ Done.")
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@
 
 import json
 import os
-import sys
 import sqlite3
+import sys
 import tempfile
 from pathlib import Path
 
@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 # ═══════════════════════════════════════════════════════════════════
 #  Test: FTS5 query sanitization
 # ═══════════════════════════════════════════════════════════════════
+
 
 def test_fts5_sanitization():
     """Test that FTS5 special characters and operators are stripped."""
@@ -42,7 +43,8 @@ def test_fts5_sanitization():
     # Verify no unescaped quotes remain: strip wrapping "term"* patterns, check for stray quotes
     stripped = result
     import re as _re
-    stripped = _re.sub(r'"[^"]*"\*?', '', stripped)  # remove valid "term"* patterns
+
+    stripped = _re.sub(r'"[^"]*"\*?', "", stripped)  # remove valid "term"* patterns
     assert '"' not in stripped, f"Stray quotes in sanitized result: {result}"
 
     # NEAR operator removed
@@ -68,6 +70,7 @@ def test_fts5_sanitization():
 #  Test: SQL injection via parameterized queries
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_sql_parameterized_queries():
     """Test that SQL queries use parameterized placeholders."""
     # Read query-session.py source and verify no f-string IN clauses with user data
@@ -75,8 +78,9 @@ def test_sql_parameterized_queries():
     content = source.read_text(encoding="utf-8")
 
     # The old vulnerable pattern should NOT exist
-    assert 'f"SELECT COUNT(*) FROM knowledge_relations WHERE source_id IN ({ids_str})' not in content, \
+    assert 'f"SELECT COUNT(*) FROM knowledge_relations WHERE source_id IN ({ids_str})' not in content, (
         "Vulnerable f-string SQL injection pattern still exists!"
+    )
 
     # The safe parameterized pattern SHOULD exist
     assert "placeholders" in content, "Parameterized query pattern not found"
@@ -89,19 +93,18 @@ def test_sql_parameterized_queries():
 #  Test: Pickle deserialization safety
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_pickle_safety():
     """Test that embed.py no longer uses direct pickle.loads for new models."""
     source = Path(__file__).parent / "embed.py"
     content = source.read_text(encoding="utf-8")
 
     # Should use JSON serialization for new models
-    assert "json.dumps(model" in content or "json.dumps(" in content, \
-        "New JSON serialization not found in embed.py"
+    assert "json.dumps(model" in content or "json.dumps(" in content, "New JSON serialization not found in embed.py"
 
     # Backward compat pickle should have deprecation warning
     if "pickle.loads" in content:
-        assert "deprecated" in content.lower() or "⚠" in content, \
-            "Pickle fallback exists but no deprecation warning"
+        assert "deprecated" in content.lower() or "⚠" in content, "Pickle fallback exists but no deprecation warning"
 
     print("  ✓ Pickle safety tests passed")
 
@@ -110,14 +113,14 @@ def test_pickle_safety():
 #  Test: Config file permissions
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_config_permissions():
     """Test that save_config sets restrictive file permissions."""
     source = Path(__file__).parent / "embed.py"
     content = source.read_text(encoding="utf-8")
 
     assert "0o600" in content, "File permission 0o600 not found in embed.py"
-    assert "chmod" in content.lower() or "os.chmod" in content, \
-        "chmod call not found in embed.py"
+    assert "chmod" in content.lower() or "os.chmod" in content, "chmod call not found in embed.py"
 
     print("  ✓ Config permissions tests passed")
 
@@ -126,16 +129,17 @@ def test_config_permissions():
 #  Test: Path traversal protection
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_path_traversal_protection():
     """Test that WSL path validation rejects traversal attempts."""
     source = Path(__file__).parent / "sync-knowledge.py"
     content = source.read_text(encoding="utf-8")
 
     # Should validate WSL home path
-    assert '".."' in content or "'..' not in" in content or '".." not in' in content, \
+    assert '".."' in content or "'..' not in" in content or '".." not in' in content, (
         "Path traversal check (..) not found in sync-knowledge.py"
-    assert "/home/" in content, \
-        "WSL home prefix check not found"
+    )
+    assert "/home/" in content, "WSL home prefix check not found"
 
     print("  ✓ Path traversal protection tests passed")
 
@@ -144,18 +148,19 @@ def test_path_traversal_protection():
 #  Test: Lock file atomicity
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_lock_atomicity():
     """Test that watch-sessions.py uses atomic lock creation."""
     source = Path(__file__).parent / "watch-sessions.py"
     content = source.read_text(encoding="utf-8")
 
     # Should use O_CREAT | O_EXCL for atomic creation
-    assert "O_CREAT" in content and "O_EXCL" in content, \
-        "Atomic lock creation (O_CREAT | O_EXCL) not found"
+    assert "O_CREAT" in content and "O_EXCL" in content, "Atomic lock creation (O_CREAT | O_EXCL) not found"
 
     # Old TOCTOU pattern should NOT exist
-    assert "if LOCK_FILE.exists():\n        try:\n            stored_pid" not in content, \
+    assert "if LOCK_FILE.exists():\n        try:\n            stored_pid" not in content, (
         "Old TOCTOU lock pattern still exists"
+    )
 
     print("  ✓ Lock file atomicity tests passed")
 
@@ -163,6 +168,7 @@ def test_lock_atomicity():
 # ═══════════════════════════════════════════════════════════════════
 #  Test: Input validation
 # ═══════════════════════════════════════════════════════════════════
+
 
 def test_input_validation():
     """Test that user inputs have length limits."""
@@ -184,13 +190,15 @@ def test_input_validation():
 #  Test: Database integrity check
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_db_integrity_check():
     """Test that database integrity check is performed."""
     source = Path(__file__).parent / "build-session-index.py"
     content = source.read_text(encoding="utf-8")
 
-    assert "quick_check" in content or "integrity_check" in content, \
+    assert "quick_check" in content or "integrity_check" in content, (
         "No PRAGMA integrity check found in build-session-index.py"
+    )
 
     print("  ✓ Database integrity check tests passed")
 
@@ -199,13 +207,13 @@ def test_db_integrity_check():
 #  Test: SQL whitelist validation
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_sql_whitelist():
     """Test that f-string SQL uses whitelist validation."""
     for filename in ["build-session-index.py", "extract-knowledge.py", "install.py"]:
         source = Path(__file__).parent / filename
         content = source.read_text(encoding="utf-8")
-        assert "_ALLOWED_" in content, \
-            f"Whitelist validation not found in {filename}"
+        assert "_ALLOWED_" in content, f"Whitelist validation not found in {filename}"
 
     print("  ✓ SQL whitelist validation tests passed")
 
@@ -214,17 +222,20 @@ def test_sql_whitelist():
 #  Test: DB write safety (busy_timeout)
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_db_write_safety():
     """Test that DB connections use busy_timeout for concurrent write safety."""
     learn_src = Path(__file__).parent / "learn.py"
     learn_content = learn_src.read_text(encoding="utf-8")
-    assert "busy_timeout" in learn_content, \
+    assert "busy_timeout" in learn_content, (
         "busy_timeout not set in learn.py — concurrent writes may fail with SQLITE_BUSY"
+    )
 
     sync_src = Path(__file__).parent / "sync-knowledge.py"
     sync_content = sync_src.read_text(encoding="utf-8")
-    assert "busy_timeout" in sync_content, \
+    assert "busy_timeout" in sync_content, (
         "busy_timeout not set in sync-knowledge.py — concurrent writes may fail with SQLITE_BUSY"
+    )
 
     print("  ✓ DB write safety (busy_timeout) tests passed")
 
@@ -233,19 +244,18 @@ def test_db_write_safety():
 #  Test: Hybrid change detection in watch-sessions.py
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_hybrid_change_detection_source():
     """Test that watch-sessions.py has hybrid mtime+content-hash change detection."""
     source = Path(__file__).parent / "watch-sessions.py"
     content = source.read_text(encoding="utf-8")
 
-    assert "_content_hash" in content, \
-        "_content_hash function not found in watch-sessions.py"
-    assert "hashlib.sha256" in content, \
-        "SHA256 content hashing not found in watch-sessions.py"
-    assert "prev_hash" in content, \
-        "prev_hash comparison not found — content-hash dedup logic missing"
-    assert "content unchanged" in content.lower() or "content_changed" in content, \
+    assert "_content_hash" in content, "_content_hash function not found in watch-sessions.py"
+    assert "hashlib.sha256" in content, "SHA256 content hashing not found in watch-sessions.py"
+    assert "prev_hash" in content, "prev_hash comparison not found — content-hash dedup logic missing"
+    assert "content unchanged" in content.lower() or "content_changed" in content, (
         "content-change tracking variable not found in watch-sessions.py"
+    )
 
     print("  ✓ Hybrid change detection source tests passed")
 
@@ -254,31 +264,31 @@ def test_no_proxy_http_client():
     """Test that outbound HTTP helper paths bypass proxy env vars explicitly."""
     init_src = Path(__file__).parent / "browse" / "__init__.py"
     init_content = init_src.read_text(encoding="utf-8")
-    assert "ProxyHandler({})" in init_content, \
-        "browse/__init__.py is missing ProxyHandler({}) in _probe_public_url"
-    assert "no_proxy_opener.open" in init_content, \
+    assert "ProxyHandler({})" in init_content, "browse/__init__.py is missing ProxyHandler({}) in _probe_public_url"
+    assert "no_proxy_opener.open" in init_content, (
         "browse/__init__.py still uses a proxy-sensitive opener for _probe_public_url"
+    )
 
     dl_src = Path(__file__).parent / "browse" / "static" / "vendor" / "_download.py"
     dl_content = dl_src.read_text(encoding="utf-8")
-    assert "ProxyHandler({})" in dl_content, \
+    assert "ProxyHandler({})" in dl_content, (
         "browse/static/vendor/_download.py is missing ProxyHandler({}) in download_lib"
-    assert "no_proxy_opener.open" in dl_content, \
-        "browse/static/vendor/_download.py still uses a proxy-sensitive opener"
+    )
+    assert "no_proxy_opener.open" in dl_content, "browse/static/vendor/_download.py still uses a proxy-sensitive opener"
 
     print("  ✓ No-proxy HTTP client pattern tests passed")
-
-
 
 
 # Create minimal stub modules for tests that need imports
 class query_session_sanitizer:
     """Stub to extract _sanitize_fts_query from query-session.py source."""
+
     pass
 
 
 class query_session_source:
     """Stub to verify source patterns."""
+
     pass
 
 
@@ -289,10 +299,8 @@ def _extract_sanitize_function():
 
     # Find and exec the function
     import re
-    match = re.search(
-        r'(def _sanitize_fts_query\(.*?\n(?:    .*\n)*)',
-        content
-    )
+
+    match = re.search(r"(def _sanitize_fts_query\(.*?\n(?:    .*\n)*)", content)
     if not match:
         raise RuntimeError("_sanitize_fts_query not found in query-session.py")
 
@@ -304,6 +312,7 @@ def _extract_sanitize_function():
 # ═══════════════════════════════════════════════════════════════════
 #  Main runner
 # ═══════════════════════════════════════════════════════════════════
+
 
 def main():
     print("\n🔒 Running security tests...\n")
@@ -334,7 +343,7 @@ def main():
             print(f"  ✗ {test.__name__}: {e}")
             failed += 1
 
-    print(f"\n{'='*40}")
+    print(f"\n{'=' * 40}")
     print(f"Results: {passed} passed, {failed} failed")
     if failed:
         sys.exit(1)

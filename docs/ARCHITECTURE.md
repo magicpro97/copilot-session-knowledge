@@ -64,20 +64,19 @@ This is the canonical inventory for Python Ruff coverage. Keep it in sync with
 
 | Surface | CI Ruff lint/format | Local `pre-commit` Ruff | Notes |
 |---------|----------------------|--------------------------|-------|
-| Exact root standalone scripts | `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `_tentacle_core.py`, `_tentacle_goal.py`, `_tentacle_pr.py`, `_tentacle_dispatch.py`, `_tentacle_review.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py` | Same exact set via `in_python_cleanliness_surface()` | These are the current blocking Ruff baseline for root scripts. |
-| Focused test file | `tests/test_browse_search_v2.py` | Same exact file | Included because it is already clean and protects the browse search API surface. |
+| Root standalone scripts | `*.py` | Any staged root `.py` path via `in_python_cleanliness_surface()` | Every root-level Python entry point is inside the blocking Ruff baseline. |
 | Package/module directories | `browse/`, `hooks/`, `scripts/` | Any staged `.py` path under `browse/`, `hooks/`, or `scripts/` | Directory coverage applies to package-like surfaces where Ruff cleanup is already baselined. |
 | Syntax gate | `python3 scripts/check_syntax.py` | All staged `.py` files via `scripts/check_syntax.py` when installed | Syntax coverage is broader than Ruff coverage. |
 | Complexity advisory | Full suite path through `run_all_tests.py`; local hook runs `scripts/check_complexity.py --json` on staged `.py` snapshots | All staged `.py` files, non-blocking and fail-open | Advisory only; it prints findings but does not deny commits. |
 | Ruff complexity/refactor advisory | `Complexity advisory (Ruff C90/PLR)` runs `ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statistics` on the same Ruff surface | Not run by local `pre-commit` | CI advisory only; `continue-on-error: true` records baseline counts before enforcement. |
-| Out-of-surface Ruff advisory | Not run by CI | Staged `.py` files outside `in_python_cleanliness_surface()` run `ruff check` as a non-blocking `[advisory]` scan | Advisory only; it is fail-open when Ruff is absent and does not change the blocking Ruff surface. |
+| Out-of-surface Ruff advisory | Not run by CI | Staged `.py` files outside root scripts and covered package directories run `ruff check` as a non-blocking `[advisory]` scan | Advisory only; it is fail-open when Ruff is absent and does not change the blocking Ruff surface. |
 
-Root `*.py` files not listed in the exact root standalone script row are intentionally
-outside the blocking Ruff lint surface until they are baselined. They are not exempt from
-the standalone-script architecture contract: keep them self-contained, run syntax/tests for
-the touched behavior, and either add them to the lint surface in the same PR or state why
-the script remains outside the current baseline. The local `pre-commit` hook may print
-non-blocking `[advisory]` Ruff findings for these files when Ruff is installed.
+Root `*.py` files are now inside the blocking Ruff lint surface by default. New
+root scripts still must honor the standalone-script architecture contract: keep them
+self-contained and run syntax/tests for the touched behavior. Python files outside root
+scripts, `browse/`, `hooks/`, and `scripts/` are outside CI Ruff coverage; the local
+`pre-commit` hook may print non-blocking `[advisory]` Ruff findings for those files when
+Ruff is installed.
 
 ## Script Inventory
 
@@ -394,7 +393,7 @@ Agent-authored docs and operator/research outputs (tentacle handoffs, retro summ
 ### CI Quality Gates
 
 GitHub Actions runs these jobs on every push / PR:
-- **`quality-gates`** — syntax check, scoped Ruff lint, and the Python test suites. The Ruff lint surface is: `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `_tentacle_core.py`, `_tentacle_goal.py`, `_tentacle_pr.py`, `_tentacle_dispatch.py`, `_tentacle_review.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py`, `browse/`, `hooks/`, `scripts/`. Ruff lint is **scoped** to this surface; other root scripts outside it are not linted by CI.
+- **`quality-gates`** — syntax check, scoped Ruff lint, and the Python test suites. The Ruff lint surface is: all root `*.py` scripts plus `browse/`, `hooks/`, and `scripts/`. Ruff lint is **scoped** to this surface; Python outside root scripts and those directories is not linted by CI.
 - **`remote-terminal`** — `npm ci`, `npm test`, lint baseline, clean-zone lint gate, and blocking high-severity dependency audit for `remote-terminal/`. Legacy complexity/size warnings stay advisory in `npm run lint`; clean files (`pty-daemon.js`, `test/client.test.js`) promote the same rules to errors through `npm run lint:clean`.
 - **`browse-ui`** — `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`. `browse-ui/eslint.config.mjs` keeps the repo-wide `@typescript-eslint/no-explicit-any` baseline advisory as `warn`, then promotes clean zones such as `src/lib/hosts/**/*.{ts,tsx}` to `error` so strict rules can expand without breaking legacy areas.
 - **`e2e-smoke`** — Playwright `behavioral` project (`smoke.spec.ts`, `shortcuts.spec.ts`, `chat.spec.ts`, `diagnostics.spec.ts`, and `broker-mode.spec.ts`) on Chromium.

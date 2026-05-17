@@ -19,14 +19,14 @@ Claude Code session structure:
 Cross-platform: Windows, macOS, Linux (WSL). Pure Python stdlib.
 """
 
-import json
-import sqlite3
-import re
-import os
-import sys
 import hashlib
-from pathlib import Path
+import json
+import os
+import re
+import sqlite3
+import sys
 from datetime import datetime
+from pathlib import Path
 
 # Fix Windows console encoding
 if os.name == "nt":
@@ -61,12 +61,14 @@ def find_claude_sessions() -> list[dict]:
         for jsonl_file in project_dir.glob("*.jsonl"):
             if jsonl_file.stat().st_size < MIN_SESSION_BYTES:
                 continue
-            sessions.append({
-                "project_hash": project_hash,
-                "session_id": jsonl_file.stem,
-                "path": jsonl_file,
-                "size_bytes": jsonl_file.stat().st_size,
-            })
+            sessions.append(
+                {
+                    "project_hash": project_hash,
+                    "session_id": jsonl_file.stem,
+                    "path": jsonl_file,
+                    "size_bytes": jsonl_file.stat().st_size,
+                }
+            )
 
         # Also check subagents/ directories
         for subdir in project_dir.iterdir():
@@ -77,13 +79,15 @@ def find_claude_sessions() -> list[dict]:
                 for jsonl_file in subagents_dir.glob("*.jsonl"):
                     if jsonl_file.stat().st_size < MIN_SESSION_BYTES:
                         continue
-                    sessions.append({
-                        "project_hash": project_hash,
-                        "session_id": jsonl_file.stem,
-                        "path": jsonl_file,
-                        "size_bytes": jsonl_file.stat().st_size,
-                        "parent_session": subdir.name,
-                    })
+                    sessions.append(
+                        {
+                            "project_hash": project_hash,
+                            "session_id": jsonl_file.stem,
+                            "path": jsonl_file,
+                            "size_bytes": jsonl_file.stat().st_size,
+                            "parent_session": subdir.name,
+                        }
+                    )
 
     return sessions
 
@@ -91,7 +95,7 @@ def find_claude_sessions() -> list[dict]:
 def parse_jsonl(path: Path) -> list[dict]:
     """Parse JSONL file, skip malformed lines."""
     entries = []
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -194,11 +198,13 @@ def parse_session(entries: list[dict]) -> dict:
             content = msg.get("content", "") if isinstance(msg, dict) else ""
             text = extract_text_from_content(content)
             if text:
-                session["conversations"].append({
-                    "role": "user",
-                    "text": text,
-                    "timestamp": timestamp,
-                })
+                session["conversations"].append(
+                    {
+                        "role": "user",
+                        "text": text,
+                        "timestamp": timestamp,
+                    }
+                )
 
         elif entry_type == "assistant":
             msg = entry.get("message", {})
@@ -220,11 +226,13 @@ def parse_session(entries: list[dict]) -> dict:
                                 session["files_touched"].add(fp)
 
             if text:
-                session["conversations"].append({
-                    "role": "assistant",
-                    "text": text,
-                    "timestamp": timestamp,
-                })
+                session["conversations"].append(
+                    {
+                        "role": "assistant",
+                        "text": text,
+                        "timestamp": timestamp,
+                    }
+                )
 
         session["timestamp_end"] = timestamp or session["timestamp_end"]
 
@@ -265,10 +273,12 @@ def session_to_sections(session: dict) -> list[dict]:
         files = session["files_touched"][:20]
         overview_parts.append(f"Files touched ({len(session['files_touched'])}): {', '.join(files)}")
     if overview_parts:
-        sections.append({
-            "section_name": "overview",
-            "content": "\n".join(overview_parts),
-        })
+        sections.append(
+            {
+                "section_name": "overview",
+                "content": "\n".join(overview_parts),
+            }
+        )
 
     # Conversation section — concatenate user+assistant messages
     conv_parts = []
@@ -285,24 +295,27 @@ def session_to_sections(session: dict) -> list[dict]:
         full_conv = "\n\n".join(conv_parts)
         if len(full_conv) > 50000:
             full_conv = full_conv[:50000] + "\n\n... (truncated)"
-        sections.append({
-            "section_name": "conversation",
-            "content": full_conv,
-        })
+        sections.append(
+            {
+                "section_name": "conversation",
+                "content": full_conv,
+            }
+        )
 
     # Technical details — files and tools
     if session["files_touched"]:
         tech = "## Files Modified/Read\n" + "\n".join(f"- {f}" for f in session["files_touched"])
-        sections.append({
-            "section_name": "technical_details",
-            "content": tech,
-        })
+        sections.append(
+            {
+                "section_name": "technical_details",
+                "content": tech,
+            }
+        )
 
     return sections
 
 
-def index_claude_session(db: sqlite3.Connection, session_info: dict,
-                         parsed: dict, incremental: bool) -> bool:
+def index_claude_session(db: sqlite3.Connection, session_info: dict, parsed: dict, incremental: bool) -> bool:
     """Index a single Claude Code session into the knowledge DB. Returns True if indexed."""
     session_id = parsed["session_id"] or session_info["session_id"]
     file_path = str(session_info["path"])
@@ -312,20 +325,21 @@ def index_claude_session(db: sqlite3.Connection, session_info: dict,
     fhash = hashlib.md5(session_info["path"].read_bytes()).hexdigest()
 
     if incremental:
-        existing = db.execute(
-            "SELECT file_hash FROM documents WHERE file_path = ?", (file_path,)
-        ).fetchone()
+        existing = db.execute("SELECT file_hash FROM documents WHERE file_path = ?", (file_path,)).fetchone()
         if existing and existing[0] == fhash:
             return False
 
     # Ensure session row exists
     summary = parsed["summary"][:500] if parsed["summary"] else ""
-    db.execute("""
+    db.execute(
+        """
         INSERT INTO sessions (id, path, summary, total_checkpoints, source, indexed_at)
         VALUES (?, ?, ?, 0, 'claude', ?)
         ON CONFLICT(id) DO UPDATE SET
             summary=excluded.summary, source='claude', indexed_at=excluded.indexed_at
-    """, (session_id, file_path, summary, datetime.now().isoformat()))
+    """,
+        (session_id, file_path, summary, datetime.now().isoformat()),
+    )
 
     # Create document entry
     title = f"Claude session {session_id[:8]}"
@@ -334,14 +348,17 @@ def index_claude_session(db: sqlite3.Connection, session_info: dict,
 
     preview = summary[:500].replace("\n", " ") if summary else ""
 
-    db.execute("""
+    db.execute(
+        """
         INSERT INTO documents (session_id, doc_type, seq, title, file_path, file_hash,
                               size_bytes, content_preview, source, indexed_at)
         VALUES (?, 'claude-session', 0, ?, ?, ?, ?, ?, 'claude', ?)
         ON CONFLICT(file_path) DO UPDATE SET
             file_hash=excluded.file_hash, size_bytes=excluded.size_bytes,
             content_preview=excluded.content_preview, source='claude', indexed_at=excluded.indexed_at
-    """, (session_id, title, file_path, fhash, file_size, preview, datetime.now().isoformat()))
+    """,
+        (session_id, title, file_path, fhash, file_size, preview, datetime.now().isoformat()),
+    )
 
     doc_id = db.execute("SELECT id FROM documents WHERE file_path = ?", (file_path,)).fetchone()[0]
 
@@ -354,12 +371,15 @@ def index_claude_session(db: sqlite3.Connection, session_info: dict,
     for sec in sections:
         db.execute(
             "INSERT INTO sections (document_id, section_name, content) VALUES (?, ?, ?)",
-            (doc_id, sec["section_name"], sec["content"])
+            (doc_id, sec["section_name"], sec["content"]),
         )
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO knowledge_fts (title, section_name, content, doc_type, session_id, document_id)
             VALUES (?, ?, ?, 'claude-session', ?, ?)
-        """, (title, sec["section_name"], sec["content"], session_id, doc_id))
+        """,
+            (title, sec["section_name"], sec["content"], session_id, doc_id),
+        )
 
     return True
 
@@ -390,9 +410,9 @@ def show_stats():
         print(f"    Sessions: {len(sess_list)}, Total: {total_kb:.1f} KB")
         for s in sorted(sess_list, key=lambda x: x["size_bytes"], reverse=True)[:5]:
             parent = f" (subagent of {s['parent_session'][:8]})" if s.get("parent_session") else ""
-            print(f"      {s['session_id'][:8]}... {s['size_bytes']/1024:.1f} KB{parent}")
+            print(f"      {s['session_id'][:8]}... {s['size_bytes'] / 1024:.1f} KB{parent}")
         if len(sess_list) > 5:
-            print(f"      ... and {len(sess_list)-5} more")
+            print(f"      ... and {len(sess_list) - 5} more")
     print()
 
 
@@ -425,12 +445,12 @@ def main():
 
     # Import create_db from build-session-index to ensure schema is ready
     sys.path.insert(0, str(Path(__file__).parent))
-    from importlib import import_module
     # Direct import approach
     import importlib.util
+    from importlib import import_module
+
     spec = importlib.util.spec_from_file_location(
-        "build_session_index",
-        Path(__file__).parent / "build-session-index.py"
+        "build_session_index", Path(__file__).parent / "build-session-index.py"
     )
     bsi = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bsi)
@@ -469,8 +489,7 @@ def main():
                 print(f"  {short_id}... indexed {n_conv} messages, {n_sections} sections")
                 indexed += 1
             else:
-                print(f"  {short_id}... (no changes)" if incremental else
-                      f"  {short_id}... (skipped)")
+                print(f"  {short_id}... (no changes)" if incremental else f"  {short_id}... (skipped)")
                 skipped += 1
 
         except Exception as e:

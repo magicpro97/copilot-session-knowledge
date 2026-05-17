@@ -198,25 +198,34 @@ def check(pkg_dir: "Path | None" = None) -> list:
         for entry in entries:
             name = entry.name
             if name.startswith(".replaced-"):
-                issues.append(Issue(
-                    "replaced_dir", entry,
-                    f"Stale rename-backup dir: {name}",
-                ))
+                issues.append(
+                    Issue(
+                        "replaced_dir",
+                        entry,
+                        f"Stale rename-backup dir: {name}",
+                    )
+                )
             elif entry.is_dir() and _is_version_dir(name):
                 try:
                     contents = list(entry.iterdir())
                 except OSError:
                     contents = []
                 if not contents:
-                    issues.append(Issue(
-                        "empty_dummy", entry,
-                        f"Empty dummy version dir: {name}",
-                    ))
+                    issues.append(
+                        Issue(
+                            "empty_dummy",
+                            entry,
+                            f"Empty dummy version dir: {name}",
+                        )
+                    )
                 elif _dir_size_bytes(entry) < 1024:
-                    issues.append(Issue(
-                        "corrupt_dir", entry,
-                        f"Suspected corrupt version dir (< 1 KB): {name}",
-                    ))
+                    issues.append(
+                        Issue(
+                            "corrupt_dir",
+                            entry,
+                            f"Suspected corrupt version dir (< 1 KB): {name}",
+                        )
+                    )
 
     tmp = pkg_dir / "tmp"
     if tmp.is_dir():
@@ -225,10 +234,13 @@ def check(pkg_dir: "Path | None" = None) -> list:
         except OSError:
             tmp_entries = []
         for entry in tmp_entries:
-            issues.append(Issue(
-                "tmp_entry", entry,
-                f"Stale partial-download in tmp/: {entry.name}",
-            ))
+            issues.append(
+                Issue(
+                    "tmp_entry",
+                    entry,
+                    f"Stale partial-download in tmp/: {entry.name}",
+                )
+            )
 
     return issues
 
@@ -419,9 +431,9 @@ def _install_windows(python: str, script: Path) -> int:
         "      <Enabled>true</Enabled>\n"
         "    </CalendarTrigger>\n"
         "  </Triggers>\n"
-        "  <Actions Context=\"Author\">\n"
+        '  <Actions Context="Author">\n'
         "    <Exec>\n"
-        f'      <Command>{python}</Command>\n'
+        f"      <Command>{python}</Command>\n"
         f'      <Arguments>"{script}" --heal</Arguments>\n'
         "    </Exec>\n"
         "  </Actions>\n"
@@ -440,7 +452,9 @@ def _install_windows(python: str, script: Path) -> int:
     try:
         r = subprocess.run(
             ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/XML", str(xml_file)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if r.returncode == 0:
             ok(f"Task Scheduler: {TASK_NAME} registered (daily 10:00)")
@@ -493,11 +507,14 @@ def _install_macos(python: str, script: Path) -> int:
     try:
         subprocess.run(
             ["launchctl", "unload", str(plist_path)],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
         subprocess.run(
             ["launchctl", "load", str(plist_path)],
-            check=True, capture_output=True, timeout=10,
+            check=True,
+            capture_output=True,
+            timeout=10,
         )
         ok(f"launchd: {LAUNCHD_LABEL} loaded (daily 10:00)")
         return 0
@@ -537,11 +554,15 @@ def _install_linux(python: str, script: Path) -> int:
     try:
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
-            check=True, timeout=10, capture_output=True,
+            check=True,
+            timeout=10,
+            capture_output=True,
         )
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", "copilot-cli-healer.timer"],
-            check=True, timeout=10, capture_output=True,
+            check=True,
+            timeout=10,
+            capture_output=True,
         )
         ok("systemd: copilot-cli-healer.timer enabled (daily)")
         return 0
@@ -558,7 +579,9 @@ def uninstall_schedule() -> int:
         try:
             r = subprocess.run(
                 ["schtasks", "/Delete", "/F", "/TN", TASK_NAME],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if r.returncode == 0:
                 ok(f"Task Scheduler: {TASK_NAME} removed")
@@ -575,7 +598,8 @@ def uninstall_schedule() -> int:
         if plist.exists():
             subprocess.run(
                 ["launchctl", "unload", str(plist)],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
             plist.unlink()
             ok(f"launchd: {LAUNCHD_LABEL} removed")
@@ -587,7 +611,8 @@ def uninstall_schedule() -> int:
         try:
             subprocess.run(
                 ["systemctl", "--user", "disable", "--now", "copilot-cli-healer.timer"],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
         except Exception:
             pass
@@ -598,7 +623,8 @@ def uninstall_schedule() -> int:
         try:
             subprocess.run(
                 ["systemctl", "--user", "daemon-reload"],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
         except Exception:
             pass
@@ -631,31 +657,39 @@ def main() -> int:
     )
     parser.add_argument("--status", action="store_true", help="Print pkg dir summary")
     parser.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="Exit 0 if healthy, 1 if stale state detected",
     )
     parser.add_argument(
-        "--heal", action="store_true",
+        "--heal",
+        action="store_true",
         help="Remove stale .replaced-* dirs and tmp/ contents",
     )
     parser.add_argument(
-        "--update", action="store_true",
+        "--update",
+        action="store_true",
         help="Heal then invoke 'copilot update' with retry",
     )
     parser.add_argument(
-        "--install-schedule", action="store_true",
+        "--install-schedule",
+        action="store_true",
         help="Register daily healer with OS scheduler",
     )
     parser.add_argument(
-        "--uninstall-schedule", action="store_true",
+        "--uninstall-schedule",
+        action="store_true",
         help="Unregister scheduled healer",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Print actions without making changes (use with --heal)",
     )
     parser.add_argument(
-        "--version", action="version", version=f"copilot-cli-healer {HEALER_VERSION}",
+        "--version",
+        action="version",
+        version=f"copilot-cli-healer {HEALER_VERSION}",
     )
 
     args = parser.parse_args()
@@ -673,10 +707,7 @@ def main() -> int:
         if not issues:
             ok("Copilot CLI pkg: healthy")
             return 0
-        warn(
-            f"Copilot CLI pkg: {len(issues)} stale item(s) — "
-            "run: python copilot-cli-healer.py --heal"
-        )
+        warn(f"Copilot CLI pkg: {len(issues)} stale item(s) — run: python copilot-cli-healer.py --heal")
         for i in issues:
             warn(f"  {i.description}")
         return 1

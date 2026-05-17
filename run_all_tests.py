@@ -140,7 +140,7 @@ def main(argv=None):
     print(f"Results: {passed}/{total} passed in {wall:.1f}s")
 
     if failures:
-        print(f"\n{'─'*72}")
+        print(f"\n{'─' * 72}")
         print("FAILURES:")
         for name, out in failures:
             print(f"\n  ▶ {name}")

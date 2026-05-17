@@ -99,7 +99,7 @@ def verify_checksum(file_path: Path, checksum_url: str) -> bool:
     actual = sha256.hexdigest()
 
     if expected != actual:
-        print(f"Error: Checksum mismatch!", file=sys.stderr)
+        print("Error: Checksum mismatch!", file=sys.stderr)
         print(f"  Expected: {expected}", file=sys.stderr)
         print(f"  Got:      {actual}", file=sys.stderr)
         return False
@@ -139,10 +139,10 @@ def setup_path_posix(install_dir: Path) -> None:
     print("⚠️  Add to your PATH:")
     print()
     if shell_name == "zsh":
-        print(f'  echo \'export PATH="{install_dir}:$PATH"\' >> ~/.zshrc')
+        print(f"  echo 'export PATH=\"{install_dir}:$PATH\"' >> ~/.zshrc")
         print("  source ~/.zshrc")
     elif shell_name == "bash":
-        print(f'  echo \'export PATH="{install_dir}:$PATH"\' >> ~/.bashrc')
+        print(f"  echo 'export PATH=\"{install_dir}:$PATH\"' >> ~/.bashrc")
         print("  source ~/.bashrc")
     elif shell_name == "fish":
         print(f"  fish_add_path {install_dir}")
@@ -156,9 +156,8 @@ def setup_path_windows(install_dir: Path) -> None:
     """Add to PATH on Windows via registry."""
     try:
         import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_ALL_ACCESS
-        )
+
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_ALL_ACCESS)
         try:
             current_path, _ = winreg.QueryValueEx(key, "Path")
         except FileNotFoundError:

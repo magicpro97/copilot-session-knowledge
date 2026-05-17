@@ -66,9 +66,7 @@ def ensure_gitignore(project_dir: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Copy tentacle skills and references into a project."
-    )
+    parser = argparse.ArgumentParser(description="Copy tentacle skills and references into a project.")
     parser.add_argument(
         "project_dir",
         nargs="?",

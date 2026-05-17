@@ -203,7 +203,7 @@ def print_report(report):
     # Summary
     total_mistakes = sum(item["count"] for item in report.get("error_types", []))
     total_recurring = sum(item.get("recurrence", 0) for item in recurring)
-    print(f"\n═══ Summary ═══")
+    print("\n═══ Summary ═══")
     print(f"  Total mistakes:     {total_mistakes}")
     print(f"  Total recurrences:  {total_recurring}")
     print(f"  Unique root causes: {len(root_causes)}")

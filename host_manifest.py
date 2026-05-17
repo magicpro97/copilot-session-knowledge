@@ -36,11 +36,11 @@ if os.name == "nt":
 _HOME = Path(os.environ["COPILOT_HOME"]) if "COPILOT_HOME" in os.environ else Path.home()
 
 COPILOT_DIR = _HOME / ".copilot"
-CLAUDE_DIR  = _HOME / ".claude"
+CLAUDE_DIR = _HOME / ".claude"
 
 # Session data roots (each host's location for session/project files)
-SESSION_STATE   = COPILOT_DIR / "session-state"
-CLAUDE_PROJECTS = CLAUDE_DIR  / "projects"
+SESSION_STATE = COPILOT_DIR / "session-state"
+CLAUDE_PROJECTS = CLAUDE_DIR / "projects"
 
 # ---------------------------------------------------------------------------
 # Supported-host manifests
@@ -56,7 +56,7 @@ UNSUPPORTED_HOSTS: tuple[str, ...] = ("Codex", "Cursor", "Windsurf", "Cline", "C
 # Top-level host config directories — used by install.py for existence checks.
 HOST_DIRS: dict[str, Path] = {
     "Copilot CLI": COPILOT_DIR,
-    "Claude Code":  CLAUDE_DIR,
+    "Claude Code": CLAUDE_DIR,
 }
 
 # Session file roots — used by watch-sessions.py to discover session files.
@@ -73,7 +73,7 @@ HOST_SESSION_ROOTS: tuple[tuple[str, Path], ...] = (
 HOST_INSTRUCTION_FILES: dict[str, str] = {
     "Copilot CLI": ".github/copilot-instructions.md",
     "Claude Code": "CLAUDE.md",
-    "All agents":  "AGENTS.md",   # host-agnostic; read by Claude, Codex, and others
+    "All agents": "AGENTS.md",  # host-agnostic; read by Claude, Codex, and others
 }
 
 # Project-relative paths for deploying SKILL.md into a project.
@@ -81,5 +81,5 @@ HOST_INSTRUCTION_FILES: dict[str, str] = {
 # so both consumers stay in sync when host layouts change.
 HOST_SKILL_SUBPATHS: dict[str, str] = {
     "Copilot CLI": ".github/skills/session-knowledge/SKILL.md",
-    "Claude Code":  ".claude/skills/session-knowledge/SKILL.md",
+    "Claude Code": ".claude/skills/session-knowledge/SKILL.md",
 }

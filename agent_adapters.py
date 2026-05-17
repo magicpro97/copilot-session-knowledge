@@ -262,9 +262,7 @@ _REGISTRY: tuple[AgentAdapter, ...] = (
 )
 
 AGENT_ADAPTERS: dict[str, AgentAdapter] = {adapter.key: adapter for adapter in _REGISTRY}
-_ALIAS_TO_KEY: dict[str, str] = {
-    alias: adapter.key for adapter in _REGISTRY for alias in adapter.aliases
-}
+_ALIAS_TO_KEY: dict[str, str] = {alias: adapter.key for adapter in _REGISTRY for alias in adapter.aliases}
 PUBLIC_AGENT_KEYS: tuple[str, ...] = tuple(adapter.key for adapter in _REGISTRY if adapter.public)
 CLI_AGENT_KEYS: tuple[str, ...] = tuple(adapter.key for adapter in _REGISTRY)
 

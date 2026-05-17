@@ -48,6 +48,7 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
             pass
         raise
 
+
 # Host metadata is centralised in host_manifest.py — import canonical constants.
 # Do NOT add new hosts here; update host_manifest.py through the review process.
 if os.name == "nt":
@@ -220,10 +221,7 @@ sk learn --relate "#id1" "resolved_by" "#id2"
 def find_git_root() -> Path | None:
     """Find the git repository root from cwd."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             return Path(result.stdout.strip())
     except Exception:
@@ -313,7 +311,9 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
                         changes += 1
                     if skill_name in VENDORED_SKILLS and _claude_skills_base:
                         asset_claude_dst = project_root / _claude_skills_base / skill_name / rel
-                        if copy_if_changed(asset_file, asset_claude_dst, dry_run, f"{item['label']} (Claude Code) → {rel}"):
+                        if copy_if_changed(
+                            asset_file, asset_claude_dst, dry_run, f"{item['label']} (Claude Code) → {rel}"
+                        ):
                             changes += 1
 
     return changes
@@ -544,24 +544,21 @@ What gets installed:
 Note: If your project already has session-knowledge installed at the user/global level
 (~/.github/instructions/session-knowledge.instructions.md), you can remove the project-level
 copy to avoid duplicate always-loaded instructions and reduce context bloat.
-"""
+""",
     )
     parser.add_argument(
-        "project_root", nargs="?", default=None,
-        help="Project root directory (default: auto-detect git root)"
+        "project_root", nargs="?", default=None, help="Project root directory (default: auto-detect git root)"
     )
     parser.add_argument(
-        "--skill-only", action="store_true",
-        help="Only install skills and instructions, don't patch CLAUDE.md etc."
+        "--skill-only", action="store_true", help="Only install skills and instructions, don't patch CLAUDE.md etc."
     )
+    parser.add_argument("--no-tentacle", action="store_true", help="Skip tentacle orchestration setup")
     parser.add_argument(
-        "--no-tentacle", action="store_true",
-        help="Skip tentacle orchestration setup"
-    )
-    parser.add_argument(
-        "--profile", default=None, metavar="PROFILE",
+        "--profile",
+        default=None,
+        metavar="PROFILE",
         help="Workflow profile to install as a hook bundle + WORKFLOW.md "
-             "(default: none; choices: default, python, typescript, mobile, fullstack)"
+        "(default: none; choices: default, python, typescript, mobile, fullstack)",
     )
     parser.add_argument(
         "--agent",
@@ -572,10 +569,7 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         help="Initialize adapter-specific context files; repeat to target multiple adapters",
     )
     parser.add_argument("--init-mode", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Show what would be done without making changes"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making changes")
     args = parser.parse_args()
 
     # Find project root
@@ -599,9 +593,7 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
     print()
 
     try:
-        init_adapters, requested_init = _select_init_adapters(
-            project_root, args.agents, init_mode=args.init_mode
-        )
+        init_adapters, requested_init = _select_init_adapters(project_root, args.agents, init_mode=args.init_mode)
     except ValueError as exc:
         print(f"✗ {exc}")
         sys.exit(1)
@@ -646,12 +638,18 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
     # 5. Install workflow profile hook bundle (optional, only when --profile is given)
     if args.profile:
         import re as _re
+
         print(f"\n🔩 Hook Bundle ({args.profile} profile):")
         hook_installer = SCRIPT_DIR / "install-project-hooks.py"
-        cmd = [sys.executable, str(hook_installer),
-               "--profile", args.profile,
-               "--project", str(project_root),
-               "--workflow"]
+        cmd = [
+            sys.executable,
+            str(hook_installer),
+            "--profile",
+            args.profile,
+            "--project",
+            str(project_root),
+            "--workflow",
+        ]
         if args.dry_run:
             cmd.append("--dry-run")
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -682,10 +680,14 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print("Next steps:")
         print("  1. Run: sk index build --all")
         print("     Fallbacks: macOS/Linux `python3 ~/.copilot/tools/build-session-index.py --all`;")
-        print("                Windows PowerShell `python \"$env:USERPROFILE\\.copilot\\tools\\build-session-index.py\" --all`")
+        print(
+            '                Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\build-session-index.py" --all`'
+        )
         print("  2. (Optional) Configure sync gateway URL: sk sync config --setup <https://gateway>")
         print("     Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host).")
-        print("  3. Trend Scout automation: keep trend-scout.py in scheduled/manual flow (trend-scout.yml), not preToolUse/postToolUse hooks.")
+        print(
+            "  3. Trend Scout automation: keep trend-scout.py in scheduled/manual flow (trend-scout.yml), not preToolUse/postToolUse hooks."
+        )
         print("  4. Customize for your project:")
         print("     /session-knowledge-creator   — Generate project-specific knowledge skill")
         if not args.no_tentacle:
