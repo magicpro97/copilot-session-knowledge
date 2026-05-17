@@ -371,7 +371,10 @@ fn check_and_index(
                     }
                     native_extract_ok = true;
                 }
-                Some(Err(e)) => eprintln!("[watch] Native extract error (continuing): {e}"),
+                Some(Err(e)) => {
+                    eprintln!("[watch] Native extract error (continuing): {e}");
+                    native_extract_needs_recovery = true;
+                }
                 None => {
                     native_extract_needs_recovery = true;
                 } // Genuine DB creation failure — recovery hint emitted below
