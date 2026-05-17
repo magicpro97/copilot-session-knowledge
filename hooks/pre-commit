@@ -123,6 +123,7 @@ def in_python_cleanliness_surface(path: str) -> bool:
         "extract-knowledge.py",
         "build-session-index.py",
         "tentacle.py",
+        "_tentacle_core.py",
         "checkpoint-diff.py",
         "checkpoint-restore.py",
         "checkpoint-save.py",

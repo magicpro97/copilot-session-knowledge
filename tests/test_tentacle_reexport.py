@@ -20,11 +20,13 @@ PASS = 0
 FAIL = 0
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 TENTACLE_PY = TOOLS_DIR / "tentacle.py"
+CORE_PY = TOOLS_DIR / "_tentacle_core.py"
 
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 T = importlib.import_module("tentacle")
+C = importlib.import_module("_tentacle_core")
 
 SEAM_LABELS = (
     "coupling map / re-export contract",
@@ -42,7 +44,11 @@ SEAM_LABELS = (
 CONTRACT_SYMBOLS = {
     "runtime-state": (
         "file_locked",
+        "_get_path_lock",
+        "_retry_windows_fs",
+        "_is_pid_running",
         "find_git_root",
+        "_same_canonical_root",
         "get_tentacles_dir",
         "parse_todos",
         "render_todos",
@@ -86,6 +92,28 @@ CONTRACT_SYMBOLS = {
     ),
 }
 
+CORE_EXPORTS = (
+    "TOOLS_DIR",
+    "LEARN_PY",
+    "BRIEFING_PY",
+    "CHECKPOINT_RESTORE_PY",
+    "MARKERS_DIR",
+    "_DISPATCHED_MARKER_PATH",
+    "_MARKER_SECRET_PATH",
+    "SKILL_METRICS_DB",
+    "_WORKTREE_STATE_ROOT",
+    "AGENT_PROFILE_REFERENCE_DIR",
+    "_get_path_lock",
+    "file_locked",
+    "_retry_windows_fs",
+    "_is_pid_running",
+    "find_git_root",
+    "_same_canonical_root",
+    "get_tentacles_dir",
+    "parse_todos",
+    "render_todos",
+)
+
 COUPLED_SURFACES = (
     "tests/test_tentacle_runtime.py",
     "hooks/session-end.py",
@@ -111,7 +139,7 @@ def _source() -> str:
 
 def test_import_contract() -> None:
     result = subprocess.run(
-        [sys.executable, "-c", "import tentacle"],
+        [sys.executable, "-c", "import tentacle; import _tentacle_core"],
         cwd=str(TOOLS_DIR),
         capture_output=True,
         text=True,
@@ -120,7 +148,7 @@ def test_import_contract() -> None:
         timeout=15,
     )
     test(
-        "tentacle imports in a fresh Python process",
+        "tentacle and _tentacle_core import in a fresh Python process",
         result.returncode == 0,
         f"returncode={result.returncode}, stderr={result.stderr[:300]}",
     )
@@ -150,12 +178,27 @@ def test_reexport_symbols_remain_on_tentacle_module() -> None:
                 test(f"{seam} export is callable: {symbol}", callable(value))
 
 
-def test_no_extraction_modules_added_yet() -> None:
+def test_core_symbols_reexported_from_tentacle() -> None:
+    test("_tentacle_core.py exists", CORE_PY.is_file(), str(CORE_PY))
+    for symbol in CORE_EXPORTS:
+        core_value = getattr(C, symbol, None)
+        tentacle_value = getattr(T, symbol, None)
+        test(f"_tentacle_core exports {symbol}", core_value is not None)
+        test(
+            f"tentacle re-exports _tentacle_core.{symbol}",
+            tentacle_value is core_value,
+            f"tentacle={tentacle_value!r}, core={core_value!r}",
+        )
+
+
+def test_core_extraction_stays_small_and_scoped() -> None:
+    line_count = len(CORE_PY.read_text(encoding="utf-8", errors="replace").splitlines())
+    test("_tentacle_core.py remains under 600 lines", line_count < 600, f"lines={line_count}")
     extraction_modules = sorted(
         path.name for path in TOOLS_DIR.glob("tentacle_*.py") if path.name not in {"tentacle.py", Path(__file__).name}
     )
     test(
-        "no tentacle extraction modules added in issue #272",
+        "no unapproved tentacle_* extraction modules exist",
         not extraction_modules,
         ", ".join(extraction_modules),
     )
@@ -167,7 +210,8 @@ def main() -> int:
     test_seam_markers_present()
     test_coupling_map_documents_callers()
     test_reexport_symbols_remain_on_tentacle_module()
-    test_no_extraction_modules_added_yet()
+    test_core_symbols_reexported_from_tentacle()
+    test_core_extraction_stays_small_and_scoped()
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 
