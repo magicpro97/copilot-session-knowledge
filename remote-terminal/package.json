@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "lint": "eslint .",
+    "audit:advisory": "npm audit --audit-level=high"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -22,6 +24,7 @@
     "systray2": "^2.1.4"
   },
   "devDependencies": {
+    "eslint": "^9.39.4",
     "socket.io-client": "^4.8.3"
   }
 }
