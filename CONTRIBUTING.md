@@ -176,6 +176,13 @@ The browse-ui ESLint baseline promotes strictness by clean zone: repo-wide
 low-churn directories such as `src/lib/hosts/**/*.{ts,tsx}` set the same rule to
 `error`. Expand this pattern only after a directory has a clean lint baseline.
 
+For `remote-terminal/`, `npm run lint` still reports legacy complexity, size,
+parameter, and unused-variable warnings without blocking the whole package. Clean
+files (`pty-daemon.js` and `test/client.test.js`) promote those same rules to
+errors and are enforced by `npm run lint:clean` with `--max-warnings=0`. The
+remote-terminal high-severity dependency audit is blocking via `npm run
+audit:high` because the current audit baseline is clean.
+
 If you need a narrow syntax-only check for a modified file:
 
 ```bash

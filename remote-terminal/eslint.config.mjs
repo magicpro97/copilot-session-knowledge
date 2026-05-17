@@ -36,6 +36,19 @@ const advisoryRules = {
   ],
 };
 
+function promoteRulesToError(rules) {
+  return Object.fromEntries(
+    Object.entries(rules).map(([name, config]) => {
+      if (Array.isArray(config)) {
+        return [name, ["error", ...config.slice(1)]];
+      }
+      return [name, "error"];
+    }),
+  );
+}
+
+const cleanZoneRules = promoteRulesToError(advisoryRules);
+
 export default [
   {
     ignores: ["coverage/**", "node_modules/**"],
@@ -51,6 +64,10 @@ export default [
       reportUnusedDisableDirectives: "warn",
     },
     rules: advisoryRules,
+  },
+  {
+    files: ["pty-daemon.js", "test/client.test.js"],
+    rules: cleanZoneRules,
   },
   {
     files: ["public/**/*.js"],

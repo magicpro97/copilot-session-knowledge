@@ -10,6 +10,8 @@
     "start": "node server.js",
     "test": "node --test",
     "lint": "eslint .",
+    "lint:clean": "eslint pty-daemon.js test/client.test.js --max-warnings=0",
+    "audit:high": "npm audit --audit-level=high",
     "audit:advisory": "npm audit --audit-level=high"
   },
   "dependencies": {
