@@ -5,10 +5,14 @@ on:
     branches: [main]
     paths:
       - 'sk-rust/**'
+      - 'benchmark.py'
+      - '.github/workflows/sk-ci.yml'
   pull_request:
     branches: [main]
     paths:
       - 'sk-rust/**'
+      - 'benchmark.py'
+      - '.github/workflows/sk-ci.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,6 +58,26 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets -- -W clippy::cognitive_complexity -W clippy::too_many_lines
       - run: cargo clippy -- -D warnings
+
+  startup-benchmark:
+    name: Startup benchmark advisory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sk-rust/target/
+          key: ubuntu-latest-cargo-startup-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ubuntu-latest-cargo-startup-
+      - name: Benchmark sk startup (advisory)
+        continue-on-error: true
+        run: |
+          cargo build --release --manifest-path sk-rust/Cargo.toml
+          python3 benchmark.py startup --runs 7 --warmups 2 --timeout 10 -- sk-rust/target/release/sk --help
 
   test:
     name: Test (${{ matrix.os }})

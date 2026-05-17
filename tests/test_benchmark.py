@@ -14,6 +14,7 @@ Covers:
 9. Migration round-trip: migrate.py v14 creates benchmark_snapshots
 10. No writes outside benchmark_snapshots (read-only contract)
 11. _collect_health uses the requested DB path and fails closed on SystemExit
+12. cmd_startup: prints median/min/max milliseconds for a no-op command
 
 Run:
     python3 test_benchmark.py
@@ -557,6 +558,58 @@ def test_parse_args_list_json():
     test("_parse_args: limit=5", args["limit"] == 5)
 
 
+def test_parse_args_startup_command():
+    b = _load_bench()
+    args = b._parse_args(
+        [
+            "benchmark.py",
+            "startup",
+            "--runs",
+            "3",
+            "--warmups",
+            "0",
+            "--timeout",
+            "2.5",
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ]
+    )
+    test("_parse_args: cmd=startup", args["cmd"] == "startup")
+    test("_parse_args: startup runs=3", args["runs"] == 3)
+    test("_parse_args: startup warmups=0", args["warmups"] == 0)
+    test("_parse_args: startup timeout=2.5", args["timeout"] == 2.5)
+    test("_parse_args: startup command captured", args["startup_command"] == [sys.executable, "-c", "pass"])
+
+
+# ── 6b. cmd_startup ──────────────────────────────────────────────────────────
+
+
+def test_cmd_startup_outputs_ms():
+    b = _load_bench()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = b.cmd_startup([sys.executable, "-c", "pass"], runs=3, warmups=1, timeout=10.0, as_json=False)
+    out = buf.getvalue()
+    test("cmd_startup: returns 0", rc == 0, f"rc={rc}")
+    test("cmd_startup: prints median_ms", "median_ms:" in out, f"out={out}")
+    test("cmd_startup: prints min_ms", "min_ms:" in out, f"out={out}")
+    test("cmd_startup: prints max_ms", "max_ms:" in out, f"out={out}")
+
+
+def test_cmd_startup_json_output():
+    b = _load_bench()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = b.cmd_startup([sys.executable, "-c", "pass"], runs=2, warmups=0, timeout=10.0, as_json=True)
+    payload = json.loads(buf.getvalue())
+    test("cmd_startup JSON: returns 0", rc == 0, f"rc={rc}")
+    test("cmd_startup JSON: median_ms present", isinstance(payload.get("median_ms"), float))
+    test("cmd_startup JSON: min_ms present", isinstance(payload.get("min_ms"), float))
+    test("cmd_startup JSON: max_ms present", isinstance(payload.get("max_ms"), float))
+
+
 # ── 7. _delta_str ────────────────────────────────────────────────────────────
 
 
@@ -774,6 +827,11 @@ def run_all():
     test_parse_args_record()
     test_parse_args_compare_commits()
     test_parse_args_list_json()
+    test_parse_args_startup_command()
+
+    print("\n── 6b. cmd_startup ───────────────────────────────────────────────────────")
+    test_cmd_startup_outputs_ms()
+    test_cmd_startup_json_output()
 
     print("\n── 7. _delta_str ─────────────────────────────────────────────────────────")
     test_delta_str_positive()

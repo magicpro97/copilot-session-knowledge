@@ -9,11 +9,13 @@ Usage:
     python3 benchmark.py record [--db PATH] [--commit SHA] [--mode local|repo]
     python3 benchmark.py compare [--db PATH] [--commits SHA SHA] [--limit N]
     python3 benchmark.py list [--db PATH] [--limit N] [--json]
+    python3 benchmark.py startup [--runs N] [--warmups N] [--timeout SEC] [-- COMMAND...]
 
 Signals captured (all read-only):
     - retro.py  → retro_score, subscores, score_confidence
     - knowledge-health.py → health.score (when available)
     - git HEAD  → commit_sha, commit_msg
+    - startup command wall-clock timing → median/min/max milliseconds
 
 Standalone script: no imports from other tools at module level.
 Stdlib-only; optional dynamic loading of retro.py / knowledge-health.py.
@@ -22,9 +24,12 @@ Stdlib-only; optional dynamic loading of retro.py / knowledge-health.py.
 import importlib.util
 import json
 import os
+import shlex
+import statistics
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 if os.name == "nt":
@@ -434,6 +439,100 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
     return 0
 
 
+# ── Startup timing ────────────────────────────────────────────────────────────
+
+
+def _measure_startup_once(command: "list[str]", timeout: float) -> "tuple[int, float, str]":
+    """Run one startup measurement and return (exit code, elapsed ms, error)."""
+    start = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(SCRIPT_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        return 127, elapsed_ms, f"command not found: {command[0]}"
+    except subprocess.TimeoutExpired:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        return 124, elapsed_ms, f"timed out after {timeout:g}s"
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return completed.returncode, elapsed_ms, ""
+
+
+def _print_startup_failure(phase: str, index: int, rc: int, elapsed_ms: float, error: str) -> None:
+    detail = error or f"exit code {rc}"
+    print(
+        f"benchmark startup: {phase} #{index} failed after {elapsed_ms:.2f} ms ({detail})",
+        file=sys.stderr,
+    )
+
+
+def cmd_startup(
+    command: "list[str]",
+    runs: int,
+    warmups: int,
+    timeout: float,
+    as_json: bool,
+) -> int:
+    """Measure startup latency for a stable no-op command."""
+    if not command:
+        print("benchmark startup: command is required", file=sys.stderr)
+        return 2
+    if runs <= 0:
+        print("benchmark startup: --runs must be greater than 0", file=sys.stderr)
+        return 2
+    if warmups < 0:
+        print("benchmark startup: --warmups must be 0 or greater", file=sys.stderr)
+        return 2
+    if timeout <= 0:
+        print("benchmark startup: --timeout must be greater than 0", file=sys.stderr)
+        return 2
+
+    for i in range(1, warmups + 1):
+        rc, elapsed_ms, error = _measure_startup_once(command, timeout)
+        if rc != 0:
+            _print_startup_failure("warmup", i, rc, elapsed_ms, error)
+            return rc if rc > 0 else 1
+
+    timings = []
+    for i in range(1, runs + 1):
+        rc, elapsed_ms, error = _measure_startup_once(command, timeout)
+        if rc != 0:
+            _print_startup_failure("run", i, rc, elapsed_ms, error)
+            return rc if rc > 0 else 1
+        timings.append(elapsed_ms)
+
+    median_ms = statistics.median(timings)
+    min_ms = min(timings)
+    max_ms = max(timings)
+    payload = {
+        "command": command,
+        "runs": runs,
+        "warmups": warmups,
+        "median_ms": round(median_ms, 2),
+        "min_ms": round(min_ms, 2),
+        "max_ms": round(max_ms, 2),
+    }
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print("benchmark startup")
+    print(f"  command:   {shlex.join(command)}")
+    print(f"  warmups:   {warmups}")
+    print(f"  runs:      {runs}")
+    print(f"  median_ms: {median_ms:.2f}")
+    print(f"  min_ms:    {min_ms:.2f}")
+    print(f"  max_ms:    {max_ms:.2f}")
+    return 0
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -446,12 +545,19 @@ def _parse_args(argv: list) -> dict:
         "commits": [],
         "limit": 10,
         "json": False,
+        "runs": 10,
+        "warmups": 1,
+        "timeout": 10.0,
+        "startup_command": ["sk", "--help"],
     }
     i = 1
     while i < len(argv):
         a = argv[i]
-        if a in ("record", "compare", "list"):
+        if a in ("record", "compare", "list", "startup"):
             args["cmd"] = a
+        elif a == "--":
+            args["startup_command"] = argv[i + 1:]
+            break
         elif a == "--db" and i + 1 < len(argv):
             i += 1
             args["db"] = Path(argv[i])
@@ -464,6 +570,15 @@ def _parse_args(argv: list) -> dict:
         elif a == "--limit" and i + 1 < len(argv):
             i += 1
             args["limit"] = int(argv[i])
+        elif a == "--runs" and i + 1 < len(argv):
+            i += 1
+            args["runs"] = int(argv[i])
+        elif a == "--warmups" and i + 1 < len(argv):
+            i += 1
+            args["warmups"] = int(argv[i])
+        elif a == "--timeout" and i + 1 < len(argv):
+            i += 1
+            args["timeout"] = float(argv[i])
         elif a == "--commits" and i + 2 < len(argv):
             args["commits"] = [argv[i + 1], argv[i + 2]]
             i += 2
@@ -481,7 +596,8 @@ def main(argv: "list | None" = None) -> int:
     if args["cmd"] is None:
         print(
             "Usage: benchmark.py <record|compare|list> [--db PATH] [--commit SHA] "
-            "[--mode local|repo] [--limit N] [--json] [--commits SHA SHA]"
+            "[--mode local|repo] [--limit N] [--json] [--commits SHA SHA]\n"
+            "       benchmark.py startup [--runs N] [--warmups N] [--timeout SEC] [-- COMMAND...]"
         )
         return 1
 
@@ -497,6 +613,14 @@ def main(argv: "list | None" = None) -> int:
         return cmd_list(db_path, args["limit"], args["json"])
     elif args["cmd"] == "compare":
         return cmd_compare(db_path, args["commits"], args["limit"])
+    elif args["cmd"] == "startup":
+        return cmd_startup(
+            args["startup_command"],
+            args["runs"],
+            args["warmups"],
+            args["timeout"],
+            args["json"],
+        )
     else:
         print(f"benchmark: unknown command '{args['cmd']}'", file=sys.stderr)
         return 1
