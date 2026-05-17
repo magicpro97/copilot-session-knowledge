@@ -664,6 +664,25 @@ CI_RUFF_FILES = [
     "tests/test_browse_search_v2.py",
 ]
 CI_RUFF_DIRS = ["browse/", "hooks/", "scripts/"]
+CI_RUFF_SURFACE = CI_RUFF_FILES + CI_RUFF_DIRS
+
+
+def _top_level_function_body(content: str, name: str) -> str:
+    match = re.search(
+        rf"^def {re.escape(name)}\([^)]*\)(?:\s*->[^:]+)?:\n(?P<body>.*?)(?=^\S|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body") if match else ""
+
+
+def _workflow_step_body(content: str, step_name: str) -> str:
+    match = re.search(
+        rf"^      - name: {re.escape(step_name)}\n(?P<body>.*?)(?=^      - name: |\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body") if match else ""
 
 
 def test_ruff_surface_in_pre_commit():
@@ -677,16 +696,22 @@ def test_ruff_surface_in_pre_commit():
         "docs/ARCHITECTURE.md#python-lint-surface-inventory" in content,
         "hooks/pre-commit should point maintainers to the canonical lint surface inventory",
     )
+    surface_body = _top_level_function_body(content, "in_python_cleanliness_surface")
+    test(
+        "pre-commit has in_python_cleanliness_surface function",
+        bool(surface_body),
+        "hooks/pre-commit missing in_python_cleanliness_surface()",
+    )
     for fname in CI_RUFF_FILES:
         test(
             f"pre-commit covers CI file: {fname}",
-            fname in content,
+            fname in surface_body,
             f"'{fname}' not found in pre-commit _py_in_surface()",
         )
     for dirname in CI_RUFF_DIRS:
         test(
             f"pre-commit covers CI directory: {dirname}",
-            dirname in content,
+            dirname in surface_body,
             f"'{dirname}' not found in pre-commit _py_in_surface()",
         )
 
@@ -702,17 +727,20 @@ def test_ci_workflow_ruff_surface():
         "docs/ARCHITECTURE.md#python-lint-surface-inventory" in content,
         ".github/workflows/ci.yml Ruff step should point to the canonical lint surface inventory",
     )
-    for fname in CI_RUFF_FILES:
+    ruff_lint_body = _workflow_step_body(content, "Ruff lint")
+    ruff_format_body = _workflow_step_body(content, "Ruff format check")
+    test("ci.yml has Ruff lint step", bool(ruff_lint_body), "ci.yml missing Ruff lint step")
+    test("ci.yml has Ruff format step", bool(ruff_format_body), "ci.yml missing Ruff format check step")
+    for surface in CI_RUFF_SURFACE:
         test(
-            f"ci.yml Ruff surface includes {fname}",
-            fname in content,
-            f"'{fname}' missing from ci.yml Ruff step",
+            f"ci.yml Ruff lint surface includes {surface}",
+            surface in ruff_lint_body,
+            f"'{surface}' missing from ci.yml Ruff lint step",
         )
-    for dirname in CI_RUFF_DIRS:
         test(
-            f"ci.yml Ruff surface includes {dirname}",
-            dirname in content,
-            f"'{dirname}' missing from ci.yml Ruff step",
+            f"ci.yml Ruff format surface includes {surface}",
+            surface in ruff_format_body,
+            f"'{surface}' missing from ci.yml Ruff format check step",
         )
 
 
