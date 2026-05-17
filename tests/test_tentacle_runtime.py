@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, patch
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
+import _tentacle_core as C
 import tentacle as T
 from hooks.rules import session_lifecycle as session_lifecycle_rules
 
@@ -1654,7 +1655,7 @@ class TestFileLocked(unittest.TestCase):
 
         fake_lock_file = FakeLockFile()
         with patch.object(T.os, "name", "nt"):
-            with patch.object(T, "msvcrt", FakeMSVCRT, create=True):
+            with patch.object(C, "msvcrt", FakeMSVCRT, create=True):
                 with patch("builtins.open", return_value=fake_lock_file):
                     with self.assertRaises(OSError):
                         with T.file_locked(self.lock_path):
