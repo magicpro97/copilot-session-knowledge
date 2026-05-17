@@ -171,6 +171,11 @@ tooling does not masquerade as a clean advisory scan.
 
 For `browse-ui/` changes, CI runs `pnpm format:check`. Fix formatting locally with `cd browse-ui && pnpm format` before committing. The always-on `e2e-smoke` job runs the Playwright `behavioral` project on push/PR; visual snapshots stay in the manual-only `e2e-visual` job gated by `workflow_dispatch`.
 
+The browse-ui ESLint baseline promotes strictness by clean zone: repo-wide
+`@typescript-eslint/no-explicit-any` remains advisory (`warn`) while clean,
+low-churn directories such as `src/lib/hosts/**/*.{ts,tsx}` set the same rule to
+`error`. Expand this pattern only after a directory has a clean lint baseline.
+
 If you need a narrow syntax-only check for a modified file:
 
 ```bash
