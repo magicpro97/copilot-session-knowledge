@@ -86,6 +86,16 @@ The `browse/*` and `hooks/*` patterns in the local `_py_in_surface()` function m
 
 **Full test suite** (`python3 run_all_tests.py`) is **not** enforced by the local `pre-commit` hook — it is too slow for every-commit use. CI runs it on every push/PR. Operators are expected to run it manually before submitting PRs. The local hook only enforces the fast checks listed in the table above.
 
+### Cross-platform CI boundary
+
+Most hook quality gates are Linux-only because the full test suite, Ruff, and browse UI checks run in the CI `quality-gates`, `browse-ui`, and Playwright jobs on `ubuntu-latest`. The portability smoke surface is separate and intentionally small: CI job `python-platform-safety` runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with `actions/setup-python` and the portable `python` command.
+
+| CI surface | Runner scope | Command boundary | Purpose |
+|------------|--------------|------------------|---------|
+| `quality-gates` | Linux-only (`ubuntu-latest`) | `python3 scripts/check_syntax.py`, Ruff, `python3 run_all_tests.py` | Full repository Python quality gate. |
+| `browse-ui`, `e2e-smoke`, `e2e-visual`, `pairing-e2e` | Linux-only (`ubuntu-latest`) | pnpm/Playwright commands | Frontend and browser evidence gates. |
+| `python-platform-safety` | Cross-platform (`ubuntu-latest`, `macos-latest`, `windows-latest`) | setup-python + `python` | Fast core Python safety proof for platform probes, atomic lock contracts, installer boundaries, and hook/security fail-open regressions. |
+
 ### Browse operator console surfaces
 
 The `/chat` operator console does **not** introduce a new hook class. Existing guardrails already cover it:

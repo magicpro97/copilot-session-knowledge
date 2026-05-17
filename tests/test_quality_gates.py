@@ -1023,8 +1023,8 @@ def test_ci_workflow_e2e_smoke_visual_split():
     )
     test(
         "agents release waits for e2e-smoke",
-        "needs: [quality-gates, browse-ui, e2e-smoke]" in release_body,
-        "agents-release-hook should not dispatch before e2e-smoke passes on main",
+        all(need in release_body for need in ("quality-gates", "python-platform-safety", "browse-ui", "e2e-smoke")),
+        "agents-release-hook should not dispatch before quality, platform, browse-ui, and e2e-smoke pass on main",
     )
 
 
