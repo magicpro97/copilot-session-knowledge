@@ -37,6 +37,8 @@ jobs:
       - name: Syntax check
         run: python3 scripts/check_syntax.py
 
+      # Canonical surface inventory: docs/ARCHITECTURE.md#python-lint-surface-inventory
+      # Keep this list in sync with hooks/pre-commit and tests/test_quality_gates.py.
       - name: Ruff lint
         run: >
           ruff check

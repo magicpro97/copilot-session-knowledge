@@ -105,6 +105,8 @@ def check_python_syntax(staged: list[str]) -> int:
     return 0
 
 
+# Canonical surface inventory: docs/ARCHITECTURE.md#python-lint-surface-inventory
+# Keep this in sync with .github/workflows/ci.yml and tests/test_quality_gates.py.
 def in_python_cleanliness_surface(path: str) -> bool:
     exact = {
         "embed.py",
