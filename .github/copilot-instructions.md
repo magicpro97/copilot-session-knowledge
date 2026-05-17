@@ -126,6 +126,29 @@ Any claim about test status, lint, format, CI, or runtime correctness must be ba
 
 If you did not run a verification command, say so: "not proven yet — run `<command>`." A `DONE` handoff with no evidence for its claims is treated as `AMBIGUOUS` by the orchestrator. Issue closeouts must include verification evidence per acceptance criterion or explicitly list unproven items.
 
+### 10. Minimum Footprint
+
+Make the smallest complete change that satisfies the task. Every changed line should trace to the request or to verification needed for the request.
+
+**Rules:**
+
+1. Do not create a new file without a clear justification that an existing file is not the right home.
+2. Do not add speculative abstractions, configuration, extension points, or general-purpose helpers for a single current use case.
+3. Reuse existing patterns, helpers, commands, and test harnesses before introducing new ones.
+4. If a changed or newly added function grows beyond 50 lines, decompose it or explain why keeping it together is safer.
+5. If a changed file grows beyond 400 lines, flag it in the PR/issue with the reason it remains acceptable or the follow-up needed to split it.
+6. Avoid formatting churn, opportunistic cleanup, or adjacent refactors that are not required by the task.
+
+### 11. New File Justification
+
+New files are durable maintenance surface. Before adding one:
+
+1. Search for an existing home first (`glob`, `rg`, LSP, or the relevant project registry) and reuse it when it can own the behavior cleanly.
+2. State the new file's responsibility in the issue, PR, step file, or handoff.
+3. Wire the file into the relevant lint, test, hook, docs, packaging, or CI surface, or explicitly justify why no surface applies.
+4. Add or update tests for the behavior the new file owns, or document the exact verification command when tests are not applicable.
+5. Avoid duplicate entry points; consolidate with existing scripts, hooks, routes, skills, or modules unless separation is justified.
+
 > **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file (`copilot-instructions.md`) is the Copilot CLI runtime enforcement surface — keep it in sync with `docs/AGENT-RULES.md`. Changes to agent rules should be reflected in both places.
 
 ## Hook Enforcement (Summary)
@@ -140,6 +163,8 @@ Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation 
 | No git ops in sub-agents | `subagent-git-guard` | Blocks `git commit`/`git push` while dispatched-subagent marker is active |
 | Syntax errors | `syntax-gate` | Blocks `.py` edit/create payloads that fail `py_compile` |
 | Evidence for closeout claims (Rule 9) | `verification-gate` | Tracks dirty Python / browse-ui surfaces, records fresh test / format / lint / typecheck / build evidence, and blocks `task_complete`, `gh issue close/comment`, and tentacle `DONE` / `complete` actions when that evidence is missing. CI/runtime proof beyond those gates remains policy-level. |
+| Minimum footprint (Rule 10) | `file-size-advisory` | Warns on large Python create/edit payloads so agents can decompose or justify oversized changes before they land. |
+| New file justification (Rule 11) | `new-file-advisory` | Warns on new root-level Python files and points agents back to the search/reuse/test-surface checklist. |
 
 > Full hook inventory: **[docs/AGENT-RULES.md](../docs/AGENT-RULES.md)** · **[docs/HOOKS.md](../docs/HOOKS.md)**
 
