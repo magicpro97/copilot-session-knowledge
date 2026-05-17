@@ -823,6 +823,8 @@ SK_CI_WORKFLOW = REPO / ".github" / "workflows" / "sk-ci.yml"
 HOOKS_MD = REPO / "docs" / "HOOKS.md"
 ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
 CONTRIBUTING = REPO / "CONTRIBUTING.md"
+HOOKS_JSON = REPO / "hooks" / "hooks.json"
+GITHUB_HOOKS_JSON = REPO / ".github" / "hooks" / "hooks.json"
 PLAYWRIGHT_CONFIG = REPO / "browse-ui" / "playwright.config.ts"
 ESLINT_CONFIG = REPO / "browse-ui" / "eslint.config.mjs"
 REMOTE_TERMINAL_ESLINT_CONFIG = REPO / "remote-terminal" / "eslint.config.mjs"
@@ -1417,6 +1419,135 @@ def test_hooks_md_rules_table_complete():
         )
 
 
+_ALLOWED_HOOK_EVENTS = {
+    "sessionStart",
+    "sessionEnd",
+    "preToolUse",
+    "postToolUse",
+    "agentStop",
+    "subagentStop",
+    "errorOccurred",
+}
+_ALLOWED_HOOK_ENTRY_KEYS = {"type", "bash", "powershell", "cwd", "env", "timeoutSec", "comment"}
+
+
+def _validate_hooks_json_schema(label: str, path: Path):
+    """Validate the repo's managed hooks.json shape without external schema deps."""
+    if not path.exists():
+        test(f"{label} exists", False, str(path))
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        test(f"{label} parses as JSON", False, str(exc))
+        return None
+
+    test(f"{label} root object is a dict", isinstance(payload, dict), f"type={type(payload).__name__}")
+    hooks = payload.get("hooks")
+    test(f"{label} hooks object is a dict", isinstance(hooks, dict), f"type={type(hooks).__name__}")
+    if not isinstance(hooks, dict):
+        return payload
+
+    events = set(hooks)
+    test(
+        f"{label} declares exactly managed hook events",
+        events == _ALLOWED_HOOK_EVENTS,
+        f"events={sorted(events)}",
+    )
+    for event, entries in hooks.items():
+        test(
+            f"{label} event '{event}' is supported",
+            event in _ALLOWED_HOOK_EVENTS,
+            f"unsupported event={event}",
+        )
+        test(
+            f"{label} event '{event}' has non-empty command list",
+            isinstance(entries, list) and bool(entries),
+            f"entries={entries!r}",
+        )
+        if not isinstance(entries, list):
+            continue
+        for index, entry in enumerate(entries):
+            prefix = f"{label} {event}[{index}]"
+            test(f"{prefix} is an object", isinstance(entry, dict), f"type={type(entry).__name__}")
+            if not isinstance(entry, dict):
+                continue
+            unexpected = set(entry) - _ALLOWED_HOOK_ENTRY_KEYS
+            test(f"{prefix} has only allowed keys", not unexpected, f"unexpected={sorted(unexpected)}")
+            test(f"{prefix} type is command", entry.get("type") == "command", f"type={entry.get('type')!r}")
+            bash = entry.get("bash", "")
+            powershell = entry.get("powershell", "")
+            timeout_sec = entry.get("timeoutSec")
+            test(
+                f"{prefix} bash command prefers sk hooks run",
+                isinstance(bash, str) and f"sk hooks run {event}" in bash,
+                f"bash={bash!r}",
+            )
+            test(
+                f"{prefix} powershell command prefers sk hooks run",
+                isinstance(powershell, str) and f"sk hooks run {event}" in powershell,
+                f"powershell={powershell!r}",
+            )
+            test(
+                f"{prefix} bash fallback invokes hook_runner.py",
+                isinstance(bash, str) and "hook_runner.py" in bash and event in bash,
+                f"bash={bash!r}",
+            )
+            test(
+                f"{prefix} powershell fallback invokes hook_runner.py",
+                isinstance(powershell, str) and "hook_runner.py" in powershell and event in powershell,
+                f"powershell={powershell!r}",
+            )
+            test(
+                f"{prefix} timeoutSec is bounded",
+                isinstance(timeout_sec, int) and 1 <= timeout_sec <= 30,
+                f"timeoutSec={timeout_sec!r}",
+            )
+    return payload
+
+
+def test_hooks_json_schema_validation():
+    """hooks.json source copies must keep the managed hook schema in sync."""
+    payloads = []
+    for label, path in [("hooks/hooks.json", HOOKS_JSON), (".github/hooks/hooks.json", GITHUB_HOOKS_JSON)]:
+        payload = _validate_hooks_json_schema(label, path)
+        if payload is not None:
+            payloads.append((label, payload))
+    if len(payloads) == 2:
+        test(
+            "hooks.json source copies are structurally identical",
+            payloads[0][1] == payloads[1][1],
+            f"{payloads[0][0]} and {payloads[1][0]} differ",
+        )
+
+
+def test_hooks_md_fail_open_regression_evidence_table():
+    """HOOKS.md must list the hook-security fail-open regression evidence."""
+    if not HOOKS_MD.exists():
+        test("docs/HOOKS.md exists", False)
+        return
+    content = HOOKS_MD.read_text(encoding="utf-8")
+    test(
+        "HOOKS.md documents fail-open regression evidence table",
+        "Fail-open Regression Evidence" in content and "tests/test_hook_security.py" in content,
+        "docs/HOOKS.md should include a fail-open/security evidence table for issue 283",
+    )
+    for phrase in (
+        "Malformed JSON hook payload",
+        "Oversized hook payload",
+        "Missing optional hook script",
+        "Hook crash isolation",
+        "Concurrent hook invocations",
+        "Path traversal-like payload",
+        "FTS operator input",
+    ):
+        test(
+            f"HOOKS.md evidence table covers {phrase}",
+            phrase in content,
+            f"Missing evidence row for {phrase}",
+        )
+
+
 test_ruff_surface_in_pre_commit()
 test_ci_workflow_ruff_surface()
 test_ci_workflow_ruff_complexity_advisory()
@@ -1430,6 +1561,8 @@ test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()
 test_architecture_md_ruff_surface()
 test_hooks_md_rules_table_complete()
+test_hooks_json_schema_validation()
+test_hooks_md_fail_open_regression_evidence_table()
 
 # ── Test 21–24: Syntax gate in pre-commit ───────────────────────────────────
 

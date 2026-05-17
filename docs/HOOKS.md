@@ -547,6 +547,22 @@ redirected audit writes away from operator state.
 Do **not** rely on `HOOK_DRY_RUN=1` alone for isolation: dry-run suppresses `deny` output but
 still writes `deny-dry` and `parse-error` entries to the audit log.
 
+## Fail-open Regression Evidence
+
+The hook runner is intentionally fail-open: malformed input, optional helper absence, telemetry
+contention, or individual rule crashes must not break the agent loop. The dedicated regression
+suite below keeps those guarantees executable.
+
+| Risk | Expected behavior | Evidence test |
+|------|-------------------|---------------|
+| Malformed JSON hook payload | `hook_runner.py` exits 0 and records a `parse-error` audit entry under isolated `HOME` | `tests/test_hook_security.py::test_malformed_json_logs_parse_error` |
+| Oversized hook payload | Payload parsing completes within the subprocess timeout and exits 0 | `tests/test_hook_security.py::test_oversized_payload_completes_within_timeout` |
+| Missing optional hook script | `sessionStart` skips absent `briefing.py` without traceback or denial | `tests/test_hook_security.py::test_missing_optional_briefing_script_fail_open` |
+| Hook crash isolation | A rule exception is caught, audited as `error`, and does not propagate out of the runner | `tests/test_hook_security.py::test_rule_crash_isolation_records_error` |
+| Concurrent hook invocations | Concurrent telemetry writes do not surface `SQLITE_LOCKED`, `database is locked`, or tracebacks | `tests/test_hook_security.py::test_concurrent_skill_usage_hooks_do_not_surface_sqlite_locked` |
+| Path traversal-like payload | Session-derived marker names are sanitized and stay under `~/.copilot/markers` | `tests/test_hook_security.py::test_path_traversal_session_id_stays_inside_markers_dir` |
+| FTS operator input | FTS operators are stripped before `MATCH ?` use in `query-session.py` | `tests/test_hook_security.py::test_fts_operator_input_is_sanitized_before_match_use` |
+
 ## `hooks.json` Schema Notes
 
 ### `comment` field
