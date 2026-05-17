@@ -1188,6 +1188,37 @@ def test_sk_ci_cargo_audit_advisory():
     )
 
 
+def test_sk_ci_startup_benchmark_regression_gate():
+    """sk CI must block configured startup regressions while bootstrapping a baseline."""
+    if not SK_CI_WORKFLOW.exists():
+        test("sk-ci.yml exists", False, str(SK_CI_WORKFLOW))
+        return
+    content = SK_CI_WORKFLOW.read_text(encoding="utf-8")
+    benchmark_body = _workflow_step_body(content, "Benchmark sk startup regression gate")
+    upload_body = _workflow_step_body(content, "Upload startup benchmark baseline")
+    normalized = " ".join(benchmark_body.split())
+    test(
+        "sk-ci.yml has blocking startup benchmark regression gate",
+        bool(benchmark_body) and "continue-on-error" not in benchmark_body,
+        "startup benchmark should be a blocking gate once regression threshold is configured",
+    )
+    test(
+        "startup benchmark gate uses baseline file and threshold",
+        "--baseline-file .benchmarks/sk-startup-baseline.json --regression-threshold 20" in normalized,
+        "startup benchmark gate should pass a baseline file and 20% regression threshold",
+    )
+    test(
+        "startup benchmark baseline is cached",
+        "ubuntu-latest-sk-startup-baseline-v1" in content and ".benchmarks/sk-startup-baseline.json" in content,
+        "sk-ci.yml should cache the startup benchmark baseline file",
+    )
+    test(
+        "startup benchmark baseline artifact is uploaded",
+        "actions/upload-artifact@v4" in upload_body and "sk-startup-baseline" in upload_body,
+        "sk-ci.yml should upload the baseline artifact for auditability",
+    )
+
+
 def test_hooks_md_documents_local_vs_ci():
     """HOOKS.md must document the local-vs-CI boundary and Ruff surface."""
     if not HOOKS_MD.exists():
@@ -1394,6 +1425,7 @@ test_playwright_behavioral_project_contract()
 test_browse_ui_eslint_clean_zone_strategy()
 test_remote_terminal_quality_gate_promotion()
 test_sk_ci_cargo_audit_advisory()
+test_sk_ci_startup_benchmark_regression_gate()
 test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()
 test_architecture_md_ruff_surface()

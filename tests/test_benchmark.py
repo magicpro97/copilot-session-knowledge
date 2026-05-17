@@ -14,7 +14,7 @@ Covers:
 9. Migration round-trip: migrate.py v14 creates benchmark_snapshots
 10. No writes outside benchmark_snapshots (read-only contract)
 11. _collect_health uses the requested DB path and fails closed on SystemExit
-12. cmd_startup: prints median/min/max milliseconds for a no-op command
+12. cmd_startup: prints median/min/max milliseconds and enforces optional regression baselines
 
 Run:
     python3 test_benchmark.py
@@ -27,7 +27,7 @@ import json
 import os
 import sqlite3
 import sys
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 if os.name == "nt":
@@ -583,6 +583,23 @@ def test_parse_args_startup_command():
     test("_parse_args: startup command captured", args["startup_command"] == [sys.executable, "-c", "pass"])
 
 
+def test_parse_args_startup_baseline_threshold(tmp_path):
+    b = _load_bench()
+    baseline = tmp_path / "startup.json"
+    args = b._parse_args(
+        [
+            "benchmark.py",
+            "startup",
+            "--baseline-file",
+            str(baseline),
+            "--regression-threshold",
+            "20",
+        ]
+    )
+    test("_parse_args: startup baseline file", args["baseline_file"] == baseline)
+    test("_parse_args: startup regression threshold", args["regression_threshold"] == 20.0)
+
+
 # ── 6b. cmd_startup ──────────────────────────────────────────────────────────
 
 
@@ -608,6 +625,76 @@ def test_cmd_startup_json_output():
     test("cmd_startup JSON: median_ms present", isinstance(payload.get("median_ms"), float))
     test("cmd_startup JSON: min_ms present", isinstance(payload.get("min_ms"), float))
     test("cmd_startup JSON: max_ms present", isinstance(payload.get("max_ms"), float))
+
+
+def test_cmd_startup_creates_missing_baseline(tmp_path):
+    b = _load_bench()
+    baseline = tmp_path / "startup-baseline.json"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = b.cmd_startup(
+            [sys.executable, "-c", "pass"],
+            runs=1,
+            warmups=0,
+            timeout=10.0,
+            as_json=False,
+            baseline_file=baseline,
+            regression_threshold=20.0,
+        )
+    payload = json.loads(baseline.read_text(encoding="utf-8"))
+    out = buf.getvalue()
+    test("cmd_startup baseline: first run returns 0", rc == 0, f"rc={rc}")
+    test("cmd_startup baseline: missing file created", baseline.exists())
+    test("cmd_startup baseline: stores median_ms", isinstance(payload.get("median_ms"), float))
+    test("cmd_startup baseline: output marks baseline-created", "baseline-created" in out, f"out={out}")
+
+
+def test_cmd_startup_regression_within_threshold_passes(tmp_path):
+    b = _load_bench()
+    baseline = tmp_path / "startup-baseline.json"
+    baseline.write_text(json.dumps({"median_ms": 100.0}), encoding="utf-8")
+    original = b._measure_startup_once
+    b._measure_startup_once = lambda _command, _timeout: (0, 119.0, "")
+    try:
+        with redirect_stdout(io.StringIO()):
+            rc = b.cmd_startup(
+                ["fake-sk", "--help"],
+                runs=1,
+                warmups=0,
+                timeout=10.0,
+                as_json=False,
+                baseline_file=baseline,
+                regression_threshold=20.0,
+            )
+    finally:
+        b._measure_startup_once = original
+    test("cmd_startup regression: 19% increase passes 20% threshold", rc == 0, f"rc={rc}")
+
+
+def test_cmd_startup_regression_over_threshold_fails(tmp_path):
+    b = _load_bench()
+    baseline = tmp_path / "startup-baseline.json"
+    baseline.write_text(json.dumps({"median_ms": 100.0}), encoding="utf-8")
+    original = b._measure_startup_once
+    b._measure_startup_once = lambda _command, _timeout: (0, 130.0, "")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = b.cmd_startup(
+                ["fake-sk", "--help"],
+                runs=1,
+                warmups=0,
+                timeout=10.0,
+                as_json=False,
+                baseline_file=baseline,
+                regression_threshold=20.0,
+            )
+    finally:
+        b._measure_startup_once = original
+    err = stderr.getvalue()
+    test("cmd_startup regression: 30% increase fails 20% threshold", rc == 1, f"rc={rc}")
+    test("cmd_startup regression: error includes percent increase", "30.00% increase" in err, f"stderr={err}")
 
 
 # ── 7. _delta_str ────────────────────────────────────────────────────────────
@@ -828,10 +915,14 @@ def run_all():
     test_parse_args_compare_commits()
     test_parse_args_list_json()
     test_parse_args_startup_command()
+    test_parse_args_startup_baseline_threshold(_tmp())
 
     print("\n── 6b. cmd_startup ───────────────────────────────────────────────────────")
     test_cmd_startup_outputs_ms()
     test_cmd_startup_json_output()
+    test_cmd_startup_creates_missing_baseline(_tmp())
+    test_cmd_startup_regression_within_threshold_passes(_tmp())
+    test_cmd_startup_regression_over_threshold_fails(_tmp())
 
     print("\n── 7. _delta_str ─────────────────────────────────────────────────────────")
     test_delta_str_positive()

@@ -9,7 +9,8 @@ Usage:
     python3 benchmark.py record [--db PATH] [--commit SHA] [--mode local|repo]
     python3 benchmark.py compare [--db PATH] [--commits SHA SHA] [--limit N]
     python3 benchmark.py list [--db PATH] [--limit N] [--json]
-    python3 benchmark.py startup [--runs N] [--warmups N] [--timeout SEC] [-- COMMAND...]
+    python3 benchmark.py startup [--runs N] [--warmups N] [--timeout SEC]
+        [--baseline-file PATH] [--regression-threshold PERCENT] [-- COMMAND...]
 
 Signals captured (all read-only):
     - retro.py  → retro_score, subscores, score_confidence
@@ -472,12 +473,62 @@ def _print_startup_failure(phase: str, index: int, rc: int, elapsed_ms: float, e
     )
 
 
+def _read_startup_baseline(path: Path) -> "dict | None":
+    """Read a startup baseline JSON file, or return None when it is absent."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid startup baseline JSON in {path}: {exc}") from exc
+
+    try:
+        median_ms = float(data["median_ms"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"startup baseline {path} must contain numeric median_ms") from exc
+    if median_ms <= 0:
+        raise ValueError(f"startup baseline {path} median_ms must be greater than 0")
+    data["median_ms"] = median_ms
+    return data
+
+
+def _write_startup_baseline(path: Path, payload: dict) -> None:
+    """Persist the first observed startup payload as the regression baseline."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    baseline = {
+        "schema_version": 1,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "command": payload["command"],
+        "runs": payload["runs"],
+        "warmups": payload["warmups"],
+        "median_ms": payload["median_ms"],
+        "min_ms": payload["min_ms"],
+        "max_ms": payload["max_ms"],
+    }
+    path.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+
+
+def _startup_regression(current_ms: float, baseline_ms: float, threshold_percent: float) -> dict:
+    """Return regression comparison data for a current startup median."""
+    allowed_ms = baseline_ms * (1.0 + threshold_percent / 100.0)
+    increase_percent = ((current_ms - baseline_ms) / baseline_ms) * 100.0
+    return {
+        "allowed_ms": round(allowed_ms, 2),
+        "baseline_median_ms": round(baseline_ms, 2),
+        "increase_percent": round(increase_percent, 2),
+        "regressed": current_ms > allowed_ms,
+        "threshold_percent": threshold_percent,
+    }
+
+
 def cmd_startup(
     command: "list[str]",
     runs: int,
     warmups: int,
     timeout: float,
     as_json: bool,
+    baseline_file: "Path | None" = None,
+    regression_threshold: "float | None" = None,
 ) -> int:
     """Measure startup latency for a stable no-op command."""
     if not command:
@@ -491,6 +542,9 @@ def cmd_startup(
         return 2
     if timeout <= 0:
         print("benchmark startup: --timeout must be greater than 0", file=sys.stderr)
+        return 2
+    if regression_threshold is not None and regression_threshold < 0:
+        print("benchmark startup: --regression-threshold must be 0 or greater", file=sys.stderr)
         return 2
 
     for i in range(1, warmups + 1):
@@ -518,10 +572,46 @@ def cmd_startup(
         "min_ms": round(min_ms, 2),
         "max_ms": round(max_ms, 2),
     }
+    exit_code = 0
+
+    if baseline_file is not None:
+        try:
+            baseline = _read_startup_baseline(baseline_file)
+        except ValueError as exc:
+            print(f"benchmark startup: {exc}", file=sys.stderr)
+            return 2
+
+        payload["baseline_file"] = str(baseline_file)
+        if baseline is None:
+            _write_startup_baseline(baseline_file, payload)
+            payload["baseline_created"] = True
+            payload["regression_status"] = "baseline-created"
+        else:
+            payload["baseline_created"] = False
+            payload["baseline_median_ms"] = round(float(baseline["median_ms"]), 2)
+            if regression_threshold is None:
+                payload["regression_status"] = "baseline-read"
+            else:
+                comparison = _startup_regression(median_ms, float(baseline["median_ms"]), regression_threshold)
+                payload.update(comparison)
+                if comparison["regressed"]:
+                    payload["regression_status"] = "failed"
+                    exit_code = 1
+                else:
+                    payload["regression_status"] = "passed"
 
     if as_json:
         print(json.dumps(payload, indent=2))
-        return 0
+        if exit_code:
+            print(
+                "benchmark startup: regression detected: "
+                f"median {payload['median_ms']:.2f} ms exceeds allowed "
+                f"{payload['allowed_ms']:.2f} ms "
+                f"({payload['increase_percent']:.2f}% increase > "
+                f"{payload['threshold_percent']:.2f}% threshold)",
+                file=sys.stderr,
+            )
+        return exit_code
 
     print("benchmark startup")
     print(f"  command:   {shlex.join(command)}")
@@ -530,7 +620,23 @@ def cmd_startup(
     print(f"  median_ms: {median_ms:.2f}")
     print(f"  min_ms:    {min_ms:.2f}")
     print(f"  max_ms:    {max_ms:.2f}")
-    return 0
+    if baseline_file is not None:
+        print(f"  baseline_file: {baseline_file}")
+        print(f"  baseline: {payload['regression_status']}")
+        if not payload["baseline_created"]:
+            print(f"  baseline_median_ms: {payload['baseline_median_ms']:.2f}")
+            if regression_threshold is not None:
+                print(f"  allowed_ms: {payload['allowed_ms']:.2f}")
+                print(f"  increase_percent: {payload['increase_percent']:.2f}")
+    if exit_code:
+        print(
+            "benchmark startup: regression detected: "
+            f"median {median_ms:.2f} ms exceeds allowed {payload['allowed_ms']:.2f} ms "
+            f"({payload['increase_percent']:.2f}% increase > "
+            f"{payload['threshold_percent']:.2f}% threshold)",
+            file=sys.stderr,
+        )
+    return exit_code
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -548,6 +654,8 @@ def _parse_args(argv: list) -> dict:
         "runs": 10,
         "warmups": 1,
         "timeout": 10.0,
+        "baseline_file": None,
+        "regression_threshold": None,
         "startup_command": ["sk", "--help"],
     }
     i = 1
@@ -579,6 +687,12 @@ def _parse_args(argv: list) -> dict:
         elif a == "--timeout" and i + 1 < len(argv):
             i += 1
             args["timeout"] = float(argv[i])
+        elif a == "--baseline-file" and i + 1 < len(argv):
+            i += 1
+            args["baseline_file"] = Path(argv[i])
+        elif a == "--regression-threshold" and i + 1 < len(argv):
+            i += 1
+            args["regression_threshold"] = float(argv[i])
         elif a == "--commits" and i + 2 < len(argv):
             args["commits"] = [argv[i + 1], argv[i + 2]]
             i += 2
@@ -597,7 +711,8 @@ def main(argv: "list | None" = None) -> int:
         print(
             "Usage: benchmark.py <record|compare|list> [--db PATH] [--commit SHA] "
             "[--mode local|repo] [--limit N] [--json] [--commits SHA SHA]\n"
-            "       benchmark.py startup [--runs N] [--warmups N] [--timeout SEC] [-- COMMAND...]"
+            "       benchmark.py startup [--runs N] [--warmups N] [--timeout SEC] "
+            "[--baseline-file PATH] [--regression-threshold PERCENT] [-- COMMAND...]"
         )
         return 1
 
@@ -620,6 +735,8 @@ def main(argv: "list | None" = None) -> int:
             args["warmups"],
             args["timeout"],
             args["json"],
+            args["baseline_file"],
+            args["regression_threshold"],
         )
     else:
         print(f"benchmark: unknown command '{args['cmd']}'", file=sys.stderr)
