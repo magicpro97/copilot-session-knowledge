@@ -23,7 +23,7 @@ class FileSizeAdvisoryRule(Rule):
     events = ["preToolUse"]
     tools = ["edit", "create"]
 
-    MAX_PYTHON_LINES = 600
+    MAX_PYTHON_LINES = 400
 
     def evaluate(self, event, data):
         tool_name = data.get("toolName", "")

@@ -23,6 +23,8 @@
 7. **Docs output quality** — distinguish Facts / Interpretation / Actions / Verification evidence; never present inference as fact; every action must include the executable command.
 8. **Tentacle execution obligations** — when dispatched inside a tentacle: (a) read bundle files first, (b) stay in declared scope, (c) mark todos done with `sk tentacle todo <name> done <index>`, (d) do NOT run `git commit`/`git push`, (e) write a structured handoff with explicit `--status` (`DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`) via `sk tentacle handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` before stopping, (f) do NOT use the platform `create` file-creation tool to save research output — the `create` tool is not available in all agent runtimes (cloud agents, background tasks); write all persistent output via `sk tentacle handoff` to `handoff.md`, or print to chat as a fallback.
 9. **Claims require evidence** — any claim about test status, lint, format, CI, or runtime correctness must be backed by concrete output. If you did not run a verification command, say "not proven yet — run `<command>`." A `DONE` handoff with no evidence is treated as `AMBIGUOUS`. Issue closeouts must include verification evidence per acceptance criterion.
+10. **Minimum Footprint** — make the smallest complete change: no unjustified new files, no speculative abstractions, reuse existing patterns first, decompose functions over 50 lines or explain why not, flag files over 400 lines, and keep every changed line traceable to the task.
+11. **New File Justification** — before adding a file, search for an existing home, state the new file's responsibility, wire it into the relevant lint/test/docs/CI surface, and add or update tests for its behavior.
 
 **Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; orchestrators own continuation. Use `sk tentacle goal criteria check` to verify success criteria and `sk tentacle goal eval --decision continue|complete` to advance the loop. For automated retries with stall detection, use `sk tentacle goal verify-loop [--escalate]`; on `needs-human` escalation, fix the issues and run `sk tentacle goal resume` to continue. Record gate evidence with `sk tentacle goal gate pass <id> --reason "..."` and iteration verification with `sk tentacle verify <name> "<check-command>" --label "goal-eval"`.
 
@@ -78,6 +80,7 @@ For `browse-ui/` changes: `cd browse-ui && pnpm typecheck && pnpm lint && pnpm f
 - NEVER use pickle for serialization
 - NEVER run `git commit` or `git push` as a dispatched sub-agent
 - NEVER modify files outside your declared tentacle scope without a scope escalation note in the handoff
+- NEVER add a new file without a documented responsibility, existing-home search, and lint/test/docs/CI surface decision
 - ALWAYS use `O_CREAT | O_EXCL` for process locks (no TOCTOU races)
 - ALWAYS run `sk briefing` before starting work on unfamiliar code (fallback: `python3 ~/.copilot/tools/briefing.py`)
 

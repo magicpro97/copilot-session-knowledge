@@ -895,8 +895,8 @@ def test_file_size_advisory_rule():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        large_py = "\n".join(f"print({i})" for i in range(700))
-        small_py = "\n".join(f"print({i})" for i in range(250))
+        large_py = "\n".join(f"print({i})" for i in range(401))
+        small_py = "\n".join(f"print({i})" for i in range(400))
 
         create_large = rule.evaluate(
             "preToolUse",
@@ -906,11 +906,11 @@ def test_file_size_advisory_rule():
             },
         )
         test(
-            "FileSizeAdvisoryRule: 700-line create returns advisory info",
+            "FileSizeAdvisoryRule: 401-line create returns advisory info",
             create_large is not None
             and create_large.get("permissionDecision") != "deny"
             and "File-size advisory" in create_large.get("message", "")
-            and "700 lines" in create_large.get("message", ""),
+            and "401 lines" in create_large.get("message", ""),
             f"got: {create_large}",
         )
 
@@ -922,7 +922,7 @@ def test_file_size_advisory_rule():
             },
         )
         test(
-            "FileSizeAdvisoryRule: 250-line create returns no warning",
+            "FileSizeAdvisoryRule: 400-line create returns no warning",
             create_small is None,
             f"got: {create_small}",
         )
@@ -941,11 +941,11 @@ def test_file_size_advisory_rule():
             },
         )
         test(
-            "FileSizeAdvisoryRule: 700-line edit returns advisory info",
+            "FileSizeAdvisoryRule: 401-line edit returns advisory info",
             edit_large is not None
             and edit_large.get("permissionDecision") != "deny"
             and "File-size advisory" in edit_large.get("message", "")
-            and "700 lines" in edit_large.get("message", ""),
+            and "401 lines" in edit_large.get("message", ""),
             f"got: {edit_large}",
         )
 
@@ -961,7 +961,7 @@ def test_file_size_advisory_rule():
             },
         )
         test(
-            "FileSizeAdvisoryRule: 250-line edit returns no warning",
+            "FileSizeAdvisoryRule: 400-line edit returns no warning",
             edit_small is None,
             f"got: {edit_small}",
         )

@@ -153,6 +153,60 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 
 ---
 
+## Rule 10 — Minimum Footprint
+
+Prefer the smallest change that fully satisfies the task. Every changed line should
+trace directly to the requested outcome or to verification needed for that outcome.
+In short: no unjustified new file, no speculative abstraction, reuse existing pattern, and changed-line traceability.
+
+**Rules:**
+
+1. Do not create a new file without a clear justification that an existing file is
+   not the right home.
+2. Do not add speculative abstractions, configuration, extension points, or
+   general-purpose helpers for a single current use case.
+3. Reuse an existing pattern, helper, command, or test harness before introducing
+   a new one.
+4. If a changed or newly added function grows beyond 50 lines, decompose it or
+   explain in the PR/issue why keeping it together is safer.
+5. If a changed file grows beyond 400 lines, flag it in the PR/issue with the
+   reason it remains acceptable or the follow-up needed to split it.
+6. Keep diffs surgical: avoid formatting churn, opportunistic cleanup, or
+   adjacent refactors that are not required by the task.
+
+```
+❌ BAD:  Add a new "utils" module because it might be useful later.
+✅ GOOD: Reuse the nearby helper; if a new file is unavoidable, document its single responsibility and tests.
+```
+
+---
+
+## Rule 11 — New File Justification
+
+New files are durable maintenance surface. Before adding one, prove that it has a
+clear home, responsibility, and verification path.
+
+**Rules:**
+
+1. Search for an existing home first (`glob`, `rg`, LSP, or the relevant project
+   registry) and reuse it when it can own the behavior cleanly.
+2. State the new file's responsibility in the issue, PR, step file, or handoff.
+   The responsibility must be narrow enough that future contributors know what
+   belongs there and what does not.
+3. Wire the file into the relevant lint, test, hook, docs, packaging, or CI
+   surface. A file that is invisible to quality gates needs explicit justification.
+4. Add or update tests for the behavior the new file owns, or document the exact
+   verification command when tests are not applicable.
+5. Avoid duplicate entry points. If the new file overlaps with an existing script,
+   hook, route, skill, or module, consolidate or explain why separation is required.
+
+```
+❌ BAD:  Create scripts/new_checker.py without checking scripts/check_*.py or adding tests.
+✅ GOOD: Confirm no existing checker fits, define the checker's responsibility, add tests, and document its command.
+```
+
+---
+
 ## Orchestrator Goal-Loop
 
 When acting as an orchestrator with an active goal, the lifecycle is iterative, not linear. After all tentacle handoffs are collected and verification gates pass, the orchestrator evaluates the goal before closing:
@@ -235,6 +289,8 @@ These rules are partially enforced at the tool level. All hooks **fail-open**: i
 | Tentacle todo progress | runtime injection | Orchestrator expects `tentacle.py todo done` calls as tasks complete |
 | Tentacle handoff | runtime injection | Orchestrator expects `tentacle.py handoff` before agent stops |
 | Evidence for closeout claims (Rule 9) | `verification-gate` (preToolUse + postToolUse) | Tracks dirty Python / browse-ui surfaces, records fresh test / format / lint / typecheck / build evidence, and blocks `task_complete`, `gh issue close/comment`, and tentacle `DONE` / `complete` actions when that evidence is missing. CI/runtime proof beyond those gates remains policy-level. |
+| Minimum footprint (Rule 10) | `file-size-advisory` (preToolUse) | Warns on large Python create/edit payloads so agents can decompose or justify oversized changes before they land. |
+| New file justification (Rule 11) | `new-file-advisory` (preToolUse) | Warns on new root-level Python files and points agents back to the search/reuse/test-surface checklist. |
 
 > Full hook rule inventory: **[docs/HOOKS.md](HOOKS.md)**
 
