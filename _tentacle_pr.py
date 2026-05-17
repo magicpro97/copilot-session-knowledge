@@ -20,7 +20,9 @@ if os.name == "nt":
     except Exception:
         pass
 
-HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED", "SCOPE_ESCALATION"})
+HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset(
+    {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED", "SCOPE_ESCALATION"}
+)
 GOAL_STATUS_COMPLETED = _DEFAULT_GOAL_STATUS_COMPLETED
 
 _runtime_find_git_root = _default_find_git_root
