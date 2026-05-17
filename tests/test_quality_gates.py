@@ -634,8 +634,8 @@ test_pre_commit_ast_parse()
 
 
 # ── Test 12–20: Ruff surface consistency ────────────────────────────────────
-# Verify that the pre-commit hook's _py_in_surface() covers the same files
-# as CI ci.yml, and that HOOKS.md documents the correct local-vs-CI boundary.
+# Verify that the pre-commit hook covers the same Ruff files as CI and that
+# docs name the canonical lint surface / standalone-script boundary.
 
 CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 HOOKS_MD = REPO / "docs" / "HOOKS.md"
@@ -661,7 +661,9 @@ CI_RUFF_FILES = [
     "checkpoint-diff.py",
     "checkpoint-restore.py",
     "checkpoint-save.py",
+    "tests/test_browse_search_v2.py",
 ]
+CI_RUFF_DIRS = ["browse/", "hooks/", "scripts/"]
 
 
 def test_ruff_surface_in_pre_commit():
@@ -670,20 +672,23 @@ def test_ruff_surface_in_pre_commit():
         test("pre-commit hook exists", False, str(PRE_COMMIT))
         return
     content = PRE_COMMIT.read_text(encoding="utf-8")
+    test(
+        "pre-commit points to canonical lint surface inventory",
+        "docs/ARCHITECTURE.md#python-lint-surface-inventory" in content,
+        "hooks/pre-commit should point maintainers to the canonical lint surface inventory",
+    )
     for fname in CI_RUFF_FILES:
         test(
             f"pre-commit covers CI file: {fname}",
             fname in content,
             f"'{fname}' not found in pre-commit _py_in_surface()",
         )
-    test("pre-commit covers browse/*.py", "browse/" in content or "browse/*" in content)
-    test(
-        "pre-commit covers hooks/ Python surface",
-        'path.startswith(("browse/", "hooks/", "scripts/"))' in content
-        or "hooks/*)" in content
-        or "hooks/*.py" in content
-        or "hooks/*/*.py" in content,
-    )
+    for dirname in CI_RUFF_DIRS:
+        test(
+            f"pre-commit covers CI directory: {dirname}",
+            dirname in content,
+            f"'{dirname}' not found in pre-commit _py_in_surface()",
+        )
 
 
 def test_ci_workflow_ruff_surface():
@@ -692,11 +697,22 @@ def test_ci_workflow_ruff_surface():
         test("ci.yml exists", False, str(CI_WORKFLOW))
         return
     content = CI_WORKFLOW.read_text(encoding="utf-8")
+    test(
+        "ci.yml points to canonical lint surface inventory",
+        "docs/ARCHITECTURE.md#python-lint-surface-inventory" in content,
+        ".github/workflows/ci.yml Ruff step should point to the canonical lint surface inventory",
+    )
     for fname in CI_RUFF_FILES:
         test(
             f"ci.yml Ruff surface includes {fname}",
             fname in content,
             f"'{fname}' missing from ci.yml Ruff step",
+        )
+    for dirname in CI_RUFF_DIRS:
+        test(
+            f"ci.yml Ruff surface includes {dirname}",
+            dirname in content,
+            f"'{dirname}' missing from ci.yml Ruff step",
         )
 
 
@@ -732,6 +748,21 @@ def test_contributing_md_local_vs_ci():
         return
     content = CONTRIBUTING.read_text(encoding="utf-8")
     test(
+        "CONTRIBUTING.md has Adding New Scripts guidance",
+        "Adding New Scripts" in content,
+        "CONTRIBUTING.md should include an 'Adding New Scripts' section",
+    )
+    test(
+        "CONTRIBUTING.md mentions standalone script",
+        "standalone script" in content.lower(),
+        "CONTRIBUTING.md should explain the standalone script boundary",
+    )
+    test(
+        "CONTRIBUTING.md mentions lint surface",
+        "lint surface" in content.lower(),
+        "CONTRIBUTING.md should require an explicit lint surface decision",
+    )
+    test(
         "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
         "briefing.py" in content,
         "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py",
@@ -741,6 +772,12 @@ def test_contributing_md_local_vs_ci():
         "tentacle.py" in content,
         "CONTRIBUTING.md Ruff scope is incomplete — missing tentacle.py",
     )
+    for fname in ("tests/test_browse_search_v2.py", "scripts/"):
+        test(
+            f"CONTRIBUTING.md mentions full Ruff scope ({fname})",
+            fname in content,
+            f"CONTRIBUTING.md Ruff scope is incomplete — missing {fname}",
+        )
     test(
         "CONTRIBUTING.md explains pre-commit is fast/scoped",
         "fail-open" in content or "full test suite" in content.lower(),
@@ -754,7 +791,17 @@ def test_architecture_md_ruff_surface():
         test("docs/ARCHITECTURE.md exists", False)
         return
     content = ARCH_MD.read_text(encoding="utf-8")
-    for fname in ("briefing.py", "tentacle.py", "browse/", "hooks/"):
+    test(
+        "ARCHITECTURE.md has Python lint surface inventory",
+        "Python Lint Surface Inventory" in content,
+        "docs/ARCHITECTURE.md should define the canonical lint surface inventory",
+    )
+    test(
+        "ARCHITECTURE.md explains uncovered root script policy",
+        "outside the blocking Ruff lint surface" in content,
+        "docs/ARCHITECTURE.md should explain coverage policy for unlisted root scripts",
+    )
+    for fname in ("briefing.py", "tentacle.py", "tests/test_browse_search_v2.py", "browse/", "hooks/", "scripts/"):
         test(
             f"ARCHITECTURE.md Ruff section names {fname}",
             fname in content,

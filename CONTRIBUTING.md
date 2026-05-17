@@ -39,6 +39,26 @@ python3 test_fixes.py       # 65 tests
 - **Windows encoding fix** — every script starts with `if os.name == "nt": sys.stdout.reconfigure(encoding="utf-8")`
 - **JSON serialization only** — never use pickle
 
+## Adding New Scripts
+
+Before adding a new standalone script, first check whether an existing script, hook rule,
+or package directory can own the behavior. Root scripts are independent CLI entry points:
+do not import one root script from another just to share helpers.
+
+Every new Python file needs an explicit lint surface decision:
+
+1. If it belongs to an already covered package-like area (`browse/`, `hooks/`, or
+   `scripts/`), it is already inside the CI and local pre-commit Ruff surface.
+2. If it is a new root standalone script and should be blocking-clean, add it to the
+   Ruff lint and format lists in `.github/workflows/ci.yml`, add it to
+   `hooks/pre-commit`'s exact surface, update `tests/test_quality_gates.py`, and
+   update the canonical table in `docs/ARCHITECTURE.md#python-lint-surface-inventory`.
+3. If it intentionally stays outside the current lint surface, state that in the PR
+   with the reason and the verification command you ran instead.
+
+At minimum, run `python3 -m py_compile <new-script.py>` and the relevant tests for the
+behavior the file owns.
+
 ## Testing
 
 ### Local vs CI enforcement boundary
@@ -118,7 +138,9 @@ shutil.rmtree(_isolated_home, ignore_errors=True)
 > **Do not** rely on `HOOK_DRY_RUN=1` alone for isolation — dry-run suppresses deny output but
 > still writes `deny-dry` and `parse-error` audit entries.
 
-CI (`quality-gates` job) runs a scoped **Ruff lint** on the following files and directories:
+CI (`quality-gates` job) runs scoped **Ruff lint** on the surface documented in
+[`docs/ARCHITECTURE.md#python-lint-surface-inventory`](docs/ARCHITECTURE.md#python-lint-surface-inventory).
+Current coverage:
 
 ```
 embed.py  scout-config.py  scout-status.py
@@ -127,7 +149,8 @@ migrate.py  generate-summary.py
 briefing.py  learn.py  query-session.py  extract-knowledge.py
 build-session-index.py  tentacle.py
 checkpoint-diff.py  checkpoint-restore.py  checkpoint-save.py
-browse/  hooks/
+tests/test_browse_search_v2.py
+browse/  hooks/  scripts/
 ```
 
 If you modify any of those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; the local `pre-commit` git hook enforces both `ruff format --check` and `ruff check` on the same surface when Ruff is available locally (fail-open — silently skips when Ruff is not installed). Other root scripts outside this surface are not currently linted by CI.

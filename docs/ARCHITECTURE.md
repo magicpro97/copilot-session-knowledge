@@ -57,6 +57,25 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 above remain on disk, are invoked by operators manually, and are referenced by name in `sk watch`
 recovery hints. None of these scripts are candidates for deletion as a consequence of wave20.
 
+## Python Lint Surface Inventory
+
+This is the canonical inventory for Python Ruff coverage. Keep it in sync with
+`.github/workflows/ci.yml`, `hooks/pre-commit`, and `tests/test_quality_gates.py`.
+
+| Surface | CI Ruff lint/format | Local `pre-commit` Ruff | Notes |
+|---------|----------------------|--------------------------|-------|
+| Exact root standalone scripts | `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py` | Same exact set via `in_python_cleanliness_surface()` | These are the current blocking Ruff baseline for root scripts. |
+| Focused test file | `tests/test_browse_search_v2.py` | Same exact file | Included because it is already clean and protects the browse search API surface. |
+| Package/module directories | `browse/`, `hooks/`, `scripts/` | Any staged `.py` path under `browse/`, `hooks/`, or `scripts/` | Directory coverage applies to package-like surfaces where Ruff cleanup is already baselined. |
+| Syntax gate | `python3 scripts/check_syntax.py` | All staged `.py` files via `scripts/check_syntax.py` when installed | Syntax coverage is broader than Ruff coverage. |
+| Complexity advisory | Full suite path through `run_all_tests.py`; local hook runs `scripts/check_complexity.py --json` on staged `.py` snapshots | All staged `.py` files, non-blocking and fail-open | Advisory only; it prints findings but does not deny commits. |
+
+Root `*.py` files not listed in the exact root standalone script row are intentionally
+outside the blocking Ruff lint surface until they are baselined. They are not exempt from
+the standalone-script architecture contract: keep them self-contained, run syntax/tests for
+the touched behavior, and either add them to the lint surface in the same PR or state why
+the script remains outside the current baseline.
+
 ## Script Inventory
 
 | Script | Role |
