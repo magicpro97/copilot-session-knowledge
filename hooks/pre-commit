@@ -124,6 +124,7 @@ def in_python_cleanliness_surface(path: str) -> bool:
         "build-session-index.py",
         "tentacle.py",
         "_tentacle_core.py",
+        "_tentacle_goal.py",
         "checkpoint-diff.py",
         "checkpoint-restore.py",
         "checkpoint-save.py",

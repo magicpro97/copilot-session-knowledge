@@ -23,6 +23,7 @@ from unittest.mock import patch
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
+import _tentacle_goal as G
 import tentacle as T
 
 SCRATCH_DIR = TOOLS_DIR / "_test_goal_locking_scratch"
@@ -146,7 +147,7 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
         stale_time = max(0.0, os.path.getmtime(lock_path) - 60.0)
         os.utime(lock_path, (stale_time, stale_time))
 
-        with patch.object(T, "_GOAL_LOCK_TIMEOUT_S", 0.5):
+        with patch.object(G, "_GOAL_LOCK_TIMEOUT_S", 0.5):
             with T._goal_lock(self.tentacles):
                 self.assertTrue(lock_path.exists())
                 self.assertEqual(lock_path.read_text(encoding="utf-8"), str(os.getpid()))
@@ -161,8 +162,8 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
             os.write(fd, str(os.getpid()).encode("utf-8"))
             future_time = os.path.getmtime(lock_path) + 3600.0
             os.utime(lock_path, (future_time, future_time))
-            with patch.object(T, "_GOAL_LOCK_TIMEOUT_S", 0.05):
-                with patch.object(T, "_GOAL_LOCK_POLL_S", 0.01):
+            with patch.object(G, "_GOAL_LOCK_TIMEOUT_S", 0.05):
+                with patch.object(G, "_GOAL_LOCK_POLL_S", 0.01):
                     with self.assertRaises(TimeoutError):
                         with T._goal_lock(self.tentacles):
                             pass
@@ -191,8 +192,8 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
             os.write(fd, b"99999")
             stale_time = max(0.0, os.path.getmtime(lock_path) - 60.0)
             os.utime(lock_path, (stale_time, stale_time))
-            with patch.object(T, "_GOAL_LOCK_TIMEOUT_S", 0.05):
-                with patch.object(T, "_GOAL_LOCK_POLL_S", 0.01):
+            with patch.object(G, "_GOAL_LOCK_TIMEOUT_S", 0.05):
+                with patch.object(G, "_GOAL_LOCK_POLL_S", 0.01):
                     with patch("pathlib.Path.unlink", new=_deny_unlink):
                         with self.assertRaises(TimeoutError):
                             with T._goal_lock(self.tentacles):
@@ -214,8 +215,8 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
         stale_time = max(0.0, os.path.getmtime(lock_path) - 60.0)
         os.utime(lock_path, (stale_time, stale_time))
 
-        with patch.object(T, "_GOAL_LOCK_TIMEOUT_S", 0.05):
-            with patch.object(T, "_GOAL_LOCK_POLL_S", 0.01):
+        with patch.object(G, "_GOAL_LOCK_TIMEOUT_S", 0.05):
+            with patch.object(G, "_GOAL_LOCK_POLL_S", 0.01):
                 with self.assertRaises(TimeoutError):
                     with T._goal_lock(self.tentacles):
                         pass

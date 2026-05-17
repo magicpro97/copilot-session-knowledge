@@ -150,7 +150,7 @@ embed.py  scout-config.py  scout-status.py
 sync-config.py  sync-daemon.py  sync-status.py
 migrate.py  generate-summary.py
 briefing.py  learn.py  query-session.py  extract-knowledge.py
-build-session-index.py  tentacle.py  _tentacle_core.py
+build-session-index.py  tentacle.py  _tentacle_core.py  _tentacle_goal.py
 checkpoint-diff.py  checkpoint-restore.py  checkpoint-save.py
 tests/test_browse_search_v2.py
 browse/  hooks/  scripts/
