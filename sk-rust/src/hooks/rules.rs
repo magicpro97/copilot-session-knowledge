@@ -8798,6 +8798,8 @@ mod tests {
     /// environment `verify_marker` requires a valid HMAC-SHA256 signature.
     #[test]
     fn git_guard_hmac_unsigned_no_secret_backward_compat() {
+        let _guard = env_lock();
+
         // Derive the real secret path the same way marker_auth does.
         let secret_exists = resolve_home_dir()
             .map(|h| {
@@ -9147,6 +9149,8 @@ mod tests {
     /// Test that read_tentacle_edits_paths handles flat legacy format correctly.
     #[test]
     fn read_tentacle_edits_paths_handles_legacy_flat_format() {
+        let _guard = env_lock();
+
         use std::collections::HashSet;
 
         let tmp = std::env::temp_dir().join("sk_tentacle_edits_test");
@@ -9179,6 +9183,8 @@ mod tests {
     /// Test that read_tentacle_edits_paths handles new JSON-dict format correctly.
     #[test]
     fn read_tentacle_edits_paths_handles_json_dict_format() {
+        let _guard = env_lock();
+
         use std::collections::HashSet;
 
         let tmp = std::env::temp_dir().join("sk_tentacle_edits_json_test");
