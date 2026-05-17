@@ -46,7 +46,7 @@ from pathlib import Path
 if os.name == "nt":
     import io
 import os
-import sys
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -92,9 +92,7 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
     elif len(name) > MAX_NAME_LEN:
         errors.append(f"'name' exceeds {MAX_NAME_LEN} characters")
     elif not all(c.isalnum() or c in "-_" for c in name):
-        errors.append(
-            "'name' may only contain alphanumeric characters, hyphens, or underscores"
-        )
+        errors.append("'name' may only contain alphanumeric characters, hyphens, or underscores")
 
     desc = data.get("description", "")
     if not isinstance(desc, str) or not desc:
@@ -111,10 +109,7 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
             if not isinstance(hook, str) or not hook.endswith(".py"):
                 errors.append(f"Hook entry must be a .py filename string, got: {hook!r}")
             elif not skip_hook_validation and available and hook not in available:
-                errors.append(
-                    f"Hook template not found on disk: '{hook}' "
-                    f"(use --skip-hook-validation to bypass)"
-                )
+                errors.append(f"Hook template not found on disk: '{hook}' (use --skip-hook-validation to bypass)")
 
     phases = data.get("workflow_phases", [])
     if not isinstance(phases, list) or len(phases) == 0:
@@ -122,10 +117,7 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
     else:
         unknown = [p for p in phases if p not in KNOWN_PHASES]
         if unknown:
-            errors.append(
-                f"Unknown phase(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(sorted(KNOWN_PHASES))}"
-            )
+            errors.append(f"Unknown phase(s): {', '.join(unknown)}. Known: {', '.join(sorted(KNOWN_PHASES))}")
 
     notes = data.get("workflow_notes", "")
     if notes and len(notes) > MAX_NOTES_LEN:
@@ -159,10 +151,7 @@ def import_profile(
 
     if dest.exists() and not force:
         shipped_note = " (shipped profile)" if name in SHIPPED_PROFILES else ""
-        print(
-            f"  ✗ '{name}'{shipped_note} already exists at {dest} — "
-            f"use --force to overwrite"
-        )
+        print(f"  ✗ '{name}'{shipped_note} already exists at {dest} — use --force to overwrite")
         return False
 
     hooks = profile.get("hooks", [])
@@ -170,8 +159,7 @@ def import_profile(
     action = "Would overwrite" if dest.exists() else "Would import"
 
     if dry_run:
-        print(f"  [dry-run] {action}: '{name}' "
-              f"({len(hooks)} hooks, {len(phases)} phases) → {dest}")
+        print(f"  [dry-run] {action}: '{name}' ({len(hooks)} hooks, {len(phases)} phases) → {dest}")
         return True
 
     presets_dir.mkdir(parents=True, exist_ok=True)
@@ -196,18 +184,27 @@ Examples:
   python3 profile-import.py --file custom.json --skip-hook-validation
 """,
     )
-    parser.add_argument("--file", required=True, metavar="PATH",
-                        help="Path to profile JSON or bundle JSON file to import")
-    parser.add_argument("--name", default=None, metavar="NAME",
-                        help="Import only this profile name (for bundle files with multiple profiles)")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing profiles (including shipped presets)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Validate and show what would be imported without writing")
-    parser.add_argument("--skip-hook-validation", action="store_true",
-                        help="Skip validation that referenced hook templates exist on disk")
-    parser.add_argument("--presets-dir", default=None, metavar="DIR",
-                        help=f"Destination presets directory (default: {PRESETS_DIR})")
+    parser.add_argument(
+        "--file", required=True, metavar="PATH", help="Path to profile JSON or bundle JSON file to import"
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        metavar="NAME",
+        help="Import only this profile name (for bundle files with multiple profiles)",
+    )
+    parser.add_argument("--force", action="store_true", help="Overwrite existing profiles (including shipped presets)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Validate and show what would be imported without writing"
+    )
+    parser.add_argument(
+        "--skip-hook-validation",
+        action="store_true",
+        help="Skip validation that referenced hook templates exist on disk",
+    )
+    parser.add_argument(
+        "--presets-dir", default=None, metavar="DIR", help=f"Destination presets directory (default: {PRESETS_DIR})"
+    )
     args = parser.parse_args()
 
     src = Path(args.file)
@@ -242,8 +239,7 @@ Examples:
     else:
         all_profiles = [data]
         if args.name and data.get("name") != args.name:
-            print(f"  ✗ File contains profile '{data.get('name')}', "
-                  f"not '{args.name}'")
+            print(f"  ✗ File contains profile '{data.get('name')}', not '{args.name}'")
             sys.exit(1)
 
     success = 0

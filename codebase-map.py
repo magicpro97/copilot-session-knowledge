@@ -33,6 +33,7 @@ SESSION_STATE = Path.home() / ".copilot" / "session-state"
 
 # ─── Discovery helpers ────────────────────────────────────────────────────────
 
+
 def find_git_root(start: Path | None = None) -> Path | None:
     """Walk up from *start* (defaults to cwd) to locate the git repository root."""
     current = (start or Path.cwd()).resolve()
@@ -67,7 +68,10 @@ def get_git_last_commit_date(repo_root: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "log", "-1", "--format=%cI"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_root),
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -78,6 +82,7 @@ def get_git_last_commit_date(repo_root: Path) -> str:
 
 # ─── File enumeration ─────────────────────────────────────────────────────────
 
+
 def ls_files(repo_root: Path, timeout: int = 10) -> list[str]:
     """Return all git-tracked files relative to *repo_root*.
 
@@ -87,7 +92,9 @@ def ls_files(repo_root: Path, timeout: int = 10) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "ls-files"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
             cwd=str(repo_root),
         )
         if result.returncode != 0:
@@ -98,6 +105,7 @@ def ls_files(repo_root: Path, timeout: int = 10) -> list[str]:
 
 
 # ─── Map generation ───────────────────────────────────────────────────────────
+
 
 def group_files(files: list[str]) -> dict[str, list[str]]:
     """Group *files* by their top-level directory (root files → key '.')."""
@@ -115,10 +123,7 @@ def ext_summary(files: list[str], cap: int = 6) -> str:
     for f in files:
         ext = Path(f).suffix or "(no ext)"
         counts[ext] += 1
-    parts = [
-        f"{ext}×{n}" if n > 1 else ext
-        for ext, n in sorted(counts.items())
-    ]
+    parts = [f"{ext}×{n}" if n > 1 else ext for ext, n in sorted(counts.items())]
     tail = f", +{len(parts) - cap} more" if len(parts) > cap else ""
     return ", ".join(parts[:cap]) + tail
 
@@ -171,6 +176,7 @@ def generate_map(repo_root: Path, files: list[str]) -> str:
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
+
 def resolve_output_path(args_output: str | None) -> Path | None:
     """Determine where to write the artifact.
 
@@ -187,23 +193,25 @@ def resolve_output_path(args_output: str | None) -> Path | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Generate codebase-map.md from git-tracked files."
-    )
+    parser = argparse.ArgumentParser(description="Generate codebase-map.md from git-tracked files.")
     parser.add_argument(
-        "--stdout", action="store_true",
+        "--stdout",
+        action="store_true",
         help="Print map to stdout instead of writing a file.",
     )
     parser.add_argument(
-        "--output", metavar="PATH",
+        "--output",
+        metavar="PATH",
         help="Write to an explicit file path.",
     )
     parser.add_argument(
-        "--repo", metavar="PATH",
+        "--repo",
+        metavar="PATH",
         help="Repository root (defaults to git root of cwd).",
     )
     parser.add_argument(
-        "--no-write", action="store_true",
+        "--no-write",
+        action="store_true",
         help="Dry-run: show the target path without writing.",
     )
     args = parser.parse_args()
@@ -222,7 +230,9 @@ def main() -> int:
         try:
             r = subprocess.run(
                 ["git", "rev-parse", "--git-dir"],
-                capture_output=True, cwd=str(repo_root), timeout=5,
+                capture_output=True,
+                cwd=str(repo_root),
+                timeout=5,
             )
             if r.returncode != 0:
                 print(
@@ -254,8 +264,7 @@ def main() -> int:
 
     if out_path is None:
         print(
-            "Error: no active Copilot session found and no --output given. "
-            "Use --output PATH or --stdout.",
+            "Error: no active Copilot session found and no --output given. Use --output PATH or --stdout.",
             file=sys.stderr,
         )
         return 1

@@ -330,20 +330,25 @@ def test_pre_commit_python_entrypoint():
 
 
 def test_pre_commit_ruff_surface_covers_all_browse_depths():
-    """Verify _py_in_surface uses browse/* to cover all subdirectory depths."""
+    """Verify in_python_cleanliness_surface covers all package subdirectory depths."""
     if not PRE_COMMIT.exists():
         test("hooks/pre-commit exists for browse depth check", False, str(PRE_COMMIT))
         return
     content = PRE_COMMIT.read_text(encoding="utf-8")
     test(
-        "pre-commit _py_in_surface uses browse/* (all depths, consistent with CI)",
-        'path.startswith(("browse/", "hooks/", "scripts/"))' in content or "browse/*)" in content,
-        "pre-commit _py_in_surface should use browse/* to match all depths under browse/",
+        "pre-commit in_python_cleanliness_surface uses browse/ (all depths, consistent with CI)",
+        "path.startswith(" in content and '"browse/"' in content,
+        "pre-commit in_python_cleanliness_surface should use browse/ to match all depths under browse/",
     )
     test(
-        "pre-commit _py_in_surface uses hooks/* (all depths, consistent with CI)",
-        'path.startswith(("browse/", "hooks/", "scripts/"))' in content or "hooks/*)" in content,
-        "pre-commit _py_in_surface should use hooks/* to match all depths under hooks/",
+        "pre-commit in_python_cleanliness_surface uses hooks/ (all depths, consistent with CI)",
+        "path.startswith(" in content and '"hooks/"' in content,
+        "pre-commit in_python_cleanliness_surface should use hooks/ to match all depths under hooks/",
+    )
+    test(
+        "pre-commit in_python_cleanliness_surface uses scripts/ (all depths, consistent with CI)",
+        "path.startswith(" in content and '"scripts/"' in content,
+        "pre-commit in_python_cleanliness_surface should use scripts/ to match all depths under scripts/",
     )
     # Depth-limited patterns that would miss browse/static/vendor/ should not be present
     test(

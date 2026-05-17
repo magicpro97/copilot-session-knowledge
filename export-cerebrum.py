@@ -151,7 +151,8 @@ def _fetch_entries(
     if tags_filter:
         lower_tags = {t.lower() for t in tags_filter}
         entries = [
-            e for e in entries
+            e
+            for e in entries
             if {tok.strip().lower() for tok in (e.get("tags") or "").split(",") if tok.strip()} & lower_tags
         ]
         if limit is not None:
@@ -195,8 +196,7 @@ def _render_markdown(
     lines: list[str] = []
     lines.append("# CEREBRUM — Agent Knowledge Snapshot\n")
     lines.append(
-        "> Auto-generated from the session knowledge DB.  "
-        "Read this file before starting any task — no query needed.\n"
+        "> Auto-generated from the session knowledge DB.  Read this file before starting any task — no query needed.\n"
     )
     lines.append(f"<!-- generated_at: {generated_at} -->\n")
     lines.append("---\n")
@@ -219,10 +219,7 @@ def _render_markdown(
             lines.extend(_render_entry_markdown(entry, i))
 
     lines.append("\n---\n")
-    lines.append(
-        f"*Refresh: `python export-cerebrum.py --output CEREBRUM.md`  "
-        f"— {generated_at}*\n"
-    )
+    lines.append(f"*Refresh: `python export-cerebrum.py --output CEREBRUM.md`  — {generated_at}*\n")
     return "\n".join(lines)
 
 
@@ -276,9 +273,7 @@ def export_cerebrum(
     # the largest fractional remainder, tie-broken by section key descending for
     # determinism.
     _base = total_fraction if total_fraction > 0 else 1.0
-    _exact: dict[str, float] = {
-        s: limit * (_SECTION_META[s]["limit_fraction"] / _base) for s in sections
-    }
+    _exact: dict[str, float] = {s: limit * (_SECTION_META[s]["limit_fraction"] / _base) for s in sections}
     _floor: dict[str, int] = {s: int(v) for s, v in _exact.items()}
     _remaining = limit - sum(_floor.values())
     _sorted_rem = sorted(sections, key=lambda s: (_exact[s] - _floor[s], s), reverse=True)
@@ -299,18 +294,21 @@ def export_cerebrum(
         learn_all = [e for e in pattern_pool if not _is_preference_entry(e)]
 
     if "preferences" in sections:
-        sections_data["preferences"] = pref_all[:section_limits["preferences"]]
+        sections_data["preferences"] = pref_all[: section_limits["preferences"]]
 
     for section_key in sections:
         if section_key == "preferences":
             continue  # already handled above
 
         if section_key == "learnings":
-            sections_data["learnings"] = learn_all[:section_limits["learnings"]]
+            sections_data["learnings"] = learn_all[: section_limits["learnings"]]
         else:
             sections_data[section_key] = _fetch_entries(
-                db, _SECTION_META[section_key]["category"],
-                section_limits[section_key], tags_filter, min_confidence,
+                db,
+                _SECTION_META[section_key]["category"],
+                section_limits[section_key],
+                tags_filter,
+                min_confidence,
             )
 
     if fmt == "json":
@@ -346,10 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         "--sections",
         default=",".join(ALL_SECTIONS),
         metavar="SECTION[,SECTION...]",
-        help=(
-            f"Comma-separated list of sections to include "
-            f"(default: {','.join(ALL_SECTIONS)})"
-        ),
+        help=(f"Comma-separated list of sections to include (default: {','.join(ALL_SECTIONS)})"),
     )
     parser.add_argument(
         "--tags",
@@ -382,10 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_sections = list(dict.fromkeys(raw_sections))
     invalid = [s for s in raw_sections if s not in _SECTION_META]
     if invalid:
-        parser.error(
-            f"Unknown section(s): {', '.join(invalid)}. "
-            f"Valid: {', '.join(ALL_SECTIONS)}"
-        )
+        parser.error(f"Unknown section(s): {', '.join(invalid)}. Valid: {', '.join(ALL_SECTIONS)}")
     if not raw_sections:
         parser.error("--sections must include at least one valid section name.")
 

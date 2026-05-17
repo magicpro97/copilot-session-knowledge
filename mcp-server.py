@@ -287,7 +287,9 @@ def _handle_request(message: dict[str, Any]) -> tuple[bool, dict[str, Any] | Non
 
     if method == "initialize":
         requested_protocol = params.get("protocolVersion")
-        protocol = requested_protocol if isinstance(requested_protocol, str) and requested_protocol else PROTOCOL_VERSION
+        protocol = (
+            requested_protocol if isinstance(requested_protocol, str) and requested_protocol else PROTOCOL_VERSION
+        )
         return False, {
             "protocolVersion": protocol,
             "capabilities": {"tools": {"listChanged": False}},

@@ -37,6 +37,7 @@ import json
 import os
 import sys
 from pathlib import Path
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -44,6 +45,7 @@ if os.name == "nt":
 
 if os.name == "nt":
     import io
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
@@ -98,10 +100,7 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
             if not isinstance(hook, str) or not hook.endswith(".py"):
                 errors.append(f"Hook '{hook}' must be a .py filename string")
             elif not skip_hook_validation and available and hook not in available:
-                errors.append(
-                    f"Hook template not found: '{hook}' "
-                    f"(use --skip-hook-validation to bypass)"
-                )
+                errors.append(f"Hook template not found: '{hook}' (use --skip-hook-validation to bypass)")
 
     phases = data.get("workflow_phases", [])
     if not isinstance(phases, list) or len(phases) == 0:
@@ -109,10 +108,7 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
     else:
         unknown = [p for p in phases if p not in KNOWN_PHASES]
         if unknown:
-            errors.append(
-                f"Unknown phase(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(KNOWN_PHASES)}"
-            )
+            errors.append(f"Unknown phase(s): {', '.join(unknown)}. Known: {', '.join(KNOWN_PHASES)}")
 
     notes = data.get("workflow_notes", "")
     if notes and len(notes) > MAX_NOTES_LEN:
@@ -156,24 +152,21 @@ Examples:
     )
     parser.add_argument("--name", help="Profile name (alphanumeric, hyphens, underscores)")
     parser.add_argument("--description", help="Short description of the profile")
-    parser.add_argument("--hooks", nargs="+", metavar="HOOK",
-                        help="Hook filenames (e.g. dangerous-blocker.py commit-gate.py)")
-    parser.add_argument("--phases", nargs="+", metavar="PHASE",
-                        help=f"Workflow phases from: {', '.join(KNOWN_PHASES)}")
-    parser.add_argument("--notes", default="",
-                        help="Optional workflow notes (shown in WORKFLOW.md)")
-    parser.add_argument("--output-dir", default=None,
-                        help="Directory to write profile JSON (default: presets/)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print the generated JSON without writing any files")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite an existing profile with the same name")
-    parser.add_argument("--skip-hook-validation", action="store_true",
-                        help="Skip validation that referenced hook templates exist on disk")
-    parser.add_argument("--list-hooks", action="store_true",
-                        help="List available hook templates and exit")
-    parser.add_argument("--list-phases", action="store_true",
-                        help="List known workflow phases and exit")
+    parser.add_argument(
+        "--hooks", nargs="+", metavar="HOOK", help="Hook filenames (e.g. dangerous-blocker.py commit-gate.py)"
+    )
+    parser.add_argument("--phases", nargs="+", metavar="PHASE", help=f"Workflow phases from: {', '.join(KNOWN_PHASES)}")
+    parser.add_argument("--notes", default="", help="Optional workflow notes (shown in WORKFLOW.md)")
+    parser.add_argument("--output-dir", default=None, help="Directory to write profile JSON (default: presets/)")
+    parser.add_argument("--dry-run", action="store_true", help="Print the generated JSON without writing any files")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing profile with the same name")
+    parser.add_argument(
+        "--skip-hook-validation",
+        action="store_true",
+        help="Skip validation that referenced hook templates exist on disk",
+    )
+    parser.add_argument("--list-hooks", action="store_true", help="List available hook templates and exit")
+    parser.add_argument("--list-phases", action="store_true", help="List known workflow phases and exit")
     args = parser.parse_args()
 
     if args.list_hooks:

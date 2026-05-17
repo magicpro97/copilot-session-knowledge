@@ -3167,8 +3167,8 @@ except Exception as _e:
 # Regression for Blocker 3: a high-priority (P0) semantic hit must not be dropped behind
 # lower-priority (P2) FTS hits due to pre-rerank truncation.
 try:
-    import sys as _sys_p11
     import sqlite3 as _sqlite3_p11
+    import sys as _sys_p11
 
     # 3 P2 FTS entries saturate cat_limit=3; without rerank the P0 semantic hit is dropped.
     _p11_fts_entries = [
@@ -3261,8 +3261,8 @@ except Exception as _e:
 # into the outer priority-aware rerank.  The mock returns a P0 entry ONLY when called with
 # limit >= fetch_limit (proving the caller passes the widened pool, not the raw cat_limit).
 try:
-    import sys as _sys_p12
     import sqlite3 as _sqlite3_p12
+    import sys as _sys_p12
 
     _p12_cat_limit = 3
     _p12_fetch_limit = max(_p12_cat_limit * 2, _p12_cat_limit + 6)  # = 9 for cat_limit=3

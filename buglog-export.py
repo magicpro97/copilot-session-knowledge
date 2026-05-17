@@ -93,7 +93,8 @@ def _fetch_mistakes(
     if tags_filter:
         lower_tags = {t.lower() for t in tags_filter}
         entries = [
-            e for e in entries
+            e
+            for e in entries
             if {tok.strip().lower() for tok in (e.get("tags") or "").split(",") if tok.strip()} & lower_tags
         ]
 

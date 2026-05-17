@@ -50,19 +50,120 @@ _CATEGORY_WEIGHT: dict[str, float] = {
 
 _STOPWORDS = frozenset(
     {
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "can", "it", "this", "that", "these",
-        "those", "i", "we", "you", "he", "she", "they", "not", "no", "so",
-        "if", "then", "when", "where", "what", "which", "who", "how", "all",
-        "any", "each", "more", "most", "also", "just", "up", "out", "as",
-        "into", "than", "their", "its", "our", "my", "your", "his", "her",
-        "them", "us", "me", "after", "before", "during", "while", "since",
-        "until", "too", "very", "about", "use", "used", "using", "run",
-        "running", "make", "new", "only", "now", "time", "way", "need",
-        "needs", "see", "get", "set", "add", "put", "let", "say", "one",
-        "two", "per", "via", "etc", "yet", "got",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "can",
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "we",
+        "you",
+        "he",
+        "she",
+        "they",
+        "not",
+        "no",
+        "so",
+        "if",
+        "then",
+        "when",
+        "where",
+        "what",
+        "which",
+        "who",
+        "how",
+        "all",
+        "any",
+        "each",
+        "more",
+        "most",
+        "also",
+        "just",
+        "up",
+        "out",
+        "as",
+        "into",
+        "than",
+        "their",
+        "its",
+        "our",
+        "my",
+        "your",
+        "his",
+        "her",
+        "them",
+        "us",
+        "me",
+        "after",
+        "before",
+        "during",
+        "while",
+        "since",
+        "until",
+        "too",
+        "very",
+        "about",
+        "use",
+        "used",
+        "using",
+        "run",
+        "running",
+        "make",
+        "new",
+        "only",
+        "now",
+        "time",
+        "way",
+        "need",
+        "needs",
+        "see",
+        "get",
+        "set",
+        "add",
+        "put",
+        "let",
+        "say",
+        "one",
+        "two",
+        "per",
+        "via",
+        "etc",
+        "yet",
+        "got",
     }
 )
 
@@ -181,11 +282,7 @@ def _make_skill_draft(
         e_content = re.sub(r"\s+", " ", (entry.get("content") or "")[:120]).strip()
         if e_title:
             content_lines.append(f"- **{e_title}**: {e_content}")
-    content_block = (
-        "\n".join(content_lines)
-        if content_lines
-        else f"- Apply proven patterns for {name_human}."
-    )
+    content_block = "\n".join(content_lines) if content_lines else f"- Apply proven patterns for {name_human}."
 
     # Example block from the first sample entry
     if sample_entries:
@@ -194,7 +291,7 @@ def _make_skill_draft(
     else:
         ex_content = f"Apply {name_human} best practices."
     if not ex_content:
-        ex_content = f"Relevant patterns and decisions surfaced from session history."
+        ex_content = "Relevant patterns and decisions surfaced from session history."
 
     lines = [
         "---",
@@ -241,7 +338,7 @@ def _open_db_readonly(db_path: Path):
     if not db_path.exists():
         return None
     try:
-        uri = "file:{}?mode=ro".format(db_path.as_posix())
+        uri = f"file:{db_path.as_posix()}?mode=ro"
         db = sqlite3.connect(uri, uri=True)
         db.row_factory = sqlite3.Row
         return db
@@ -255,16 +352,14 @@ def _open_db_readonly(db_path: Path):
 
 
 def _table_exists(db: sqlite3.Connection, name: str) -> bool:
-    row = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone()
+    row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
     return row is not None
 
 
 # Signal-type score weights for boosting improvement-signal-derived candidates.
 _SIGNAL_TYPE_WEIGHT: dict[str, float] = {
-    "missed_match": 2.0,    # Strong: no skill existed — high priority to create one
-    "wrong_skill": 1.5,     # Medium: wrong skill fired — patch candidate
+    "missed_match": 2.0,  # Strong: no skill existed — high priority to create one
+    "wrong_skill": 1.5,  # Medium: wrong skill fired — patch candidate
     "outdated_skill": 1.5,  # Medium: skill is stale — update candidate
 }
 
@@ -743,10 +838,7 @@ def _print_text(result: dict) -> None:
         overlaps = sug["overlap_with_existing"]
         print(f"{'=' * 60}")
         print(f"  Suggestion #{i}: {sug['candidate_name']}")
-        print(
-            f"  Score: {sug['score']} | Occurrences: {sug['total_occurrences']}"
-            f" | Entries: {sug['entry_count']}"
-        )
+        print(f"  Score: {sug['score']} | Occurrences: {sug['total_occurrences']} | Entries: {sug['entry_count']}")
         print(f"  Source: {sug['source_cluster']} ({sug['cluster_type']})")
         if sug["top_tags"]:
             print(f"  Tags: {', '.join(sug['top_tags'][:5])}")
@@ -821,9 +913,7 @@ Examples:
     args = parser.parse_args(argv)
 
     db_path = Path(args.db).expanduser() if args.db else DB_PATH
-    skills_dir = (
-        Path(args.skills_dir).expanduser() if args.skills_dir else DEFAULT_SKILLS_DIR
-    )
+    skills_dir = Path(args.skills_dir).expanduser() if args.skills_dir else DEFAULT_SKILLS_DIR
 
     result = suggest(
         db_path=db_path,

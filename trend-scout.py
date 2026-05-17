@@ -2507,7 +2507,7 @@ def run(
             skip, reason = _check_grace_window(grace_hours, run_state)
             if skip:
                 print(f"⏭  Grace window active — {reason}")
-                print(f"   Use --force to override.")
+                print("   Use --force to override.")
                 if explain:
                     _write_explain_artifact([], [], config, explain_output, skip_reason=reason)
                 if research_pack:

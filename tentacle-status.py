@@ -55,9 +55,7 @@ def _open_metrics_db() -> sqlite3.Connection | None:
 
 
 def _table_exists(db: sqlite3.Connection, name: str) -> bool:
-    row = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone()
+    row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
     return row is not None
 
 
@@ -348,10 +346,7 @@ def format_status(status: dict) -> str:
             vf = t.get("verification_failed", 0)
             outcome = t.get("recorded_outcome")
             outcome_str = f"  outcome={outcome['outcome_status']}" if outcome else ""
-            lines.append(
-                f"  {t['name']:<35} status={t['status']:<8}"
-                f"  verify={vp}✓/{vf}✗{outcome_str}"
-            )
+            lines.append(f"  {t['name']:<35} status={t['status']:<8}  verify={vp}✓/{vf}✗{outcome_str}")
     lines.extend(
         [
             "",

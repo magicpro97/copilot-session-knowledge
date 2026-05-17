@@ -35,21 +35,128 @@ DB_PATH = SESSION_STATE / "knowledge.db"
 # Concept tag extraction (pure stdlib, no ML imports)
 # ---------------------------------------------------------------------------
 
-_CONCEPT_STOPWORDS = frozenset({
-    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "can", "it", "this", "that", "these", "those",
-    "i", "we", "you", "he", "she", "they", "not", "no", "so", "if", "then",
-    "when", "where", "what", "which", "who", "how", "all", "any", "each",
-    "more", "most", "also", "just", "up", "out", "as", "into", "than",
-    "their", "its", "our", "my", "your", "his", "her", "them", "us", "me",
-    "after", "before", "during", "while", "since", "until", "too", "very",
-    "about", "above", "below", "between", "through", "use", "used", "using",
-    "run", "running", "make", "new", "only", "now", "time", "way",
-    "need", "needs", "see", "get", "set", "add", "put", "let", "say",
-    "one", "two", "per", "via", "etc", "yet", "got",
-})
+_CONCEPT_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "can",
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "we",
+        "you",
+        "he",
+        "she",
+        "they",
+        "not",
+        "no",
+        "so",
+        "if",
+        "then",
+        "when",
+        "where",
+        "what",
+        "which",
+        "who",
+        "how",
+        "all",
+        "any",
+        "each",
+        "more",
+        "most",
+        "also",
+        "just",
+        "up",
+        "out",
+        "as",
+        "into",
+        "than",
+        "their",
+        "its",
+        "our",
+        "my",
+        "your",
+        "his",
+        "her",
+        "them",
+        "us",
+        "me",
+        "after",
+        "before",
+        "during",
+        "while",
+        "since",
+        "until",
+        "too",
+        "very",
+        "about",
+        "above",
+        "below",
+        "between",
+        "through",
+        "use",
+        "used",
+        "using",
+        "run",
+        "running",
+        "make",
+        "new",
+        "only",
+        "now",
+        "time",
+        "way",
+        "need",
+        "needs",
+        "see",
+        "get",
+        "set",
+        "add",
+        "put",
+        "let",
+        "say",
+        "one",
+        "two",
+        "per",
+        "via",
+        "etc",
+        "yet",
+        "got",
+    }
+)
 
 
 def extract_concept_tags(text: str, top_k: int = 5) -> list[str]:
@@ -67,7 +174,7 @@ def extract_concept_tags(text: str, top_k: int = 5) -> list[str]:
     """
     if not text:
         return []
-    tokens = re.findall(r'[a-zA-Z][a-zA-Z0-9_-]{2,}', text.lower())
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower())
     freq: dict[str, int] = {}
     for tok in tokens:
         if tok not in _CONCEPT_STOPWORDS:
@@ -79,6 +186,7 @@ def extract_concept_tags(text: str, top_k: int = 5) -> list[str]:
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
+
 
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
@@ -129,6 +237,7 @@ def _seed_sync_policy(db: sqlite3.Connection):
 # ---------------------------------------------------------------------------
 # Core batch tagging logic
 # ---------------------------------------------------------------------------
+
 
 def run_batch_tag(
     retag_all: bool = False,
@@ -247,15 +356,13 @@ def run_stats() -> dict:
     db = get_db()
     try:
         total = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
-        has_ect = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'"
-        ).fetchone()
+        has_ect = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'").fetchone()
         if not has_ect:
             return {"total_entries": total, "tagged_entries": 0, "coverage_pct": 0.0, "available": False}
 
-        tagged = db.execute(
-            "SELECT COUNT(DISTINCT entry_id) FROM entry_concept_tags WHERE source = 'auto'"
-        ).fetchone()[0]
+        tagged = db.execute("SELECT COUNT(DISTINCT entry_id) FROM entry_concept_tags WHERE source = 'auto'").fetchone()[
+            0
+        ]
         coverage_pct = round((tagged / total) * 100, 1) if total > 0 else 0.0
         total_tags = db.execute("SELECT COUNT(*) FROM entry_concept_tags WHERE source = 'auto'").fetchone()[0]
         top_tags = db.execute("""
@@ -282,6 +389,7 @@ def run_stats() -> dict:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list | None = None) -> int:
     import argparse
 
@@ -289,16 +397,13 @@ def main(argv: list | None = None) -> int:
         description="Batch concept-tag extraction for knowledge entries.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--all", dest="retag_all", action="store_true",
-                        help="Re-tag all entries, replacing stale auto tags")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Preview without writing to DB")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="Process at most N entries (0 = no limit)")
-    parser.add_argument("--stats", action="store_true",
-                        help="Show concept tag coverage statistics")
-    parser.add_argument("--quiet", action="store_true",
-                        help="Suppress per-entry output")
+    parser.add_argument(
+        "--all", dest="retag_all", action="store_true", help="Re-tag all entries, replacing stale auto tags"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
+    parser.add_argument("--limit", type=int, default=0, help="Process at most N entries (0 = no limit)")
+    parser.add_argument("--stats", action="store_true", help="Show concept tag coverage statistics")
+    parser.add_argument("--quiet", action="store_true", help="Suppress per-entry output")
 
     args = parser.parse_args(argv)
 

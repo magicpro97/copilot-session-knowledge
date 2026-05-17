@@ -78,9 +78,7 @@ class GatewayStore:
 
     def latest_txn_id(self) -> str | None:
         with self.lock:
-            row = self.conn.execute(
-                "SELECT txn_id FROM txns ORDER BY seq DESC LIMIT 1"
-            ).fetchone()
+            row = self.conn.execute("SELECT txn_id FROM txns ORDER BY seq DESC LIMIT 1").fetchone()
         return row["txn_id"] if row else None
 
     def _insert_txn_in_current_transaction(self, txn: dict) -> bool:
@@ -143,9 +141,7 @@ class GatewayStore:
         with self.lock:
             after_seq = 0
             if after_txn_id:
-                row = self.conn.execute(
-                    "SELECT seq FROM txns WHERE txn_id = ? LIMIT 1", (after_txn_id,)
-                ).fetchone()
+                row = self.conn.execute("SELECT seq FROM txns WHERE txn_id = ? LIMIT 1", (after_txn_id,)).fetchone()
                 if row is None:
                     raise ValueError("unknown_after")
                 after_seq = int(row["seq"])
@@ -328,9 +324,7 @@ def create_server(host: str, port: int, db_path: Path) -> tuple[ThreadingHTTPSer
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Reference/mock sync gateway (local integration contract surface)"
-    )
+    parser = argparse.ArgumentParser(description="Reference/mock sync gateway (local integration contract surface)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(

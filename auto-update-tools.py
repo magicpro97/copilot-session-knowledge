@@ -115,41 +115,44 @@ GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
 # ---------------------------------------------------------------------------
 COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
     "Source Scripts": [
-        ("*.py",                 "root-level Python scripts (triggers restart-services)"),
-        ("browse/",              "browse module — web session browser"),
-        ("providers/",           "provider implementations"),
-        ("tests/",               "tests/ — pytest-style subdirectory for newer test modules"),
+        ("*.py", "root-level Python scripts (triggers restart-services)"),
+        ("browse/", "browse module — web session browser"),
+        ("providers/", "provider implementations"),
+        ("tests/", "tests/ — pytest-style subdirectory for newer test modules"),
     ],
     "Skills": [
-        ("skills/",              "skill SKILL.md and assets — deployed on update"),
-        ("templates/",           "SKILL.md templates — deployed on update"),
+        ("skills/", "skill SKILL.md and assets — deployed on update"),
+        ("templates/", "SKILL.md templates — deployed on update"),
     ],
     "Hooks": [
-        ("hooks/",               "all Python hook scripts — install.py --deploy-hooks; "
-                                 "git hooks (pre-commit/pre-push): install.py --install-git-hooks per repo"),
-        (".github/hooks/",       "legacy fallback hook config source — deployed via install.py --deploy-hooks"),
-        ("hooks/rules/",         "hook rule modules (auto-discovered by install.py)"),
+        (
+            "hooks/",
+            "all Python hook scripts — install.py --deploy-hooks; "
+            "git hooks (pre-commit/pre-push): install.py --install-git-hooks per repo",
+        ),
+        (".github/hooks/", "legacy fallback hook config source — deployed via install.py --deploy-hooks"),
+        ("hooks/rules/", "hook rule modules (auto-discovered by install.py)"),
     ],
     "Workflows": [
-        ("scripts/",             "pipeline scripts (added by quality-gates tentacle)"),
-        (".github/workflows/",   "CI/CD workflow definitions (added by quality-gates tentacle)"),
+        ("scripts/", "pipeline scripts (added by quality-gates tentacle)"),
+        (".github/workflows/", "CI/CD workflow definitions (added by quality-gates tentacle)"),
     ],
     "Services": [
-        ("launchd/",             "macOS LaunchAgent templates — reinstalled on update"),
+        ("launchd/", "macOS LaunchAgent templates — reinstalled on update"),
     ],
     "Browse UI": [
-        ("browse/api/",          "browse JSON API module (Pha 5 extract — /api/* endpoints)"),
-        ("browse-ui/src/",       "browse-ui Next.js source (TS + components)"),
-        ("browse-ui/public/",    "browse-ui static assets"),
-        ("browse-ui/dist/",      "browse-ui generated local artifact (ignored; rebuild with pnpm build)"),
+        ("browse/api/", "browse JSON API module (Pha 5 extract — /api/* endpoints)"),
+        ("browse-ui/src/", "browse-ui Next.js source (TS + components)"),
+        ("browse-ui/public/", "browse-ui static assets"),
+        ("browse-ui/dist/", "browse-ui generated local artifact (ignored; rebuild with pnpm build)"),
     ],
     "Other": [
-        ("docs/",                "documentation"),
-        ("presets/",             "preset configurations"),
+        ("docs/", "documentation"),
+        ("presets/", "preset configurations"),
     ],
     "Launcher": [
-        ("~/.copilot/bin/",      "managed sk launcher directory — refreshed on sk.py / install.py changes"),
-        ("sk-rust/",             "Rust sk binary source — triggers GitHub Release asset update check"),
+        ("~/.copilot/bin/", "managed sk launcher directory — refreshed on sk.py / install.py changes"),
+        ("sk-rust/", "Rust sk binary source — triggers GitHub Release asset update check"),
     ],
 }
 
@@ -267,11 +270,14 @@ def _global_copilot_skill_dirs() -> tuple[Path, ...]:
 def log(msg: str):
     print(f"[sk-update] {msg}")
 
+
 def ok(msg: str):
     print(f"[sk-update] ✅ {msg}")
 
+
 def warn(msg: str):
     print(f"[sk-update] ⚠️  {msg}", file=sys.stderr)
+
 
 def err(msg: str):
     print(f"[sk-update] ❌ {msg}", file=sys.stderr)
@@ -337,8 +343,8 @@ def _load_project_registry() -> list[Path]:
 # ---------------------------------------------------------------------------
 # Atomic write helpers, Windows FS retry, and update lock (P0-1/2/3/4/8)
 # ---------------------------------------------------------------------------
-SELF_EXEC_GUARD = TOOLS_DIR / ".self-exec-active"   # P0-7
-_UPDATE_LOCK_FILE = TOOLS_DIR / ".update-lock"       # P0-8
+SELF_EXEC_GUARD = TOOLS_DIR / ".self-exec-active"  # P0-7
+_UPDATE_LOCK_FILE = TOOLS_DIR / ".update-lock"  # P0-8
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -507,8 +513,9 @@ def pull_latest() -> tuple[bool, str, str]:
         # P0-5: check stash pop result; abort if conflicted to avoid running on broken tree
         r_pop = _git("stash", "pop", "--quiet")
         if r_pop.returncode != 0:
-            warn("Stash pop failed — local changes are in stash. "
-                 "Run 'git stash pop' manually after resolving conflicts.")
+            warn(
+                "Stash pop failed — local changes are in stash. Run 'git stash pop' manually after resolving conflicts."
+            )
             if r_pop.stderr:
                 warn(f"git stash pop stderr: {r_pop.stderr[:200]}")
             return False, old_sha, old_sha  # treat as no-update; abort pipeline
@@ -556,38 +563,40 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
     changed = diff_output.splitlines()
     return {
         "all": changed,
-        "py_scripts":   [f for f in changed if f.endswith(".py")],
-        "launchd":      [f for f in changed if f.startswith("launchd/")],
-        "templates":    [f for f in changed if f.startswith("templates/")],
-        "skills":       [f for f in changed if f.startswith("skills/")],
-        "hooks":        [f for f in changed if f.startswith("hooks/")],
+        "py_scripts": [f for f in changed if f.endswith(".py")],
+        "launchd": [f for f in changed if f.startswith("launchd/")],
+        "templates": [f for f in changed if f.startswith("templates/")],
+        "skills": [f for f in changed if f.startswith("skills/")],
+        "hooks": [f for f in changed if f.startswith("hooks/")],
         "github_hooks": [f for f in changed if f.startswith(".github/hooks/")],
-        "hooks_rules":  [f for f in changed if f.startswith("hooks/rules/")],
-        "browse":       [f for f in changed if f.startswith("browse/")],
-        "browse_ui":    [f for f in changed if f.startswith("browse-ui/") and not f.startswith("browse-ui/dist/")],
-        "providers":    [f for f in changed if f.startswith("providers/")],
-        "scripts":      [f for f in changed if f.startswith("scripts/")],
-        "workflows":    [f for f in changed if f.startswith(".github/workflows/")],
-        "embed":        [f for f in changed if "embed" in f.lower() and f.endswith(".py")],
-        "migrate":      "migrate.py" in changed,
-        "self_update":  "auto-update-tools.py" in changed,
+        "hooks_rules": [f for f in changed if f.startswith("hooks/rules/")],
+        "browse": [f for f in changed if f.startswith("browse/")],
+        "browse_ui": [f for f in changed if f.startswith("browse-ui/") and not f.startswith("browse-ui/dist/")],
+        "providers": [f for f in changed if f.startswith("providers/")],
+        "scripts": [f for f in changed if f.startswith("scripts/")],
+        "workflows": [f for f in changed if f.startswith(".github/workflows/")],
+        "embed": [f for f in changed if "embed" in f.lower() and f.endswith(".py")],
+        "migrate": "migrate.py" in changed,
+        "self_update": "auto-update-tools.py" in changed,
         "watch_sessions": "watch-sessions.py" in changed,
         "global_instructions": [
-            f for f in changed
+            f
+            for f in changed
             if f == "templates/copilot-instructions.md"
             or f == "templates/session-knowledge.instructions.md"
             or f.startswith("templates/instructions/")
         ],
         "managed_hooks": [
-            f for f in changed
+            f
+            for f in changed
             if f == "hooks/hooks.json"
             or f == ".github/hooks/hooks.json"
             or (f.startswith("hooks/") and f.endswith(".py"))
         ],
         # Refresh the managed sk launcher when sk.py or install.py changes
-        "sk_launcher":  any(f in changed for f in ("sk.py", "install.py")),
+        "sk_launcher": any(f in changed for f in ("sk.py", "install.py")),
         # Track Rust binary source changes (used for manifest; binary update is unconditional)
-        "sk_binary":    any(p.startswith("sk-rust/") for p in changed),
+        "sk_binary": any(p.startswith("sk-rust/") for p in changed),
     }
 
 
@@ -608,8 +617,13 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
     if changes.get("self_update") and "--skip-pull" not in sys.argv:
         log("auto-update-tools.py changed — re-executing with new code...")
         _state_set("self_exec_from", old_sha[:8])
-        args = [sys.executable, str(TOOLS_DIR / "auto-update-tools.py"), "--skip-pull",
-                f"--old-sha={old_sha}", f"--new-sha={new_sha}"]
+        args = [
+            sys.executable,
+            str(TOOLS_DIR / "auto-update-tools.py"),
+            "--skip-pull",
+            f"--old-sha={old_sha}",
+            f"--new-sha={new_sha}",
+        ]
         # Add original flags
         for a in sys.argv[1:]:
             if a not in ("--force", "--skip-pull") and not a.startswith("--old-sha") and not a.startswith("--new-sha"):
@@ -626,11 +640,11 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
             pass
         if platform.system() == "Windows":
             # os.execl behaves differently on Windows
-            SELF_EXEC_GUARD.touch()   # P0-7: block concurrent post-merge hook race
+            SELF_EXEC_GUARD.touch()  # P0-7: block concurrent post-merge hook race
             subprocess.Popen(args)
             sys.exit(0)
         else:
-            SELF_EXEC_GUARD.touch()   # P0-7
+            SELF_EXEC_GUARD.touch()  # P0-7
             os.execl(sys.executable, *args)
 
     # P0-6: wrap pipeline steps; always write manifest so --doctor reflects reality
@@ -649,8 +663,9 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         # .git/hooks/ in arbitrary repos would be unsafe.  Users must re-run install.py.
         if changes.get("managed_hooks"):
             refresh_global_hooks()
-            hook_files = [f for f in changes["managed_hooks"]
-                          if "pre-commit" in f or "pre-push" in f or "check_subagent" in f]
+            hook_files = [
+                f for f in changes["managed_hooks"] if "pre-commit" in f or "pre-push" in f or "check_subagent" in f
+            ]
             if hook_files:
                 warn("Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.")
                 warn("ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):")
@@ -707,11 +722,17 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         warn("Run 'sk update --force' to retry.")
         try:
             _FAILED_MARKER = TOOLS_DIR / ".update-failed.json"
-            _atomic_write_text(_FAILED_MARKER, json.dumps({
-                "failed_at": datetime.now().isoformat(),
-                "old_sha": old_sha,
-                "new_sha": new_sha,
-            }, indent=2))
+            _atomic_write_text(
+                _FAILED_MARKER,
+                json.dumps(
+                    {
+                        "failed_at": datetime.now().isoformat(),
+                        "old_sha": old_sha,
+                        "new_sha": new_sha,
+                    },
+                    indent=2,
+                ),
+            )
         except Exception:
             pass
 
@@ -733,7 +754,9 @@ def reinstall_launchagents():
         log("LaunchAgent templates changed — reinstalling...")
         r = subprocess.run(
             [sys.executable, str(installer)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if r.returncode == 0:
             ok("LaunchAgents reinstalled")
@@ -754,10 +777,14 @@ def trigger_embedding_rebuild():
     log("Embedding logic changed — triggering rebuild...")
     subprocess.Popen(
         [sys.executable, str(embed_script), "--build"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         start_new_session=True if platform.system() != "Windows" else False,
-        **({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW}
-           if platform.system() == "Windows" else {}),
+        **(
+            {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW}
+            if platform.system() == "Windows"
+            else {}
+        ),
     )
     ok("Embedding rebuild triggered (background)")
 
@@ -767,6 +794,7 @@ def _pnpm_cmd() -> list[str]:
     is not directly on PATH but corepack is available.
     """
     import shutil
+
     if shutil.which("pnpm"):
         return ["pnpm"]
     if shutil.which("corepack"):
@@ -902,7 +930,9 @@ def _should_update_rust_binary(install_dir: Path, exe_name: str, remote_tag: str
     try:
         result = subprocess.run(
             [str(exe_path), "--version"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return True
@@ -970,6 +1000,7 @@ def _refresh_rust_binary_local(local_archive: str, os_name: str, arch: str) -> b
                 zf.extractall(str(tmp_extract))
         else:
             import tarfile
+
             with tarfile.open(str(archive_path), "r:gz") as tf:
                 tf.extractall(str(tmp_extract))
 
@@ -1086,7 +1117,7 @@ def refresh_rust_binary() -> bool:
                         sha256.update(chunk)
                 actual = sha256.hexdigest()
                 if expected != actual:
-                    warn(f"[rust-binary] Checksum mismatch — aborting update")
+                    warn("[rust-binary] Checksum mismatch — aborting update")
                     return False
                 log("[rust-binary] Checksum verified")
             except Exception:
@@ -1101,6 +1132,7 @@ def refresh_rust_binary() -> bool:
                         zf.extractall(str(tmp_extract))
                 else:
                     import tarfile
+
                     with tarfile.open(str(tmp_archive), "r:gz") as tf:
                         tf.extractall(str(tmp_extract))
 
@@ -1179,7 +1211,9 @@ def _rebuild_browse_ui():
         r = subprocess.run(
             pnpm + ["install", "--frozen-lockfile"],
             cwd=str(browse_ui_dir),
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         if r.returncode != 0:
             warn(f"pnpm install failed: {r.stderr[:300]}")
@@ -1187,7 +1221,9 @@ def _rebuild_browse_ui():
         r = subprocess.run(
             pnpm + ["build"],
             cwd=str(browse_ui_dir),
-            capture_output=True, text=True, timeout=180,
+            capture_output=True,
+            text=True,
+            timeout=180,
         )
         if r.returncode == 0:
             ok("browse-ui rebuilt successfully")
@@ -1206,7 +1242,10 @@ def ensure_post_merge_hook():
     hook_path = TOOLS_DIR / ".git" / "hooks" / "post-merge"
 
     hook_python = "python" if platform.system() == "Windows" else "python3"
-    hook_content = "#!/usr/bin/env " + hook_python + """
+    hook_content = (
+        "#!/usr/bin/env "
+        + hook_python
+        + """
 # Auto-generated by auto-update-tools.py — triggers pipeline after git pull.
 # Re-created on each update; do not edit manually.
 
@@ -1261,6 +1300,7 @@ try:
 except Exception:
     pass
 """
+    )
     try:
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         desired_bytes = hook_content.encode("utf-8")
@@ -1318,7 +1358,8 @@ def write_manifest(sha: str, changes: dict):
     if system == "Darwin":
         r = subprocess.run(
             ["launchctl", "list", "com.copilot.watch-sessions"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         # launchctl list exits 0 when the job is loaded, even when it is not
         # actively running (e.g. waiting for restart after repeated failures).
@@ -1332,7 +1373,8 @@ def write_manifest(sha: str, changes: dict):
     elif system == "Linux":
         r = subprocess.run(
             ["systemctl", "--user", "is-active", "copilot-watch-sessions.service"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         manifest["services"]["watch-sessions"] = {
             "managed_by": "systemd",
@@ -1341,7 +1383,8 @@ def write_manifest(sha: str, changes: dict):
     elif system == "Windows":
         r = subprocess.run(
             ["schtasks", "/Query", "/TN", "CopilotSessionWatcher"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         manifest["services"]["watch-sessions"] = {
             "managed_by": "task-scheduler",
@@ -1350,14 +1393,24 @@ def write_manifest(sha: str, changes: dict):
 
     # P0-2: atomic manifest write to prevent --doctor parse failures on crash
     # Coverage: which categories had changes this run (backwards-compat: use .get())
-    manifest["tracked_dirs"] = [
-        pat for entries in COVERAGE_MANIFEST.values() for pat, _ in entries
-    ]
+    manifest["tracked_dirs"] = [pat for entries in COVERAGE_MANIFEST.values() for pat, _ in entries]
     manifest["changed_categories"] = {
         key: bool(changes.get(key))
-        for key in ("browse", "browse_ui", "providers", "skills", "hooks", "hooks_rules",
-                    "scripts", "workflows", "launchd", "templates", "py_scripts",
-                    "sk_launcher", "sk_binary")
+        for key in (
+            "browse",
+            "browse_ui",
+            "providers",
+            "skills",
+            "hooks",
+            "hooks_rules",
+            "scripts",
+            "workflows",
+            "launchd",
+            "templates",
+            "py_scripts",
+            "sk_launcher",
+            "sk_binary",
+        )
         if key in changes
     }
     try:
@@ -1429,11 +1482,11 @@ def deploy_skills():
         # Fallback when manifest is unavailable (broken or first-run state).
         HOST_DIRS = {
             "Copilot CLI": Path.home() / ".copilot",
-            "Claude Code":  Path.home() / ".claude",
+            "Claude Code": Path.home() / ".claude",
         }
         HOST_SKILL_SUBPATHS = {
             "Copilot CLI": ".github/skills/session-knowledge/SKILL.md",
-            "Claude Code":  ".claude/skills/session-knowledge/SKILL.md",
+            "Claude Code": ".claude/skills/session-knowledge/SKILL.md",
         }
 
     # Pre-read skill sources once; skip if source doesn't exist.
@@ -1603,7 +1656,9 @@ def deploy_skills():
                         if not existed or asset_target.read_bytes() != content:
                             asset_target.parent.mkdir(parents=True, exist_ok=True)
                             asset_target.write_bytes(content)
-                            ok(f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
+                            ok(
+                                f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/{rel} in {global_skills_root}"
+                            )
                     except Exception:
                         pass
 
@@ -1712,8 +1767,11 @@ def _restart_manual():
     if system == "Windows":
         # Find pythonw processes running watch-sessions.py
         r = subprocess.run(
-            ["powershell", "-Command",
-             "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*watch-sessions.py*' } | Select-Object ProcessId"],
+            [
+                "powershell",
+                "-Command",
+                "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*watch-sessions.py*' } | Select-Object ProcessId",
+            ],
             capture_output=True,
             text=True,
         )
@@ -1731,6 +1789,7 @@ def _restart_manual():
         # P1-2: poll for process exit on Windows before spawning replacement
         if killed_pids:
             import ctypes
+
             PROCESS_SYNCHRONIZE = 0x00100000
             for pid in killed_pids:
                 h = ctypes.windll.kernel32.OpenProcess(PROCESS_SYNCHRONIZE, False, pid)
@@ -1800,6 +1859,7 @@ def _try_healer_check():
     """Return list of healer Issues or None if healer unavailable."""
     try:
         import importlib.util as _ilu
+
         _hpath = TOOLS_DIR / "copilot-cli-healer.py"
         if not _hpath.exists():
             return None
@@ -1858,6 +1918,7 @@ def doctor():
     if DB_PATH.exists():
         try:
             import sqlite3
+
             conn = sqlite3.connect(str(DB_PATH))
             count = conn.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
             conn.close()
@@ -1914,8 +1975,10 @@ def doctor():
     if _FAILED_MARKER.exists():
         try:
             fdata = json.loads(_FAILED_MARKER.read_text(encoding="utf-8"))
-            warn(f"Previous update incomplete (failed at {fdata.get('failed_at', '?')}). "
-                 "Run 'sk update --force' to retry.")
+            warn(
+                f"Previous update incomplete (failed at {fdata.get('failed_at', '?')}). "
+                "Run 'sk update --force' to retry."
+            )
             issues += 1
         except Exception:
             pass
@@ -1944,7 +2007,8 @@ def doctor():
     elif system == "Linux":
         r = subprocess.run(
             ["systemctl", "--user", "is-active", "copilot-watch-sessions.service"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if r.returncode == 0:
             ok("systemd copilot-watch-sessions: active")
@@ -1953,7 +2017,8 @@ def doctor():
     elif system == "Windows":
         r = subprocess.run(
             ["schtasks", "/Query", "/TN", "CopilotSessionWatcher"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if r.returncode == 0:
             ok("Task Scheduler CopilotSessionWatcher: registered")
@@ -1965,7 +2030,7 @@ def doctor():
     if healer_issues is None:
         warn("Copilot CLI healer: not found (optional — run install.py --install-healer)")
     elif healer_issues:
-        warn(f"Copilot CLI pkg: stale state — run: python copilot-cli-healer.py --heal")
+        warn("Copilot CLI pkg: stale state — run: python copilot-cli-healer.py --heal")
         issues += 1
     else:
         ok("Copilot CLI pkg: healthy")
@@ -1984,7 +2049,9 @@ def doctor():
                 continue
             check_path = TOOLS_DIR / base
             if check_path.exists():
-                if pattern not in [p for p, _ in [e for ent in COVERAGE_MANIFEST.values() for e in ent] if p in present]:
+                if pattern not in [
+                    p for p, _ in [e for ent in COVERAGE_MANIFEST.values() for e in ent] if p in present
+                ]:
                     present.append(pattern)
             else:
                 absent.append(pattern)
@@ -2141,6 +2208,7 @@ def main():
                 err("copilot-cli-healer.py not found in tools dir")
                 sys.exit(1)
             import importlib.util as _ilu
+
             _hpath = TOOLS_DIR / "copilot-cli-healer.py"
             _spec = _ilu.spec_from_file_location("_healer", _hpath)
             _mod = _ilu.module_from_spec(_spec)

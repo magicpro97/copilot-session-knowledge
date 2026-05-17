@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS skill_patch_history (
 # Fuzzy-whitespace matching
 # ---------------------------------------------------------------------------
 
+
 def _fuzzy_pattern(text: str) -> re.Pattern:
     """
     Build a regex that matches *text* modulo leading/trailing whitespace on
@@ -144,6 +145,7 @@ def apply_patch(
 # Skill path resolution
 # ---------------------------------------------------------------------------
 
+
 def resolve_skill_path(raw: str) -> Path:
     p = Path(raw).expanduser().resolve()
     if p.is_dir():
@@ -159,6 +161,7 @@ def resolve_skill_path(raw: str) -> Path:
 # ---------------------------------------------------------------------------
 # Atomic write
 # ---------------------------------------------------------------------------
+
 
 def atomic_write(path: Path, content: str) -> None:
     """Write *content* to *path* atomically via a sibling tempfile + os.replace."""
@@ -202,6 +205,7 @@ def _write_to_temp(target_path: Path, content: str) -> Path:
 # Post-patch validation
 # ---------------------------------------------------------------------------
 
+
 def run_validation(skill_path: Path) -> tuple[bool, int, int]:
     """
     Run validate-skill.py against *skill_path* via subprocess.
@@ -238,6 +242,7 @@ def run_validation(skill_path: Path) -> tuple[bool, int, int]:
 # ---------------------------------------------------------------------------
 # Metrics logging
 # ---------------------------------------------------------------------------
+
 
 def _ensure_patch_history_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SKILL_PATCH_HISTORY_DDL)
@@ -302,13 +307,16 @@ def log_patch_history(
 # Simple unified-diff helper
 # ---------------------------------------------------------------------------
 
+
 def _simple_diff(before: str, after: str, path: Path) -> str:
     lines_before = before.splitlines(keepends=True)
     lines_after = after.splitlines(keepends=True)
     import difflib
+
     return "".join(
         difflib.unified_diff(
-            lines_before, lines_after,
+            lines_before,
+            lines_after,
             fromfile=f"a/{path.name}",
             tofile=f"b/{path.name}",
         )
@@ -319,6 +327,7 @@ def _simple_diff(before: str, after: str, path: Path) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="skill-patch",
@@ -326,20 +335,13 @@ def main(argv: list[str] | None = None) -> int:
         add_help=True,
     )
     parser.add_argument("path", help="Path to SKILL.md or skill directory")
-    parser.add_argument("--old", required=True, metavar="TEXT",
-                        help="Text to find (fuzzy whitespace matching)")
-    parser.add_argument("--new", required=True, metavar="TEXT",
-                        help="Replacement text", dest="new_text")
-    parser.add_argument("--replace-all", action="store_true",
-                        help="Replace all occurrences (default: first only)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show diff; do NOT write or log anything")
-    parser.add_argument("--no-validate", action="store_true",
-                        help="Skip post-patch validation via validate-skill.py")
-    parser.add_argument("--no-metrics", action="store_true",
-                        help="Skip logging patch history to skill-metrics.db")
-    parser.add_argument("--metrics-db", metavar="PATH",
-                        help="Override the skill-metrics.db path")
+    parser.add_argument("--old", required=True, metavar="TEXT", help="Text to find (fuzzy whitespace matching)")
+    parser.add_argument("--new", required=True, metavar="TEXT", help="Replacement text", dest="new_text")
+    parser.add_argument("--replace-all", action="store_true", help="Replace all occurrences (default: first only)")
+    parser.add_argument("--dry-run", action="store_true", help="Show diff; do NOT write or log anything")
+    parser.add_argument("--no-validate", action="store_true", help="Skip post-patch validation via validate-skill.py")
+    parser.add_argument("--no-metrics", action="store_true", help="Skip logging patch history to skill-metrics.db")
+    parser.add_argument("--metrics-db", metavar="PATH", help="Override the skill-metrics.db path")
 
     args = parser.parse_args(argv)
 
@@ -381,13 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     count_will = count_found if args.replace_all else 1
 
     # Apply patch
-    patched, occurrences_replaced = apply_patch(
-        original, old_text, new_text, replace_all=args.replace_all
-    )
+    patched, occurrences_replaced = apply_patch(original, old_text, new_text, replace_all=args.replace_all)
 
     if occurrences_replaced == 0:
-        print("skill-patch: error: pattern matched but replacement yielded 0 substitutions",
-              file=sys.stderr)
+        print("skill-patch: error: pattern matched but replacement yielded 0 substitutions", file=sys.stderr)
         return 1
 
     # Diff display

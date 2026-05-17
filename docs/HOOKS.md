@@ -69,18 +69,13 @@ hooks/
 **Ruff lint surface** (identical between local `pre-commit` and CI `quality-gates` job):
 
 ```
-embed.py  scout-config.py  scout-status.py
-sync-config.py  sync-daemon.py  sync-status.py
-migrate.py  generate-summary.py
-briefing.py  learn.py  query-session.py  extract-knowledge.py
-build-session-index.py  tentacle.py
-checkpoint-diff.py  checkpoint-restore.py  checkpoint-save.py
-browse/  hooks/
+*.py
+browse/  hooks/  scripts/
 ```
 
-Both the local hook and CI run `ruff format --check` and `ruff check` on staged/changed files in this surface. Locally, **both checks are fail-open** — they skip silently when `ruff` is not installed. CI always has Ruff and will fail hard on violations. Other root scripts (e.g., `watch-sessions.py`, `install.py`, `auto-update-tools.py`) are **not** in scope.
+Both the local hook and CI run `ruff format --check` and `ruff check` on staged/changed files in this surface. Locally, **both checks are fail-open** — they skip silently when `ruff` is not installed. CI always has Ruff and will fail hard on violations. Python outside root scripts and the covered directories is **not** in CI Ruff scope.
 
-The `browse/*` and `hooks/*` patterns in the local `_py_in_surface()` function match **all subdirectory depths** — consistent with CI's directory-level `ruff check browse/ hooks/` invocation. This ensures depth-4 files like `browse/static/vendor/_download.py` are covered locally as well as in CI.
+The `browse/*`, `hooks/*`, and `scripts/*` patterns in the local `in_python_cleanliness_surface()` function match **all subdirectory depths** — consistent with CI's directory-level `ruff check browse/ hooks/ scripts/` invocation. This ensures depth-4 files like `browse/static/vendor/_download.py` are covered locally as well as in CI.
 
 **Complexity advisory** (`scripts/check_complexity.py`): the local `pre-commit` hook runs the reporter on staged `.py` files and prints warnings for files/functions over the advisory thresholds. This is always non-blocking and fail-open: missing reporter, reporter errors, or malformed reporter output do not block the commit.
 

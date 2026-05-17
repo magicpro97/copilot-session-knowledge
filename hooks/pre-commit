@@ -108,32 +108,9 @@ def check_python_syntax(staged: list[str]) -> int:
 # Canonical surface inventory: docs/ARCHITECTURE.md#python-lint-surface-inventory
 # Keep this in sync with .github/workflows/ci.yml and tests/test_quality_gates.py.
 def in_python_cleanliness_surface(path: str) -> bool:
-    exact = {
-        "embed.py",
-        "scout-config.py",
-        "scout-status.py",
-        "sync-config.py",
-        "sync-daemon.py",
-        "sync-status.py",
-        "migrate.py",
-        "generate-summary.py",
-        "briefing.py",
-        "learn.py",
-        "query-session.py",
-        "extract-knowledge.py",
-        "build-session-index.py",
-        "tentacle.py",
-        "_tentacle_core.py",
-        "_tentacle_goal.py",
-        "_tentacle_pr.py",
-        "_tentacle_dispatch.py",
-        "_tentacle_review.py",
-        "checkpoint-diff.py",
-        "checkpoint-restore.py",
-        "checkpoint-save.py",
-        "tests/test_browse_search_v2.py",
-    }
-    return path in exact or path.startswith(("browse/", "hooks/", "scripts/"))
+    return (path.endswith(".py") and "/" not in path and "\\" not in path) or path.startswith(
+        ("browse/", "hooks/", "scripts/")
+    )
 
 
 def check_ruff(staged: list[str]) -> int:

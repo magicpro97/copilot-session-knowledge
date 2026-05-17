@@ -10,10 +10,11 @@ Usage:
 """
 
 import collections
-import sys
-import re
-from pathlib import Path
 import os
+import re
+import sys
+from pathlib import Path
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -29,9 +30,9 @@ MAX_HEAVY_HANDED = 5  # MUST/ALWAYS/NEVER without reasoning
 # ---------------------------------------------------------------------------
 
 #: Severity constants (ordered from least to most severe)
-SEVERITY_LOW      = "low"
-SEVERITY_MEDIUM   = "medium"
-SEVERITY_HIGH     = "high"
+SEVERITY_LOW = "low"
+SEVERITY_MEDIUM = "medium"
+SEVERITY_HIGH = "high"
 SEVERITY_CRITICAL = "critical"
 
 #: A single security finding produced by validate_security().
@@ -40,10 +41,10 @@ Finding = collections.namedtuple("Finding", ["severity", "category", "message", 
 #: A compiled security rule used by validate_security().
 _SecurityRule = collections.namedtuple("_SecurityRule", ["category", "severity", "rx", "message"])
 
+
 def _rule(category: str, severity: str, flags: int, pattern: str, message: str) -> _SecurityRule:
     """Compile a security rule, raising ValueError on bad regex at import time."""
-    return _SecurityRule(category=category, severity=severity,
-                         rx=re.compile(pattern, flags), message=message)
+    return _SecurityRule(category=category, severity=severity, rx=re.compile(pattern, flags), message=message)
 
 
 def _mask_code_blocks(content: str) -> str:
@@ -100,11 +101,12 @@ def _mask_code_blocks(content: str) -> str:
     for i, line in enumerate(lines):
         if i in masked_indices:
             stripped = line.rstrip("\r\n")
-            eol = line[len(stripped):]
+            eol = line[len(stripped) :]
             result.append(" " * len(stripped) + eol)
         else:
             result.append(line)
     return "".join(result)
+
 
 # ---------------------------------------------------------------------------
 # Security rules — 35 patterns across four categories
@@ -116,123 +118,263 @@ def _mask_code_blocks(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 SECURITY_RULES: list[_SecurityRule] = [
-
     # ── Prompt Injection ────────────────────────────────────────────────────
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"ignore\s+(all\s+)?previous\s+(instructions?|commands?|context|rules?|guidelines?|prompt)",
-          "Prompt injection: 'ignore previous instructions' pattern detected"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"disregard\s+(all\s+)?previous\s+(instructions?|commands?|context|rules?|guidelines?)",
-          "Prompt injection: 'disregard previous instructions' pattern detected"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"forget\s+(everything|all\s+previous|your\s+(instructions?|training|guidelines?|rules?))",
-          "Prompt injection: 'forget your instructions' pattern detected"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE | re.MULTILINE,
-          r"^system:\s",
-          "Prompt injection: line starts with 'system:' — may hijack system prompt"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"<system>",
-          "Prompt injection: <system> tag may inject system-level instructions"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bact\s+as\b.{0,40}\b(hacker|attacker|evil|malicious|unrestricted|jailbreak|no[- ]restriction)",
-          "Prompt injection: 'act as [unconstrained role]' persona injection pattern"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"you\s+are\s+now\b.{0,40}\b(hacker|unrestricted|jailbreak|DAN|evil|no[- ]restriction)",
-          "Prompt injection: 'you are now [persona]' identity injection pattern"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"\b(jailbreak|DAN)\s+mode\b",
-          "Prompt injection: jailbreak/DAN mode activation pattern detected"),
-    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
-          r"override\s+(your|all|the)\s+(instructions?|training|guidelines?|safety[\s_-]measures?|constraints?)",
-          "Prompt injection: instruction override attempt detected"),
-    _rule("prompt-injection", SEVERITY_MEDIUM, re.IGNORECASE,
-          r"\[INST\]|\[/INST\]",
-          "Prompt injection: LLaMA/instruction-tuning special tokens detected"),
-    _rule("prompt-injection", SEVERITY_MEDIUM, re.IGNORECASE,
-          r"pretend\s+(you\s+are|to\s+be).{0,60}(unrestricted|no\s+rules?|no\s+restrictions?|no\s+limits?|without\s+restriction)",
-          "Prompt injection: 'pretend to be unrestricted' pattern detected"),
-    _rule("prompt-injection", SEVERITY_MEDIUM, re.IGNORECASE,
-          r"<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>|\[SYSTEM\]",
-          "Prompt injection: model special tokens detected (ChatML/GPT format)"),
-
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"ignore\s+(all\s+)?previous\s+(instructions?|commands?|context|rules?|guidelines?|prompt)",
+        "Prompt injection: 'ignore previous instructions' pattern detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"disregard\s+(all\s+)?previous\s+(instructions?|commands?|context|rules?|guidelines?)",
+        "Prompt injection: 'disregard previous instructions' pattern detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"forget\s+(everything|all\s+previous|your\s+(instructions?|training|guidelines?|rules?))",
+        "Prompt injection: 'forget your instructions' pattern detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE | re.MULTILINE,
+        r"^system:\s",
+        "Prompt injection: line starts with 'system:' — may hijack system prompt",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"<system>",
+        "Prompt injection: <system> tag may inject system-level instructions",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bact\s+as\b.{0,40}\b(hacker|attacker|evil|malicious|unrestricted|jailbreak|no[- ]restriction)",
+        "Prompt injection: 'act as [unconstrained role]' persona injection pattern",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"you\s+are\s+now\b.{0,40}\b(hacker|unrestricted|jailbreak|DAN|evil|no[- ]restriction)",
+        "Prompt injection: 'you are now [persona]' identity injection pattern",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\b(jailbreak|DAN)\s+mode\b",
+        "Prompt injection: jailbreak/DAN mode activation pattern detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"override\s+(your|all|the)\s+(instructions?|training|guidelines?|safety[\s_-]measures?|constraints?)",
+        "Prompt injection: instruction override attempt detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_MEDIUM,
+        re.IGNORECASE,
+        r"\[INST\]|\[/INST\]",
+        "Prompt injection: LLaMA/instruction-tuning special tokens detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_MEDIUM,
+        re.IGNORECASE,
+        r"pretend\s+(you\s+are|to\s+be).{0,60}(unrestricted|no\s+rules?|no\s+restrictions?|no\s+limits?|without\s+restriction)",
+        "Prompt injection: 'pretend to be unrestricted' pattern detected",
+    ),
+    _rule(
+        "prompt-injection",
+        SEVERITY_MEDIUM,
+        re.IGNORECASE,
+        r"<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>|\[SYSTEM\]",
+        "Prompt injection: model special tokens detected (ChatML/GPT format)",
+    ),
     # ── Destructive Commands ────────────────────────────────────────────────
-    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE,
-          r"\brm\s+-[rRf]*[rf][rRf]*\s+[/~]",
-          "Destructive command: recursive/force rm on root or home path"),
-    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
-          r"\brm\s+-[rRf]*[rf][rRf]*\s+(?:\*|\.\.?(?:[/\\]|(?=\s|$)))",
-          "Destructive command: recursive/force rm with glob or relative path (may wipe project directory)"),
-    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bdel(?:ete)?\s+/[fsqFSQ]|\bdel\s+\*\.[*a-zA-Z]",
-          "Destructive command: Windows forced/silent delete pattern"),
-    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE | re.MULTILINE,
-          r"\bformat\s+[a-zA-Z]:\s*(?:/[a-zA-Z0-9]|\s*$)",
-          "Destructive command: Windows disk format command detected"),
-    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX)\b",
-          "Destructive command: SQL DROP statement detected"),
-    _rule("destructive", SEVERITY_MEDIUM, re.IGNORECASE,
-          r"\bDELETE\s+FROM\s+\w",
-          "Destructive command: SQL DELETE FROM statement detected"),
-    _rule("destructive", SEVERITY_MEDIUM, re.IGNORECASE,
-          r"\bTRUNCATE\s+TABLE\b",
-          "Destructive command: SQL TRUNCATE TABLE statement detected"),
-    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bkill\s+-9\s+(-1|1)\b",
-          "Destructive command: kill -9 all/init processes detected"),
-    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bshutdown\s+(now|/[sS]|-[hHrRpP])\b",
-          "Destructive command: system shutdown/reboot command detected"),
-    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE,
-          r"\bmkfs\b",
-          "Destructive command: filesystem format utility (mkfs) detected"),
-    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE,
-          r"\bdd\b[^\n]*\bof=/dev/(?:(?:s|h|xv|v)d|nvme\d+n\d+|mmcblk\d+|dm-\d+|loop\d+|mapper/\S+)",
-          "Destructive command: dd writing to raw block device detected"),
-
+    _rule(
+        "destructive",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE,
+        r"\brm\s+-[rRf]*[rf][rRf]*\s+[/~]",
+        "Destructive command: recursive/force rm on root or home path",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\brm\s+-[rRf]*[rf][rRf]*\s+(?:\*|\.\.?(?:[/\\]|(?=\s|$)))",
+        "Destructive command: recursive/force rm with glob or relative path (may wipe project directory)",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bdel(?:ete)?\s+/[fsqFSQ]|\bdel\s+\*\.[*a-zA-Z]",
+        "Destructive command: Windows forced/silent delete pattern",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE | re.MULTILINE,
+        r"\bformat\s+[a-zA-Z]:\s*(?:/[a-zA-Z0-9]|\s*$)",
+        "Destructive command: Windows disk format command detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX)\b",
+        "Destructive command: SQL DROP statement detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_MEDIUM,
+        re.IGNORECASE,
+        r"\bDELETE\s+FROM\s+\w",
+        "Destructive command: SQL DELETE FROM statement detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_MEDIUM,
+        re.IGNORECASE,
+        r"\bTRUNCATE\s+TABLE\b",
+        "Destructive command: SQL TRUNCATE TABLE statement detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bkill\s+-9\s+(-1|1)\b",
+        "Destructive command: kill -9 all/init processes detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bshutdown\s+(now|/[sS]|-[hHrRpP])\b",
+        "Destructive command: system shutdown/reboot command detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE,
+        r"\bmkfs\b",
+        "Destructive command: filesystem format utility (mkfs) detected",
+    ),
+    _rule(
+        "destructive",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE,
+        r"\bdd\b[^\n]*\bof=/dev/(?:(?:s|h|xv|v)d|nvme\d+n\d+|mmcblk\d+|dm-\d+|loop\d+|mapper/\S+)",
+        "Destructive command: dd writing to raw block device detected",
+    ),
     # ── Exfiltration ────────────────────────────────────────────────────────
-    _rule("exfiltration", SEVERITY_CRITICAL, re.IGNORECASE,
-          r"\bcurl\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl|ruby|exec)\b",
-          "Exfiltration: curl-pipe-to-shell pattern (remote code execution risk)"),
-    _rule("exfiltration", SEVERITY_CRITICAL, re.IGNORECASE,
-          r"\bwget\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl)\b",
-          "Exfiltration: wget-pipe-to-shell pattern (remote code execution risk)"),
-    _rule("exfiltration", SEVERITY_CRITICAL, re.IGNORECASE,
-          r"\bbase64\s*(?:--decode|-d)\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl)\b",
-          "Exfiltration: base64 decode pipe to shell (obfuscated RCE risk)"),
-    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bnc\s+\d{1,3}(?:\.\d{1,3}){3}\s+\d{2,5}\b",
-          "Exfiltration: netcat to IP address/port detected"),
-    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
-          r"(?:curl|wget)\b[^\n`]*\$\(",
-          "Exfiltration: command substitution in curl/wget URL (data exfiltration risk)"),
-    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
-          r"(?:curl|wget)\b[^\n`]*\$\{?(?:[A-Z0-9]*_)*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE|AUTH)(?![A-Za-z])\w*\}?",
-          "Exfiltration: secret-like environment variable in curl/wget (credential leak risk)"),
-    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
-          r"/dev/tcp/[^/\s]+/\d+",
-          "Exfiltration: bash /dev/tcp network redirect detected"),
-    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
-          r"\bpython3?\s+-c\s+['\"][^'\"]*(?:import\s+socket|urllib\.request|http\.client|requests\.)"
-          r"[^'\"]*(?:send|post|get|connect)\(",
-          "Exfiltration: Python one-liner with network socket/HTTP call detected"),
-
+    _rule(
+        "exfiltration",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE,
+        r"\bcurl\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl|ruby|exec)\b",
+        "Exfiltration: curl-pipe-to-shell pattern (remote code execution risk)",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE,
+        r"\bwget\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl)\b",
+        "Exfiltration: wget-pipe-to-shell pattern (remote code execution risk)",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_CRITICAL,
+        re.IGNORECASE,
+        r"\bbase64\s*(?:--decode|-d)\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl)\b",
+        "Exfiltration: base64 decode pipe to shell (obfuscated RCE risk)",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bnc\s+\d{1,3}(?:\.\d{1,3}){3}\s+\d{2,5}\b",
+        "Exfiltration: netcat to IP address/port detected",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"(?:curl|wget)\b[^\n`]*\$\(",
+        "Exfiltration: command substitution in curl/wget URL (data exfiltration risk)",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"(?:curl|wget)\b[^\n`]*\$\{?(?:[A-Z0-9]*_)*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE|AUTH)(?![A-Za-z])\w*\}?",
+        "Exfiltration: secret-like environment variable in curl/wget (credential leak risk)",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"/dev/tcp/[^/\s]+/\d+",
+        "Exfiltration: bash /dev/tcp network redirect detected",
+    ),
+    _rule(
+        "exfiltration",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\bpython3?\s+-c\s+['\"][^'\"]*(?:import\s+socket|urllib\.request|http\.client|requests\.)"
+        r"[^'\"]*(?:send|post|get|connect)\(",
+        "Exfiltration: Python one-liner with network socket/HTTP call detected",
+    ),
     # ── Obfuscation ─────────────────────────────────────────────────────────
-    _rule("obfuscation", SEVERITY_MEDIUM, 0,
-          r"[A-Za-z0-9+/]{100,}={0,2}",
-          "Obfuscation: unusually long base64-like string may hide a payload"),
-    _rule("obfuscation", SEVERITY_HIGH, 0,
-          "[\u202e\u2066\u2067\u2069\u200b\u200c\u200d\ufeff]",
-          "Obfuscation: Unicode direction-override or invisible character detected"),
-    _rule("obfuscation", SEVERITY_HIGH, re.IGNORECASE,
-          r"\beval\s*\(\s*base64_decode\s*\(",
-          "Obfuscation: eval(base64_decode()) PHP-style obfuscated code execution"),
-    _rule("obfuscation", SEVERITY_MEDIUM, re.IGNORECASE,
-          r"(?:\\x[0-9a-fA-F]{2}){4,}",
-          r"Obfuscation: multiple hex escape sequences (\xNN) may hide malicious content"),
-    _rule("obfuscation", SEVERITY_LOW, re.IGNORECASE,
-          r"(?:%[0-9a-fA-F]{2}){4,}",
-          "Obfuscation: multiple URL-encoded sequences may conceal path traversal or injection"),
+    _rule(
+        "obfuscation",
+        SEVERITY_MEDIUM,
+        0,
+        r"[A-Za-z0-9+/]{100,}={0,2}",
+        "Obfuscation: unusually long base64-like string may hide a payload",
+    ),
+    _rule(
+        "obfuscation",
+        SEVERITY_HIGH,
+        0,
+        "[\u202e\u2066\u2067\u2069\u200b\u200c\u200d\ufeff]",
+        "Obfuscation: Unicode direction-override or invisible character detected",
+    ),
+    _rule(
+        "obfuscation",
+        SEVERITY_HIGH,
+        re.IGNORECASE,
+        r"\beval\s*\(\s*base64_decode\s*\(",
+        "Obfuscation: eval(base64_decode()) PHP-style obfuscated code execution",
+    ),
+    _rule(
+        "obfuscation",
+        SEVERITY_MEDIUM,
+        re.IGNORECASE,
+        r"(?:\\x[0-9a-fA-F]{2}){4,}",
+        r"Obfuscation: multiple hex escape sequences (\xNN) may hide malicious content",
+    ),
+    _rule(
+        "obfuscation",
+        SEVERITY_LOW,
+        re.IGNORECASE,
+        r"(?:%[0-9a-fA-F]{2}){4,}",
+        "Obfuscation: multiple URL-encoded sequences may conceal path traversal or injection",
+    ),
 ]
 
 
@@ -254,13 +396,16 @@ def validate_security(content: str) -> list[Finding]:
         m = rule.rx.search(scanned)
         if m:
             line_no = scanned[: m.start()].count("\n") + 1
-            findings.append(Finding(
-                severity=rule.severity,
-                category=rule.category,
-                message=f"{rule.message} (line {line_no})",
-                line=line_no,
-            ))
+            findings.append(
+                Finding(
+                    severity=rule.severity,
+                    category=rule.category,
+                    message=f"{rule.message} (line {line_no})",
+                    line=line_no,
+                )
+            )
     return findings
+
 
 def validate(path: Path) -> tuple[list[str], list[str]]:
     """Validate a SKILL.md file. Returns (errors, warnings)."""
@@ -321,8 +466,7 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
                             )
                 else:
                     errors.append(
-                        "'name' field has no value — it must not be empty "
-                        "(e.g. `name: my-skill` not just `name:`)."
+                        "'name' field has no value — it must not be empty (e.g. `name: my-skill` not just `name:`)."
                     )
             if "description:" not in fm:
                 errors.append("Frontmatter missing 'description' field")
@@ -366,35 +510,28 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
     # --- 2. Line count ---
     line_count = len(lines)
     if line_count > MAX_LINES:
-        errors.append(
-            f"File is {line_count} lines (max {MAX_LINES}). "
-            f"Move detail into references/ files."
-        )
+        errors.append(f"File is {line_count} lines (max {MAX_LINES}). Move detail into references/ files.")
     elif line_count > MAX_LINES * 0.8:
         warnings.append(
-            f"File is {line_count}/{MAX_LINES} lines — approaching limit. "
-            f"Consider moving detail to references/."
+            f"File is {line_count}/{MAX_LINES} lines — approaching limit. Consider moving detail to references/."
         )
 
     # --- 3. Examples ---
     example_count = content.count("<example>")
     if example_count == 0:
-        errors.append(
-            "No <example> blocks found. Include 1-3 realistic examples "
-            "wrapped in <example> tags."
-        )
+        errors.append("No <example> blocks found. Include 1-3 realistic examples wrapped in <example> tags.")
 
     # Check for matching closing tags
     close_count = content.count("</example>")
     if example_count != close_count:
-        errors.append(
-            f"Mismatched example tags: {example_count} opening, {close_count} closing"
-        )
+        errors.append(f"Mismatched example tags: {example_count} opening, {close_count} closing")
 
     # --- 4. Required sections ---
     has_title = bool(re.search(r"^# .+", content, re.MULTILINE))
     has_when = bool(re.search(r"##.*(?:when|trigger|activat)", content, re.IGNORECASE | re.MULTILINE))
-    has_workflow = bool(re.search(r"##.*(?:workflow|process|steps|how|phase|usage)", content, re.IGNORECASE | re.MULTILINE))
+    has_workflow = bool(
+        re.search(r"##.*(?:workflow|process|steps|how|phase|usage)", content, re.IGNORECASE | re.MULTILINE)
+    )
 
     if not has_title:
         errors.append("Missing title (# heading)")
@@ -489,11 +626,11 @@ def main():
     if display_path.exists():
         line_count = len(display_path.read_text(encoding="utf-8-sig", errors="replace").splitlines())
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Skill Validation: {display_path.name}")
     print(f"  Path: {display_path}")
     print(f"  Lines: {line_count}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     if errors:
         print(f"❌ ERRORS ({len(errors)}):")
@@ -514,15 +651,19 @@ def main():
 
     crit = _sev(errors, SEVERITY_CRITICAL)
     high = _sev(errors, SEVERITY_HIGH)
-    med  = _sev(warnings, SEVERITY_MEDIUM)
-    low  = _sev(warnings, SEVERITY_LOW)
+    med = _sev(warnings, SEVERITY_MEDIUM)
+    low = _sev(warnings, SEVERITY_LOW)
     sec_total = crit + high + med + low
     if sec_total:
         parts = []
-        if crit: parts.append(f"critical={crit}")
-        if high: parts.append(f"high={high}")
-        if med:  parts.append(f"medium={med}")
-        if low:  parts.append(f"low={low}")
+        if crit:
+            parts.append(f"critical={crit}")
+        if high:
+            parts.append(f"high={high}")
+        if med:
+            parts.append(f"medium={med}")
+        if low:
+            parts.append(f"low={low}")
         print(f"🔒 Security findings: {' '.join(parts)}\n")
 
     # Verdict: FAIL / WARN / PASS
