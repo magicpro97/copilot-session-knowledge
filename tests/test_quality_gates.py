@@ -1039,7 +1039,13 @@ def test_playwright_behavioral_project_contract():
         bool(behavioral_body),
         "playwright.config.ts missing behavioral project",
     )
-    for spec in ("smoke.spec.ts", "shortcuts.spec.ts", "chat.spec.ts"):
+    for spec in (
+        "smoke.spec.ts",
+        "shortcuts.spec.ts",
+        "chat.spec.ts",
+        "diagnostics.spec.ts",
+        "broker-mode.spec.ts",
+    ):
         test(
             f"playwright behavioral project includes {spec}",
             spec in behavioral_body,
@@ -1074,6 +1080,11 @@ def test_hooks_md_documents_local_vs_ci():
         "HOOKS.md notes full test suite is NOT enforced by local hook",
         "not" in content.lower() and "run_all_tests" in content,
         "HOOKS.md should clarify that run_all_tests is not enforced by the local pre-commit hook",
+    )
+    test(
+        "HOOKS.md documents E2E smoke/visual split",
+        "e2e-smoke" in content and "e2e-visual" in content and "workflow_dispatch" in content,
+        "docs/HOOKS.md should document e2e-smoke and manual-only e2e-visual",
     )
 
 

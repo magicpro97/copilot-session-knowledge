@@ -92,7 +92,7 @@ The `/chat` operator console does **not** introduce a new hook class. Existing g
 
 - Python-side operator files (`browse/core/operator_console.py`, `browse/api/operator.py`) stay inside the normal `browse/` syntax + Ruff surface.
 - Frontend operator files under `browse-ui/src/app/chat/` and `browse-ui/src/components/chat/` stay under `block-edit-dist`, `block-unsafe-html`, `nextjs-typecheck-reminder`, and the staged Prettier check in `pre-commit`.
-- `browse-ui/e2e/chat.spec.ts` is not hook-enforced directly; quality for that surface comes from `pnpm test:e2e` locally and the manual-dispatch CI `e2e` job.
+- `browse-ui/e2e/chat.spec.ts` is not hook-enforced directly; quality for that surface comes from `pnpm test:e2e` locally and the always-on CI `e2e-smoke` job. Screenshot-based visual snapshots stay in the manual-only `e2e-visual` job gated by `workflow_dispatch`.
 
 ### Browse host management surfaces
 
