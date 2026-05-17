@@ -6539,15 +6539,19 @@ def _configure_goal_runtime() -> None:
         HANDOFF_TRIAGE_STATUSES=HANDOFF_TRIAGE_STATUSES,
         SCOPE_ESCALATION_STATUS=SCOPE_ESCALATION_STATUS,
         SCOPE_REDUCTION_STATUS=SCOPE_REDUCTION_STATUS,
-        _agent_profile_meta=_agent_profile_meta,
-        _bundle_enabled=_bundle_enabled,
-        _classify_quota_signal=_classify_quota_signal,
-        _describe_scope_reclassification=_describe_scope_reclassification,
-        _discover_spec_artifacts=_discover_spec_artifacts,
-        _reclassification_record=_reclassification_record,
-        _render_agent_profile_section=_render_agent_profile_section,
-        _run_briefing=_run_briefing,
-        _validate_tentacle_name=_validate_tentacle_name,
+        find_git_root=lambda: find_git_root(),
+        get_tentacles_dir=lambda session_dir=None: get_tentacles_dir(session_dir),
+        _agent_profile_meta=lambda profile: _agent_profile_meta(profile),
+        _bundle_enabled=lambda args: _bundle_enabled(args),
+        _classify_quota_signal=lambda text: _classify_quota_signal(text),
+        _describe_scope_reclassification=lambda status: _describe_scope_reclassification(status),
+        _discover_spec_artifacts=lambda repo_root=None: _discover_spec_artifacts(repo_root),
+        _reclassification_record=lambda meta: _reclassification_record(meta),
+        _render_agent_profile_section=lambda profile, *, prompt=False: _render_agent_profile_section(
+            profile, prompt=prompt
+        ),
+        _run_briefing=lambda query: _run_briefing(query),
+        _validate_tentacle_name=lambda name, tentacles: _validate_tentacle_name(name, tentacles),
     )
 
 
