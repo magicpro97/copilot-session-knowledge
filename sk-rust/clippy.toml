@@ -1,0 +1,5 @@
+# Advisory complexity thresholds for sk-rust. These values are measured first in
+# CI before any future enforcement change.
+cognitive-complexity-threshold = 25
+too-many-lines-threshold = 400
+too-many-arguments-threshold = 8
