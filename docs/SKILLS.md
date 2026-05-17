@@ -209,7 +209,7 @@ python3 ~/.copilot/tools/tentacle.py marker-cleanup --apply  # remove stale entr
 
 ### Meta-skill rollout — global vs project scope
 
-`setup-project.py` deploys all 15 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
+`setup-project.py` deploys all 16 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
 
 **Vendored skills** (`karpathy-guidelines`) are deployed to **both** Copilot CLI (`.github/skills/`) and Claude Code (`.claude/skills/`) by `setup-project.py`. All other skills in `INSTALL_ITEMS["skills"]` are deployed to **Copilot CLI only** (`.github/skills/`). The `VENDORED_SKILLS` tuple in both `setup-project.py` and `auto-update-tools.py` is the authoritative list of dual-host skills.
 
