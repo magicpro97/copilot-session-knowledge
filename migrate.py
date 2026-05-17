@@ -2,13 +2,13 @@
 """Versioned DB migration for session-knowledge tools."""
 
 import ast
-from datetime import datetime, timezone
 import hashlib
 import os
-from pathlib import Path
 import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
