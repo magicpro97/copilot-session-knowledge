@@ -8,6 +8,8 @@ Verifies:
 Run: python3 test_quality_gates.py
 """
 
+import ast
+import json
 import os
 import re
 import shutil
@@ -26,6 +28,7 @@ FAIL = 0
 REPO = Path(__file__).parent.parent
 
 CHECK_SYNTAX = REPO / "scripts" / "check_syntax.py"
+CHECK_COMPLEXITY = REPO / "scripts" / "check_complexity.py"
 RUN_ALL_TESTS = REPO / "run_all_tests.py"
 FIXTURE = REPO / "tests" / "fixtures" / "broken_syntax_example.py.txt"
 
@@ -42,6 +45,7 @@ def test(name: str, condition: bool, detail: str = ""):
 
 # ── Test 1: check_syntax.py detects broken syntax ───────────────────────────
 
+
 def test_syntax_gate_detects_broken():
     """Copy the broken fixture to a scratch dir as .py, run check_syntax.py, expect exit 1."""
     scratch = Path(REPO) / "_quality_gate_scratch"
@@ -51,7 +55,8 @@ def test_syntax_gate_detects_broken():
         shutil.copy(FIXTURE, broken_py)
         result = subprocess.run(
             [sys.executable, str(CHECK_SYNTAX), str(scratch)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         test(
             "check_syntax exits non-zero for broken file",
@@ -70,6 +75,7 @@ def test_syntax_gate_detects_broken():
 
 # ── Test 2: check_syntax.py passes on valid Python ──────────────────────────
 
+
 def test_syntax_gate_passes_valid():
     """Create a valid .py file, run check_syntax.py, expect exit 0."""
     scratch = Path(REPO) / "_quality_gate_scratch2"
@@ -79,7 +85,8 @@ def test_syntax_gate_passes_valid():
         valid_py.write_text("def hello():\n    return 'world'\n")
         result = subprocess.run(
             [sys.executable, str(CHECK_SYNTAX), str(scratch)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         test(
             "check_syntax exits 0 for valid file",
@@ -92,11 +99,13 @@ def test_syntax_gate_passes_valid():
 
 # ── Test 3: run_all_tests.py --dry works ────────────────────────────────────
 
+
 def test_run_all_tests_dry():
     """run_all_tests.py --dry should list files and exit 0."""
     result = subprocess.run(
         [sys.executable, str(RUN_ALL_TESTS), "--dry"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         cwd=str(REPO),
     )
     test(
@@ -113,11 +122,13 @@ def test_run_all_tests_dry():
 
 # ── Test 4: run_all_tests.py --help works ───────────────────────────────────
 
+
 def test_run_all_tests_help():
     """run_all_tests.py --help should print usage and exit 0."""
     result = subprocess.run(
         [sys.executable, str(RUN_ALL_TESTS), "--help"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         cwd=str(REPO),
     )
     test(
@@ -129,11 +140,13 @@ def test_run_all_tests_help():
 
 # ── Test 5: scripts/check_syntax.py is self-consistent ──────────────────────
 
+
 def test_check_syntax_is_valid_python():
     """check_syntax.py itself should pass its own check."""
     result = subprocess.run(
         [sys.executable, "-m", "py_compile", str(CHECK_SYNTAX)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "check_syntax.py compiles cleanly",
@@ -142,16 +155,18 @@ def test_check_syntax_is_valid_python():
     )
 
 
+# ── SyntaxGateRule.evaluate() unit tests ────────────────────────────────────
 
-# ── Test 6–11: SyntaxGateRule.evaluate() unit tests ─────────────────────────
 
 def _make_syntax_gate():
     """Import and return a fresh SyntaxGateRule instance."""
     import importlib
     import sys as _sys
+
     _sys.path.insert(0, str(REPO))
     # Import the package hierarchy so relative imports resolve.
     import hooks.rules  # noqa: F401
+
     mod = importlib.import_module("hooks.rules.syntax_gate")
     return mod.SyntaxGateRule()
 
@@ -170,10 +185,13 @@ def test_syntax_gate_rule():
         # (a) edit with indented snippet → final file valid → allow
         target_a = tmp / "module_a.py"
         target_a.write_text("def foo():\n    x = 1\n")
-        result_a = rule.evaluate("preToolUse", {
-            "toolName": "edit",
-            "toolArgs": {"path": str(target_a), "old_str": "    x = 1\n", "new_str": "    return 42\n"},
-        })
+        result_a = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {"path": str(target_a), "old_str": "    x = 1\n", "new_str": "    return 42\n"},
+            },
+        )
         test(
             "SyntaxGateRule: edit indented snippet → valid final file → allow",
             result_a is None,
@@ -183,10 +201,13 @@ def test_syntax_gate_rule():
         # (b) edit that introduces a true syntax error → deny
         target_b = tmp / "module_b.py"
         target_b.write_text("def foo():\n    x = 1\n")
-        result_b = rule.evaluate("preToolUse", {
-            "toolName": "edit",
-            "toolArgs": {"path": str(target_b), "old_str": "    x = 1\n", "new_str": "    if x:\nreturn\n"},
-        })
+        result_b = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {"path": str(target_b), "old_str": "    x = 1\n", "new_str": "    if x:\nreturn\n"},
+            },
+        )
         test(
             "SyntaxGateRule: edit introducing syntax error → deny",
             result_b is not None and result_b.get("permissionDecision") == "deny",
@@ -194,10 +215,13 @@ def test_syntax_gate_rule():
         )
 
         # (c) create with valid file_text → allow
-        result_c = rule.evaluate("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"path": str(tmp / "new_c.py"), "file_text": "print('hi')\n"},
-        })
+        result_c = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"path": str(tmp / "new_c.py"), "file_text": "print('hi')\n"},
+            },
+        )
         test(
             "SyntaxGateRule: create with valid file_text → allow",
             result_c is None,
@@ -205,10 +229,13 @@ def test_syntax_gate_rule():
         )
 
         # (d) create with broken file_text → deny
-        result_d = rule.evaluate("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"path": str(tmp / "new_d.py"), "file_text": "def foo(:\n"},
-        })
+        result_d = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"path": str(tmp / "new_d.py"), "file_text": "def foo(:\n"},
+            },
+        )
         test(
             "SyntaxGateRule: create with broken file_text → deny",
             result_d is not None and result_d.get("permissionDecision") == "deny",
@@ -216,10 +243,13 @@ def test_syntax_gate_rule():
         )
 
         # (e) non-python path → allow (no-op)
-        result_e = rule.evaluate("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"path": str(tmp / "README.md"), "file_text": "def foo(:\n"},
-        })
+        result_e = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"path": str(tmp / "README.md"), "file_text": "def foo(:\n"},
+            },
+        )
         test(
             "SyntaxGateRule: non-.py path → allow",
             result_e is None,
@@ -227,10 +257,13 @@ def test_syntax_gate_rule():
         )
 
         # (f) edit on non-existent file → allow
-        result_f = rule.evaluate("preToolUse", {
-            "toolName": "edit",
-            "toolArgs": {"path": str(tmp / "ghost.py"), "old_str": "x", "new_str": "y"},
-        })
+        result_f = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {"path": str(tmp / "ghost.py"), "old_str": "x", "new_str": "y"},
+            },
+        )
         test(
             "SyntaxGateRule: edit on non-existent file → allow",
             result_f is None,
@@ -241,12 +274,191 @@ def test_syntax_gate_rule():
 test_syntax_gate_rule()
 
 
-
 test_syntax_gate_detects_broken()
 test_syntax_gate_passes_valid()
 test_run_all_tests_dry()
 test_run_all_tests_help()
 test_check_syntax_is_valid_python()
+
+
+# ── Test 6–12: check_complexity.py reporter ─────────────────────────────────
+
+
+def test_check_complexity_text_report():
+    """check_complexity.py should report file and function metrics."""
+    result = subprocess.run(
+        [sys.executable, str(CHECK_COMPLEXITY), "tentacle.py"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    output = result.stdout + result.stderr
+    test(
+        "check_complexity text report exits 0 for tentacle.py",
+        result.returncode == 0,
+        f"returncode={result.returncode}, output={output[:300]}",
+    )
+    test(
+        "check_complexity text report includes file/function metrics",
+        "tentacle.py" in output and "functions=" in output and "Complexity report" in output,
+        f"output={output[:300]}",
+    )
+
+
+def test_check_complexity_json_report():
+    """--json output should be parseable and contain the frozen top-level shape."""
+    result = subprocess.run(
+        [sys.executable, str(CHECK_COMPLEXITY), "--json", "browse"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test(
+        "check_complexity --json exits 0 for browse/",
+        result.returncode == 0,
+        f"returncode={result.returncode}, stderr={result.stderr[:300]}",
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        test("check_complexity --json emits parseable JSON", False, str(exc))
+        return
+    test(
+        "check_complexity JSON top-level shape",
+        sorted(payload) == ["errors", "files", "summary", "thresholds"],
+        f"keys={sorted(payload)}",
+    )
+    test(
+        "check_complexity JSON summary has file/function counts",
+        isinstance(payload["summary"].get("files_checked"), int)
+        and isinstance(payload["summary"].get("functions_checked"), int),
+        f"summary={payload.get('summary')}",
+    )
+
+
+def test_check_complexity_self_and_invalid_path():
+    """Self-check exits 0; missing paths exit non-zero with a clear error."""
+    self_result = subprocess.run(
+        [sys.executable, str(CHECK_COMPLEXITY), "scripts/check_complexity.py"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test(
+        "check_complexity exits 0 for itself",
+        self_result.returncode == 0,
+        f"returncode={self_result.returncode}, output={self_result.stdout + self_result.stderr}",
+    )
+
+    missing_result = subprocess.run(
+        [sys.executable, str(CHECK_COMPLEXITY), "missing-nope.py"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test(
+        "check_complexity invalid path exits non-zero",
+        missing_result.returncode != 0,
+        f"returncode={missing_result.returncode}",
+    )
+    test(
+        "check_complexity invalid path has clear error",
+        "path does not exist" in (missing_result.stdout + missing_result.stderr),
+        f"output={missing_result.stdout + missing_result.stderr}",
+    )
+
+    mixed_result = subprocess.run(
+        [sys.executable, str(CHECK_COMPLEXITY), "--json", "scripts/check_complexity.py", "missing-nope.py"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test(
+        "check_complexity mixed valid+invalid path exits non-zero",
+        mixed_result.returncode != 0,
+        f"returncode={mixed_result.returncode}",
+    )
+    try:
+        mixed_payload = json.loads(mixed_result.stdout)
+    except json.JSONDecodeError as exc:
+        test("check_complexity mixed valid+invalid emits parseable JSON", False, str(exc))
+        mixed_payload = {"files": [], "errors": []}
+    test(
+        "check_complexity mixed valid+invalid still reports valid targets",
+        any(item.get("path") == "scripts/check_complexity.py" for item in mixed_payload.get("files", []))
+        and any("path does not exist" in error for error in mixed_payload.get("errors", [])),
+        f"payload={mixed_payload}",
+    )
+
+
+def test_check_complexity_null_byte_json_error():
+    """Null-byte files should return structured JSON errors, not tracebacks."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bad_file = Path(tmpdir) / "bad.py"
+        bad_file.write_bytes(b"print('before')\n\x00\n")
+        result = subprocess.run(
+            [sys.executable, str(CHECK_COMPLEXITY), "--json", str(bad_file)],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO),
+        )
+    test(
+        "check_complexity null-byte file exits non-zero",
+        result.returncode != 0,
+        f"returncode={result.returncode}",
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        test("check_complexity null-byte file emits parseable JSON", False, str(exc))
+        return
+    test(
+        "check_complexity null-byte file reports structured error",
+        payload.get("files") == []
+        and any(
+            "null" in error.lower() or "source code string" in error.lower() for error in payload.get("errors", [])
+        ),
+        f"payload={payload}",
+    )
+
+
+def test_check_complexity_stdlib_imports_only():
+    """The complexity reporter must stay stdlib-only."""
+    allowed = {"argparse", "ast", "dataclasses", "json", "os", "pathlib", "sys"}
+    tree = ast.parse(CHECK_COMPLEXITY.read_text(encoding="utf-8"))
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split(".", 1)[0])
+    test(
+        "check_complexity uses stdlib imports only",
+        imports <= allowed,
+        f"imports={sorted(imports)}",
+    )
+
+
+def test_check_complexity_script_compiles():
+    """check_complexity.py itself should parse/compile cleanly."""
+    result = subprocess.run(
+        [sys.executable, "-m", "py_compile", str(CHECK_COMPLEXITY)],
+        capture_output=True,
+        text=True,
+    )
+    test(
+        "check_complexity.py compiles cleanly",
+        result.returncode == 0,
+        result.stderr,
+    )
+
+
+test_check_complexity_text_report()
+test_check_complexity_json_report()
+test_check_complexity_self_and_invalid_path()
+test_check_complexity_null_byte_json_error()
+test_check_complexity_stdlib_imports_only()
+test_check_complexity_script_compiles()
 
 
 # ── Test 12–20: Ruff surface consistency ────────────────────────────────────
@@ -261,12 +473,23 @@ CONTRIBUTING = REPO / "CONTRIBUTING.md"
 
 # CI Ruff surface (extracted from ci.yml)
 CI_RUFF_FILES = [
-    "embed.py", "scout-config.py", "scout-status.py",
-    "sync-config.py", "sync-daemon.py", "sync-status.py",
-    "migrate.py", "generate-summary.py",
-    "briefing.py", "learn.py", "query-session.py", "extract-knowledge.py",
-    "build-session-index.py", "tentacle.py",
-    "checkpoint-diff.py", "checkpoint-restore.py", "checkpoint-save.py",
+    "embed.py",
+    "scout-config.py",
+    "scout-status.py",
+    "sync-config.py",
+    "sync-daemon.py",
+    "sync-status.py",
+    "migrate.py",
+    "generate-summary.py",
+    "briefing.py",
+    "learn.py",
+    "query-session.py",
+    "extract-knowledge.py",
+    "build-session-index.py",
+    "tentacle.py",
+    "checkpoint-diff.py",
+    "checkpoint-restore.py",
+    "checkpoint-save.py",
 ]
 
 
@@ -285,7 +508,7 @@ def test_ruff_surface_in_pre_commit():
     test("pre-commit covers browse/*.py", "browse/" in content or "browse/*" in content)
     test(
         "pre-commit covers hooks/ Python surface",
-        "path.startswith((\"browse/\", \"hooks/\", \"scripts/\"))" in content
+        'path.startswith(("browse/", "hooks/", "scripts/"))' in content
         or "hooks/*)" in content
         or "hooks/*.py" in content
         or "hooks/*/*.py" in content,
@@ -312,17 +535,23 @@ def test_hooks_md_documents_local_vs_ci():
         test("docs/HOOKS.md exists", False)
         return
     content = HOOKS_MD.read_text(encoding="utf-8")
-    test("HOOKS.md documents local-vs-CI section",
-         "Local vs CI" in content,
-         "Add 'Local vs CI enforcement boundary' section to docs/HOOKS.md")
+    test(
+        "HOOKS.md documents local-vs-CI section",
+        "Local vs CI" in content,
+        "Add 'Local vs CI enforcement boundary' section to docs/HOOKS.md",
+    )
     # Key files from the Ruff surface should be named in HOOKS.md
     for fname in ("briefing.py", "tentacle.py", "browse/"):
-        test(f"HOOKS.md mentions Ruff surface file: {fname}",
-             fname in content,
-             f"'{fname}' not mentioned in HOOKS.md Ruff surface")
-    test("HOOKS.md notes full test suite is NOT enforced by local hook",
-         "not" in content.lower() and "run_all_tests" in content,
-         "HOOKS.md should clarify that run_all_tests is not enforced by the local pre-commit hook")
+        test(
+            f"HOOKS.md mentions Ruff surface file: {fname}",
+            fname in content,
+            f"'{fname}' not mentioned in HOOKS.md Ruff surface",
+        )
+    test(
+        "HOOKS.md notes full test suite is NOT enforced by local hook",
+        "not" in content.lower() and "run_all_tests" in content,
+        "HOOKS.md should clarify that run_all_tests is not enforced by the local pre-commit hook",
+    )
 
 
 def test_contributing_md_local_vs_ci():
@@ -331,15 +560,21 @@ def test_contributing_md_local_vs_ci():
         test("CONTRIBUTING.md exists", False)
         return
     content = CONTRIBUTING.read_text(encoding="utf-8")
-    test("CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
-         "briefing.py" in content,
-         "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py")
-    test("CONTRIBUTING.md mentions full Ruff scope (tentacle.py)",
-         "tentacle.py" in content,
-         "CONTRIBUTING.md Ruff scope is incomplete — missing tentacle.py")
-    test("CONTRIBUTING.md explains pre-commit is fast/scoped",
-         "fail-open" in content or "full test suite" in content.lower(),
-         "CONTRIBUTING.md should explain that the local pre-commit hook is scoped, not a full gate")
+    test(
+        "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
+        "briefing.py" in content,
+        "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py",
+    )
+    test(
+        "CONTRIBUTING.md mentions full Ruff scope (tentacle.py)",
+        "tentacle.py" in content,
+        "CONTRIBUTING.md Ruff scope is incomplete — missing tentacle.py",
+    )
+    test(
+        "CONTRIBUTING.md explains pre-commit is fast/scoped",
+        "fail-open" in content or "full test suite" in content.lower(),
+        "CONTRIBUTING.md should explain that the local pre-commit hook is scoped, not a full gate",
+    )
 
 
 def test_architecture_md_ruff_surface():
@@ -349,9 +584,11 @@ def test_architecture_md_ruff_surface():
         return
     content = ARCH_MD.read_text(encoding="utf-8")
     for fname in ("briefing.py", "tentacle.py", "browse/", "hooks/"):
-        test(f"ARCHITECTURE.md Ruff section names {fname}",
-             fname in content,
-             f"ARCHITECTURE.md quality-gates section missing '{fname}'")
+        test(
+            f"ARCHITECTURE.md Ruff section names {fname}",
+            fname in content,
+            f"ARCHITECTURE.md quality-gates section missing '{fname}'",
+        )
 
 
 def _registered_hook_rule_names():
@@ -427,9 +664,7 @@ def test_pre_commit_syntax_gate_present():
     )
     test(
         "pre-commit syntax gate is fail-open (checks for script existence)",
-        "SYNTAX_CHECKER" in content
-        and "if not SYNTAX_CHECKER.is_file()" in content
-        and "return 0" in content,
+        "SYNTAX_CHECKER" in content and "if not SYNTAX_CHECKER.is_file()" in content and "return 0" in content,
         "hooks/pre-commit syntax gate should skip silently when check_syntax.py is absent",
     )
 
@@ -492,10 +727,13 @@ def test_file_size_advisory_rule():
         large_py = "\n".join(f"print({i})" for i in range(700))
         small_py = "\n".join(f"print({i})" for i in range(250))
 
-        create_large = rule.evaluate("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"path": str(tmp / "large.py"), "file_text": large_py},
-        })
+        create_large = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"path": str(tmp / "large.py"), "file_text": large_py},
+            },
+        )
         test(
             "FileSizeAdvisoryRule: 700-line create returns advisory info",
             create_large is not None
@@ -505,10 +743,13 @@ def test_file_size_advisory_rule():
             f"got: {create_large}",
         )
 
-        create_small = rule.evaluate("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"path": str(tmp / "small.py"), "file_text": small_py},
-        })
+        create_small = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"path": str(tmp / "small.py"), "file_text": small_py},
+            },
+        )
         test(
             "FileSizeAdvisoryRule: 250-line create returns no warning",
             create_small is None,
@@ -517,14 +758,17 @@ def test_file_size_advisory_rule():
 
         target = tmp / "module.py"
         target.write_text("print('start')\n", encoding="utf-8")
-        edit_large = rule.evaluate("preToolUse", {
-            "toolName": "edit",
-            "toolArgs": {
-                "path": str(target),
-                "old_str": "print('start')\n",
-                "new_str": large_py,
+        edit_large = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {
+                    "path": str(target),
+                    "old_str": "print('start')\n",
+                    "new_str": large_py,
+                },
             },
-        })
+        )
         test(
             "FileSizeAdvisoryRule: 700-line edit returns advisory info",
             edit_large is not None
@@ -534,24 +778,30 @@ def test_file_size_advisory_rule():
             f"got: {edit_large}",
         )
 
-        edit_small = rule.evaluate("preToolUse", {
-            "toolName": "edit",
-            "toolArgs": {
-                "path": str(target),
-                "old_str": "print('start')\n",
-                "new_str": small_py,
+        edit_small = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {
+                    "path": str(target),
+                    "old_str": "print('start')\n",
+                    "new_str": small_py,
+                },
             },
-        })
+        )
         test(
             "FileSizeAdvisoryRule: 250-line edit returns no warning",
             edit_small is None,
             f"got: {edit_small}",
         )
 
-        create_js = rule.evaluate("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"path": str(tmp / "large.js"), "file_text": large_py},
-        })
+        create_js = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"path": str(tmp / "large.js"), "file_text": large_py},
+            },
+        )
         test(
             "FileSizeAdvisoryRule: non-Python file returns no warning",
             create_js is None,
@@ -613,10 +863,13 @@ def test_new_file_advisory_rule():
         test("NewFileAdvisoryRule import", False, str(exc))
         return
 
-    create_root = rule.evaluate("preToolUse", {
-        "toolName": "create",
-        "toolArgs": {"path": "new_script.py", "file_text": "print('hi')\n"},
-    })
+    create_root = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {"path": "new_script.py", "file_text": "print('hi')\n"},
+        },
+    )
     test(
         "NewFileAdvisoryRule: root Python create returns advisory info",
         create_root is not None
@@ -626,30 +879,39 @@ def test_new_file_advisory_rule():
         f"got: {create_root}",
     )
 
-    create_nested = rule.evaluate("preToolUse", {
-        "toolName": "create",
-        "toolArgs": {"path": "browse/core/new_module.py", "file_text": "print('hi')\n"},
-    })
+    create_nested = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {"path": "browse/core/new_module.py", "file_text": "print('hi')\n"},
+        },
+    )
     test(
         "NewFileAdvisoryRule: nested Python create returns no warning",
         create_nested is None,
         f"got: {create_nested}",
     )
 
-    edit_root = rule.evaluate("preToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"path": "new_script.py", "old_str": "x", "new_str": "y"},
-    })
+    edit_root = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"path": "new_script.py", "old_str": "x", "new_str": "y"},
+        },
+    )
     test(
         "NewFileAdvisoryRule: edit event returns no warning",
         edit_root is None,
         f"got: {edit_root}",
     )
 
-    create_abs_root = rule.evaluate("preToolUse", {
-        "toolName": "create",
-        "toolArgs": {"path": str(REPO / "new_script.py"), "file_text": "print('hi')\n"},
-    })
+    create_abs_root = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {"path": str(REPO / "new_script.py"), "file_text": "print('hi')\n"},
+        },
+    )
     test(
         "NewFileAdvisoryRule: absolute root Python create returns advisory info",
         create_abs_root is not None
@@ -658,13 +920,16 @@ def test_new_file_advisory_rule():
         f"got: {create_abs_root}",
     )
 
-    create_abs_nested = rule.evaluate("preToolUse", {
-        "toolName": "create",
-        "toolArgs": {
-            "path": str(REPO / "browse" / "core" / "new_module.py"),
-            "file_text": "print('hi')\n",
+    create_abs_nested = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {
+                "path": str(REPO / "browse" / "core" / "new_module.py"),
+                "file_text": "print('hi')\n",
+            },
         },
-    })
+    )
     test(
         "NewFileAdvisoryRule: absolute nested Python create returns no warning",
         create_abs_nested is None,
@@ -703,7 +968,7 @@ test_new_file_advisory_rule()
 test_new_file_advisory_registered()
 test_hooks_md_new_file_advisory_documented()
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
     print("🎉 All quality gate tests passed!")

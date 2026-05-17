@@ -56,8 +56,15 @@ The full test suite is **not** run by the hook. Run it manually before submittin
 
 ```bash
 python3 scripts/check_syntax.py
+python3 scripts/check_complexity.py
 python3 run_all_tests.py
 ```
+
+`scripts/check_complexity.py` is a stdlib-only advisory reporter for Python file
+size, function size, and approximate cyclomatic complexity. It scans root
+Python scripts plus `browse/`, `hooks/`, and `scripts/` by default, or accepts
+targeted paths such as `python3 scripts/check_complexity.py tentacle.py`. Use
+`--json` when CI or automation needs machine-readable metrics.
 
 For faster targeted loops, these focused checks are still useful:
 
