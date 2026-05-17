@@ -91,6 +91,22 @@ AUTO_RECALL_START = "<!-- AUTO-RECALL-START -->"
 AUTO_RECALL_END = "<!-- AUTO-RECALL-END -->"
 
 # ---------------------------------------------------------------------------
+# SEAM: coupling map / re-export contract
+# ---------------------------------------------------------------------------
+# Future extraction work should keep these symbols importable from tentacle.py.
+#
+# | Seam | Coupled callers | Symbols / behavior to preserve |
+# |------|-----------------|--------------------------------|
+# | runtime-state | tests/test_tentacle_runtime.py, hooks/session-end.py | get_tentacles_dir, file_locked, marker helpers |
+# | dispatch-bundle | swarm/dispatch CLI, reviewer bundle tests | _build_runtime_bundle, prompt render helpers |
+# | worktree-verify | worktree/verify/review-loop CLI | worktree helpers, _run_and_record_verification |
+# | goal-state | goal CLI, hooks/session-end.py, goal tests | _goal_* helpers and cmd_goal |
+# | core-cli | sk.py, sk-rust/src/commands/fallback.rs, shell users | main(), cmd_* subcommands and argparse names |
+# | handoff-complete | handoff/complete/audit tests | handoff parsing, completion, metrics helpers |
+# | stop-event-cleanup | Rust hook runner fallback and session lifecycle hooks | marker-cleanup CLI behavior |
+# | pr-automation | tests/test_tentacle_pr.py | _pr_* helpers and cmd_pr |
+
+# ---------------------------------------------------------------------------
 # Dispatched-subagent marker constants
 # ---------------------------------------------------------------------------
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
@@ -1549,7 +1565,7 @@ def _get_marker_state() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Context packet helpers
+# SEAM: dispatch-bundle context packet helpers
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONTEXT_PACKET_TEMPLATE = """\
@@ -2322,7 +2338,7 @@ def _render_dispatch_reviewer_prompt(name: str, bundle_info: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Git worktree helpers
+# SEAM: worktree-verify git worktree helpers
 # ---------------------------------------------------------------------------
 
 
@@ -2511,7 +2527,7 @@ def cmd_worktree(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Verification command
+# SEAM: worktree-verify verification command
 # ---------------------------------------------------------------------------
 
 
@@ -3771,7 +3787,7 @@ def _validate_tentacle_name(name: str, tentacles: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Goal state helpers
+# SEAM: goal-state helpers
 # ---------------------------------------------------------------------------
 
 
@@ -4945,7 +4961,7 @@ def _goal_criteria_run_one(criterion: dict, cwd: str, timeout: int = 60) -> tupl
 
 
 # ---------------------------------------------------------------------------
-# Goal CLI sub-command implementations
+# SEAM: goal-state CLI sub-command implementations
 # ---------------------------------------------------------------------------
 
 
@@ -8059,7 +8075,7 @@ def cmd_todo(args):
 
 
 # ---------------------------------------------------------------------------
-# Quota / rate-limit signal classification
+# SEAM: handoff-complete quota / rate-limit signal classification
 # ---------------------------------------------------------------------------
 
 # Minimal pattern list for classifying quota/rate-limit signals in dispatch output.
@@ -9524,7 +9540,7 @@ def cmd_bundle(args):
 
 
 # ---------------------------------------------------------------------------
-# Stop-event cleanup helpers (stable CLI boundary for Rust callers)
+# SEAM: stop-event-cleanup stable CLI boundary for Rust callers
 # ---------------------------------------------------------------------------
 
 _STOP_NAME_KEYS = frozenset(
@@ -9765,7 +9781,7 @@ def cmd_marker_cleanup(args):
 
 
 # ---------------------------------------------------------------------------
-# PR automation — sk tentacle pr
+# SEAM: pr-automation — sk tentacle pr
 # ---------------------------------------------------------------------------
 
 
@@ -10246,6 +10262,11 @@ def cmd_pr(args) -> None:
     print(f"✅ PR created: {pr_url}")
     if issue_ref:
         print(f"   Will close {issue_ref} on merge.")
+
+
+# ---------------------------------------------------------------------------
+# SEAM: core-cli argparse boundary
+# ---------------------------------------------------------------------------
 
 
 def main():
