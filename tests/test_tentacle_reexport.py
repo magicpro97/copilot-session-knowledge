@@ -23,6 +23,8 @@ TENTACLE_PY = TOOLS_DIR / "tentacle.py"
 CORE_PY = TOOLS_DIR / "_tentacle_core.py"
 GOAL_PY = TOOLS_DIR / "_tentacle_goal.py"
 PR_PY = TOOLS_DIR / "_tentacle_pr.py"
+DISPATCH_PY = TOOLS_DIR / "_tentacle_dispatch.py"
+REVIEW_PY = TOOLS_DIR / "_tentacle_review.py"
 
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -31,6 +33,8 @@ T = importlib.import_module("tentacle")
 C = importlib.import_module("_tentacle_core")
 G = importlib.import_module("_tentacle_goal")
 P = importlib.import_module("_tentacle_pr")
+D = importlib.import_module("_tentacle_dispatch")
+R = importlib.import_module("_tentacle_review")
 
 SEAM_LABELS = (
     "coupling map / re-export contract",
@@ -42,6 +46,8 @@ SEAM_LABELS = (
     "handoff-complete quota / rate-limit signal classification",
     "stop-event-cleanup stable CLI boundary for Rust callers",
     "pr-automation",
+    "dispatch-bundle context packet helpers (extracted to _tentacle_dispatch.py)",
+    "review-loop helpers (extracted to _tentacle_review.py)",
     "core-cli argparse boundary",
 )
 
@@ -84,6 +90,22 @@ CONTRACT_SYMBOLS = {
         "_pr_generate_commit_message",
         "_pr_generate_body",
         "cmd_pr",
+    ),
+    "dispatch-bundle": (
+        "_build_runtime_bundle",
+        "_fetch_recall_pack_json",
+        "_run_briefing_for_task",
+        "cmd_bundle",
+        "cmd_next_step",
+        "cmd_resume",
+        "cmd_swarm",
+    ),
+    "review-loop": (
+        "_build_reviewer_bundle",
+        "_render_dispatch_reviewer_prompt",
+        "_review_loop_classify_failure",
+        "cmd_dispatch_reviewer",
+        "cmd_review_loop",
     ),
     "core-cli": (
         "cmd_create",
@@ -164,6 +186,53 @@ PR_EXPORTS = (
     "cmd_pr",
 )
 
+DISPATCH_EXPORTS = (
+    "POINTER_DISPATCH_MODE_NAME",
+    "FULL_CONTEXT_DISPATCH_MODE_NAME",
+    "POINTER_PROMPT_REDUCTION_TARGET_PERCENT",
+    "_agent_profile_meta",
+    "_build_runtime_bundle",
+    "_bundle_enabled",
+    "_dispatch_context_mode",
+    "_dispatch_prompt_size_stats",
+    "_fetch_recall_pack_json",
+    "_load_agent_profile",
+    "_load_latest_checkpoint_context",
+    "_render_dispatch_context",
+    "_render_dispatch_prompt_size_section",
+    "_render_recall_payload",
+    "_render_swarm_prompt",
+    "_run_briefing_for_task",
+    "_scope_items",
+    "_scope_summary",
+    "cmd_bundle",
+    "cmd_next_step",
+    "cmd_resume",
+    "cmd_swarm",
+)
+
+REVIEW_EXPORTS = (
+    "REVIEWER_BUNDLE_DIRNAME",
+    "REVIEWER_FINDINGS_FILENAME",
+    "REVIEW_LOOP_CLASSIFICATIONS",
+    "_build_reviewer_bundle",
+    "_render_dispatch_reviewer_prompt",
+    "_require_done_handoff",
+    "_review_loop_actionable_count",
+    "_review_loop_append_history",
+    "_review_loop_changed_files",
+    "_review_loop_classify_failure",
+    "_review_loop_collect_baseline_failures",
+    "_review_loop_create_resolver_tentacle",
+    "_review_loop_handle_reviewer_findings",
+    "_review_loop_latest_verify_command",
+    "_reviewer_collect_diff",
+    "_reviewer_load_findings",
+    "_reviewer_parse_findings",
+    "cmd_dispatch_reviewer",
+    "cmd_review_loop",
+)
+
 COUPLED_SURFACES = (
     "tests/test_tentacle_runtime.py",
     "hooks/session-end.py",
@@ -189,7 +258,12 @@ def _source() -> str:
 
 def test_import_contract() -> None:
     result = subprocess.run(
-        [sys.executable, "-c", "import tentacle; import _tentacle_core; import _tentacle_goal; import _tentacle_pr"],
+        [
+            sys.executable,
+            "-c",
+            "import tentacle; import _tentacle_core; import _tentacle_goal; "
+            "import _tentacle_pr; import _tentacle_dispatch; import _tentacle_review",
+        ],
         cwd=str(TOOLS_DIR),
         capture_output=True,
         text=True,
@@ -267,6 +341,32 @@ def test_pr_symbols_reexported_from_tentacle() -> None:
         )
 
 
+def test_dispatch_symbols_reexported_from_tentacle() -> None:
+    test("_tentacle_dispatch.py exists", DISPATCH_PY.is_file(), str(DISPATCH_PY))
+    for symbol in DISPATCH_EXPORTS:
+        dispatch_value = getattr(D, symbol, None)
+        tentacle_value = getattr(T, symbol, None)
+        test(f"_tentacle_dispatch exports {symbol}", dispatch_value is not None)
+        test(
+            f"tentacle re-exports _tentacle_dispatch.{symbol}",
+            tentacle_value is dispatch_value,
+            f"tentacle={tentacle_value!r}, dispatch={dispatch_value!r}",
+        )
+
+
+def test_review_symbols_reexported_from_tentacle() -> None:
+    test("_tentacle_review.py exists", REVIEW_PY.is_file(), str(REVIEW_PY))
+    for symbol in REVIEW_EXPORTS:
+        review_value = getattr(R, symbol, None)
+        tentacle_value = getattr(T, symbol, None)
+        test(f"_tentacle_review exports {symbol}", review_value is not None)
+        test(
+            f"tentacle re-exports _tentacle_review.{symbol}",
+            tentacle_value is review_value,
+            f"tentacle={tentacle_value!r}, review={review_value!r}",
+        )
+
+
 def test_core_extraction_stays_small_and_scoped() -> None:
     line_count = len(CORE_PY.read_text(encoding="utf-8", errors="replace").splitlines())
     test("_tentacle_core.py remains under 600 lines", line_count < 600, f"lines={line_count}")
@@ -274,6 +374,10 @@ def test_core_extraction_stays_small_and_scoped() -> None:
     test("_tentacle_goal.py remains under 4200 lines", goal_line_count < 4200, f"lines={goal_line_count}")
     pr_line_count = len(PR_PY.read_text(encoding="utf-8", errors="replace").splitlines())
     test("_tentacle_pr.py remains under 600 lines", pr_line_count < 600, f"lines={pr_line_count}")
+    dispatch_line_count = len(DISPATCH_PY.read_text(encoding="utf-8", errors="replace").splitlines())
+    test("_tentacle_dispatch.py remains under 2200 lines", dispatch_line_count < 2200, f"lines={dispatch_line_count}")
+    review_line_count = len(REVIEW_PY.read_text(encoding="utf-8", errors="replace").splitlines())
+    test("_tentacle_review.py remains under 1300 lines", review_line_count < 1300, f"lines={review_line_count}")
     extraction_modules = sorted(
         path.name for path in TOOLS_DIR.glob("tentacle_*.py") if path.name not in {"tentacle.py", Path(__file__).name}
     )
@@ -293,6 +397,8 @@ def main() -> int:
     test_core_symbols_reexported_from_tentacle()
     test_goal_symbols_reexported_from_tentacle()
     test_pr_symbols_reexported_from_tentacle()
+    test_dispatch_symbols_reexported_from_tentacle()
+    test_review_symbols_reexported_from_tentacle()
     test_core_extraction_stays_small_and_scoped()
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
