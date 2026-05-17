@@ -33,7 +33,7 @@ At `sessionStart`, the `auto-briefing` hook passes `--session-start` to `briefin
 ### L0 index format
 
 ```
-📦 Skills installed (15 total)
+📦 Skills installed (16 total)
   agent-creator — Generate project-specific .agent.md files from curated tem...
   code-reviewer — Skeptical, high signal-to-noise code review that surfaces o...
   ...
@@ -209,7 +209,7 @@ python3 ~/.copilot/tools/tentacle.py marker-cleanup --apply  # remove stale entr
 
 ### Meta-skill rollout — global vs project scope
 
-`setup-project.py` deploys all 14 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
+`setup-project.py` deploys all 15 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
 
 **Vendored skills** (`karpathy-guidelines`) are deployed to **both** Copilot CLI (`.github/skills/`) and Claude Code (`.claude/skills/`) by `setup-project.py`. All other skills in `INSTALL_ITEMS["skills"]` are deployed to **Copilot CLI only** (`.github/skills/`). The `VENDORED_SKILLS` tuple in both `setup-project.py` and `auto-update-tools.py` is the authoritative list of dual-host skills.
 

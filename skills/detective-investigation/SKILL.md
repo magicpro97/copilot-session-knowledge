@@ -64,7 +64,7 @@ Capture investigation facts in a canonical JSON/YAML structure, then generate Ma
 | --- | --- | --- |
 | Physical | logs, traces, database rows, API responses, failing tests | 1.00 |
 | Observational | screenshots, videos, direct reproduction notes | 0.75 |
-| Inferential | code reading, diffs, reasoned mapper/data-flow analysis | 0.50 |
+| Inferential | code reading, diffs, reasoned mapping/data-flow analysis | 0.50 |
 | Testimonial | remembered behavior, second-hand reports | 0.25 |
 
 ## Promotion rules
