@@ -70,12 +70,14 @@ This is the canonical inventory for Python Ruff coverage. Keep it in sync with
 | Syntax gate | `python3 scripts/check_syntax.py` | All staged `.py` files via `scripts/check_syntax.py` when installed | Syntax coverage is broader than Ruff coverage. |
 | Complexity advisory | Full suite path through `run_all_tests.py`; local hook runs `scripts/check_complexity.py --json` on staged `.py` snapshots | All staged `.py` files, non-blocking and fail-open | Advisory only; it prints findings but does not deny commits. |
 | Ruff complexity/refactor advisory | `Complexity advisory (Ruff C90/PLR)` runs `ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statistics` on the same Ruff surface | Not run by local `pre-commit` | CI advisory only; `continue-on-error: true` records baseline counts before enforcement. |
+| Out-of-surface Ruff advisory | Not run by CI | Staged `.py` files outside `in_python_cleanliness_surface()` run `ruff check` as a non-blocking `[advisory]` scan | Advisory only; it is fail-open when Ruff is absent and does not change the blocking Ruff surface. |
 
 Root `*.py` files not listed in the exact root standalone script row are intentionally
 outside the blocking Ruff lint surface until they are baselined. They are not exempt from
 the standalone-script architecture contract: keep them self-contained, run syntax/tests for
 the touched behavior, and either add them to the lint surface in the same PR or state why
-the script remains outside the current baseline.
+the script remains outside the current baseline. The local `pre-commit` hook may print
+non-blocking `[advisory]` Ruff findings for these files when Ruff is installed.
 
 ## Script Inventory
 

@@ -54,7 +54,9 @@ Every new Python file needs an explicit lint surface decision:
    `hooks/pre-commit`'s exact surface, update `tests/test_quality_gates.py`, and
    update the canonical table in `docs/ARCHITECTURE.md#python-lint-surface-inventory`.
 3. If it intentionally stays outside the current lint surface, state that in the PR
-   with the reason and the verification command you ran instead.
+   with the reason and the verification command you ran instead. When Ruff is
+   installed, local `pre-commit` may still print non-blocking `[advisory]` findings
+   for staged out-of-surface Python files.
 
 At minimum, run `python3 -m py_compile <new-script.py>` and the relevant tests for the
 behavior the file owns.
@@ -69,6 +71,7 @@ The local `pre-commit` git hook is **fast and scoped** — it does NOT run the f
 - `browse/routes/*.py` inline-`<style>` regression guard (always)
 - Python syntax gate on all staged `.py` files via `scripts/check_syntax.py` (fail-open when script absent)
 - Ruff format + lint on staged files in the CI surface (fail-open when Ruff absent)
+- Ruff advisory scan on staged `.py` files outside the CI surface (fail-open and non-blocking)
 - Complexity advisory on staged `.py` files via `scripts/check_complexity.py` (fail-open and non-blocking)
 - Prettier format check on staged `browse-ui/src/` files (fail-open when Prettier absent)
 - Skill/agent file lint (fail-open when lint-skills.py absent)
@@ -153,7 +156,7 @@ tests/test_browse_search_v2.py
 browse/  hooks/  scripts/
 ```
 
-If you modify any of those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; the local `pre-commit` git hook enforces both `ruff format --check` and `ruff check` on the same surface when Ruff is available locally (fail-open — silently skips when Ruff is not installed). Other root scripts outside this surface are not currently linted by CI.
+If you modify any of those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; the local `pre-commit` git hook enforces both `ruff format --check` and `ruff check` on the same surface when Ruff is available locally (fail-open — silently skips when Ruff is not installed). Other root scripts outside this surface are not currently linted by CI; local `pre-commit` runs `ruff check` for staged out-of-surface `.py` files only as a non-blocking `[advisory]` scan.
 
 CI also runs a non-blocking `Complexity advisory (Ruff C90/PLR)` step on the same
 surface with `ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statistics`.
