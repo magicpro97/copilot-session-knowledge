@@ -26,6 +26,7 @@ def get_rules_for_event(event):
     from .constitution_gate import ConstitutionGateRule
     from .edit_tracker import TestReminderRule, TrackEditsRule
     from .error_kb import ErrorKBRule
+    from .file_size_advisory import FileSizeAdvisoryRule
     from .integrity import IntegrityRule
     from .learn_gate import EnforceLearnRule
     from .learn_reminder import LearnReminderRule
@@ -58,6 +59,7 @@ def get_rules_for_event(event):
         PnpmLockfileGuardRule(),
         BlockUnsafeHtmlRule(),
         VerificationGateRule(),
+        FileSizeAdvisoryRule(),
         ReadBeforeEditRule(),
         ReadTrackerRule(),  # Issue #85: warn on repeat reads (preToolUse)
         # postToolUse (all run, output is informational)

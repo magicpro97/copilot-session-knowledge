@@ -464,6 +464,132 @@ test_pre_commit_syntax_gate_present()
 test_hooks_md_syntax_gate_documented()
 test_contributing_md_syntax_gate()
 
+
+# ── Test 25–30: File-size advisory hook rule ────────────────────────────────
+
+
+def _make_file_size_advisory():
+    """Import and return a fresh FileSizeAdvisoryRule instance."""
+    import importlib
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    mod = importlib.import_module("hooks.rules.file_size_advisory")
+    return mod.FileSizeAdvisoryRule()
+
+
+def test_file_size_advisory_rule():
+    """Unit tests for advisory Python file size warnings."""
+    try:
+        rule = _make_file_size_advisory()
+    except Exception as exc:
+        test("FileSizeAdvisoryRule import", False, str(exc))
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        large_py = "\n".join(f"print({i})" for i in range(700))
+        small_py = "\n".join(f"print({i})" for i in range(250))
+
+        create_large = rule.evaluate("preToolUse", {
+            "toolName": "create",
+            "toolArgs": {"path": str(tmp / "large.py"), "file_text": large_py},
+        })
+        test(
+            "FileSizeAdvisoryRule: 700-line create returns advisory info",
+            create_large is not None
+            and create_large.get("permissionDecision") != "deny"
+            and "File-size advisory" in create_large.get("message", "")
+            and "700 lines" in create_large.get("message", ""),
+            f"got: {create_large}",
+        )
+
+        create_small = rule.evaluate("preToolUse", {
+            "toolName": "create",
+            "toolArgs": {"path": str(tmp / "small.py"), "file_text": small_py},
+        })
+        test(
+            "FileSizeAdvisoryRule: 250-line create returns no warning",
+            create_small is None,
+            f"got: {create_small}",
+        )
+
+        target = tmp / "module.py"
+        target.write_text("print('start')\n", encoding="utf-8")
+        edit_large = rule.evaluate("preToolUse", {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": str(target),
+                "old_str": "print('start')\n",
+                "new_str": large_py,
+            },
+        })
+        test(
+            "FileSizeAdvisoryRule: 700-line edit returns advisory info",
+            edit_large is not None
+            and edit_large.get("permissionDecision") != "deny"
+            and "File-size advisory" in edit_large.get("message", "")
+            and "700 lines" in edit_large.get("message", ""),
+            f"got: {edit_large}",
+        )
+
+        edit_small = rule.evaluate("preToolUse", {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": str(target),
+                "old_str": "print('start')\n",
+                "new_str": small_py,
+            },
+        })
+        test(
+            "FileSizeAdvisoryRule: 250-line edit returns no warning",
+            edit_small is None,
+            f"got: {edit_small}",
+        )
+
+        create_js = rule.evaluate("preToolUse", {
+            "toolName": "create",
+            "toolArgs": {"path": str(tmp / "large.js"), "file_text": large_py},
+        })
+        test(
+            "FileSizeAdvisoryRule: non-Python file returns no warning",
+            create_js is None,
+            f"got: {create_js}",
+        )
+
+
+def test_file_size_advisory_registered():
+    """The runtime hook registry must include the advisory rule."""
+    try:
+        rules = _registered_hook_rule_names()
+    except Exception as exc:
+        test("FileSizeAdvisoryRule registry import", False, str(exc))
+        return
+    test(
+        "ALL_RULES contains file-size-advisory",
+        "file-size-advisory" in rules,
+        f"registered={rules}",
+    )
+
+
+def test_hooks_md_file_size_advisory_documented():
+    """HOOKS.md must document the advisory rule."""
+    if not HOOKS_MD.exists():
+        test("docs/HOOKS.md exists", False)
+        return
+    content = HOOKS_MD.read_text(encoding="utf-8")
+    test(
+        "HOOKS.md documents file-size-advisory",
+        re.search(r"^\|\s*`file-size-advisory`\s*\|", content, re.MULTILINE) is not None,
+        "docs/HOOKS.md rules table missing file-size-advisory row",
+    )
+
+
+test_file_size_advisory_rule()
+test_file_size_advisory_registered()
+test_hooks_md_file_size_advisory_documented()
+
 print(f"\n{'='*50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
