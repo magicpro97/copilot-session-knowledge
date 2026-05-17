@@ -60,7 +60,7 @@ jobs:
       - run: cargo clippy -- -D warnings
 
   startup-benchmark:
-    name: Startup benchmark advisory
+    name: Startup benchmark regression gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,11 +73,23 @@ jobs:
             sk-rust/target/
           key: ubuntu-latest-cargo-startup-${{ hashFiles('sk-rust/Cargo.lock') }}
           restore-keys: ubuntu-latest-cargo-startup-
-      - name: Benchmark sk startup (advisory)
-        continue-on-error: true
+      - name: Restore startup benchmark baseline
+        uses: actions/cache@v4
+        with:
+          path: .benchmarks/sk-startup-baseline.json
+          key: ubuntu-latest-sk-startup-baseline-v1
+          restore-keys: ubuntu-latest-sk-startup-baseline-
+      - name: Benchmark sk startup regression gate
         run: |
           cargo build --release --manifest-path sk-rust/Cargo.toml
-          python3 benchmark.py startup --runs 7 --warmups 2 --timeout 10 -- sk-rust/target/release/sk --help
+          python3 benchmark.py startup --runs 7 --warmups 2 --timeout 10 --baseline-file .benchmarks/sk-startup-baseline.json --regression-threshold 20 -- sk-rust/target/release/sk --help
+      - name: Upload startup benchmark baseline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sk-startup-baseline
+          path: .benchmarks/sk-startup-baseline.json
+          if-no-files-found: ignore
 
   dependency-audit:
     name: RustSec dependency audit advisory
