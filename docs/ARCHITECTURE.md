@@ -385,13 +385,15 @@ Agent-authored docs and operator/research outputs (tentacle handoffs, retro summ
 
 ### CI Quality Gates
 
-GitHub Actions runs two jobs on every push / PR:
+GitHub Actions runs these jobs on every push / PR:
 - **`quality-gates`** — syntax check, scoped Ruff lint, and the Python test suites. The Ruff lint surface is: `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py`, `browse/`, `hooks/`. Ruff lint is **scoped** to this surface; other root scripts outside it are not linted by CI.
+- **`remote-terminal`** — `npm ci`, `npm test`, lint baseline, and dependency audit advisory for `remote-terminal/`.
 - **`browse-ui`** — `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`.
+- **`e2e-smoke`** — Playwright `behavioral` project (`smoke.spec.ts`, `shortcuts.spec.ts`, `chat.spec.ts`, `diagnostics.spec.ts`, and `broker-mode.spec.ts`) on Chromium.
 
 For `sk-rust/**` changes, `sk CI` also runs Rust formatting, strict Clippy, and tests across Ubuntu, Windows, and macOS. `sk-rust/clippy.toml` defines advisory complexity thresholds (`cognitive-complexity-threshold`, `too-many-lines-threshold`, `too-many-arguments-threshold`). The `Complexity advisory (Rust Clippy)` step runs before the strict Clippy gate with `continue-on-error: true`, so complexity warnings are measured before any future enforcement change.
 
-Playwright E2E runs are manual-dispatch only. The stable `behavioral` project covers `smoke.spec.ts`, `shortcuts.spec.ts`, and `chat.spec.ts`; `visual.spec.ts` remains outside always-on CI because screenshot output differs across platforms.
+Playwright visual snapshot E2E is manual-dispatch only in **`e2e-visual`** because screenshot output differs across platforms. The always-on **`e2e-smoke`** job runs only the stable `behavioral` project and excludes `visual.spec.ts`.
 
 ### Automation Surfaces
 

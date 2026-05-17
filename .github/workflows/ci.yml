@@ -157,17 +157,63 @@ jobs:
       - name: Build
         run: pnpm build
 
-  # E2E tests are gated to manual dispatch only.
+  # E2E smoke runs on every push / PR. Visual snapshots remain manual-only.
   #
   # Reason: visual.spec.ts contains screenshot-comparison tests whose pixel
   # output differs between macOS (local) and Linux (CI runners), so they would
-  # produce false negatives on every push. The smoke, shortcuts, and chat specs
-  # are behaviorally stable, but bundling them with visual tests makes the
-  # whole suite unreliable for always-on use.
+  # produce false negatives on every push. The smoke, shortcuts, chat,
+  # diagnostics, and broker-mode specs run under the Playwright behavioral
+  # project and are stable enough for always-on use.
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: browse-ui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: browse-ui/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run E2E smoke tests
+        run: pnpm exec playwright test --project=behavioral --reporter=html
+
+      - name: Upload Playwright smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-report
+          path: browse-ui/playwright-report/
+          retention-days: 30
+
+  # Visual E2E remains gated to manual dispatch only.
   #
-  # To run E2E: trigger this workflow manually via the GitHub Actions UI or
+  # To run visual E2E: trigger this workflow manually via the GitHub Actions UI or
   #   gh workflow run ci.yml
-  e2e:
+  e2e-visual:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: github.event_name == 'workflow_dispatch'
@@ -202,8 +248,19 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
 
-      - name: Run E2E tests
-        run: pnpm test:e2e
+      - name: Run visual E2E snapshots
+        run: >
+          pnpm exec playwright test e2e/visual.spec.ts
+          --project=visual
+          --reporter=html
+
+      - name: Upload Playwright visual report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-visual-report
+          path: browse-ui/playwright-report/
+          retention-days: 30
 
   # Pairing E2E — Edge desktop + mobile Chrome (#58 acceptance proof).
   #
@@ -270,7 +327,7 @@ jobs:
 
   agents-release-hook:
     runs-on: ubuntu-latest
-    needs: [quality-gates, browse-ui]
+    needs: [quality-gates, browse-ui, e2e-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
