@@ -43,15 +43,15 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 
 `sk watch` (Rust binary) **never** spawns Python — including on error paths. The following Python surfaces are **permanent intentional architecture**, not residual code pending deletion:
 
-| Python surface | Role | Status |
-|----------------|------|--------|
-| `sk.py` shim | Thin launcher/dispatcher for non-binary installs; routes all `sk <cmd>` calls | **Intentional** — the no-binary install contract |
-| `hook_runner.py` | Python hook runner for `sk.py` shim and non-binary installs; owns all managed hook events when no Rust binary is present | **Intentional** — Python shim hook entry point |
-| `build-session-index.py` | Indexes session files → FTS5 DB; named in `sk watch` DB-failure recovery hints | **Intentional** — manual operator recovery tool |
-| `extract-knowledge.py` | Knowledge classification, relation extraction, `--semantic-only` fallback; named in `sk watch` extract-failure recovery hints | **Intentional** — manual/fallback operator tool |
-| `migrate.py` | Versioned schema migrations via `schema_version` table | **Intentional** — canonical schema upgrade owner; Rust native bootstrap does NOT replace this |
-| `sync-daemon.py` | Push/pull sync runtime for Python `sk.py` shim and non-binary installs | **Intentional** — shim sync path |
-| `briefing.py`, `learn.py`, `query-session.py`, `project-registry.py`, etc. | Admin/operator CLI scripts | **Intentional** — these are the primary Python CLI surface; the Rust binary may bypass Python for measured hot read-only subcommands such as `sk project list`, while the direct scripts and mutating fallbacks remain supported |
+| Python surface | Role | Status | Tested by |
+|----------------|------|--------|-----------|
+| `sk.py` shim | Thin launcher/dispatcher for non-binary installs; routes all `sk <cmd>` calls | **Intentional** — the no-binary install contract | `tests/test_py_rust_boundary.py::test_python_shim_dispatch_without_rust_binary`; `tests/test_py_rust_boundary.py::test_project_list_json_matches_python_shim_when_rust_available` |
+| `hook_runner.py` | Python hook runner for `sk.py` shim and non-binary installs; owns all managed hook events when no Rust binary is present | **Intentional** — Python shim hook entry point | `tests/test_py_rust_boundary.py::test_hook_runner_empty_payload_matches_native_exit_when_rust_available` |
+| `build-session-index.py` | Indexes session files → FTS5 DB; named in `sk watch` DB-failure recovery hints | **Intentional** — manual operator recovery tool | `tests/test_py_rust_boundary.py::test_watch_db_failure_recovery_hint_no_python_spawn_when_rust_available` |
+| `extract-knowledge.py` | Knowledge classification, relation extraction, `--semantic-only` fallback; named in `sk watch` extract-failure recovery hints | **Intentional** — manual/fallback operator tool | `tests/test_py_rust_boundary.py::test_watch_db_failure_recovery_hint_no_python_spawn_when_rust_available` |
+| `migrate.py` | Versioned schema migrations via `schema_version` table | **Intentional** — canonical schema upgrade owner; Rust native bootstrap does NOT replace this | `tests/test_py_rust_boundary.py::test_migrate_help_remains_manual_python_surface` |
+| `sync-daemon.py` | Push/pull sync runtime for Python `sk.py` shim and non-binary installs | **Intentional** — shim sync path | `tests/test_py_rust_boundary.py::test_python_shim_sync_run_dispatches_sync_daemon_without_rust_binary` |
+| `briefing.py`, `learn.py`, `query-session.py`, `project-registry.py`, etc. | Admin/operator CLI scripts | **Intentional** — these are the primary Python CLI surface; the Rust binary may bypass Python for measured hot read-only subcommands such as `sk project list`, while the direct scripts and mutating fallbacks remain supported | `tests/test_py_rust_boundary.py::test_python_shim_dispatch_without_rust_binary`; `tests/test_py_rust_boundary.py::test_project_list_json_matches_python_shim_when_rust_available` |
 
 **What wave20 removed:** auto-spawning Python subprocess on `sk watch` error paths. The scripts
 above remain on disk, are invoked by operators manually, and are referenced by name in `sk watch`

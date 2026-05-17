@@ -6,12 +6,16 @@ on:
     paths:
       - 'sk-rust/**'
       - 'benchmark.py'
+      - 'docs/ARCHITECTURE.md'
+      - 'tests/test_py_rust_boundary.py'
       - '.github/workflows/sk-ci.yml'
   pull_request:
     branches: [main]
     paths:
       - 'sk-rust/**'
       - 'benchmark.py'
+      - 'docs/ARCHITECTURE.md'
+      - 'tests/test_py_rust_boundary.py'
       - '.github/workflows/sk-ci.yml'
 
 env:
@@ -137,3 +141,12 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('sk-rust/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
       - run: cargo test
+      - name: Python/Rust boundary regression
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          bin="sk-rust/target/debug/sk"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            bin="sk-rust/target/debug/sk.exe"
+          fi
+          python3 tests/test_py_rust_boundary.py --rust-bin "$bin"
