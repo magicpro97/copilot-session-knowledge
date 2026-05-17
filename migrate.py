@@ -109,26 +109,32 @@ def _create_backup_copy(db_path: str, backup_path: str | None = None) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     src_conn = sqlite3.connect(str(source))
     dst_conn = sqlite3.connect(str(destination))
+    backup_error = None
     try:
         src_conn.backup(dst_conn)
-    except sqlite3.Error:
-        destination.unlink(missing_ok=True)
-        raise
+    except sqlite3.Error as exc:
+        backup_error = exc
     finally:
         dst_conn.close()
         src_conn.close()
+    if backup_error is not None:
+        destination.unlink(missing_ok=True)
+        raise backup_error
 
     verify_conn = sqlite3.connect(str(destination))
+    verify_error = None
     try:
         row = verify_conn.execute("PRAGMA quick_check").fetchone()
         status = row[0] if row else "no quick_check result"
         if str(status).lower() != "ok":
             raise sqlite3.DatabaseError(f"backup quick_check returned {status!r}")
-    except sqlite3.Error:
-        destination.unlink(missing_ok=True)
-        raise
+    except sqlite3.Error as exc:
+        verify_error = exc
     finally:
         verify_conn.close()
+    if verify_error is not None:
+        destination.unlink(missing_ok=True)
+        raise verify_error
     return destination
 
 
@@ -142,9 +148,26 @@ def _print_database_recovery_hint(db_path: str, error: str) -> None:
     )
 
 
+def _print_database_retry_hint(db_path: str, error: str) -> None:
+    print(f"  [migrate] Database check failed for {db_path}: {error}", file=sys.stderr)
+    print(
+        "  [migrate] Recovery hint: database appears locked or busy; stop active session-knowledge "
+        "writers such as watch/sync processes, then retry the migration.",
+        file=sys.stderr,
+    )
+
+
 def _validate_database_or_exit(db: sqlite3.Connection, db_path: str) -> None:
     try:
         row = db.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.OperationalError as exc:
+        db.close()
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            _print_database_retry_hint(db_path, str(exc))
+        else:
+            _print_database_recovery_hint(db_path, str(exc))
+        raise SystemExit(1) from None
     except sqlite3.DatabaseError as exc:
         db.close()
         _print_database_recovery_hint(db_path, str(exc))
@@ -1235,7 +1258,6 @@ if __name__ == "__main__":
         ),
     ]
     applied = 0
-    failed_migrations = []
     for ver, name, stmts in MIGRATIONS:
         if ver <= current:
             continue
@@ -1253,16 +1275,15 @@ if __name__ == "__main__":
             applied += 1
             print(f"  [migrate] v{ver}: {name}")
         except Exception as e:
-            failed_migrations.append((ver, name, str(e)))
+            db.rollback()
             print(f"  [migrate] v{ver} {name}: {e}", file=sys.stderr)
-    if failed_migrations:
-        print(
-            "  [migrate] Recovery hint: restore a backup or fix the schema error before retrying. "
-            "Run `python migrate.py DB_PATH --backup-only --backup-path BACKUP_PATH` before manual repair.",
-            file=sys.stderr,
-        )
-        db.close()
-        raise SystemExit(1)
+            print(
+                "  [migrate] Recovery hint: restore a backup or fix the schema error before retrying. "
+                "Run `python migrate.py DB_PATH --backup-only --backup-path BACKUP_PATH` before manual repair.",
+                file=sys.stderr,
+            )
+            db.close()
+            raise SystemExit(1) from None
     try:
         repaired_priority, renamed_priority = _repair_legacy_priority_collision(db)
         if repaired_priority:

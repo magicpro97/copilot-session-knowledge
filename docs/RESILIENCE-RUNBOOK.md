@@ -349,14 +349,22 @@ python migrate.py ~/.copilot/session-state/knowledge.db
 
 If migration reports a corrupt database or schema failure, do not keep retrying against
 the same file. Restore the backup, or move the bad database aside and let migration
-bootstrap a fresh schema:
+bootstrap a fresh schema. Stop all session-knowledge writers first, then remove or move
+the matching WAL sidecars so SQLite cannot replay stale `knowledge.db-wal` state after
+the main DB file is restored or replaced:
 
 ```bash
+# Stop active writers before manipulating DB files
+# Examples: stop `sk watch`, sync daemons, launchd services, or CI jobs using this DB.
+
 # Restore known-good backup
+rm -f ~/.copilot/session-state/knowledge.db-wal ~/.copilot/session-state/knowledge.db-shm
 cp /tmp/knowledge.db.backup ~/.copilot/session-state/knowledge.db
 
 # Or preserve the bad file for investigation and bootstrap a new DB
 mv ~/.copilot/session-state/knowledge.db ~/.copilot/session-state/knowledge.db.corrupt
+mv ~/.copilot/session-state/knowledge.db-wal ~/.copilot/session-state/knowledge.db-wal.corrupt 2>/dev/null || true
+mv ~/.copilot/session-state/knowledge.db-shm ~/.copilot/session-state/knowledge.db-shm.corrupt 2>/dev/null || true
 python migrate.py ~/.copilot/session-state/knowledge.db
 ```
 

@@ -6,6 +6,7 @@ Run: python3 tests/test_migration_rehearsal.py
 
 import ast
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -21,6 +22,10 @@ if os.name == "nt":
 
 REPO = Path(__file__).resolve().parent.parent
 MIGRATE = REPO / "migrate.py"
+CREATE_TABLE_RE = re.compile(
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 
 
 def _declared_migrations() -> list[tuple[int, str, list[str]]]:
@@ -38,6 +43,18 @@ def _latest_version() -> int:
     if not versions:
         raise AssertionError("No declared migrations found")
     return max(versions)
+
+
+def _tables_created_after(version: int) -> list[str]:
+    tables = []
+    for migration_version, _name, statements in _declared_migrations():
+        if migration_version <= version:
+            continue
+        for statement in statements:
+            match = CREATE_TABLE_RE.search(statement)
+            if match and match.group(1) not in tables:
+                tables.append(match.group(1))
+    return tables
 
 
 def _run_migrate(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -111,6 +128,8 @@ class MigrationRehearsalTests(unittest.TestCase):
         self.assertEqual(initial.returncode, 0, initial.stderr)
 
         n_minus_two = _latest_version() - 2
+        future_tables = _tables_created_after(n_minus_two)
+        self.assertGreater(len(future_tables), 0)
         with sqlite3.connect(db_path) as db:
             db.execute(
                 """
@@ -120,8 +139,8 @@ class MigrationRehearsalTests(unittest.TestCase):
                 ("n-2", "pattern", "sentinel migration row", "preserve me", "migration"),
             )
             db.execute("DELETE FROM schema_version WHERE version > ?", (n_minus_two,))
-            db.execute("DROP TABLE IF EXISTS file_annotations")
-            db.execute("DROP TABLE IF EXISTS improvement_signals")
+            for table in future_tables:
+                db.execute(f"DROP TABLE IF EXISTS {table}")
 
         result = _run_migrate(str(db_path))
 
@@ -134,14 +153,12 @@ class MigrationRehearsalTests(unittest.TestCase):
             _db_scalar(db_path, "SELECT content FROM knowledge_entries WHERE title = ?", ("sentinel migration row",)),
             "preserve me",
         )
-        self.assertEqual(
-            _db_scalar(db_path, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='file_annotations'"),
-            1,
-        )
-        self.assertEqual(
-            _db_scalar(db_path, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='improvement_signals'"),
-            1,
-        )
+        for table in future_tables:
+            self.assertEqual(
+                _db_scalar(db_path, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)),
+                1,
+                table,
+            )
 
     def test_backup_only_uses_online_backup_for_wal_database(self):
         db_path = self.tmpdir / "knowledge.db"
@@ -190,6 +207,19 @@ class MigrationRehearsalTests(unittest.TestCase):
         self.assertIn("restore", combined.lower())
         self.assertNotIn("Traceback", combined)
 
+    def test_backup_only_failure_removes_requested_destination(self):
+        db_path = self.tmpdir / "corrupt.db"
+        backup_path = self.tmpdir / "corrupt.backup.db"
+        db_path.write_bytes(b"not a sqlite database")
+
+        result = _run_migrate(str(db_path), "--backup-only", "--backup-path", str(backup_path))
+
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("Backup failed", combined)
+        self.assertFalse(backup_path.exists())
+        self.assertNotIn("Traceback", combined)
+
     def test_schema_failure_has_recovery_hint_not_success_shape(self):
         db_path = self.tmpdir / "bad-schema.db"
         with sqlite3.connect(db_path) as db:
@@ -217,6 +247,10 @@ class MigrationRehearsalTests(unittest.TestCase):
         self.assertIn("Recovery hint", combined)
         self.assertNotIn("Schema up to date", combined)
         self.assertNotIn("Traceback", combined)
+        self.assertEqual(
+            _db_scalar(db_path, "SELECT MAX(version) FROM schema_version"),
+            14,
+        )
 
 
 if __name__ == "__main__":
