@@ -29,21 +29,24 @@ pub fn run_project_command(args: &[String]) -> Option<ExitCode> {
         return None;
     }
 
-    let rest = args.get(1..).unwrap_or(&[]);
-    if rest.iter().any(|arg| arg == "-h" || arg == "--help") {
-        return None;
+    let mut json_output = false;
+    for arg in args.get(1..).unwrap_or(&[]) {
+        match arg.as_str() {
+            "--json" => json_output = true,
+            "-h" | "--help" => return None,
+            _ => return None,
+        }
     }
-    if rest.iter().any(|arg| arg != "--json") {
+
+    let raw = load_raw_registry();
+    if !uses_string_schema(&raw) {
         return None;
     }
 
-    let json_output = rest.iter().any(|arg| arg == "--json");
-    Some(cmd_list(json_output))
+    Some(cmd_list(json_output, load_deduped_registry(raw)))
 }
 
-fn cmd_list(json_output: bool) -> ExitCode {
-    let deduped = load_deduped_registry();
-
+fn cmd_list(json_output: bool, deduped: Vec<RawProjectEntry>) -> ExitCode {
     if deduped.is_empty() {
         if json_output {
             println!("[]");
@@ -123,10 +126,22 @@ fn load_raw_registry() -> Vec<RawProjectEntry> {
         .collect()
 }
 
-fn load_deduped_registry() -> Vec<RawProjectEntry> {
+fn uses_string_schema(entries: &[RawProjectEntry]) -> bool {
+    entries.iter().all(|entry| match entry {
+        RawProjectEntry::Path(_) => true,
+        RawProjectEntry::Object(obj) => ["path", "name", "created_at", "session_state", "db_path"]
+            .iter()
+            .all(|key| {
+                obj.get(*key)
+                    .map_or(true, |value| value.is_null() || value.is_string())
+            }),
+    })
+}
+
+fn load_deduped_registry(raw: Vec<RawProjectEntry>) -> Vec<RawProjectEntry> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for entry in load_raw_registry() {
+    for entry in raw {
         let path = entry_path(&entry);
         if path.is_empty() || !seen.insert(path) {
             continue;
