@@ -45,7 +45,11 @@ Before implementing:
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
-- Project Rule 10, **Minimum Footprint**: no unjustified new files, no speculative abstractions, reuse existing patterns first, decompose functions over 50 lines or explain why not, flag files over 400 lines, and keep every changed line traceable to the task.
+- Mandatory Project Rule 10, **Minimum Footprint** (canonical text:
+  `docs/AGENT-RULES.md#rule-10--minimum-footprint`): no unjustified new
+  files, no speculative abstractions, reuse existing patterns first, decompose
+  functions over 50 lines or explain why not, flag files over 400 lines, and
+  keep every changed line traceable to the task.
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
@@ -65,9 +69,11 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-Project Rule 11, **New File Justification**: before adding a file, search for an
-existing home, state the new file's responsibility, wire it into the relevant
-lint/test/docs/CI surface, and add or update tests for the behavior it owns.
+Project Rule 11, **New File Justification** (canonical text:
+`docs/AGENT-RULES.md#rule-11--new-file-justification`): before adding a file,
+search for an existing home, state the new file's responsibility, wire it into
+the relevant lint/test/docs/CI surface, and add or update tests for the behavior
+it owns.
 
 ### 4. Goal-Driven Execution
 
