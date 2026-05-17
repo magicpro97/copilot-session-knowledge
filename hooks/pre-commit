@@ -134,18 +134,31 @@ def in_python_cleanliness_surface(path: str) -> bool:
 def check_ruff(staged: list[str]) -> int:
     if not shutil.which("ruff"):
         return 0
-    surface_py = [f for f in staged if f.endswith(".py") and in_python_cleanliness_surface(f)]
-    if not surface_py:
-        return 0
-    print("🧹 Checking Python cleanliness (ruff)...")
-    result = run(["ruff", "format", "--check", *surface_py], timeout=60)
-    if result.returncode != 0:
-        print(f"✖ ruff format check failed. Run: ruff format {' '.join(surface_py)}")
-        return 1
-    result = run(["ruff", "check", *surface_py], timeout=60)
-    if result.returncode != 0:
-        print("✖ ruff lint check failed. Fix violations above before committing.")
-        return 1
+    staged_py = [f for f in staged if f.endswith(".py")]
+    surface_py = [f for f in staged_py if in_python_cleanliness_surface(f)]
+    outside_surface_py = [f for f in staged_py if not in_python_cleanliness_surface(f)]
+    if surface_py:
+        print("🧹 Checking Python cleanliness (ruff)...")
+        result = run(["ruff", "format", "--check", *surface_py], timeout=60)
+        if result.returncode != 0:
+            print(f"✖ ruff format check failed. Run: ruff format {' '.join(surface_py)}")
+            return 1
+        result = run(["ruff", "check", *surface_py], timeout=60)
+        if result.returncode != 0:
+            print("✖ ruff lint check failed. Fix violations above before committing.")
+            return 1
+    if outside_surface_py:
+        try:
+            result = run(["ruff", "check", *outside_surface_py], capture_output=True, timeout=60)
+        except Exception as exc:
+            print(f"[advisory] Ruff scan skipped outside the blocking lint surface: {exc}")
+            return 0
+        if result.returncode != 0:
+            print("[advisory] Ruff found issues outside the blocking lint surface:")
+            output = (result.stdout + result.stderr).strip()
+            if output:
+                print(output)
+            print("[advisory] Out-of-surface Ruff findings are non-blocking.")
     return 0
 
 

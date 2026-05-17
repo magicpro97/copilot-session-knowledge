@@ -9,9 +9,14 @@ Run: python3 test_quality_gates.py
 """
 
 import ast
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -491,11 +496,17 @@ def _seed_pre_commit_tools(home: Path, *, include_complexity: bool = True) -> Pa
     return tools / "hooks" / "pre-commit"
 
 
-def _run_pre_commit_hook(repo: Path, hook: Path, home: Path) -> subprocess.CompletedProcess:
+def _run_pre_commit_hook(
+    repo: Path,
+    hook: Path,
+    home: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "HOME": str(home),
         "USERPROFILE": str(home),
+        **(extra_env or {}),
     }
     return subprocess.run(
         [sys.executable, str(hook)],
@@ -506,6 +517,41 @@ def _run_pre_commit_hook(repo: Path, hook: Path, home: Path) -> subprocess.Compl
         errors="replace",
         env=env,
     )
+
+
+def _write_git_shim(bin_dir: Path) -> None:
+    git = shutil.which("git")
+    if not git:
+        return
+    if os.name == "nt":
+        (bin_dir / "git.cmd").write_text(f'@echo off\r\n"{git}" %*\r\n', encoding="utf-8")
+        return
+    shim = bin_dir / "git"
+    shim.write_text(f'#!/bin/sh\nexec {shlex.quote(git)} "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+
+
+def _write_fake_ruff(bin_dir: Path, body: str) -> None:
+    script = bin_dir / "ruff.py"
+    script.write_text(body, encoding="utf-8")
+    if os.name == "nt":
+        wrapper = f'@echo off\r\n"{sys.executable}" "%~dp0ruff.py" %*\r\n'
+        (bin_dir / "ruff.cmd").write_text(wrapper, encoding="utf-8")
+        (bin_dir / "ruff.bat").write_text(wrapper, encoding="utf-8")
+        return
+    shim = bin_dir / "ruff"
+    shim.write_text(
+        f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(script))} "$@"\n', encoding="utf-8"
+    )
+    shim.chmod(0o755)
+
+
+def _isolated_path_env(bin_dir: Path) -> dict[str, str]:
+    _write_git_shim(bin_dir)
+    env = {"PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
+    if os.name == "nt":
+        env["PATHEXT"] = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    return env
 
 
 def test_pre_commit_complexity_advisory():
@@ -627,10 +673,145 @@ def test_pre_commit_ast_parse():
     )
 
 
+def _load_pre_commit_module():
+    loader = importlib.machinery.SourceFileLoader("pre_commit_hook_for_tests", str(PRE_COMMIT))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_pre_commit_out_of_surface_ruff_advisory():
+    """Out-of-surface staged Python with Ruff findings should warn without blocking."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        repo = base / "repo"
+        home = base / "home"
+        bin_dir = base / "bin"
+        repo.mkdir()
+        home.mkdir()
+        bin_dir.mkdir()
+        hook = _seed_pre_commit_tools(home)
+        _write_fake_ruff(
+            bin_dir,
+            "import sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[:2] == ['format', '--check']:\n"
+            "    raise SystemExit(0)\n"
+            "if args and args[0] == 'check':\n"
+            "    print(f'{args[-1]}:1:1: F401 fake violation')\n"
+            "    raise SystemExit(1)\n"
+            "raise SystemExit(0)\n",
+        )
+        env = _isolated_path_env(bin_dir)
+        git_init = _git_ok(repo, "init")
+        staged = repo / "outside_surface.py"
+        staged.write_text("import os\n")
+        git_add = _git_ok(repo, "add", "outside_surface.py")
+        result = _run_pre_commit_hook(repo, hook, home, env)
+        output = result.stdout + result.stderr
+        test(
+            "pre-commit out-of-surface Ruff advisory exits 0",
+            git_init.returncode == 0 and git_add.returncode == 0 and result.returncode == 0,
+            f"returncode={result.returncode}, output={output}",
+        )
+        test(
+            "pre-commit out-of-surface Ruff advisory prints [advisory]",
+            "[advisory]" in output and "outside_surface.py" in output and "F401" in output,
+            f"output={output}",
+        )
+
+
+def test_pre_commit_in_surface_ruff_still_blocks():
+    """In-surface staged Python should keep blocking on Ruff failures."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        repo = base / "repo"
+        home = base / "home"
+        bin_dir = base / "bin"
+        repo.mkdir()
+        home.mkdir()
+        bin_dir.mkdir()
+        hook = _seed_pre_commit_tools(home)
+        _write_fake_ruff(
+            bin_dir,
+            "import sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[:2] == ['format', '--check']:\n"
+            "    raise SystemExit(0)\n"
+            "if args and args[0] == 'check':\n"
+            "    print(f'{args[-1]}:1:1: F401 fake violation')\n"
+            "    raise SystemExit(1)\n"
+            "raise SystemExit(0)\n",
+        )
+        env = _isolated_path_env(bin_dir)
+        git_init = _git_ok(repo, "init")
+        scripts_dir = repo / "scripts"
+        scripts_dir.mkdir()
+        staged = scripts_dir / "in_surface.py"
+        staged.write_text("import os\n")
+        git_add = _git_ok(repo, "add", "scripts/in_surface.py")
+        result = _run_pre_commit_hook(repo, hook, home, env)
+        output = result.stdout + result.stderr
+        test(
+            "pre-commit in-surface Ruff failure exits non-zero",
+            git_init.returncode == 0 and git_add.returncode == 0 and result.returncode != 0,
+            f"returncode={result.returncode}, output={output}",
+        )
+        test(
+            "pre-commit in-surface Ruff failure remains blocking",
+            "ruff lint check failed" in output and "[advisory]" not in output,
+            f"output={output}",
+        )
+
+
+def test_pre_commit_missing_ruff_fail_open():
+    """Missing Ruff binary should not block staged Python commits."""
+    content = PRE_COMMIT.read_text(encoding="utf-8")
+    test(
+        "pre-commit missing Ruff binary stays fail-open",
+        'if not shutil.which("ruff"):\n        return 0' in content,
+        "hooks/pre-commit should skip Ruff checks when Ruff is absent",
+    )
+
+
+def test_pre_commit_out_of_surface_ruff_exception_fail_open():
+    """Advisory Ruff subprocess errors should skip instead of blocking."""
+    try:
+        module = _load_pre_commit_module()
+    except Exception as exc:
+        test("pre-commit module loads for Ruff exception test", False, str(exc))
+        return
+
+    class FakeShutil:
+        @staticmethod
+        def which(_name: str) -> str:
+            return "ruff"
+
+    def raising_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="ruff check outside_surface.py", timeout=60)
+
+    module.shutil = FakeShutil
+    module.run = raising_run
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        result = module.check_ruff(["outside_surface.py"])
+    output = stdout.getvalue()
+    test(
+        "pre-commit out-of-surface Ruff exception stays fail-open",
+        result == 0 and "Ruff scan skipped outside the blocking lint surface" in output,
+        f"result={result}, output={output}",
+    )
+
+
 test_pre_commit_complexity_advisory()
 test_pre_commit_complexity_missing_checker_fail_open()
 test_pre_commit_complexity_malformed_json_fail_open()
 test_pre_commit_ast_parse()
+test_pre_commit_out_of_surface_ruff_advisory()
+test_pre_commit_in_surface_ruff_still_blocks()
+test_pre_commit_missing_ruff_fail_open()
+test_pre_commit_out_of_surface_ruff_exception_fail_open()
 
 
 # ── Test 12–20: Ruff surface consistency ────────────────────────────────────
@@ -715,6 +896,11 @@ def test_ruff_surface_in_pre_commit():
             dirname in surface_body,
             f"'{dirname}' not found in pre-commit _py_in_surface()",
         )
+    test(
+        "pre-commit has out-of-surface Ruff advisory",
+        "outside_surface_py" in content and "[advisory] Ruff" in content,
+        "hooks/pre-commit should run a non-blocking Ruff advisory for staged Python outside the blocking surface",
+    )
 
 
 def test_ci_workflow_ruff_surface():
@@ -828,6 +1014,11 @@ def test_contributing_md_local_vs_ci():
         "CONTRIBUTING.md should document the Ruff C90/PLR advisory step",
     )
     test(
+        "CONTRIBUTING.md documents out-of-surface Ruff advisory",
+        "[advisory]" in content and "out-of-surface" in content and "Ruff" in content,
+        "CONTRIBUTING.md should document the local out-of-surface Ruff advisory",
+    )
+    test(
         "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
         "briefing.py" in content,
         "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py",
@@ -870,6 +1061,11 @@ def test_architecture_md_ruff_surface():
         "ARCHITECTURE.md documents Ruff complexity advisory",
         "Complexity advisory (Ruff C90/PLR)" in content and RUFF_COMPLEXITY_SELECT in content,
         "docs/ARCHITECTURE.md should document the Ruff C90/PLR advisory step",
+    )
+    test(
+        "ARCHITECTURE.md documents out-of-surface Ruff advisory",
+        "Out-of-surface Ruff advisory" in content and "[advisory]" in content,
+        "docs/ARCHITECTURE.md should document the local out-of-surface Ruff advisory",
     )
     for fname in ("briefing.py", "tentacle.py", "tests/test_browse_search_v2.py", "browse/", "hooks/", "scripts/"):
         test(
