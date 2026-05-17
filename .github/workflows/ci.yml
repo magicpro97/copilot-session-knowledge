@@ -46,7 +46,7 @@ jobs:
           sync-config.py sync-daemon.py sync-status.py
           migrate.py generate-summary.py
           briefing.py learn.py query-session.py extract-knowledge.py
-          build-session-index.py tentacle.py checkpoint-diff.py
+          build-session-index.py tentacle.py _tentacle_core.py checkpoint-diff.py
           checkpoint-restore.py checkpoint-save.py
           tests/test_browse_search_v2.py
           browse/ hooks/ scripts/
@@ -58,7 +58,7 @@ jobs:
           sync-config.py sync-daemon.py sync-status.py
           migrate.py generate-summary.py
           briefing.py learn.py query-session.py extract-knowledge.py
-          build-session-index.py tentacle.py checkpoint-diff.py
+          build-session-index.py tentacle.py _tentacle_core.py checkpoint-diff.py
           checkpoint-restore.py checkpoint-save.py
           tests/test_browse_search_v2.py
           browse/ hooks/ scripts/
@@ -71,7 +71,7 @@ jobs:
           sync-config.py sync-daemon.py sync-status.py
           migrate.py generate-summary.py
           briefing.py learn.py query-session.py extract-knowledge.py
-          build-session-index.py tentacle.py checkpoint-diff.py
+          build-session-index.py tentacle.py _tentacle_core.py checkpoint-diff.py
           checkpoint-restore.py checkpoint-save.py
           tests/test_browse_search_v2.py
           browse/ hooks/ scripts/

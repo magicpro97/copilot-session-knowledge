@@ -846,6 +846,7 @@ CI_RUFF_FILES = [
     "extract-knowledge.py",
     "build-session-index.py",
     "tentacle.py",
+    "_tentacle_core.py",
     "checkpoint-diff.py",
     "checkpoint-restore.py",
     "checkpoint-save.py",
@@ -1361,7 +1362,15 @@ def test_architecture_md_ruff_surface():
         "cargo audit" in content and "RustSec" in content and "continue-on-error: true" in content,
         "docs/ARCHITECTURE.md should document the non-blocking RustSec cargo audit advisory",
     )
-    for fname in ("briefing.py", "tentacle.py", "tests/test_browse_search_v2.py", "browse/", "hooks/", "scripts/"):
+    for fname in (
+        "briefing.py",
+        "tentacle.py",
+        "_tentacle_core.py",
+        "tests/test_browse_search_v2.py",
+        "browse/",
+        "hooks/",
+        "scripts/",
+    ):
         test(
             f"ARCHITECTURE.md Ruff section names {fname}",
             fname in content,
