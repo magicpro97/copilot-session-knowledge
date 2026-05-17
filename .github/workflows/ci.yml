@@ -94,6 +94,13 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run lint baseline
+        run: npm run lint
+
+      - name: Dependency audit advisory
+        continue-on-error: true
+        run: npm run audit:advisory
+
   browse-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 10

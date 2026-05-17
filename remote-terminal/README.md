@@ -18,6 +18,18 @@ npm install
 npm start
 ```
 
+## Quality baseline
+
+```powershell
+cd remote-terminal
+npm ci
+npm test
+npm run lint
+npm run audit:advisory
+```
+
+`npm run lint` uses ESLint flat config with warning-only complexity, size, parameter, and unused-variable rules so the current large-file baseline is visible without blocking normal development. The CI job runs lint after tests and then runs `npm run audit:advisory` as a non-blocking high-severity dependency audit.
+
 By default the server:
 
 1. listens on `0.0.0.0:2208`
