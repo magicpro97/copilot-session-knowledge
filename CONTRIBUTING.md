@@ -163,6 +163,12 @@ surface with `ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statisti
 It is advisory (`continue-on-error: true`) so maintainers can track baseline counts before
 promoting complexity/refactor rules to enforcement.
 
+For `sk-rust/**` changes, `sk CI` includes a non-blocking RustSec `cargo audit`
+advisory. The workflow installs `cargo-audit`, runs `cargo audit --file Cargo.lock`,
+and keeps `continue-on-error: true` on the audit step until the documented TODO is
+removed after the baseline is clean. The install step remains blocking so missing
+tooling does not masquerade as a clean advisory scan.
+
 For `browse-ui/` changes, CI runs `pnpm format:check`. Fix formatting locally with `cd browse-ui && pnpm format` before committing. The always-on `e2e-smoke` job runs the Playwright `behavioral` project on push/PR; visual snapshots stay in the manual-only `e2e-visual` job gated by `workflow_dispatch`.
 
 If you need a narrow syntax-only check for a modified file:

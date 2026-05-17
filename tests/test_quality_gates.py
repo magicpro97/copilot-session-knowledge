@@ -819,6 +819,7 @@ test_pre_commit_out_of_surface_ruff_exception_fail_open()
 # docs name the canonical lint surface / standalone-script boundary.
 
 CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+SK_CI_WORKFLOW = REPO / ".github" / "workflows" / "sk-ci.yml"
 HOOKS_MD = REPO / "docs" / "HOOKS.md"
 ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
 CONTRIBUTING = REPO / "CONTRIBUTING.md"
@@ -1058,6 +1059,48 @@ def test_playwright_behavioral_project_contract():
     )
 
 
+def test_sk_ci_cargo_audit_advisory():
+    """sk CI must run RustSec cargo audit as a non-blocking advisory with a blocking TODO."""
+    if not SK_CI_WORKFLOW.exists():
+        test("sk-ci.yml exists", False, str(SK_CI_WORKFLOW))
+        return
+    content = SK_CI_WORKFLOW.read_text(encoding="utf-8")
+    install_body = _workflow_step_body(content, "Install cargo-audit")
+    audit_body = _workflow_step_body(content, "RustSec dependency audit (advisory)")
+    normalized = " ".join(audit_body.split())
+    install_normalized = " ".join(install_body.split())
+    test(
+        "sk-ci.yml has RustSec dependency audit advisory step",
+        bool(audit_body),
+        "sk-ci.yml missing RustSec dependency audit advisory step",
+    )
+    test(
+        "sk-ci.yml installs cargo-audit before advisory step",
+        bool(install_body) and "cargo install cargo-audit --locked" in install_normalized,
+        "sk-ci.yml should install cargo-audit before running the advisory scan",
+    )
+    test(
+        "cargo-audit installation remains blocking",
+        "continue-on-error: true" not in install_body,
+        "cargo-audit installation failures should not be hidden by advisory mode",
+    )
+    test(
+        "RustSec dependency audit advisory is non-blocking",
+        "continue-on-error: true" in audit_body,
+        "cargo audit advisory step must use continue-on-error: true for the initial baseline phase",
+    )
+    test(
+        "RustSec dependency audit scans Cargo.lock",
+        "cargo audit --file Cargo.lock" in normalized,
+        "cargo audit advisory step should print Cargo.lock audit output",
+    )
+    test(
+        "RustSec dependency audit documents future blocking path",
+        "TODO(issue-269)" in content and "make this blocking" in content,
+        "sk-ci.yml should document removing advisory mode after the RustSec baseline is clean",
+    )
+
+
 def test_hooks_md_documents_local_vs_ci():
     """HOOKS.md must document the local-vs-CI boundary and Ruff surface."""
     if not HOOKS_MD.exists():
@@ -1125,6 +1168,11 @@ def test_contributing_md_local_vs_ci():
         "CONTRIBUTING.md should document the E2E smoke/visual split",
     )
     test(
+        "CONTRIBUTING.md documents cargo audit advisory",
+        "cargo audit" in content and "RustSec" in content and "continue-on-error" in content,
+        "CONTRIBUTING.md should document the non-blocking RustSec cargo audit advisory",
+    )
+    test(
         "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
         "briefing.py" in content,
         "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py",
@@ -1177,6 +1225,11 @@ def test_architecture_md_ruff_surface():
         "ARCHITECTURE.md documents E2E smoke/visual split",
         "e2e-smoke" in content and "e2e-visual" in content,
         "docs/ARCHITECTURE.md should document the E2E smoke/visual split",
+    )
+    test(
+        "ARCHITECTURE.md documents cargo audit advisory",
+        "cargo audit" in content and "RustSec" in content and "continue-on-error: true" in content,
+        "docs/ARCHITECTURE.md should document the non-blocking RustSec cargo audit advisory",
     )
     for fname in ("briefing.py", "tentacle.py", "tests/test_browse_search_v2.py", "browse/", "hooks/", "scripts/"):
         test(
@@ -1241,6 +1294,7 @@ test_ci_workflow_ruff_surface()
 test_ci_workflow_ruff_complexity_advisory()
 test_ci_workflow_e2e_smoke_visual_split()
 test_playwright_behavioral_project_contract()
+test_sk_ci_cargo_audit_advisory()
 test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()
 test_architecture_md_ruff_surface()
