@@ -825,6 +825,8 @@ ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
 CONTRIBUTING = REPO / "CONTRIBUTING.md"
 PLAYWRIGHT_CONFIG = REPO / "browse-ui" / "playwright.config.ts"
 ESLINT_CONFIG = REPO / "browse-ui" / "eslint.config.mjs"
+REMOTE_TERMINAL_ESLINT_CONFIG = REPO / "remote-terminal" / "eslint.config.mjs"
+REMOTE_TERMINAL_PACKAGE = REPO / "remote-terminal" / "package.json"
 
 # CI Ruff surface (extracted from ci.yml)
 CI_RUFF_FILES = [
@@ -1089,6 +1091,61 @@ def test_browse_ui_eslint_clean_zone_strategy():
     )
 
 
+def test_remote_terminal_quality_gate_promotion():
+    """remote-terminal must promote clean lint zones and keep clean audits blocking."""
+    if not REMOTE_TERMINAL_ESLINT_CONFIG.exists():
+        test("remote-terminal eslint config exists", False, str(REMOTE_TERMINAL_ESLINT_CONFIG))
+        return
+    if not REMOTE_TERMINAL_PACKAGE.exists():
+        test("remote-terminal package.json exists", False, str(REMOTE_TERMINAL_PACKAGE))
+        return
+    if not CI_WORKFLOW.exists():
+        test("ci.yml exists", False, str(CI_WORKFLOW))
+        return
+
+    eslint_content = REMOTE_TERMINAL_ESLINT_CONFIG.read_text(encoding="utf-8")
+    package_content = REMOTE_TERMINAL_PACKAGE.read_text(encoding="utf-8")
+    ci_content = CI_WORKFLOW.read_text(encoding="utf-8")
+    lint_gate_body = _workflow_step_body(ci_content, "Run clean-zone lint gate")
+    audit_body = _workflow_step_body(ci_content, "Dependency audit")
+
+    test(
+        "remote-terminal legacy lint baseline remains advisory",
+        'complexity: ["warn", { max: 24 }]' in eslint_content,
+        "remote-terminal should keep legacy complexity/size rules as warnings outside clean files",
+    )
+    test(
+        "remote-terminal clean-zone files are declared",
+        '"pty-daemon.js", "test/client.test.js"' in eslint_content,
+        "remote-terminal eslint config should declare the clean files promoted to errors",
+    )
+    test(
+        "remote-terminal clean-zone rules promote advisory rules to errors",
+        "promoteRulesToError(advisoryRules)" in eslint_content,
+        "remote-terminal clean zones should derive error-level rules from the advisory baseline",
+    )
+    test(
+        "remote-terminal package exposes clean-zone lint command",
+        '"lint:clean": "eslint pty-daemon.js test/client.test.js --max-warnings=0"' in package_content,
+        "remote-terminal package.json should expose the blocking clean-zone lint command",
+    )
+    test(
+        "remote-terminal package exposes blocking high audit command",
+        '"audit:high": "npm audit --audit-level=high"' in package_content,
+        "remote-terminal package.json should expose the blocking high-severity audit command",
+    )
+    test(
+        "ci.yml runs remote-terminal clean-zone lint gate",
+        "npm run lint:clean" in lint_gate_body,
+        "remote-terminal CI job should run the clean-zone lint gate",
+    )
+    test(
+        "remote-terminal dependency audit is blocking",
+        "npm run audit:high" in audit_body and "continue-on-error" not in audit_body,
+        "remote-terminal audit baseline is clean, so CI should not mark the audit step advisory",
+    )
+
+
 def test_sk_ci_cargo_audit_advisory():
     """sk CI must run RustSec cargo audit as a non-blocking advisory with a blocking TODO."""
     if not SK_CI_WORKFLOW.exists():
@@ -1335,6 +1392,7 @@ test_ci_workflow_ruff_complexity_advisory()
 test_ci_workflow_e2e_smoke_visual_split()
 test_playwright_behavioral_project_contract()
 test_browse_ui_eslint_clean_zone_strategy()
+test_remote_terminal_quality_gate_promotion()
 test_sk_ci_cargo_audit_advisory()
 test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()

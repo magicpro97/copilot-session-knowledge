@@ -25,10 +25,11 @@ cd remote-terminal
 npm ci
 npm test
 npm run lint
-npm run audit:advisory
+npm run lint:clean
+npm run audit:high
 ```
 
-`npm run lint` uses ESLint flat config with warning-only complexity, size, parameter, and unused-variable rules so the current large-file baseline is visible without blocking normal development. The CI job runs lint after tests and then runs `npm run audit:advisory` as a non-blocking high-severity dependency audit.
+`npm run lint` uses ESLint flat config with warning-only complexity, size, parameter, and unused-variable rules so the current large-file baseline is visible without blocking normal development. Clean files (`pty-daemon.js` and `test/client.test.js`) promote the same rules to errors and are checked by `npm run lint:clean` with `--max-warnings=0`. The CI job runs lint after tests, blocks on the clean-zone lint gate, and runs `npm run audit:high` as a blocking high-severity dependency audit because the current dependency baseline is clean.
 
 By default the server:
 

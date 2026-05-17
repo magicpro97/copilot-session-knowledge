@@ -112,9 +112,11 @@ jobs:
       - name: Run lint baseline
         run: npm run lint
 
-      - name: Dependency audit advisory
-        continue-on-error: true
-        run: npm run audit:advisory
+      - name: Run clean-zone lint gate
+        run: npm run lint:clean
+
+      - name: Dependency audit
+        run: npm run audit:high
 
   browse-ui:
     runs-on: ubuntu-latest

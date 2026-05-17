@@ -387,7 +387,7 @@ Agent-authored docs and operator/research outputs (tentacle handoffs, retro summ
 
 GitHub Actions runs these jobs on every push / PR:
 - **`quality-gates`** — syntax check, scoped Ruff lint, and the Python test suites. The Ruff lint surface is: `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py`, `browse/`, `hooks/`. Ruff lint is **scoped** to this surface; other root scripts outside it are not linted by CI.
-- **`remote-terminal`** — `npm ci`, `npm test`, lint baseline, and dependency audit advisory for `remote-terminal/`.
+- **`remote-terminal`** — `npm ci`, `npm test`, lint baseline, clean-zone lint gate, and blocking high-severity dependency audit for `remote-terminal/`. Legacy complexity/size warnings stay advisory in `npm run lint`; clean files (`pty-daemon.js`, `test/client.test.js`) promote the same rules to errors through `npm run lint:clean`.
 - **`browse-ui`** — `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`. `browse-ui/eslint.config.mjs` keeps the repo-wide `@typescript-eslint/no-explicit-any` baseline advisory as `warn`, then promotes clean zones such as `src/lib/hosts/**/*.{ts,tsx}` to `error` so strict rules can expand without breaking legacy areas.
 - **`e2e-smoke`** — Playwright `behavioral` project (`smoke.spec.ts`, `shortcuts.spec.ts`, `chat.spec.ts`, `diagnostics.spec.ts`, and `broker-mode.spec.ts`) on Chromium.
 
