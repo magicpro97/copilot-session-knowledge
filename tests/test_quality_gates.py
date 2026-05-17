@@ -824,6 +824,7 @@ HOOKS_MD = REPO / "docs" / "HOOKS.md"
 ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
 CONTRIBUTING = REPO / "CONTRIBUTING.md"
 PLAYWRIGHT_CONFIG = REPO / "browse-ui" / "playwright.config.ts"
+ESLINT_CONFIG = REPO / "browse-ui" / "eslint.config.mjs"
 
 # CI Ruff surface (extracted from ci.yml)
 CI_RUFF_FILES = [
@@ -1059,6 +1060,35 @@ def test_playwright_behavioral_project_contract():
     )
 
 
+def test_browse_ui_eslint_clean_zone_strategy():
+    """browse-ui ESLint must keep baseline warnings while promoting clean zones to strict errors."""
+    if not ESLINT_CONFIG.exists():
+        test("browse-ui eslint config exists", False, str(ESLINT_CONFIG))
+        return
+    content = ESLINT_CONFIG.read_text(encoding="utf-8")
+    test(
+        "browse-ui global no-explicit-any baseline remains advisory",
+        '"@typescript-eslint/no-explicit-any": "warn"' in content,
+        "browse-ui should keep the repo-wide no-explicit-any baseline advisory until legacy areas are clean",
+    )
+    test(
+        "browse-ui hosts clean zone is declared",
+        '"src/lib/hosts/**/*.{ts,tsx}"' in content,
+        "browse-ui eslint config should declare src/lib/hosts as a clean zone",
+    )
+    hosts_override = re.search(
+        r'files:\s*\[\s*"src/lib/hosts/\*\*/\*\.\{ts,tsx\}"\s*\](?P<body>.*?)(?=^\s*\},\n\s*\{|^\s*globalIgnores|\Z)',
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    hosts_body = hosts_override.group("body") if hosts_override else ""
+    test(
+        "browse-ui hosts clean zone promotes no-explicit-any to error",
+        '"@typescript-eslint/no-explicit-any": "error"' in hosts_body,
+        "src/lib/hosts clean zone should make explicit any a lint error",
+    )
+
+
 def test_sk_ci_cargo_audit_advisory():
     """sk CI must run RustSec cargo audit as a non-blocking advisory with a blocking TODO."""
     if not SK_CI_WORKFLOW.exists():
@@ -1168,6 +1198,11 @@ def test_contributing_md_local_vs_ci():
         "CONTRIBUTING.md should document the E2E smoke/visual split",
     )
     test(
+        "CONTRIBUTING.md documents browse-ui clean zones",
+        "clean zone" in content and "src/lib/hosts" in content and "no-explicit-any" in content,
+        "CONTRIBUTING.md should document the browse-ui clean-zone lint strategy",
+    )
+    test(
         "CONTRIBUTING.md documents cargo audit advisory",
         "cargo audit" in content and "RustSec" in content and "continue-on-error" in content,
         "CONTRIBUTING.md should document the non-blocking RustSec cargo audit advisory",
@@ -1225,6 +1260,11 @@ def test_architecture_md_ruff_surface():
         "ARCHITECTURE.md documents E2E smoke/visual split",
         "e2e-smoke" in content and "e2e-visual" in content,
         "docs/ARCHITECTURE.md should document the E2E smoke/visual split",
+    )
+    test(
+        "ARCHITECTURE.md documents browse-ui clean zones",
+        "clean zone" in content and "src/lib/hosts" in content and "no-explicit-any" in content,
+        "docs/ARCHITECTURE.md should document the browse-ui clean-zone lint strategy",
     )
     test(
         "ARCHITECTURE.md documents cargo audit advisory",
@@ -1294,6 +1334,7 @@ test_ci_workflow_ruff_surface()
 test_ci_workflow_ruff_complexity_advisory()
 test_ci_workflow_e2e_smoke_visual_split()
 test_playwright_behavioral_project_contract()
+test_browse_ui_eslint_clean_zone_strategy()
 test_sk_ci_cargo_audit_advisory()
 test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()

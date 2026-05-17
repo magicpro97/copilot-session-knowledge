@@ -20,5 +20,11 @@ export default defineConfig([
       "react-hooks/set-state-in-effect": "off",
     },
   },
+  {
+    files: ["src/lib/hosts/**/*.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+    },
+  },
   globalIgnores(["dist/**", ".next/**", "coverage/**", "next-env.d.ts"]),
 ]);
