@@ -1091,6 +1091,8 @@ if __name__ == "__main__":
             15,
             "confidence_backfill_wave3",
             [
+                "ALTER TABLE knowledge_entries ADD COLUMN confidence REAL DEFAULT 1.0",
+                "ALTER TABLE knowledge_entries ADD COLUMN occurrence_count INTEGER DEFAULT 1",
                 # Raise confidence floor for extracted patterns to 0.5
                 "UPDATE knowledge_entries SET confidence = MAX(confidence, 0.5) WHERE category = 'pattern' AND confidence < 0.5",
                 # Recurrence reward: bump entries seen 2+ times (capped to avoid runaway)

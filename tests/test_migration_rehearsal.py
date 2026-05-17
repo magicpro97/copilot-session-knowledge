@@ -230,12 +230,9 @@ class MigrationRehearsalTests(unittest.TestCase):
                     migrated_at TEXT DEFAULT (datetime('now')),
                     name TEXT DEFAULT ''
                 );
-                INSERT INTO schema_version(version, name) VALUES (14, 'benchmark_snapshots');
-                CREATE TABLE knowledge_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    title TEXT NOT NULL
+                INSERT INTO schema_version(version, name) VALUES (16, 'error_lifecycle_columns');
+                CREATE TABLE briefing_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT
                 );
                 """
             )
@@ -249,7 +246,7 @@ class MigrationRehearsalTests(unittest.TestCase):
         self.assertNotIn("Traceback", combined)
         self.assertEqual(
             _db_scalar(db_path, "SELECT MAX(version) FROM schema_version"),
-            14,
+            16,
         )
 
 
