@@ -45,7 +45,6 @@ from pathlib import Path
 
 if os.name == "nt":
     import io
-import os
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
