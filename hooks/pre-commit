@@ -6,6 +6,7 @@ fresh dispatched-subagent marker, staged Python syntax errors, and hook/skill
 lint errors.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ if os.name == "nt":
 TOOLS_DIR = Path.home() / ".copilot" / "tools"
 SUBAGENT_CHECK = TOOLS_DIR / "hooks" / "check_subagent_marker.py"
 SYNTAX_CHECKER = TOOLS_DIR / "scripts" / "check_syntax.py"
+COMPLEXITY_CHECKER = TOOLS_DIR / "scripts" / "check_complexity.py"
 LINT_SKILLS = TOOLS_DIR / "hooks" / "lint-skills.py"
 
 
@@ -144,6 +146,58 @@ def check_ruff(staged: list[str]) -> int:
     return 0
 
 
+def check_complexity(staged: list[str]) -> int:
+    if not COMPLEXITY_CHECKER.is_file():
+        return 0
+    staged_py = [f for f in staged if f.endswith(".py")]
+    if not staged_py:
+        return 0
+    try:
+        result = run(
+            [sys.executable, str(COMPLEXITY_CHECKER), "--json", *staged_py],
+            capture_output=True,
+            timeout=60,
+        )
+    except Exception as exc:
+        print(f"⚠️ Complexity advisory skipped: {exc}")
+        return 0
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        output = (result.stdout + result.stderr).strip()
+        if output:
+            print("⚠️ Complexity advisory skipped: reporter output was not JSON")
+            print(output)
+        return 0
+
+    advisory_lines: list[str] = []
+    for file_info in payload.get("files", []):
+        path = file_info.get("path", "")
+        if file_info.get("severity") in {"warning", "high"}:
+            advisory_lines.append(
+                f"  {file_info.get('severity')}: {path} "
+                f"lines={file_info.get('lines')} functions={len(file_info.get('functions', []))}"
+            )
+        for fn in file_info.get("functions", []):
+            if fn.get("severity") not in {"warning", "high"}:
+                continue
+            advisory_lines.append(
+                f"  {fn.get('severity')}: {path}:{fn.get('line')} {fn.get('name')} "
+                f"complexity={fn.get('complexity')} lines={fn.get('lines')}"
+            )
+
+    errors = payload.get("errors", [])
+    if advisory_lines or errors:
+        print("⚠️ Complexity advisory (non-blocking):")
+        for line in advisory_lines:
+            print(line)
+        for error in errors:
+            print(f"  reporter-error: {error}")
+        print("  Review large/complex functions before committing; this advisory does not block.")
+    return 0
+
+
 def check_prettier(staged: list[str]) -> int:
     supported = (".css", ".js", ".jsx", ".json", ".md", ".ts", ".tsx", ".yaml", ".yml")
     ui_src = [f for f in staged if f.startswith("browse-ui/src/") and f.endswith(supported)]
@@ -171,7 +225,11 @@ def check_skill_lint(staged: list[str]) -> int:
     staged_skills = [f for f in staged if f.endswith(".agent.md") or f.endswith("SKILL.md")]
     if not staged_skills:
         try:
-            run([sys.executable, str(LINT_SKILLS), "--all", "--quiet"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run(
+                [sys.executable, str(LINT_SKILLS), "--all", "--quiet"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except Exception:
             pass
         return 0
@@ -198,6 +256,7 @@ def main() -> int:
         check_inline_styles,
         check_python_syntax,
         check_ruff,
+        check_complexity,
         check_prettier,
         check_skill_lint,
     ):
