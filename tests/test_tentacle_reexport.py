@@ -22,6 +22,7 @@ TOOLS_DIR = Path(__file__).resolve().parent.parent
 TENTACLE_PY = TOOLS_DIR / "tentacle.py"
 CORE_PY = TOOLS_DIR / "_tentacle_core.py"
 GOAL_PY = TOOLS_DIR / "_tentacle_goal.py"
+PR_PY = TOOLS_DIR / "_tentacle_pr.py"
 
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -29,6 +30,7 @@ if str(TOOLS_DIR) not in sys.path:
 T = importlib.import_module("tentacle")
 C = importlib.import_module("_tentacle_core")
 G = importlib.import_module("_tentacle_goal")
+P = importlib.import_module("_tentacle_pr")
 
 SEAM_LABELS = (
     "coupling map / re-export contract",
@@ -153,6 +155,15 @@ GOAL_EXPORTS = (
     "cmd_goal",
 )
 
+PR_EXPORTS = (
+    "_pr_collect_handoffs",
+    "_pr_collect_verifications",
+    "_pr_generate_commit_message",
+    "_pr_generate_body",
+    "_pr_run_subprocess_safe",
+    "cmd_pr",
+)
+
 COUPLED_SURFACES = (
     "tests/test_tentacle_runtime.py",
     "hooks/session-end.py",
@@ -178,7 +189,7 @@ def _source() -> str:
 
 def test_import_contract() -> None:
     result = subprocess.run(
-        [sys.executable, "-c", "import tentacle; import _tentacle_core"],
+        [sys.executable, "-c", "import tentacle; import _tentacle_core; import _tentacle_goal; import _tentacle_pr"],
         cwd=str(TOOLS_DIR),
         capture_output=True,
         text=True,
@@ -187,7 +198,7 @@ def test_import_contract() -> None:
         timeout=15,
     )
     test(
-        "tentacle and _tentacle_core import in a fresh Python process",
+        "tentacle and extraction modules import in a fresh Python process",
         result.returncode == 0,
         f"returncode={result.returncode}, stderr={result.stderr[:300]}",
     )
@@ -243,11 +254,26 @@ def test_goal_symbols_reexported_from_tentacle() -> None:
         )
 
 
+def test_pr_symbols_reexported_from_tentacle() -> None:
+    test("_tentacle_pr.py exists", PR_PY.is_file(), str(PR_PY))
+    for symbol in PR_EXPORTS:
+        pr_value = getattr(P, symbol, None)
+        tentacle_value = getattr(T, symbol, None)
+        test(f"_tentacle_pr exports {symbol}", pr_value is not None)
+        test(
+            f"tentacle re-exports _tentacle_pr.{symbol}",
+            tentacle_value is pr_value,
+            f"tentacle={tentacle_value!r}, pr={pr_value!r}",
+        )
+
+
 def test_core_extraction_stays_small_and_scoped() -> None:
     line_count = len(CORE_PY.read_text(encoding="utf-8", errors="replace").splitlines())
     test("_tentacle_core.py remains under 600 lines", line_count < 600, f"lines={line_count}")
     goal_line_count = len(GOAL_PY.read_text(encoding="utf-8", errors="replace").splitlines())
     test("_tentacle_goal.py remains under 4200 lines", goal_line_count < 4200, f"lines={goal_line_count}")
+    pr_line_count = len(PR_PY.read_text(encoding="utf-8", errors="replace").splitlines())
+    test("_tentacle_pr.py remains under 600 lines", pr_line_count < 600, f"lines={pr_line_count}")
     extraction_modules = sorted(
         path.name for path in TOOLS_DIR.glob("tentacle_*.py") if path.name not in {"tentacle.py", Path(__file__).name}
     )
@@ -266,6 +292,7 @@ def main() -> int:
     test_reexport_symbols_remain_on_tentacle_module()
     test_core_symbols_reexported_from_tentacle()
     test_goal_symbols_reexported_from_tentacle()
+    test_pr_symbols_reexported_from_tentacle()
     test_core_extraction_stays_small_and_scoped()
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

@@ -184,7 +184,7 @@ Python validation runs through `run_all_tests.py`, but individual files use a mi
 
 Key facts every agent must remember:
 
-- **Standalone scripts by default** — avoid inter-script imports unless a documented helper exception such as `_tentacle_core.py` or `_tentacle_goal.py` preserves an existing contract
+- **Standalone scripts by default** — avoid inter-script imports unless a documented helper exception such as `_tentacle_core.py`, `_tentacle_goal.py`, or `_tentacle_pr.py` preserves an existing contract
 - **Pure stdlib Python 3.10+** — zero pip dependencies; `scikit-learn` / embedding keys are optional
 - **Parameterized SQL only** — use `?` placeholders; never interpolate user input into SQL
 - **JSON serialization only** — never use pickle; new code uses JSON / `struct.pack`
@@ -204,6 +204,6 @@ Key facts every agent must remember:
 - **`sk hooks run <event>`** (Rust binary) — all managed events route natively (`sessionStart`, `sessionEnd`, `preToolUse`, `postToolUse`, `agentStop`, `subagentStop`, `errorOccurred`). Python `sk.py` shim always delegates to `hook_runner.py` — shim behavior unchanged.
 - **`sk index embed`** — native (`native-embed` default Cargo feature); `embed.py` is the fallback when the feature is unavailable.
 - **`sk sync run`** (compiled binary) — native Rust daemon loop, push, pull, FTS refresh (`native-sync` default Cargo feature). Python `sk.py` shim → `sync-daemon.py`.
-- **Intentional Python surfaces (not removed):** `sk.py` shim, `hook_runner.py`, `build-session-index.py`, `extract-knowledge.py`, `migrate.py`, `sync-daemon.py`, `_tentacle_core.py`, `_tentacle_goal.py`, and all operator/admin CLI scripts remain on disk as intentional tools.
+- **Intentional Python surfaces (not removed):** `sk.py` shim, `hook_runner.py`, `build-session-index.py`, `extract-knowledge.py`, `migrate.py`, `sync-daemon.py`, `_tentacle_core.py`, `_tentacle_goal.py`, `_tentacle_pr.py`, and all operator/admin CLI scripts remain on disk as intentional tools.
 
 > Full Python/Rust boundary table and script inventory: **[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)**
