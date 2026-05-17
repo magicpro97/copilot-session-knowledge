@@ -39,7 +39,9 @@ def _latest_declared_migration_version() -> int | None:
 
 def _usage() -> str:
     latest = _latest_declared_migration_version()
-    latest_line = f"Latest declared migration: v{latest}" if latest is not None else "Latest declared migration: unknown"
+    latest_line = (
+        f"Latest declared migration: v{latest}" if latest is not None else "Latest declared migration: unknown"
+    )
     return "\n".join(
         [
             "Usage: python migrate.py [DB_PATH] [--backup-only] [--backup-path PATH]",
