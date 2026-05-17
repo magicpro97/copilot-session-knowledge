@@ -41,7 +41,7 @@ See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-
 
 ## Architecture Key Facts
 
-- **Standalone scripts by default** — avoid inter-script imports unless a documented helper exception such as `_tentacle_core.py` preserves an existing contract
+- **Standalone scripts by default** — avoid inter-script imports unless a documented helper exception such as `_tentacle_core.py` or `_tentacle_goal.py` preserves an existing contract
 - **Pure stdlib Python 3.10+** — zero pip dependencies; `scikit-learn` / embedding keys are optional
 - **Parameterized SQL only** — `?` placeholders; never interpolate user input into SQL
 - **JSON serialization only** — never use pickle
@@ -60,7 +60,7 @@ See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-
 - **`sk watch`** (Rust binary) — native loop + indexer + extract; **never** auto-spawns Python. On DB or extract failure, emits a recovery hint naming the manual command.
 - **`sk hooks run <event>`** (Rust binary) — all managed events route natively. Python `sk.py` shim routes all events through `hook_runner.py` — unchanged.
 - **`sk index embed`** / **`sk sync run`** (compiled binary) — native Rust hot paths.
-- **Intentional Python surfaces:** `sk.py` shim, `hook_runner.py`, `build-session-index.py`, `extract-knowledge.py`, `migrate.py`, `sync-daemon.py`, `_tentacle_core.py`, and all operator CLI scripts remain intentional permanent tools.
+- **Intentional Python surfaces:** `sk.py` shim, `hook_runner.py`, `build-session-index.py`, `extract-knowledge.py`, `migrate.py`, `sync-daemon.py`, `_tentacle_core.py`, `_tentacle_goal.py`, and all operator CLI scripts remain intentional permanent tools.
 
 > Full Python/Rust boundary table and script inventory: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 

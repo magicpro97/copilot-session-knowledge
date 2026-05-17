@@ -21,12 +21,14 @@ FAIL = 0
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 TENTACLE_PY = TOOLS_DIR / "tentacle.py"
 CORE_PY = TOOLS_DIR / "_tentacle_core.py"
+GOAL_PY = TOOLS_DIR / "_tentacle_goal.py"
 
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 T = importlib.import_module("tentacle")
 C = importlib.import_module("_tentacle_core")
+G = importlib.import_module("_tentacle_goal")
 
 SEAM_LABELS = (
     "coupling map / re-export contract",
@@ -114,6 +116,43 @@ CORE_EXPORTS = (
     "render_todos",
 )
 
+GOAL_EXPORTS = (
+    "GOAL_STATE_FILENAME",
+    "_GOAL_LOCK_TIMEOUT_S",
+    "_GOAL_LOCK_POLL_S",
+    "GOAL_STATUS_ACTIVE",
+    "GOAL_STATUS_PAUSED",
+    "GOAL_STATUS_COMPLETED",
+    "GOAL_STATUS_ABANDONED",
+    "GOAL_STATUS_NEEDS_HUMAN",
+    "GOAL_STATUS_AWAITING_GATE",
+    "GOAL_STATUS_BUDGET_LIMITED",
+    "GOAL_EVAL_DECISIONS",
+    "_GOAL_TEXT_SOFT_LIMIT",
+    "_GOAL_TEXT_HARD_LIMIT",
+    "_GOAL_TEXT_EXTERNALIZE_HINT",
+    "_goal_path",
+    "_goal_lock_path",
+    "_goal_lock",
+    "_goal_load",
+    "_goal_write",
+    "_goal_transact",
+    "_goal_update",
+    "_goal_budget_status",
+    "_goal_gates_all_passed",
+    "_goal_criteria_run_one",
+    "_cmd_goal_init",
+    "_cmd_goal_validate",
+    "_cmd_goal_status",
+    "_cmd_goal_dispatch",
+    "_cmd_goal_eval",
+    "_cmd_goal_resume",
+    "_cmd_goal_verify_loop",
+    "_cmd_goal_loop",
+    "_cmd_goal_resilience_status",
+    "cmd_goal",
+)
+
 COUPLED_SURFACES = (
     "tests/test_tentacle_runtime.py",
     "hooks/session-end.py",
@@ -191,9 +230,24 @@ def test_core_symbols_reexported_from_tentacle() -> None:
         )
 
 
+def test_goal_symbols_reexported_from_tentacle() -> None:
+    test("_tentacle_goal.py exists", GOAL_PY.is_file(), str(GOAL_PY))
+    for symbol in GOAL_EXPORTS:
+        goal_value = getattr(G, symbol, None)
+        tentacle_value = getattr(T, symbol, None)
+        test(f"_tentacle_goal exports {symbol}", goal_value is not None)
+        test(
+            f"tentacle re-exports _tentacle_goal.{symbol}",
+            tentacle_value is goal_value,
+            f"tentacle={tentacle_value!r}, goal={goal_value!r}",
+        )
+
+
 def test_core_extraction_stays_small_and_scoped() -> None:
     line_count = len(CORE_PY.read_text(encoding="utf-8", errors="replace").splitlines())
     test("_tentacle_core.py remains under 600 lines", line_count < 600, f"lines={line_count}")
+    goal_line_count = len(GOAL_PY.read_text(encoding="utf-8", errors="replace").splitlines())
+    test("_tentacle_goal.py remains under 4200 lines", goal_line_count < 4200, f"lines={goal_line_count}")
     extraction_modules = sorted(
         path.name for path in TOOLS_DIR.glob("tentacle_*.py") if path.name not in {"tentacle.py", Path(__file__).name}
     )
@@ -211,6 +265,7 @@ def main() -> int:
     test_coupling_map_documents_callers()
     test_reexport_symbols_remain_on_tentacle_module()
     test_core_symbols_reexported_from_tentacle()
+    test_goal_symbols_reexported_from_tentacle()
     test_core_extraction_stays_small_and_scoped()
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

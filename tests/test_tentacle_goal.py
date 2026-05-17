@@ -33,6 +33,7 @@ from unittest.mock import patch
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
+import _tentacle_goal as G
 import tentacle as T
 
 # ---------------------------------------------------------------------------
@@ -503,7 +504,7 @@ class TestGoalValidate(unittest.TestCase):
 
     def test_validate_with_full_overrides_skips_goal_load(self):
         args = _fake_args(goal_action="validate", title="Ad hoc", desc="custom", format="text")
-        with patch.object(T, "_goal_load", side_effect=AssertionError("should not load goal state")):
+        with patch.object(G, "_goal_load", side_effect=AssertionError("should not load goal state")):
             title, desc = T._goal_validate_input_source(args, self.tentacles)
         self.assertEqual(title, "Ad hoc")
         self.assertEqual(desc, "custom")
@@ -3195,7 +3196,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=escalate,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_mock_run):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_mock_run):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     T._cmd_goal_verify_loop(args, self.tentacles)
@@ -3275,7 +3276,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_always_same_failure):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_always_same_failure):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3305,7 +3306,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_unique_failures):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3338,7 +3339,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_mock_run):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_mock_run):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     try:
@@ -3377,7 +3378,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=True,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(1, "stall output")):
+        with patch("_tentacle_goal._goal_criteria_run_one", return_value=(1, "stall output")):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3399,7 +3400,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(1, "stall output")):
+        with patch("_tentacle_goal._goal_criteria_run_one", return_value=(1, "stall output")):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit):
@@ -3429,7 +3430,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_unique_failures):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3455,7 +3456,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=True,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_unique_failures):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3484,7 +3485,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_unique_failures):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit):
@@ -3670,7 +3671,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=True,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(1, "stall-output")):
+        with patch("_tentacle_goal._goal_criteria_run_one", return_value=(1, "stall-output")):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit):
@@ -3687,7 +3688,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
 
         # Step 3: verify-loop succeeds after fix
         try:
-            with patch("tentacle._goal_criteria_run_one", return_value=(0, "now passing")):
+            with patch("_tentacle_goal._goal_criteria_run_one", return_value=(0, "now passing")):
                 with patch("time.sleep"):
                     with patch("builtins.print"):
                         T._cmd_goal_verify_loop(
@@ -3803,7 +3804,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=True,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(1, "still failing")):
+        with patch("_tentacle_goal._goal_criteria_run_one", return_value=(1, "still failing")):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3857,7 +3858,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(0, "ok")):
+        with patch("_tentacle_goal._goal_criteria_run_one", return_value=(0, "ok")):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     T._cmd_goal_verify_loop(args, self.tentacles)
@@ -3920,7 +3921,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", side_effect=_mock_run):
+        with patch("_tentacle_goal._goal_criteria_run_one", side_effect=_mock_run):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit) as cm:
@@ -3950,7 +3951,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(1, output_text)):
+        with patch("_tentacle_goal._goal_criteria_run_one", return_value=(1, output_text)):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit):
@@ -6425,6 +6426,7 @@ class TestGoalLoopAutoDispatch(unittest.TestCase):
         self.assertGreater(len(argv), 2)
         # First element must be a Python executable path (no shell interpolation risk).
         self.assertIn("python", argv[0].lower(), "argv[0] must be the Python interpreter")
+        self.assertEqual(Path(argv[1]).resolve(), TOOLS_DIR / "tentacle.py")
         # tentacle name appears verbatim in the argv list.
         self.assertIn("my-tentacle", argv)
         # dispatch subcommand present.
