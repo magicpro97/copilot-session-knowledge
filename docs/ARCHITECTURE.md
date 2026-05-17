@@ -69,6 +69,7 @@ This is the canonical inventory for Python Ruff coverage. Keep it in sync with
 | Package/module directories | `browse/`, `hooks/`, `scripts/` | Any staged `.py` path under `browse/`, `hooks/`, or `scripts/` | Directory coverage applies to package-like surfaces where Ruff cleanup is already baselined. |
 | Syntax gate | `python3 scripts/check_syntax.py` | All staged `.py` files via `scripts/check_syntax.py` when installed | Syntax coverage is broader than Ruff coverage. |
 | Complexity advisory | Full suite path through `run_all_tests.py`; local hook runs `scripts/check_complexity.py --json` on staged `.py` snapshots | All staged `.py` files, non-blocking and fail-open | Advisory only; it prints findings but does not deny commits. |
+| Ruff complexity/refactor advisory | `Complexity advisory (Ruff C90/PLR)` runs `ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statistics` on the same Ruff surface | Not run by local `pre-commit` | CI advisory only; `continue-on-error: true` records baseline counts before enforcement. |
 
 Root `*.py` files not listed in the exact root standalone script row are intentionally
 outside the blocking Ruff lint surface until they are baselined. They are not exempt from
