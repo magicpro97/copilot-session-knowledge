@@ -590,6 +590,119 @@ test_file_size_advisory_rule()
 test_file_size_advisory_registered()
 test_hooks_md_file_size_advisory_documented()
 
+
+# ── Test 31–36: New-file advisory hook rule ─────────────────────────────────
+
+
+def _make_new_file_advisory():
+    """Import and return a fresh NewFileAdvisoryRule instance."""
+    import importlib
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    mod = importlib.import_module("hooks.rules.new_file_advisory")
+    return mod.NewFileAdvisoryRule()
+
+
+def test_new_file_advisory_rule():
+    """Unit tests for advisory new root Python script warnings."""
+    try:
+        rule = _make_new_file_advisory()
+    except Exception as exc:
+        test("NewFileAdvisoryRule import", False, str(exc))
+        return
+
+    create_root = rule.evaluate("preToolUse", {
+        "toolName": "create",
+        "toolArgs": {"path": "new_script.py", "file_text": "print('hi')\n"},
+    })
+    test(
+        "NewFileAdvisoryRule: root Python create returns advisory info",
+        create_root is not None
+        and create_root.get("permissionDecision") != "deny"
+        and "New-file advisory" in create_root.get("message", "")
+        and "Rule 11" in create_root.get("message", ""),
+        f"got: {create_root}",
+    )
+
+    create_nested = rule.evaluate("preToolUse", {
+        "toolName": "create",
+        "toolArgs": {"path": "browse/core/new_module.py", "file_text": "print('hi')\n"},
+    })
+    test(
+        "NewFileAdvisoryRule: nested Python create returns no warning",
+        create_nested is None,
+        f"got: {create_nested}",
+    )
+
+    edit_root = rule.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": "new_script.py", "old_str": "x", "new_str": "y"},
+    })
+    test(
+        "NewFileAdvisoryRule: edit event returns no warning",
+        edit_root is None,
+        f"got: {edit_root}",
+    )
+
+    create_abs_root = rule.evaluate("preToolUse", {
+        "toolName": "create",
+        "toolArgs": {"path": str(REPO / "new_script.py"), "file_text": "print('hi')\n"},
+    })
+    test(
+        "NewFileAdvisoryRule: absolute root Python create returns advisory info",
+        create_abs_root is not None
+        and create_abs_root.get("permissionDecision") != "deny"
+        and "Rule 11" in create_abs_root.get("message", ""),
+        f"got: {create_abs_root}",
+    )
+
+    create_abs_nested = rule.evaluate("preToolUse", {
+        "toolName": "create",
+        "toolArgs": {
+            "path": str(REPO / "browse" / "core" / "new_module.py"),
+            "file_text": "print('hi')\n",
+        },
+    })
+    test(
+        "NewFileAdvisoryRule: absolute nested Python create returns no warning",
+        create_abs_nested is None,
+        f"got: {create_abs_nested}",
+    )
+
+
+def test_new_file_advisory_registered():
+    """The runtime hook registry must include the advisory rule."""
+    try:
+        rules = _registered_hook_rule_names()
+    except Exception as exc:
+        test("NewFileAdvisoryRule registry import", False, str(exc))
+        return
+    test(
+        "ALL_RULES contains new-file-advisory",
+        "new-file-advisory" in rules,
+        f"registered={rules}",
+    )
+
+
+def test_hooks_md_new_file_advisory_documented():
+    """HOOKS.md must document the advisory rule."""
+    if not HOOKS_MD.exists():
+        test("docs/HOOKS.md exists", False)
+        return
+    content = HOOKS_MD.read_text(encoding="utf-8")
+    test(
+        "HOOKS.md documents new-file-advisory",
+        re.search(r"^\|\s*`new-file-advisory`\s*\|", content, re.MULTILINE) is not None,
+        "docs/HOOKS.md rules table missing new-file-advisory row",
+    )
+
+
+test_new_file_advisory_rule()
+test_new_file_advisory_registered()
+test_hooks_md_new_file_advisory_documented()
+
 print(f"\n{'='*50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:

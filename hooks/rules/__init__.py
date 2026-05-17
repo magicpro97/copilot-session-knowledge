@@ -30,6 +30,7 @@ def get_rules_for_event(event):
     from .integrity import IntegrityRule
     from .learn_gate import EnforceLearnRule
     from .learn_reminder import LearnReminderRule
+    from .new_file_advisory import NewFileAdvisoryRule
     from .nextjs_typecheck import NextjsTypecheckRule
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
     from .read_before_edit import ReadBeforeEditRule
@@ -60,6 +61,7 @@ def get_rules_for_event(event):
         BlockUnsafeHtmlRule(),
         VerificationGateRule(),
         FileSizeAdvisoryRule(),
+        NewFileAdvisoryRule(),
         ReadBeforeEditRule(),
         ReadTrackerRule(),  # Issue #85: warn on repeat reads (preToolUse)
         # postToolUse (all run, output is informational)
