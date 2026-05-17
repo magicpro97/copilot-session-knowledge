@@ -14,8 +14,9 @@
 2. [Compaction / State-Loss Recovery](#2-compaction--state-loss-recovery)
 3. [Session Interruption Recovery](#3-session-interruption-recovery)
 4. [Quota and Rate-Limit Recovery](#4-quota-and-rate-limit-recovery)
-5. [Goal Status Reference](#5-goal-status-reference)
-6. [Recovery Decision Tree (Quick Reference)](#6-recovery-decision-tree-quick-reference)
+5. [Database Schema Backup and Rollback](#5-database-schema-backup-and-rollback)
+6. [Goal Status Reference](#6-goal-status-reference)
+7. [Recovery Decision Tree (Quick Reference)](#7-recovery-decision-tree-quick-reference)
 
 ---
 
@@ -332,7 +333,47 @@ sk tentacle goal verify-loop --escalate
 
 ---
 
-## 5. Goal Status Reference
+## 5. Database Schema Backup and Rollback
+
+Use this before manual database repair, schema rehearsals, or risky local upgrades.
+`migrate.py --backup-only` uses SQLite's online backup API, so it captures a
+consistent copy even when the source database is in WAL mode.
+
+```bash
+# Create a rollback copy without applying migrations
+python migrate.py ~/.copilot/session-state/knowledge.db --backup-only --backup-path /tmp/knowledge.db.backup
+
+# Apply migrations after the backup exists
+python migrate.py ~/.copilot/session-state/knowledge.db
+```
+
+If migration reports a corrupt database or schema failure, do not keep retrying against
+the same file. Restore the backup, or move the bad database aside and let migration
+bootstrap a fresh schema. Stop all session-knowledge writers first, then remove or move
+the matching WAL sidecars so SQLite cannot replay stale `knowledge.db-wal` state after
+the main DB file is restored or replaced:
+
+```bash
+# Stop active writers before manipulating DB files
+# Examples: stop `sk watch`, sync daemons, launchd services, or CI jobs using this DB.
+
+# Restore known-good backup
+rm -f ~/.copilot/session-state/knowledge.db-wal ~/.copilot/session-state/knowledge.db-shm
+cp /tmp/knowledge.db.backup ~/.copilot/session-state/knowledge.db
+
+# Or preserve the bad file for investigation and bootstrap a new DB
+mv ~/.copilot/session-state/knowledge.db ~/.copilot/session-state/knowledge.db.corrupt
+mv ~/.copilot/session-state/knowledge.db-wal ~/.copilot/session-state/knowledge.db-wal.corrupt 2>/dev/null || true
+mv ~/.copilot/session-state/knowledge.db-shm ~/.copilot/session-state/knowledge.db-shm.corrupt 2>/dev/null || true
+python migrate.py ~/.copilot/session-state/knowledge.db
+```
+
+When validating a rollback, run migration twice: the first run should apply missing
+versions, and the second run should report `Schema up to date`.
+
+---
+
+## 6. Goal Status Reference
 
 | Status | Meaning | How to resume |
 |--------|---------|--------------|
@@ -345,7 +386,7 @@ sk tentacle goal verify-loop --escalate
 
 ---
 
-## 6. Recovery Decision Tree (Quick Reference)
+## 7. Recovery Decision Tree (Quick Reference)
 
 ```
 After compaction / new session:

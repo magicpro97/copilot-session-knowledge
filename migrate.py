@@ -1,16 +1,183 @@
 #!/usr/bin/env python3
 """Versioned DB migration for session-knowledge tools."""
 
+import ast
 import hashlib
 import os
 import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _default_db_path() -> str:
+    return os.environ.get("SK_DB_PATH") or os.path.expanduser("~/.copilot/session-state/knowledge.db")
+
+
+def _latest_declared_migration_version() -> int | None:
+    """Read the local migration literal for help text without executing migrations."""
+    try:
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(isinstance(target, ast.Name) and target.id == "MIGRATIONS" for target in node.targets):
+                continue
+            migrations = ast.literal_eval(node.value)
+            versions = [int(item[0]) for item in migrations]
+            return max(versions) if versions else None
+    except (OSError, SyntaxError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _usage() -> str:
+    latest = _latest_declared_migration_version()
+    latest_line = (
+        f"Latest declared migration: v{latest}" if latest is not None else "Latest declared migration: unknown"
+    )
+    return "\n".join(
+        [
+            "Usage: python migrate.py [DB_PATH] [--backup-only] [--backup-path PATH]",
+            "",
+            "Run schema migrations for the session-knowledge SQLite database.",
+            "If DB_PATH is omitted, SK_DB_PATH or ~/.copilot/session-state/knowledge.db is used.",
+            "",
+            "Options:",
+            "  --backup-only       Copy DB_PATH to a rollback backup and exit without migrating.",
+            "  --backup-path PATH  Destination path for --backup-only; fails if PATH exists.",
+            "  -h, --help          Show this help and exit without touching the database.",
+            "",
+            latest_line,
+        ]
+    )
+
+
+def _parse_cli_args(argv: list[str]) -> tuple[str, bool, str | None]:
+    db_path = None
+    backup_only = False
+    backup_path = None
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg in {"-h", "--help"}:
+            print(_usage())
+            raise SystemExit(0)
+        if arg == "--backup-only":
+            backup_only = True
+        elif arg == "--backup-path":
+            index += 1
+            if index >= len(argv):
+                print("  [migrate] --backup-path requires a destination path", file=sys.stderr)
+                raise SystemExit(2)
+            backup_path = argv[index]
+        elif arg.startswith("-"):
+            print(f"  [migrate] Unknown option: {arg}", file=sys.stderr)
+            print(_usage(), file=sys.stderr)
+            raise SystemExit(2)
+        elif db_path is None:
+            db_path = arg
+        else:
+            print(f"  [migrate] Unexpected extra argument: {arg}", file=sys.stderr)
+            print(_usage(), file=sys.stderr)
+            raise SystemExit(2)
+        index += 1
+
+    if backup_path and not backup_only:
+        print("  [migrate] --backup-path can only be used with --backup-only", file=sys.stderr)
+        raise SystemExit(2)
+    return db_path or _default_db_path(), backup_only, backup_path
+
+
+def _create_backup_copy(db_path: str, backup_path: str | None = None) -> Path:
+    source = Path(db_path).expanduser()
+    if not source.is_file():
+        raise FileNotFoundError(f"database does not exist: {source}")
+    if backup_path:
+        destination = Path(backup_path).expanduser()
+    else:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        destination = source.with_name(f"{source.name}.backup-{stamp}")
+    if destination.exists():
+        raise FileExistsError(f"backup destination already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    src_conn = sqlite3.connect(str(source))
+    dst_conn = sqlite3.connect(str(destination))
+    backup_error = None
+    try:
+        src_conn.backup(dst_conn)
+    except sqlite3.Error as exc:
+        backup_error = exc
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    if backup_error is not None:
+        destination.unlink(missing_ok=True)
+        raise backup_error
+
+    verify_conn = sqlite3.connect(str(destination))
+    verify_error = None
+    try:
+        row = verify_conn.execute("PRAGMA quick_check").fetchone()
+        status = row[0] if row else "no quick_check result"
+        if str(status).lower() != "ok":
+            raise sqlite3.DatabaseError(f"backup quick_check returned {status!r}")
+    except sqlite3.Error as exc:
+        verify_error = exc
+    finally:
+        verify_conn.close()
+    if verify_error is not None:
+        destination.unlink(missing_ok=True)
+        raise verify_error
+    return destination
+
+
+def _print_database_recovery_hint(db_path: str, error: str) -> None:
+    print(f"  [migrate] Database check failed for {db_path}: {error}", file=sys.stderr)
+    print(
+        "  [migrate] Recovery hint: restore a known-good backup, or move the database aside "
+        "and rerun migration to bootstrap a fresh schema. See "
+        "docs/RESILIENCE-RUNBOOK.md#5-database-schema-backup-and-rollback.",
+        file=sys.stderr,
+    )
+
+
+def _print_database_retry_hint(db_path: str, error: str) -> None:
+    print(f"  [migrate] Database check failed for {db_path}: {error}", file=sys.stderr)
+    print(
+        "  [migrate] Recovery hint: database appears locked or busy; stop active session-knowledge "
+        "writers such as watch/sync processes, then retry the migration.",
+        file=sys.stderr,
+    )
+
+
+def _validate_database_or_exit(db: sqlite3.Connection, db_path: str) -> None:
+    try:
+        row = db.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.OperationalError as exc:
+        db.close()
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            _print_database_retry_hint(db_path, str(exc))
+        else:
+            _print_database_recovery_hint(db_path, str(exc))
+        raise SystemExit(1) from None
+    except sqlite3.DatabaseError as exc:
+        db.close()
+        _print_database_recovery_hint(db_path, str(exc))
+        raise SystemExit(1) from None
+
+    status = row[0] if row else "no integrity_check result"
+    if str(status).lower() != "ok":
+        db.close()
+        _print_database_recovery_hint(db_path, f"integrity_check returned {status!r}")
+        raise SystemExit(1)
 
 
 def _normalize_title(title: str) -> str:
@@ -587,9 +754,22 @@ def _ensure_base_schema(db: sqlite3.Connection):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.argv.append(os.environ.get("SK_DB_PATH") or os.path.expanduser("~/.copilot/session-state/knowledge.db"))
-    db = sqlite3.connect(sys.argv[1])
+    db_path, backup_only, backup_path = _parse_cli_args(sys.argv[1:])
+    if backup_only:
+        try:
+            created = _create_backup_copy(db_path, backup_path)
+        except (FileNotFoundError, FileExistsError, OSError, sqlite3.Error) as exc:
+            print(f"  [migrate] Backup failed: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
+        print(f"  [migrate] Backup created: {created}")
+        raise SystemExit(0)
+
+    try:
+        db = sqlite3.connect(db_path)
+    except sqlite3.Error as exc:
+        _print_database_recovery_hint(db_path, str(exc))
+        raise SystemExit(1) from None
+    _validate_database_or_exit(db, db_path)
     _ensure_base_schema(db)
     try:
         db.execute("ALTER TABLE schema_version ADD COLUMN name TEXT DEFAULT ''")
@@ -911,6 +1091,8 @@ if __name__ == "__main__":
             15,
             "confidence_backfill_wave3",
             [
+                "ALTER TABLE knowledge_entries ADD COLUMN confidence REAL DEFAULT 1.0",
+                "ALTER TABLE knowledge_entries ADD COLUMN occurrence_count INTEGER DEFAULT 1",
                 # Raise confidence floor for extracted patterns to 0.5
                 "UPDATE knowledge_entries SET confidence = MAX(confidence, 0.5) WHERE category = 'pattern' AND confidence < 0.5",
                 # Recurrence reward: bump entries seen 2+ times (capped to avoid runaway)
@@ -1095,7 +1277,15 @@ if __name__ == "__main__":
             applied += 1
             print(f"  [migrate] v{ver}: {name}")
         except Exception as e:
+            db.rollback()
             print(f"  [migrate] v{ver} {name}: {e}", file=sys.stderr)
+            print(
+                "  [migrate] Recovery hint: restore a backup or fix the schema error before retrying. "
+                "Run `python migrate.py DB_PATH --backup-only --backup-path BACKUP_PATH` before manual repair.",
+                file=sys.stderr,
+            )
+            db.close()
+            raise SystemExit(1) from None
     try:
         repaired_priority, renamed_priority = _repair_legacy_priority_collision(db)
         if repaired_priority:
