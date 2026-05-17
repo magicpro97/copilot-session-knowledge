@@ -665,6 +665,7 @@ CI_RUFF_FILES = [
 ]
 CI_RUFF_DIRS = ["browse/", "hooks/", "scripts/"]
 CI_RUFF_SURFACE = CI_RUFF_FILES + CI_RUFF_DIRS
+RUFF_COMPLEXITY_SELECT = "C90,PLR0911,PLR0912,PLR0913,PLR0915"
 
 
 def _top_level_function_body(content: str, name: str) -> str:
@@ -744,6 +745,37 @@ def test_ci_workflow_ruff_surface():
         )
 
 
+def test_ci_workflow_ruff_complexity_advisory():
+    """CI workflow must include the non-blocking Ruff complexity/refactor advisory."""
+    if not CI_WORKFLOW.exists():
+        test("ci.yml exists", False, str(CI_WORKFLOW))
+        return
+    content = CI_WORKFLOW.read_text(encoding="utf-8")
+    advisory_body = _workflow_step_body(content, "Complexity advisory (Ruff C90/PLR)")
+    normalized = " ".join(advisory_body.split())
+    test(
+        "ci.yml has Ruff complexity advisory step",
+        bool(advisory_body),
+        "ci.yml missing Complexity advisory (Ruff C90/PLR) step",
+    )
+    test(
+        "Ruff complexity advisory is non-blocking",
+        "continue-on-error: true" in advisory_body,
+        "Complexity advisory step must be continue-on-error: true",
+    )
+    test(
+        "Ruff complexity advisory uses requested rules and statistics",
+        f"ruff check --select {RUFF_COMPLEXITY_SELECT} --statistics" in normalized,
+        "Complexity advisory step must use Ruff C90/PLR select list with --statistics",
+    )
+    for surface in CI_RUFF_SURFACE:
+        test(
+            f"Ruff complexity advisory surface includes {surface}",
+            surface in advisory_body,
+            f"'{surface}' missing from Complexity advisory Ruff step",
+        )
+
+
 def test_hooks_md_documents_local_vs_ci():
     """HOOKS.md must document the local-vs-CI boundary and Ruff surface."""
     if not HOOKS_MD.exists():
@@ -791,6 +823,11 @@ def test_contributing_md_local_vs_ci():
         "CONTRIBUTING.md should require an explicit lint surface decision",
     )
     test(
+        "CONTRIBUTING.md documents Ruff complexity advisory",
+        "Complexity advisory (Ruff C90/PLR)" in content and RUFF_COMPLEXITY_SELECT in content,
+        "CONTRIBUTING.md should document the Ruff C90/PLR advisory step",
+    )
+    test(
         "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
         "briefing.py" in content,
         "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py",
@@ -828,6 +865,11 @@ def test_architecture_md_ruff_surface():
         "ARCHITECTURE.md explains uncovered root script policy",
         "outside the blocking Ruff lint surface" in content,
         "docs/ARCHITECTURE.md should explain coverage policy for unlisted root scripts",
+    )
+    test(
+        "ARCHITECTURE.md documents Ruff complexity advisory",
+        "Complexity advisory (Ruff C90/PLR)" in content and RUFF_COMPLEXITY_SELECT in content,
+        "docs/ARCHITECTURE.md should document the Ruff C90/PLR advisory step",
     )
     for fname in ("briefing.py", "tentacle.py", "tests/test_browse_search_v2.py", "browse/", "hooks/", "scripts/"):
         test(
@@ -889,6 +931,7 @@ def test_hooks_md_rules_table_complete():
 
 test_ruff_surface_in_pre_commit()
 test_ci_workflow_ruff_surface()
+test_ci_workflow_ruff_complexity_advisory()
 test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()
 test_architecture_md_ruff_surface()

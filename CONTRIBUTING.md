@@ -155,6 +155,11 @@ browse/  hooks/  scripts/
 
 If you modify any of those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; the local `pre-commit` git hook enforces both `ruff format --check` and `ruff check` on the same surface when Ruff is available locally (fail-open — silently skips when Ruff is not installed). Other root scripts outside this surface are not currently linted by CI.
 
+CI also runs a non-blocking `Complexity advisory (Ruff C90/PLR)` step on the same
+surface with `ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statistics`.
+It is advisory (`continue-on-error: true`) so maintainers can track baseline counts before
+promoting complexity/refactor rules to enforcement.
+
 For `browse-ui/` changes, CI runs `pnpm format:check`. Fix formatting locally with `cd browse-ui && pnpm format` before committing.
 
 If you need a narrow syntax-only check for a modified file:
