@@ -751,6 +751,21 @@ def _sk_launcher_script_paths() -> "list[Path]":
     return [SK_LAUNCHER_DIR / "sk"]
 
 
+def _launcher_backup_path(script: Path) -> Path:
+    """Return the rollback copy path for a replaced launcher."""
+    return script.with_name(script.name + ".backup")
+
+
+def _sk_launcher_managed_paths() -> "list[Path]":
+    """Return existing managed launcher files, including rollback backups."""
+    paths: list[Path] = []
+    for script in _sk_launcher_script_paths():
+        for candidate in (script, _launcher_backup_path(script)):
+            if candidate.is_file():
+                paths.append(candidate)
+    return paths
+
+
 def _sk_launcher_content() -> str:
     """Return the launcher script body for the current platform."""
     if os.name == "nt":
@@ -997,20 +1012,27 @@ def install_sk_launcher(quiet: bool = False) -> bool:
     """
     SK_LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
     content = _sk_launcher_content()
+    content_bytes = content.encode("utf-8")
     changed = False
 
     for script in _sk_launcher_script_paths():
-        existing = script.read_bytes().decode("utf-8") if script.is_file() else None
-        if existing == content:
+        existing_bytes = script.read_bytes() if script.is_file() else None
+        if existing_bytes == content_bytes:
             if not quiet:
                 print(f"  {INFO} sk launcher — already up to date ({_tilde(script)})")
         else:
+            backup = None
+            if existing_bytes is not None:
+                backup = _launcher_backup_path(script)
+                shutil.copy2(str(script), str(backup))
             _atomic_write_text(script, content)
             if os.name != "nt":
                 script.chmod(script.stat().st_mode | 0o755)
             if not quiet:
-                verb = "updated" if existing is not None else "created"
+                verb = "updated" if existing_bytes is not None else "created"
                 print(f"  {OK} sk launcher {verb}: {_tilde(script)}")
+                if backup is not None:
+                    print(f"  {INFO} Previous launcher backed up: {_tilde(backup)}")
             changed = True
 
     if os.name != "nt":
@@ -1019,7 +1041,7 @@ def install_sk_launcher(quiet: bool = False) -> bool:
         _inject_launcher_path_windows(quiet=quiet)
         _emit_windows_current_path_hint(quiet=quiet)
 
-    _record_managed_paths([script for script in _sk_launcher_script_paths() if script.is_file()], quiet=quiet)
+    _record_managed_paths(_sk_launcher_managed_paths(), quiet=quiet)
     return changed
 
 
@@ -1031,8 +1053,8 @@ def uninstall_sk_launcher(quiet: bool = False) -> int:
     import re
 
     removed = 0
-    launcher_scripts = [script for script in _sk_launcher_script_paths() if script.is_file()]
-    safe_scripts, modified_scripts, untracked_scripts = _partition_manifest_removals(launcher_scripts)
+    launcher_paths = _sk_launcher_managed_paths()
+    safe_scripts, modified_scripts, untracked_scripts = _partition_manifest_removals(launcher_paths)
 
     for script in modified_scripts:
         if not quiet:
