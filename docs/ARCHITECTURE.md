@@ -51,7 +51,7 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | `extract-knowledge.py` | Knowledge classification, relation extraction, `--semantic-only` fallback; named in `sk watch` extract-failure recovery hints | **Intentional** — manual/fallback operator tool |
 | `migrate.py` | Versioned schema migrations via `schema_version` table | **Intentional** — canonical schema upgrade owner; Rust native bootstrap does NOT replace this |
 | `sync-daemon.py` | Push/pull sync runtime for Python `sk.py` shim and non-binary installs | **Intentional** — shim sync path |
-| `briefing.py`, `learn.py`, `query-session.py`, etc. | Admin/operator CLI scripts | **Intentional** — these are the primary Python CLI surface |
+| `briefing.py`, `learn.py`, `query-session.py`, `project-registry.py`, etc. | Admin/operator CLI scripts | **Intentional** — these are the primary Python CLI surface; the Rust binary may bypass Python for measured hot read-only subcommands such as `sk project list`, while the direct scripts and mutating fallbacks remain supported |
 
 **What wave20 removed:** auto-spawning Python subprocess on `sk watch` error paths. The scripts
 above remain on disk, are invoked by operators manually, and are referenced by name in `sk watch`
@@ -101,7 +101,7 @@ non-blocking `[advisory]` Ruff findings for these files when Ruff is installed.
 | `migrate.py` | Versioned schema migrations via `schema_version` table |
 | `install.py` | Deploy skills/hooks; inject global AI instructions |
 | `setup-project.py` | Full project onboarding: skills + hooks + WORKFLOW.md |
-| `project-registry.py` | `sk project add/remove/list` — manage the persistent project registry (`tools-managed-projects.json`) |
+| `project-registry.py` | `sk project add/remove/list` — manage the persistent project registry (`tools-managed-projects.json`); Rust `sk project list` is a measured native read-only hot path, while `add`/`remove` and direct-script use stay on this Python owner |
 | `host_manifest.py` | Single source of truth for supported hosts + their filesystem paths |
 | `index-status.py` | Row counts, FTS integrity, event-offset coverage |
 | `knowledge-health.py` | Knowledge base health + recall telemetry |
@@ -369,6 +369,9 @@ All readers (`_load_project_registry()` in `install.py`, `setup-project.py`, and
 `auto-update-tools.py`) extract the path string from either format.
 
 `project-registry.py` is the CLI owner of this file: `sk project add|remove|list`.
+The Rust binary handles `sk project list` natively as a measured read-only hot path and
+preserves Python fallback/direct-script behavior for `add`, `remove`, help, and non-native
+forms.
 
 ### DB Migrations
 
