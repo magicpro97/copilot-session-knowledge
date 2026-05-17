@@ -822,6 +822,7 @@ CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 HOOKS_MD = REPO / "docs" / "HOOKS.md"
 ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
 CONTRIBUTING = REPO / "CONTRIBUTING.md"
+PLAYWRIGHT_CONFIG = REPO / "browse-ui" / "playwright.config.ts"
 
 # CI Ruff surface (extracted from ci.yml)
 CI_RUFF_FILES = [
@@ -861,6 +862,15 @@ def _top_level_function_body(content: str, name: str) -> str:
 def _workflow_step_body(content: str, step_name: str) -> str:
     match = re.search(
         rf"^      - name: {re.escape(step_name)}\n(?P<body>.*?)(?=^      - name: |\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group("body") if match else ""
+
+
+def _workflow_job_body(content: str, job_name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(job_name)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
         content,
         re.MULTILINE | re.DOTALL,
     )
@@ -962,6 +972,92 @@ def test_ci_workflow_ruff_complexity_advisory():
         )
 
 
+def test_ci_workflow_e2e_smoke_visual_split():
+    """CI must run behavioral E2E smoke on push/PR while keeping visual snapshots manual-only."""
+    if not CI_WORKFLOW.exists():
+        test("ci.yml exists", False, str(CI_WORKFLOW))
+        return
+    content = CI_WORKFLOW.read_text(encoding="utf-8")
+    smoke_body = _workflow_job_body(content, "e2e-smoke")
+    visual_body = _workflow_job_body(content, "e2e-visual")
+    release_body = _workflow_job_body(content, "agents-release-hook")
+    test("ci.yml has e2e-smoke job", bool(smoke_body), "ci.yml missing e2e-smoke job")
+    test("ci.yml has e2e-visual job", bool(visual_body), "ci.yml missing e2e-visual job")
+    test(
+        "e2e-smoke is push/PR enabled",
+        "github.event_name == 'workflow_dispatch'" not in smoke_body,
+        "e2e-smoke should not be gated to workflow_dispatch",
+    )
+    smoke_normalized = " ".join(smoke_body.split())
+    test(
+        "e2e-smoke runs behavioral Playwright project",
+        "pnpm exec playwright test --project=behavioral" in smoke_normalized,
+        "e2e-smoke should run the behavioral Playwright project",
+    )
+    test(
+        "e2e-smoke excludes visual snapshots",
+        "visual.spec.ts" not in smoke_body and "--project=visual" not in smoke_body,
+        "e2e-smoke must not run visual snapshots",
+    )
+    test(
+        "e2e-visual remains manual-only",
+        "if: github.event_name == 'workflow_dispatch'" in visual_body,
+        "e2e-visual should stay gated to workflow_dispatch",
+    )
+    visual_normalized = " ".join(visual_body.split())
+    test(
+        "e2e-visual runs visual snapshot spec",
+        "pnpm exec playwright test e2e/visual.spec.ts --project=visual" in visual_normalized,
+        "e2e-visual should run only visual snapshots",
+    )
+    test(
+        "old combined e2e job removed",
+        re.search(r"^  e2e:\n", content, re.MULTILINE) is None,
+        "combined manual-only e2e job should be split into e2e-smoke and e2e-visual",
+    )
+    test(
+        "agents release waits for e2e-smoke",
+        "needs: [quality-gates, browse-ui, e2e-smoke]" in release_body,
+        "agents-release-hook should not dispatch before e2e-smoke passes on main",
+    )
+
+
+def test_playwright_behavioral_project_contract():
+    """Playwright behavioral project must include stable smoke specs and exclude visual snapshots."""
+    if not PLAYWRIGHT_CONFIG.exists():
+        test("playwright.config.ts exists", False, str(PLAYWRIGHT_CONFIG))
+        return
+    content = PLAYWRIGHT_CONFIG.read_text(encoding="utf-8")
+    behavioral_match = re.search(
+        r'name: "behavioral",(?P<body>.*?)(?=^\s+\{|\n\s+\],)',
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    behavioral_body = behavioral_match.group("body") if behavioral_match else ""
+    test(
+        "playwright behavioral project exists",
+        bool(behavioral_body),
+        "playwright.config.ts missing behavioral project",
+    )
+    for spec in (
+        "smoke.spec.ts",
+        "shortcuts.spec.ts",
+        "chat.spec.ts",
+        "diagnostics.spec.ts",
+        "broker-mode.spec.ts",
+    ):
+        test(
+            f"playwright behavioral project includes {spec}",
+            spec in behavioral_body,
+            f"behavioral project missing {spec}",
+        )
+    test(
+        "playwright behavioral project excludes visual.spec.ts",
+        "visual.spec.ts" not in behavioral_body,
+        "behavioral project should not include visual snapshots",
+    )
+
+
 def test_hooks_md_documents_local_vs_ci():
     """HOOKS.md must document the local-vs-CI boundary and Ruff surface."""
     if not HOOKS_MD.exists():
@@ -984,6 +1080,11 @@ def test_hooks_md_documents_local_vs_ci():
         "HOOKS.md notes full test suite is NOT enforced by local hook",
         "not" in content.lower() and "run_all_tests" in content,
         "HOOKS.md should clarify that run_all_tests is not enforced by the local pre-commit hook",
+    )
+    test(
+        "HOOKS.md documents E2E smoke/visual split",
+        "e2e-smoke" in content and "e2e-visual" in content and "workflow_dispatch" in content,
+        "docs/HOOKS.md should document e2e-smoke and manual-only e2e-visual",
     )
 
 
@@ -1017,6 +1118,11 @@ def test_contributing_md_local_vs_ci():
         "CONTRIBUTING.md documents out-of-surface Ruff advisory",
         "[advisory]" in content and "out-of-surface" in content and "Ruff" in content,
         "CONTRIBUTING.md should document the local out-of-surface Ruff advisory",
+    )
+    test(
+        "CONTRIBUTING.md documents E2E smoke/visual split",
+        "e2e-smoke" in content and "e2e-visual" in content and "workflow_dispatch" in content,
+        "CONTRIBUTING.md should document the E2E smoke/visual split",
     )
     test(
         "CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
@@ -1066,6 +1172,11 @@ def test_architecture_md_ruff_surface():
         "ARCHITECTURE.md documents out-of-surface Ruff advisory",
         "Out-of-surface Ruff advisory" in content and "[advisory]" in content,
         "docs/ARCHITECTURE.md should document the local out-of-surface Ruff advisory",
+    )
+    test(
+        "ARCHITECTURE.md documents E2E smoke/visual split",
+        "e2e-smoke" in content and "e2e-visual" in content,
+        "docs/ARCHITECTURE.md should document the E2E smoke/visual split",
     )
     for fname in ("briefing.py", "tentacle.py", "tests/test_browse_search_v2.py", "browse/", "hooks/", "scripts/"):
         test(
@@ -1128,6 +1239,8 @@ def test_hooks_md_rules_table_complete():
 test_ruff_surface_in_pre_commit()
 test_ci_workflow_ruff_surface()
 test_ci_workflow_ruff_complexity_advisory()
+test_ci_workflow_e2e_smoke_visual_split()
+test_playwright_behavioral_project_contract()
 test_hooks_md_documents_local_vs_ci()
 test_contributing_md_local_vs_ci()
 test_architecture_md_ruff_surface()

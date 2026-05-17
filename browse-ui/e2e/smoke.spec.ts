@@ -68,6 +68,15 @@ const KNOWLEDGE_INSIGHTS_FIXTURE = {
   entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
 };
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/knowledge/insights*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(KNOWLEDGE_INSIGHTS_FIXTURE),
+    });
+  });
+});
+
 test("root routes render expected headings", async ({ page }) => {
   const headingByRoute = [
     ["/sessions/", "Sessions"],
@@ -451,13 +460,6 @@ test("insights search quality tab renders Wave 2 diagnostics", async ({ page }) 
       }),
     });
   });
-  await page.route("**/api/knowledge/insights*", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify(KNOWLEDGE_INSIGHTS_FIXTURE),
-    });
-  });
-
   await page.goto("/insights/#search-quality");
   await expect(page.getByRole("tab", { name: "Search Quality" })).toHaveAttribute(
     "aria-selected",

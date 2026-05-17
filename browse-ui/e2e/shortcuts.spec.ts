@@ -2,6 +2,34 @@ import { expect, test } from "./fixtures";
 import { aliasPlaceholderSession } from "./session-detail-alias";
 
 const modKey = process.platform === "darwin" ? "Meta" : "Control";
+const KNOWLEDGE_INSIGHTS_FIXTURE = {
+  generated_at: "2026-05-01T00:00:00Z",
+  summary: "Knowledge coverage is healthy enough to render diagnostics.",
+  overview: {
+    health_score: 82,
+    total_entries: 120,
+    sessions: 18,
+    high_confidence_pct: 70,
+    low_confidence_pct: 8,
+    stale_pct: 6,
+    relation_density: 2.4,
+    embedding_pct: 78,
+  },
+  quality_alerts: [],
+  recommended_actions: [],
+  recurring_noise_titles: [],
+  hot_files: [],
+  entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
+};
+
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/knowledge/insights*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(KNOWLEDGE_INSIGHTS_FIXTURE),
+    });
+  });
+});
 
 test("command palette opens and navigates", async ({ page }) => {
   await page.goto("/sessions/");
