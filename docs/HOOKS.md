@@ -47,6 +47,7 @@ hooks/
 | `pnpm-lockfile-guard` | preToolUse | Blocks staging `browse-ui/package.json` changes without a matching `pnpm-lock.yaml` update. Prevents lockfile drift. |
 | `block-unsafe-html` | preToolUse | Blocks `dangerouslySetInnerHTML` usage in `.ts`/`.tsx` files without `DOMPurify.sanitize()` or the `<Highlight>` component. |
 | `verification-gate` | preToolUse + postToolUse | Tracks dirty Python / `browse-ui` TS/JS surfaces, records successful verification commands, and blocks closeout-style actions (`task_complete`, `gh issue close/comment`, tentacle `handoff --status DONE`, tentacle `complete`) until the required fresh evidence exists. |
+| `file-size-advisory` | preToolUse | Warns when an `edit`/`create` payload would leave a Python file over 600 lines. Advisory-only and fail-open: emits information but never denies the tool call. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete; also surfaces [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) for docs/memory follow-ups |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
