@@ -265,21 +265,27 @@ fn main() -> ExitCode {
             // that bad subcommands fail fast with a consistent message even if
             // the Python script is missing or not invocable — matching the
             // behaviour of the Python sk.py _run_project() dispatcher.
-            const VALID_SUBS: &[&str] = &["add", "remove", "list"];
-            let sub = args.first().map(|s| s.as_str());
-            match sub {
-                // No subcommand or explicit help flag → show help
-                None | Some("-h") | Some("--help") => {
-                    run_fallback("project-registry.py", &["--help".to_string()])
-                }
-                Some(s) if VALID_SUBS.contains(&s) => run_fallback("project-registry.py", &args),
-                Some(bad) => {
-                    eprintln!(
-                        "sk project: unknown subcommand '{}'. Choose from: {}",
-                        bad,
-                        VALID_SUBS.join(", ")
-                    );
-                    ExitCode::from(2)
+            if let Some(exit_code) = commands::project::run_project_command(&args) {
+                exit_code
+            } else {
+                const VALID_SUBS: &[&str] = &["add", "remove", "list"];
+                let sub = args.first().map(|s| s.as_str());
+                match sub {
+                    // No subcommand or explicit help flag → show help
+                    None | Some("-h") | Some("--help") => {
+                        run_fallback("project-registry.py", &["--help".to_string()])
+                    }
+                    Some(s) if VALID_SUBS.contains(&s) => {
+                        run_fallback("project-registry.py", &args)
+                    }
+                    Some(bad) => {
+                        eprintln!(
+                            "sk project: unknown subcommand '{}'. Choose from: {}",
+                            bad,
+                            VALID_SUBS.join(", ")
+                        );
+                        ExitCode::from(2)
+                    }
                 }
             }
         }

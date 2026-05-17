@@ -52,6 +52,133 @@ fn unknown_command_returns_error() {
 }
 
 #[test]
+fn project_list_json_is_native_and_matches_python() {
+    use serde_json::json;
+    use std::fs;
+    use std::process::Command as StdCommand;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_root = std::env::temp_dir().join(format!("sk_project_list_native_{unique}"));
+    let session_state = test_root.join(".copilot").join("session-state");
+    let mock_tools = test_root.join("mock-tools");
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let registry_path = session_state.join("tools-managed-projects.json");
+    let fallback_flag = mock_tools.join("project-registry-called.flag");
+    let _ = fs::remove_dir_all(&test_root);
+    fs::create_dir_all(&session_state).unwrap();
+    fs::create_dir_all(&mock_tools).unwrap();
+
+    let alpha = test_root.join("alpha");
+    let beta = test_root.join("beta");
+    fs::create_dir_all(&alpha).unwrap();
+    fs::create_dir_all(&beta).unwrap();
+    let registry = json!({
+        "projects": [
+            alpha.to_string_lossy(),
+            {
+                "name": "beta-custom",
+                "path": beta.to_string_lossy(),
+                "created_at": "2026-05-17T00:00:00+00:00"
+            },
+            alpha.to_string_lossy()
+        ]
+    });
+    fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+
+    let mock_py = format!(
+        "from pathlib import Path\nPath(r'{}').write_text('called', encoding='utf-8')\nraise SystemExit(97)\n",
+        fallback_flag.display()
+    );
+    fs::write(mock_tools.join("project-registry.py"), mock_py).unwrap();
+
+    let python = if cfg!(target_os = "windows") {
+        "python"
+    } else {
+        "python3"
+    };
+
+    let expected_json = StdCommand::new(python)
+        .arg(repo_root.join("project-registry.py"))
+        .args(["list", "--json"])
+        .env("HOME", &test_root)
+        .env("USERPROFILE", &test_root)
+        .output()
+        .expect("python project-registry.py should run");
+    assert!(
+        expected_json.status.success(),
+        "python project-registry.py list --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&expected_json.stdout),
+        String::from_utf8_lossy(&expected_json.stderr)
+    );
+
+    let expected_text = StdCommand::new(python)
+        .arg(repo_root.join("project-registry.py"))
+        .arg("list")
+        .env("HOME", &test_root)
+        .env("USERPROFILE", &test_root)
+        .output()
+        .expect("python project-registry.py should run");
+    assert!(
+        expected_text.status.success(),
+        "python project-registry.py list failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&expected_text.stdout),
+        String::from_utf8_lossy(&expected_text.stderr)
+    );
+
+    let actual_json = sk()
+        .args(["project", "list", "--json"])
+        .env("HOME", &test_root)
+        .env("USERPROFILE", &test_root)
+        .env("SK_TOOLS_DIR", &mock_tools)
+        .assert()
+        .success();
+
+    let actual_json_value: serde_json::Value =
+        serde_json::from_slice(&actual_json.get_output().stdout).unwrap();
+    let expected_json_value: serde_json::Value =
+        serde_json::from_slice(&expected_json.stdout).unwrap();
+    assert_eq!(
+        actual_json_value, expected_json_value,
+        "native project list JSON must match Python project-registry.py semantically"
+    );
+
+    let actual_text = sk()
+        .args(["project", "list"])
+        .env("HOME", &test_root)
+        .env("USERPROFILE", &test_root)
+        .env("SK_TOOLS_DIR", &mock_tools)
+        .assert()
+        .success();
+    assert_eq!(
+        normalize_newlines(&String::from_utf8(actual_text.get_output().stdout.clone()).unwrap()),
+        normalize_newlines(&String::from_utf8(expected_text.stdout).unwrap()),
+        "native project list text output must match Python project-registry.py"
+    );
+
+    assert!(
+        !fallback_flag.exists(),
+        "sk project list --json must not spawn project-registry.py"
+    );
+
+    let _ = fs::remove_dir_all(&test_root);
+}
+
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+#[test]
 fn version_completes_under_10ms() {
     let start = Instant::now();
     sk().arg("--version").assert().success();
@@ -2809,11 +2936,9 @@ fn wave15_native_extract_sync_enqueue_fail_open() {
 /// installs and ensures SkillUsageRule is wired into the native runner.
 #[test]
 fn hooks_posttooluse_skill_usage_exits_zero() {
-    use std::io::Write;
-
     let payload = r#"{"toolName":"skill","toolInput":{"skill":"karpathy-guidelines"},"toolResult":"x","sessionId":"integration-test-sess"}"#;
-    let mut child = sk()
-        .args(&["hooks", "run", "postToolUse"])
+    let child = sk()
+        .args(["hooks", "run", "postToolUse"])
         .write_stdin(payload)
         .assert()
         .success()
@@ -2847,7 +2972,7 @@ fn hooks_posttooluse_skill_usage_writes_db() {
     let mut cmd = Command::cargo_bin("sk").unwrap();
     cmd.env("HOME", &tmp)
         .env("USERPROFILE", &tmp) // Windows
-        .args(&["hooks", "run", "postToolUse"])
+        .args(["hooks", "run", "postToolUse"])
         .write_stdin(payload)
         .assert()
         .success();
