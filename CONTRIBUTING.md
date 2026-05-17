@@ -49,6 +49,7 @@ The local `pre-commit` git hook is **fast and scoped** — it does NOT run the f
 - `browse/routes/*.py` inline-`<style>` regression guard (always)
 - Python syntax gate on all staged `.py` files via `scripts/check_syntax.py` (fail-open when script absent)
 - Ruff format + lint on staged files in the CI surface (fail-open when Ruff absent)
+- Complexity advisory on staged `.py` files via `scripts/check_complexity.py` (fail-open and non-blocking)
 - Prettier format check on staged `browse-ui/src/` files (fail-open when Prettier absent)
 - Skill/agent file lint (fail-open when lint-skills.py absent)
 
@@ -63,8 +64,10 @@ python3 run_all_tests.py
 `scripts/check_complexity.py` is a stdlib-only advisory reporter for Python file
 size, function size, and approximate cyclomatic complexity. It scans root
 Python scripts plus `browse/`, `hooks/`, and `scripts/` by default, or accepts
-targeted paths such as `python3 scripts/check_complexity.py tentacle.py`. Use
-`--json` when CI or automation needs machine-readable metrics.
+targeted paths such as `python3 scripts/check_complexity.py tentacle.py`. The
+local `pre-commit` hook also runs it on staged `.py` files and prints
+non-blocking warnings for complexity findings. Use `--json` when CI or
+automation needs machine-readable metrics.
 
 For faster targeted loops, these focused checks are still useful:
 

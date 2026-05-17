@@ -31,6 +31,7 @@ CHECK_SYNTAX = REPO / "scripts" / "check_syntax.py"
 CHECK_COMPLEXITY = REPO / "scripts" / "check_complexity.py"
 RUN_ALL_TESTS = REPO / "run_all_tests.py"
 FIXTURE = REPO / "tests" / "fixtures" / "broken_syntax_example.py.txt"
+PRE_COMMIT = REPO / "hooks" / "pre-commit"
 
 
 def test(name: str, condition: bool, detail: str = ""):
@@ -461,11 +462,134 @@ test_check_complexity_stdlib_imports_only()
 test_check_complexity_script_compiles()
 
 
+# ── Pre-commit complexity advisory tests ────────────────────────────────────
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True)
+
+
+def _seed_pre_commit_tools(home: Path, *, include_complexity: bool = True) -> Path:
+    tools = home / ".copilot" / "tools"
+    (tools / "hooks").mkdir(parents=True, exist_ok=True)
+    (tools / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy(PRE_COMMIT, tools / "hooks" / "pre-commit")
+    if include_complexity:
+        shutil.copy(CHECK_COMPLEXITY, tools / "scripts" / "check_complexity.py")
+    return tools / "hooks" / "pre-commit"
+
+
+def _run_pre_commit_hook(repo: Path, hook: Path, home: Path) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+    }
+    return subprocess.run(
+        [sys.executable, str(hook)],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+
+
+def test_pre_commit_complexity_advisory():
+    """Pre-commit should warn on complex staged Python and stay quiet on small staged Python."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        repo = base / "repo"
+        home = base / "home"
+        repo.mkdir()
+        home.mkdir()
+        hook = _seed_pre_commit_tools(home)
+        _git(repo, "init")
+
+        complex_file = repo / "complex_module.py"
+        branches = "\n".join(f"    if value == {i}:\n        total += {i}" for i in range(20))
+        complex_file.write_text(f"def complex_func(value):\n    total = 0\n{branches}\n    return total\n")
+        _git(repo, "add", "complex_module.py")
+        complex_result = _run_pre_commit_hook(repo, hook, home)
+        complex_output = complex_result.stdout + complex_result.stderr
+        test(
+            "pre-commit complexity advisory exits 0 for complex staged file",
+            complex_result.returncode == 0,
+            f"returncode={complex_result.returncode}, output={complex_output}",
+        )
+        test(
+            "pre-commit complexity advisory prints warning for complex staged file",
+            "Complexity advisory" in complex_output
+            and "complex_module.py" in complex_output
+            and "complex_func" in complex_output,
+            f"output={complex_output}",
+        )
+
+        _git(repo, "reset")
+        small_file = repo / "small_module.py"
+        small_file.write_text("def small_func():\n    return 1\n")
+        _git(repo, "add", "small_module.py")
+        small_result = _run_pre_commit_hook(repo, hook, home)
+        small_output = small_result.stdout + small_result.stderr
+        test(
+            "pre-commit complexity advisory exits 0 for small staged file",
+            small_result.returncode == 0,
+            f"returncode={small_result.returncode}, output={small_output}",
+        )
+        test(
+            "pre-commit complexity advisory prints no warning for small staged file",
+            "Complexity advisory" not in small_output,
+            f"output={small_output}",
+        )
+
+
+def test_pre_commit_complexity_missing_checker_fail_open():
+    """Missing check_complexity.py should not block commits."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        repo = base / "repo"
+        home = base / "home"
+        repo.mkdir()
+        home.mkdir()
+        hook = _seed_pre_commit_tools(home, include_complexity=False)
+        _git(repo, "init")
+        staged = repo / "module.py"
+        staged.write_text("def small_func():\n    return 1\n")
+        _git(repo, "add", "module.py")
+        result = _run_pre_commit_hook(repo, hook, home)
+        output = result.stdout + result.stderr
+        test(
+            "pre-commit complexity advisory fail-open when checker missing",
+            result.returncode == 0 and "Complexity advisory" not in output,
+            f"returncode={result.returncode}, output={output}",
+        )
+
+
+def test_pre_commit_ast_parse():
+    """hooks/pre-commit is a valid standalone Python script."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import ast; ast.parse(open('hooks/pre-commit', encoding='utf-8').read())"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test(
+        "hooks/pre-commit parses as Python",
+        result.returncode == 0,
+        result.stderr,
+    )
+
+
+test_pre_commit_complexity_advisory()
+test_pre_commit_complexity_missing_checker_fail_open()
+test_pre_commit_ast_parse()
+
+
 # ── Test 12–20: Ruff surface consistency ────────────────────────────────────
 # Verify that the pre-commit hook's _py_in_surface() covers the same files
 # as CI ci.yml, and that HOOKS.md documents the correct local-vs-CI boundary.
 
-PRE_COMMIT = REPO / "hooks" / "pre-commit"
 CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 HOOKS_MD = REPO / "docs" / "HOOKS.md"
 ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
