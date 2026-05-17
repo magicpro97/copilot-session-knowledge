@@ -425,7 +425,9 @@ def test_check_complexity_null_byte_json_error():
 
 def test_check_complexity_stdlib_imports_only():
     """The complexity reporter must stay stdlib-only."""
-    allowed = {"argparse", "ast", "dataclasses", "json", "os", "pathlib", "sys"}
+    allowed = set(getattr(sys, "stdlib_module_names", ()))
+    if not allowed:
+        allowed = {"argparse", "ast", "dataclasses", "json", "os", "pathlib", "sys"}
     tree = ast.parse(CHECK_COMPLEXITY.read_text(encoding="utf-8"))
     imports = set()
     for node in ast.walk(tree):
@@ -469,6 +471,16 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True)
 
 
+def _git_ok(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    result = _git(repo, *args)
+    test(
+        f"git {' '.join(args)} succeeds",
+        result.returncode == 0,
+        f"returncode={result.returncode}, output={result.stdout + result.stderr}",
+    )
+    return result
+
+
 def _seed_pre_commit_tools(home: Path, *, include_complexity: bool = True) -> Path:
     tools = home / ".copilot" / "tools"
     (tools / "hooks").mkdir(parents=True, exist_ok=True)
@@ -505,41 +517,45 @@ def test_pre_commit_complexity_advisory():
         repo.mkdir()
         home.mkdir()
         hook = _seed_pre_commit_tools(home)
-        _git(repo, "init")
+        git_init = _git_ok(repo, "init")
 
         complex_file = repo / "complex_module.py"
         branches = "\n".join(f"    if value == {i}:\n        total += {i}" for i in range(20))
         complex_file.write_text(f"def complex_func(value):\n    total = 0\n{branches}\n    return total\n")
-        _git(repo, "add", "complex_module.py")
+        git_add_complex = _git_ok(repo, "add", "complex_module.py")
+        complex_file.write_text("def complex_func(value):\n    return value\n")
         complex_result = _run_pre_commit_hook(repo, hook, home)
         complex_output = complex_result.stdout + complex_result.stderr
         test(
             "pre-commit complexity advisory exits 0 for complex staged file",
-            complex_result.returncode == 0,
+            git_init.returncode == 0 and git_add_complex.returncode == 0 and complex_result.returncode == 0,
             f"returncode={complex_result.returncode}, output={complex_output}",
         )
         test(
             "pre-commit complexity advisory prints warning for complex staged file",
-            "Complexity advisory" in complex_output
+            git_init.returncode == 0
+            and git_add_complex.returncode == 0
+            and "Complexity advisory" in complex_output
             and "complex_module.py" in complex_output
             and "complex_func" in complex_output,
             f"output={complex_output}",
         )
 
-        _git(repo, "reset")
+        git_reset = _git_ok(repo, "reset")
         small_file = repo / "small_module.py"
         small_file.write_text("def small_func():\n    return 1\n")
-        _git(repo, "add", "small_module.py")
+        git_add_small = _git_ok(repo, "add", "small_module.py")
+        small_file.write_text(f"def small_func(value):\n    total = 0\n{branches}\n    return total\n")
         small_result = _run_pre_commit_hook(repo, hook, home)
         small_output = small_result.stdout + small_result.stderr
         test(
             "pre-commit complexity advisory exits 0 for small staged file",
-            small_result.returncode == 0,
+            git_reset.returncode == 0 and git_add_small.returncode == 0 and small_result.returncode == 0,
             f"returncode={small_result.returncode}, output={small_output}",
         )
         test(
             "pre-commit complexity advisory prints no warning for small staged file",
-            "Complexity advisory" not in small_output,
+            git_reset.returncode == 0 and git_add_small.returncode == 0 and "Complexity advisory" not in small_output,
             f"output={small_output}",
         )
 
@@ -553,15 +569,45 @@ def test_pre_commit_complexity_missing_checker_fail_open():
         repo.mkdir()
         home.mkdir()
         hook = _seed_pre_commit_tools(home, include_complexity=False)
-        _git(repo, "init")
+        git_init = _git_ok(repo, "init")
         staged = repo / "module.py"
         staged.write_text("def small_func():\n    return 1\n")
-        _git(repo, "add", "module.py")
+        git_add = _git_ok(repo, "add", "module.py")
         result = _run_pre_commit_hook(repo, hook, home)
         output = result.stdout + result.stderr
         test(
             "pre-commit complexity advisory fail-open when checker missing",
-            result.returncode == 0 and "Complexity advisory" not in output,
+            git_init.returncode == 0
+            and git_add.returncode == 0
+            and result.returncode == 0
+            and "Complexity advisory" not in output,
+            f"returncode={result.returncode}, output={output}",
+        )
+
+
+def test_pre_commit_complexity_malformed_json_fail_open():
+    """Malformed-but-valid reporter JSON should not make pre-commit fail closed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        repo = base / "repo"
+        home = base / "home"
+        repo.mkdir()
+        home.mkdir()
+        hook = _seed_pre_commit_tools(home)
+        checker = home / ".copilot" / "tools" / "scripts" / "check_complexity.py"
+        checker.write_text("print('[]')\n", encoding="utf-8")
+        git_init = _git_ok(repo, "init")
+        staged = repo / "module.py"
+        staged.write_text("def small_func():\n    return 1\n")
+        git_add = _git_ok(repo, "add", "module.py")
+        result = _run_pre_commit_hook(repo, hook, home)
+        output = result.stdout + result.stderr
+        test(
+            "pre-commit complexity advisory fail-open on malformed JSON shape",
+            git_init.returncode == 0
+            and git_add.returncode == 0
+            and result.returncode == 0
+            and "reporter JSON shape was unexpected" in output,
             f"returncode={result.returncode}, output={output}",
         )
 
@@ -583,6 +629,7 @@ def test_pre_commit_ast_parse():
 
 test_pre_commit_complexity_advisory()
 test_pre_commit_complexity_missing_checker_fail_open()
+test_pre_commit_complexity_malformed_json_fail_open()
 test_pre_commit_ast_parse()
 
 

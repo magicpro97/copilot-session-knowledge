@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 if os.name == "nt":
@@ -146,6 +147,62 @@ def check_ruff(staged: list[str]) -> int:
     return 0
 
 
+def write_staged_python_snapshot(staged_py: list[str], temp_root: Path) -> tuple[list[str], dict[str, str]]:
+    report_paths: list[str] = []
+    path_map: dict[str, str] = {}
+    for staged_path in staged_py:
+        temp_path = temp_root / staged_path
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(staged_content(staged_path), encoding="utf-8", errors="replace")
+        report_paths.append(str(temp_path))
+        path_map[str(temp_path)] = staged_path
+        path_map[temp_path.as_posix()] = staged_path
+    return report_paths, path_map
+
+
+def restore_report_path(value: object, path_map: dict[str, str]) -> str:
+    label = str(value or "")
+    return path_map.get(label, label)
+
+
+def restore_error_paths(error: object, path_map: dict[str, str]) -> str:
+    message = str(error)
+    for temp_path, staged_path in path_map.items():
+        message = message.replace(temp_path, staged_path)
+    return message
+
+
+def complexity_advisory_lines(payload: object, path_map: dict[str, str]) -> tuple[list[str], list[str]] | None:
+    if not isinstance(payload, dict):
+        return None
+    files = payload.get("files", [])
+    errors = payload.get("errors", [])
+    if not isinstance(files, list) or not isinstance(errors, list):
+        return None
+    advisory_lines: list[str] = []
+    for file_info in files:
+        if not isinstance(file_info, dict):
+            return None
+        functions = file_info.get("functions", [])
+        if not isinstance(functions, list):
+            return None
+        path = restore_report_path(file_info.get("path"), path_map)
+        if file_info.get("severity") in {"warning", "high"}:
+            advisory_lines.append(
+                f"  {file_info.get('severity')}: {path} lines={file_info.get('lines')} functions={len(functions)}"
+            )
+        for fn in functions:
+            if not isinstance(fn, dict):
+                return None
+            if fn.get("severity") not in {"warning", "high"}:
+                continue
+            advisory_lines.append(
+                f"  {fn.get('severity')}: {path}:{fn.get('line')} {fn.get('name')} "
+                f"complexity={fn.get('complexity')} lines={fn.get('lines')}"
+            )
+    return advisory_lines, [restore_error_paths(error, path_map) for error in errors]
+
+
 def check_complexity(staged: list[str]) -> int:
     if not COMPLEXITY_CHECKER.is_file():
         return 0
@@ -153,15 +210,16 @@ def check_complexity(staged: list[str]) -> int:
     if not staged_py:
         return 0
     try:
-        result = run(
-            [sys.executable, str(COMPLEXITY_CHECKER), "--json", *staged_py],
-            capture_output=True,
-            timeout=60,
-        )
+        with tempfile.TemporaryDirectory(prefix="pre-commit-complexity-") as temp_dir:
+            report_paths, path_map = write_staged_python_snapshot(staged_py, Path(temp_dir))
+            result = run(
+                [sys.executable, str(COMPLEXITY_CHECKER), "--json", *report_paths],
+                capture_output=True,
+                timeout=60,
+            )
     except Exception as exc:
         print(f"⚠️ Complexity advisory skipped: {exc}")
         return 0
-
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -171,23 +229,11 @@ def check_complexity(staged: list[str]) -> int:
             print(output)
         return 0
 
-    advisory_lines: list[str] = []
-    for file_info in payload.get("files", []):
-        path = file_info.get("path", "")
-        if file_info.get("severity") in {"warning", "high"}:
-            advisory_lines.append(
-                f"  {file_info.get('severity')}: {path} "
-                f"lines={file_info.get('lines')} functions={len(file_info.get('functions', []))}"
-            )
-        for fn in file_info.get("functions", []):
-            if fn.get("severity") not in {"warning", "high"}:
-                continue
-            advisory_lines.append(
-                f"  {fn.get('severity')}: {path}:{fn.get('line')} {fn.get('name')} "
-                f"complexity={fn.get('complexity')} lines={fn.get('lines')}"
-            )
-
-    errors = payload.get("errors", [])
+    parsed = complexity_advisory_lines(payload, path_map)
+    if parsed is None:
+        print("⚠️ Complexity advisory skipped: reporter JSON shape was unexpected")
+        return 0
+    advisory_lines, errors = parsed
     if advisory_lines or errors:
         print("⚠️ Complexity advisory (non-blocking):")
         for line in advisory_lines:

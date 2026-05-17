@@ -287,13 +287,7 @@ def report_dict(files: list[FileMetric], errors: list[str]) -> dict:
     return {
         "summary": summarize(files),
         "thresholds": thresholds(),
-        "files": [
-            {
-                **asdict(file),
-                "functions": [asdict(fn) for fn in file.functions],
-            }
-            for file in files
-        ],
+        "files": [asdict(file) for file in files],
         "errors": errors,
     }
 
