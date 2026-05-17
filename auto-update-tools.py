@@ -101,6 +101,7 @@ BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
     "task-step-generator",
     "conductor-creator",
     "project-onboarding",
+    "detective-investigation",
 )
 
 # Global Copilot CLI skills directory.  deploy_skills() creates missing VENDORED

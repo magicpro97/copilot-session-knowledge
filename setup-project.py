@@ -22,10 +22,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_adapters import detect_agents, expand_init_agents, get_adapter, unique_target_adapters
-from host_manifest import HOST_INSTRUCTION_FILES as KNOWN_HOSTS_INSTRUCTION_FILES  # noqa: E402
-from host_manifest import HOST_SKILL_SUBPATHS  # noqa: E402
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
 SKILLS_DIR = SCRIPT_DIR / "skills"
@@ -50,6 +46,8 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
 
 # Host metadata is centralised in host_manifest.py — import canonical constants.
 # Do NOT add new hosts here; update host_manifest.py through the review process.
+from host_manifest import HOST_INSTRUCTION_FILES as KNOWN_HOSTS_INSTRUCTION_FILES  # noqa: E402
+from host_manifest import HOST_SKILL_SUBPATHS  # noqa: E402
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -77,6 +75,7 @@ INSTALL_ITEMS = {
         {"src": "task-step-generator", "label": "Task Step Generator (structured step-file generation)"},
         {"src": "conductor-creator", "label": "Conductor Creator (task-router generator)"},
         {"src": "project-onboarding", "label": "Project Onboarding (full AI ecosystem setup guide)"},
+        {"src": "detective-investigation", "label": "Detective Investigation (evidence-board RCA workflow)"},
         {"src": "karpathy-guidelines", "label": "Karpathy Guidelines (anti-overcomplication coding rules)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
@@ -104,15 +103,13 @@ CLAUDE_SNIPPET = """
 
 ```bash
 # Before starting a task — get context from past sessions
-sk briefing --auto --compact
-# Fallbacks: macOS/Linux `python3 ~/.copilot/tools/briefing.py --auto --compact`;
-# Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\briefing.py" --auto --compact`
+python3 ~/.copilot/tools/briefing.py --auto --compact
 
 # After fixing a bug — record the mistake
-sk learn --mistake "Title" "What happened and fix" --tags "relevant,tags"
+python3 ~/.copilot/tools/learn.py --mistake "Title" "What happened and fix" --tags "relevant,tags"
 
 # After completing work — record pattern/decision
-sk learn --pattern "Title" "What works well" --tags "tags"
+python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well" --tags "tags"
 ```
 """
 
@@ -195,23 +192,21 @@ AGENTS_SNIPPET = """
 
 ```bash
 # Before task — start minimal and escalate only when needed
-sk briefing --auto --compact
-# Fallbacks: macOS/Linux `python3 ~/.copilot/tools/briefing.py --auto --compact`;
-# Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\briefing.py" --auto --compact`
+python3 ~/.copilot/tools/briefing.py --auto --compact
 
 # Before delegating via tentacle — preferred structured recall path
-sk tentacle swarm <name> --briefing
+python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
 
 # Manual compatibility for ad hoc sub-agent prompts
-sk briefing "<sub-agent task>" --for-subagent
+python3 ~/.copilot/tools/briefing.py "<sub-agent task>" --for-subagent
 
 # During task — search for errors/topics
-sk query "<error or topic>" --verbose
+python3 ~/.copilot/tools/query-session.py "<error or topic>" --verbose
 
 # After task — record with full metadata
-sk learn --mistake "Title" "Description" --tags "t1,t2" --wing <wing> --room <room> --fact "key detail"
-sk learn --pattern "Title" "Description" --tags "t1,t2" --wing <wing> --room <room>
-sk learn --relate "#id1" "resolved_by" "#id2"
+python3 ~/.copilot/tools/learn.py --mistake "Title" "Description" --tags "t1,t2" --wing <wing> --room <room> --fact "key detail"
+python3 ~/.copilot/tools/learn.py --pattern "Title" "Description" --tags "t1,t2" --wing <wing> --room <room>
+python3 ~/.copilot/tools/learn.py --relate "#id1" "resolved_by" "#id2"
 ```
 """
 
@@ -473,39 +468,6 @@ def patch_agents_md(project_root: Path, dry_run: bool) -> bool:
     return True
 
 
-def _select_init_adapters(
-    project_root: Path, requested_agents: list[str] | None, *, init_mode: bool
-) -> tuple[list, list[str]]:
-    selected = list(requested_agents or [])
-    if not selected and init_mode:
-        selected = detect_agents(project_root)
-        if not selected:
-            selected = ["copilot"]
-    if not selected:
-        return [], []
-    adapters = [get_adapter(key) for key in expand_init_agents(selected)]
-    return unique_target_adapters(adapters), selected
-
-
-def apply_init_adapters(project_root: Path, adapters: list, dry_run: bool) -> int:
-    changes = 0
-    for adapter in adapters:
-        rel = adapter.target_path(project_root).relative_to(project_root)
-        try:
-            status = adapter.upsert_context(project_root, dry_run=dry_run)
-        except ValueError as exc:
-            raise ValueError(f"{adapter.name} context at {rel} is invalid: {exc}") from exc
-        if status == "unchanged":
-            print(f"  ⏭ {adapter.name} already up to date ({rel})")
-            continue
-        changes += 1
-        if dry_run:
-            print(f"  [dry-run] Would {status}: {rel} ({adapter.name})")
-        else:
-            print(f"  ✓ {status.capitalize()}: {rel} ({adapter.name})")
-    return changes
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Integrate session-knowledge + tentacle orchestration into a project",
@@ -563,15 +525,6 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
              "(default: none; choices: default, python, typescript, mobile, fullstack)"
     )
     parser.add_argument(
-        "--agent",
-        dest="agents",
-        action="append",
-        default=None,
-        metavar="AGENT",
-        help="Initialize adapter-specific context files; repeat to target multiple adapters",
-    )
-    parser.add_argument("--init-mode", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument(
         "--dry-run", action="store_true",
         help="Show what would be done without making changes"
     )
@@ -597,13 +550,6 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print("   (dry-run mode)")
     print()
 
-    try:
-        init_adapters, requested_init = _select_init_adapters(
-            project_root, args.agents, init_mode=args.init_mode
-        )
-    except ValueError as exc:
-        print(f"✗ {exc}")
-        sys.exit(1)
     changes = 0
 
     # 1. Install session-knowledge skill + instructions
@@ -622,25 +568,12 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
     # 4. Patch config files
     if not args.skill_only:
         print("\n📝 Config Files:")
-        if init_adapters:
-            if args.agents:
-                requested_text = ", ".join(requested_init)
-                print(f"  Initializing adapter contexts for: {requested_text}")
-            elif args.init_mode:
-                detected_text = ", ".join(requested_init)
-                print(f"  Using detected adapters: {detected_text}")
-            try:
-                changes += apply_init_adapters(project_root, init_adapters, args.dry_run)
-            except ValueError as exc:
-                print(f"✗ {exc}")
-                sys.exit(1)
-        else:
-            if patch_claude_md(project_root, args.dry_run):
-                changes += 1
-            if patch_copilot_instructions(project_root, args.dry_run):
-                changes += 1
-            if patch_agents_md(project_root, args.dry_run):
-                changes += 1
+        if patch_claude_md(project_root, args.dry_run):
+            changes += 1
+        if patch_copilot_instructions(project_root, args.dry_run):
+            changes += 1
+        if patch_agents_md(project_root, args.dry_run):
+            changes += 1
 
     # 5. Install workflow profile hook bundle (optional, only when --profile is given)
     if args.profile:
@@ -679,10 +612,8 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print(f"✅ Done! {changes} change(s) applied.")
         print()
         print("Next steps:")
-        print("  1. Run: sk index build --all")
-        print("     Fallbacks: macOS/Linux `python3 ~/.copilot/tools/build-session-index.py --all`;")
-        print("                Windows PowerShell `python \"$env:USERPROFILE\\.copilot\\tools\\build-session-index.py\" --all`")
-        print("  2. (Optional) Configure sync gateway URL: sk sync config --setup <https://gateway>")
+        print("  1. Run: python3 ~/.copilot/tools/build-session-index.py --all")
+        print("  2. (Optional) Configure sync gateway URL: python3 ~/.copilot/tools/sync-config.py --setup <https://gateway>")
         print("     Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host).")
         print("  3. Trend Scout automation: keep trend-scout.py in scheduled/manual flow (trend-scout.yml), not preToolUse/postToolUse hooks.")
         print("  4. Customize for your project:")

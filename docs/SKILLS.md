@@ -63,6 +63,7 @@ At `sessionStart`, the `auto-briefing` hook passes `--session-start` to `briefin
 | `workflow-creator` | Create phased development workflows with quality gates |
 | `conductor-creator` | Generate a project-specific Conductor (task router) mapping tasks to workflows and skills |
 | `project-onboarding` | Complete guide to set up the full AI-assisted development ecosystem for any project |
+| `detective-investigation` | Project-agnostic evidence-board workflow for root-cause investigations, regressions, incidents, and interactive HTML reports |
 | `find-skills` | Discover and install agent skills from the registry |
 | `agent-instructions-auditor` | Audit and improve agent instruction files |
 | `forge-ecosystem` | Scaffold and manage app/game projects via forge CLI tools |

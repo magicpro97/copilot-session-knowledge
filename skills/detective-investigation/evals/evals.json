@@ -1,0 +1,28 @@
+{
+  "skill_name": "detective-investigation",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We have a regression where the billing export started showing zero totals after last week's release. Investigate it like a detective and produce an evidence board report.",
+      "expected_output": "A project-agnostic investigation plan/report with RED evidence, evidence tiers, timeline, hypothesis graph, contradictions, root-cause proof, and GREEN verification plan.",
+      "files": [],
+      "expectations": [
+        "Requires RED evidence before root-cause conclusion.",
+        "Uses evidence tiers and support/contradict directions.",
+        "Represents unknowns and contradictions explicitly.",
+        "Includes a reusable graph/report structure rather than a one-off prose-only answer."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Turn these scattered logs, screenshots, and code notes into an interactive HTML bug board with root cause, hidden nodes, and next actions.",
+      "expected_output": "A structured HTML evidence-board plan that uses canonical investigation data and reusable rendering guidance.",
+      "files": [],
+      "expectations": [
+        "Defines nodes and edges for symptom, evidence, hypothesis, root cause, fix, verification, contradiction, and unknown.",
+        "Specifies interactions such as search, filters, focus mode, path highlight, detail panel, and export.",
+        "Keeps citations/artifacts attached to claims."
+      ]
+    }
+  ]
+}
