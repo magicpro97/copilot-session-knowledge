@@ -59,7 +59,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{resolve_copilot_dir, resolve_home_dir, resolve_tools_dir};
-use crate::daemon::{install_shutdown_handler, run_daemon_loop, DaemonLock, LoopConfig};
+use crate::daemon::{
+    install_shutdown_handler, run_daemon_loop, run_daemon_loop_with_wake, DaemonLock, LoopConfig,
+};
 use crate::index::claude as native_claude;
 use crate::index::session as native_index;
 
@@ -131,7 +133,12 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
         "adaptive".to_string()
     };
     println!("[watch] Watching: {dirs_str}");
-    println!("[watch] Poll interval: {interval_note} | Ctrl+C to stop");
+    let event_note = if opts.event_watch {
+        " (event-wake enabled)"
+    } else {
+        ""
+    };
+    println!("[watch] Poll interval: {interval_note}{event_note} | Ctrl+C to stop");
 
     let mut state = load_watch_state(&state_file);
     let tools_dir = resolve_tools_dir();
@@ -145,7 +152,7 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
         once: opts.once,
     };
 
-    run_daemon_loop(&running, &loop_cfg, || {
+    let mut do_tick = || {
         let (age, state_changed) = check_and_index(
             &mut state,
             &watch_dirs,
@@ -161,7 +168,17 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
             save_watch_state(&state_file, &state);
         }
         age
-    });
+    };
+
+    if !run_event_watch_if_requested(
+        opts.event_watch,
+        &running,
+        &loop_cfg,
+        &watch_dirs,
+        &mut do_tick,
+    ) {
+        run_daemon_loop(&running, &loop_cfg, &mut do_tick);
+    }
 
     println!("[watch] Stopped.");
     lock.release();
@@ -462,6 +479,7 @@ struct WatchOpts {
     changed_only: bool,
     install_hint: bool,
     help: bool,
+    event_watch: bool,
 }
 
 fn parse_watch_args(args: &[String]) -> WatchOpts {
@@ -472,6 +490,7 @@ fn parse_watch_args(args: &[String]) -> WatchOpts {
         changed_only: false,
         install_hint: false,
         help: false,
+        event_watch: false,
     };
     let mut i = 0;
     while i < args.len() {
@@ -500,6 +519,10 @@ fn parse_watch_args(args: &[String]) -> WatchOpts {
                 opts.help = true;
                 i += 1;
             }
+            "--event-watch" => {
+                opts.event_watch = true;
+                i += 1;
+            }
             _ => i += 1,
         }
     }
@@ -516,7 +539,8 @@ fn print_watch_help() {
          \x20   sk watch --once            Single check then exit\n\
          \x20   sk watch --daemon          Background process\n\
          \x20   sk watch --changed-only    Print changed files before re-extracting\n\
-         \x20   sk watch --install-hint    Print auto-start setup instructions"
+         \x20   sk watch --install-hint    Print auto-start setup instructions\n\
+         \x20   sk watch --event-watch     Use filesystem events to wake the loop early (opt-in)"
     );
 }
 
@@ -588,9 +612,100 @@ fn render_install_hint(os_name: &str, exe: &str) -> String {
     }
 }
 
+// ── Event-driven wake (WBS-027) ────────────────────────────────────────────────
+
+/// Gate for event-driven mode.
+///
+/// Returns `true` if event-watch was successfully set up and the loop ran
+/// (caller should skip polling fallback).  Returns `false` if:
+///   - `event_watch` flag is not set, OR
+///   - the `native-watch` Cargo feature is absent, OR
+///   - notify watcher setup failed (fail-open → caller falls back to polling).
+fn run_event_watch_if_requested<F>(
+    event_watch: bool,
+    running: &Arc<AtomicBool>,
+    config: &LoopConfig,
+    watch_dirs: &[std::path::PathBuf],
+    tick: &mut F,
+) -> bool
+where
+    F: FnMut() -> Option<u64>,
+{
+    if !event_watch {
+        return false;
+    }
+    run_event_watch_inner(running, config, watch_dirs, tick)
+}
+
+#[cfg(feature = "native-watch")]
+fn run_event_watch_inner<F>(
+    running: &Arc<AtomicBool>,
+    config: &LoopConfig,
+    watch_dirs: &[std::path::PathBuf],
+    tick: &mut F,
+) -> bool
+where
+    F: FnMut() -> Option<u64>,
+{
+    use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::atomic::Ordering;
+
+    let event_flag = Arc::new(AtomicBool::new(false));
+    let flag_clone = event_flag.clone();
+
+    let handler = move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            flag_clone.store(true, Ordering::SeqCst);
+        }
+    };
+
+    let mut watcher = match RecommendedWatcher::new(handler, NotifyConfig::default()) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[watch] event-watch setup failed ({e}); falling back to polling");
+            return false;
+        }
+    };
+
+    for dir in watch_dirs {
+        if let Err(e) = watcher.watch(dir.as_path(), RecursiveMode::Recursive) {
+            eprintln!(
+                "[watch] event-watch: could not watch {}: {e}",
+                dir.display()
+            );
+        }
+    }
+
+    let should_wake = {
+        let flag = event_flag.clone();
+        move || flag.swap(false, Ordering::SeqCst)
+    };
+
+    run_daemon_loop_with_wake(running, config, tick, should_wake);
+    drop(watcher);
+    true
+}
+
+#[cfg(not(feature = "native-watch"))]
+fn run_event_watch_inner<F>(
+    _running: &Arc<AtomicBool>,
+    _config: &LoopConfig,
+    _watch_dirs: &[std::path::PathBuf],
+    _tick: &mut F,
+) -> bool
+where
+    F: FnMut() -> Option<u64>,
+{
+    eprintln!(
+        "[watch] --event-watch requested but sk was not compiled with the \
+         native-watch feature; falling back to polling"
+    );
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use super::render_install_hint;
+    use super::*;
 
     #[test]
     fn install_hint_windows_mentions_task_scheduler() {
@@ -612,5 +727,95 @@ mod tests {
         assert!(hint.contains("launchd user agent"));
         assert!(hint.contains("launchctl load"));
         assert!(!hint.contains("systemd"));
+    }
+
+    #[test]
+    fn parse_event_watch_flag_sets_opt() {
+        let args: Vec<String> = vec!["--event-watch".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(
+            opts.event_watch,
+            "--event-watch should set event_watch=true"
+        );
+    }
+
+    #[test]
+    fn parse_no_event_watch_flag_defaults_false() {
+        let args: Vec<String> = vec!["--once".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(!opts.event_watch, "event_watch should default to false");
+    }
+
+    #[test]
+    fn parse_event_watch_combined_with_once() {
+        let args: Vec<String> = vec!["--event-watch".to_string(), "--once".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(opts.event_watch);
+        assert!(opts.once);
+    }
+
+    #[test]
+    fn run_event_watch_if_requested_false_skips() {
+        // When event_watch=false, returns false without running.
+        let running = Arc::new(AtomicBool::new(true));
+        let config = LoopConfig {
+            interval_secs: 1,
+            adaptive: false,
+            once: true,
+        };
+        let dirs: Vec<std::path::PathBuf> = vec![];
+        let mut tick_called = false;
+        let mut tick = || {
+            tick_called = true;
+            None
+        };
+        let result = run_event_watch_if_requested(false, &running, &config, &dirs, &mut tick);
+        assert!(!result, "should return false when event_watch=false");
+        assert!(!tick_called, "tick should not be called");
+    }
+
+    #[cfg(not(feature = "native-watch"))]
+    #[test]
+    fn run_event_watch_inner_without_feature_returns_false() {
+        let running = Arc::new(AtomicBool::new(true));
+        let config = LoopConfig {
+            interval_secs: 1,
+            adaptive: false,
+            once: true,
+        };
+        let dirs: Vec<std::path::PathBuf> = vec![];
+        let mut tick = || None;
+        let result = run_event_watch_inner(&running, &config, &dirs, &mut tick);
+        assert!(
+            !result,
+            "stub should return false without native-watch feature"
+        );
+    }
+
+    #[cfg(feature = "native-watch")]
+    #[test]
+    fn run_event_watch_inner_with_feature_and_once() {
+        // With native-watch and --once, the loop either runs once (returns true)
+        // or fails to set up watcher (returns false). Both are acceptable (fail-open).
+        let running = Arc::new(AtomicBool::new(true));
+        let config = LoopConfig {
+            interval_secs: 1,
+            adaptive: false,
+            once: true,
+        };
+        let dirs: Vec<std::path::PathBuf> = vec![];
+        let mut tick_called = false;
+        let mut tick = || {
+            tick_called = true;
+            None
+        };
+        let result = run_event_watch_inner(&running, &config, &dirs, &mut tick);
+        // Either it ran (true + tick_called) or setup failed (false + not called)
+        if result {
+            assert!(
+                tick_called,
+                "if event watch ran, tick should have been called"
+            );
+        }
     }
 }

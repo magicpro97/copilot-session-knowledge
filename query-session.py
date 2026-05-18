@@ -1703,7 +1703,7 @@ def export_search_results(results: list, fmt: str):
             print("---\n")
 
 
-def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieval_query: str = None):
+def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieval_query: str = None, rrf_k: int = None):
     """Hybrid search: FTS5 keyword + vector semantic, merged with RRF."""
     try:
         tools_dir = Path(__file__).parent
@@ -1714,6 +1714,8 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieva
         return search(query, limit=limit, verbose=verbose, retrieval_query=retrieval_query)
 
     config = load_config()
+    if rrf_k is not None:
+        config["rrf_k"] = int(rrf_k)
     db = get_db()
     ensure_embedding_tables(db)
 
@@ -2684,6 +2686,14 @@ def _run(args: list, compact: bool = False):
     use_semantic = "--semantic" in args or "-s" in args
     # Issue #371: synonym expansion flag
     use_expand_synonyms = "--expand-synonyms" in args
+    # Issue #375: configurable RRF k
+    rrf_k_override = None
+    if "--rrf-k" in args:
+        try:
+            _rrf_idx = args.index("--rrf-k")
+            rrf_k_override = int(args[_rrf_idx + 1])
+        except (ValueError, IndexError):
+            pass
 
     # Default: search mode
     query_parts = []
@@ -2704,8 +2714,12 @@ def _run(args: list, compact: bool = False):
             i += 1
         elif args[i] in ("--expand-synonyms",):
             i += 1  # already captured above
+        elif args[i] in ("--rrf-k",):
+            i += 2  # skip flag + value (already parsed above)
         elif args[i] in ("--compact", "--snippet", "--no-snippet"):
             i += 1  # already consumed or toggle flags
+        elif args[i] in ("--agent-tag", "--msg-tag"):
+            i += 2  # skip flag + value; tag filters must not enter query text
         elif args[i].startswith("--"):
             i += 1  # skip unknown flags
         else:
@@ -2729,7 +2743,7 @@ def _run(args: list, compact: bool = False):
         rewritten_query = _expand_synonyms_fts(rewritten_query)
 
     if use_semantic:
-        output, meta = _run_with_capture(semantic_search, query, limit, verbose, semantic_query)
+        output, meta = _run_with_capture(semantic_search, query, limit, verbose, semantic_query, rrf_k_override)
         meta = meta or {"hit_count": 0, "selected_entry_ids": []}
         _record_recall_event(
             event_kind="recall",

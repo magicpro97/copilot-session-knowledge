@@ -25,6 +25,7 @@ def get_rules_for_event(event):
     from .briefing import AutoBriefingRule, EnforceBriefingRule
     from .constitution_gate import ConstitutionGateRule
     from .edit_tracker import TestReminderRule, TrackEditsRule
+    from .episode_batcher import EpisodeBatcherRule
     from .error_kb import ErrorFixNudgeRule, ErrorKBRule
     from .file_size_advisory import FileSizeAdvisoryRule
     from .integrity import IntegrityRule
@@ -36,6 +37,7 @@ def get_rules_for_event(event):
     from .read_before_edit import ReadBeforeEditRule
     from .read_tracker import ReadTrackerRule
     from .recurrence_detector import RecurrenceDetectorRule
+    from .session_compiler import SessionCompilerRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
     from .skill_nudge import SkillNudgeRule
     from .skill_usage import SkillUsageRule
@@ -76,6 +78,7 @@ def get_rules_for_event(event):
         SkillNudgeRule(),  # Issue #116: skill-creation nudge after threshold tool calls
         SkillUsageRule(),  # Issue #119: event-level skill usage tracking
         TokenTrackerRule(),  # Issue #84: token usage tracking (postToolUse)
+        EpisodeBatcherRule(),  # Issue #394: batch episode auto-learn (opt-in)
         # VerificationGateRule also handles postToolUse (already registered above)
         # errorOccurred
         ErrorKBRule(),
@@ -84,6 +87,7 @@ def get_rules_for_event(event):
         # sessionEnd
         SessionEndRule(),
         RecurrenceDetectorRule(),
+        SessionCompilerRule(),  # Issue #395: session compiler (opt-in)
         # agentStop / subagentStop
         SubagentStopRule(),
         # userPromptSubmitted (WBS-025)

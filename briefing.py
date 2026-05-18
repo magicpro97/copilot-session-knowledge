@@ -1407,7 +1407,7 @@ def _apply_feedback_bias_to_knowledge(
         if not votes:
             return 0.0
         non_neutral = [v for v in votes if v != 0]
-        if len(non_neutral) < 2:
+        if not non_neutral:
             return 0.0
         feedback_sum = sum(non_neutral)
         return max(-0.15, min(0.15, feedback_sum * 0.05))
@@ -3630,7 +3630,15 @@ def main():
         if "--limit" in args:
             idx = args.index("--limit")
             limit = int(args[idx + 1]) if idx + 1 < len(args) else 20
-        query_parts = [a for a in args if not a.startswith("--") and a != str(limit)]
+        # Consume values that follow known value-carrying flags so they don't
+        # leak into the query string (e.g. --agent-tag <value>).
+        _titles_consumed: set[int] = set()
+        for _ti, _ta in enumerate(args):
+            if _ta in ("--limit", "--agent-tag", "--msg-tag") and _ti + 1 < len(args):
+                _titles_consumed.add(_ti + 1)
+        query_parts = [
+            a for i, a in enumerate(args) if i not in _titles_consumed and not a.startswith("--") and a != str(limit)
+        ]
         query = " ".join(query_parts)
         print(generate_titles_only(query=query, limit=limit))
         return
@@ -3790,6 +3798,8 @@ def main():
                 "--budget",
                 "--mode",
                 "--available-tokens",
+                "--agent-tag",
+                "--msg-tag",
             ) and i + 1 < len(args):
                 consumed_value_indices.add(i + 1)
         query_parts = [

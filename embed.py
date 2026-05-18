@@ -251,6 +251,7 @@ DEFAULT_CONFIG = {
     "active_provider": "auto",  # "auto" tries env vars in order
     "fallback": "tfidf",  # "tfidf" or "none"
     "batch_size": 100,  # embeddings per API call (Fireworks supports up to 2048)
+    "rrf_k": 60,  # RRF ranking constant (higher = flatter score curve)
     "providers": {
         "openai": {
             "base_url": "https://api.openai.com/v1",
@@ -299,7 +300,7 @@ def load_config() -> dict:
                 else:
                     config["providers"][name] = prov
             # Merge top-level keys
-            for key in ("active_provider", "fallback", "batch_size"):
+            for key in ("active_provider", "fallback", "batch_size", "rrf_k"):
                 if key in user_config:
                     config[key] = user_config[key]
         except (json.JSONDecodeError, KeyError):
@@ -897,7 +898,7 @@ def _apply_feedback_bias(
         if not votes:
             return 0.0
         non_neutral = [v for v in votes if v != 0]
-        if len(non_neutral) < 2:
+        if not non_neutral:
             return 0.0
         feedback_sum = sum(non_neutral)
         return max(-0.15, min(0.15, feedback_sum * 0.05))
@@ -1107,11 +1108,14 @@ def hybrid_search(
                     existing[k] = info[k]
 
     if fts_keys and vec_keys:
-        merged = reciprocal_rank_fusion([fts_keys, vec_keys])
+        rrf_k = int(config.get("rrf_k", 60))
+        merged = reciprocal_rank_fusion([fts_keys, vec_keys], k=rrf_k)
     elif fts_keys:
-        merged = [(k, 1.0 / (60 + i + 1)) for i, k in enumerate(fts_keys)]
+        rrf_k = int(config.get("rrf_k", 60))
+        merged = [(k, 1.0 / (rrf_k + i + 1)) for i, k in enumerate(fts_keys)]
     elif vec_keys:
-        merged = [(k, 1.0 / (60 + i + 1)) for i, k in enumerate(vec_keys)]
+        rrf_k = int(config.get("rrf_k", 60))
+        merged = [(k, 1.0 / (rrf_k + i + 1)) for i, k in enumerate(vec_keys)]
     else:
         return []
 

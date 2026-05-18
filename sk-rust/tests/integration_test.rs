@@ -578,6 +578,102 @@ fn wave18_fresh_db_bootstrap_without_python() {
     let _ = fs::remove_dir_all(&test_root);
 }
 
+/// WBS-027: `sk watch --once --event-watch` must exit 0 regardless of whether the
+/// `native-watch` feature is compiled in.
+///
+/// With `native-watch`: notify watcher is set up (or fails open), loop runs one tick
+/// (--once), exits cleanly.  Without `native-watch`: stub emits a warning to stderr,
+/// falls back to polling, runs one tick, exits.
+///
+/// This is a deterministic end-to-end acceptance test that works on all build
+/// configurations.  It does NOT rely on actual OS file events being delivered.
+#[test]
+fn watch_once_with_event_watch_flag_exits_cleanly() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_root = std::env::temp_dir().join(format!("sk_watch_event_once_{unique}"));
+    let watch_root = test_root.join(".copilot").join("session-state");
+    let tools_dir = test_root.join("tools");
+    let _ = fs::remove_dir_all(&test_root);
+    fs::create_dir_all(&watch_root).unwrap();
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    let output = sk()
+        .args(["watch", "--once", "--event-watch"])
+        .env("HOME", &test_root)
+        .env("USERPROFILE", &test_root)
+        .env("SK_TOOLS_DIR", &tools_dir)
+        .output()
+        .expect("sk watch should run");
+
+    assert!(
+        output.status.success(),
+        "sk watch --once --event-watch must exit 0 (event mode or polling fallback)\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The watcher must mention the session-state directory it is watching.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected_path = watch_root.to_string_lossy();
+    assert!(
+        stdout.contains(expected_path.as_ref()),
+        "watch output should reference session-state path.\nGot:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&test_root);
+}
+
+/// WBS-027: --once behaviour is preserved when --event-watch is given.
+/// The watcher must exit after one tick — it must NOT hang.
+#[test]
+fn watch_once_with_event_watch_exits_not_hangs() {
+    use std::fs;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_root = std::env::temp_dir().join(format!("sk_watch_event_hang_{unique}"));
+    let watch_root = test_root.join(".copilot").join("session-state");
+    let tools_dir = test_root.join("tools");
+    let _ = fs::remove_dir_all(&test_root);
+    fs::create_dir_all(&watch_root).unwrap();
+    fs::create_dir_all(&tools_dir).unwrap();
+
+    let start = Instant::now();
+    let output = sk()
+        .args(["watch", "--once", "--event-watch"])
+        .env("HOME", &test_root)
+        .env("USERPROFILE", &test_root)
+        .env("SK_TOOLS_DIR", &tools_dir)
+        .output()
+        .expect("sk watch should run");
+
+    let elapsed = start.elapsed();
+    assert!(
+        output.status.success(),
+        "sk watch --once --event-watch must succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // --once must complete quickly; 15 s is generous for CI load.
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "sk watch --once --event-watch took {:?} — expected <15 s (--once must exit after one tick)",
+        elapsed
+    );
+
+    let _ = fs::remove_dir_all(&test_root);
+}
+
 /// Wave 20 proof: when native DB open/create fails (directory planted at the DB path
 /// forces SQLite to fail), `sk watch --once` emits structured recovery guidance but
 /// does NOT spawn Python helpers.

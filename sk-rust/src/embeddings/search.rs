@@ -259,6 +259,7 @@ pub fn run_hybrid_search(
     query: &str,
     query_vec: Option<&[f32]>,
     limit: usize,
+    rrf_k: f64,
 ) -> Vec<SearchResult> {
     let fts_ke = fts_knowledge_search(conn, query, 30);
     let fts_sec = fts_sections_search(conn, query, 30);
@@ -386,7 +387,7 @@ pub fn run_hybrid_search(
         return vec![];
     }
 
-    rrf_merge(&all_lists, 60.0)
+    rrf_merge(&all_lists, rrf_k)
         .into_iter()
         .take(limit)
         .filter_map(|(key, rrf_score)| {
@@ -399,23 +400,63 @@ pub fn run_hybrid_search(
 
 /// Query the stored TF-IDF model (from `tfidf_model` table) for section matches.
 ///
-/// Returns a ranked list of `SearchKey::Section` entries to include in the
-/// RRF merge.  Silently returns an empty vec if no model is present or if
-/// the query produces no results above the 0.05 threshold.
+/// ## Caching (#355)
+/// The parsed model is kept in a process-global cache keyed by `built_at`.
+/// Repeated searches against the same model generation are served entirely
+/// from memory without re-parsing.
 ///
-/// This is the pure-Rust fallback when no embedding provider is configured:
-/// no HTTP, no scikit-learn.
+/// ## Binary preference (#356)
+/// When `model_bin` is present and non-empty the binary blob is loaded instead
+/// of the JSON blob.  The binary format parses 5-10× faster for large models.
+/// A corrupt/absent binary falls back to JSON automatically.
 fn tfidf_search_sections(conn: &Connection, query: &str, limit: usize) -> Vec<SearchKey> {
-    // Load TF-IDF model blob from DB
-    let model_blob: Vec<u8> =
-        match conn.query_row("SELECT model_blob FROM tfidf_model WHERE id = 1", [], |r| {
-            r.get(0)
-        }) {
-            Ok(b) => b,
-            Err(_) => return vec![],
-        };
+    // Load generation key + prefer binary blob, fallback to JSON.
+    // On pre-migration databases the `model_bin` column does not exist yet.
+    // We try the new schema first; on column-not-found error we retry with
+    // the old schema (JSON-only) so that TF-IDF search keeps working without
+    // requiring the user to rebuild the index after updating.
+    let (generation, model_blob, is_binary): (String, Vec<u8>, bool) = {
+        let new_schema = conn.query_row(
+            "SELECT COALESCE(built_at,''), model_bin, model_blob \
+             FROM tfidf_model WHERE id = 1",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<Vec<u8>>>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            },
+        );
+        match new_schema {
+            Ok((gen, Some(bin), _)) if !bin.is_empty() => (gen, bin, true),
+            Ok((gen, _, Some(json))) if !json.is_empty() => (gen, json, false),
+            // Query failed — likely "no such column: model_bin" on an old DB.
+            // Retry without model_bin so read-only search stays resilient.
+            Err(_) => match conn.query_row(
+                "SELECT COALESCE(built_at,''), model_blob FROM tfidf_model WHERE id = 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
+            ) {
+                Ok((gen, Some(json))) if !json.is_empty() => (gen, json, false),
+                _ => return vec![],
+            },
+            _ => return vec![],
+        }
+    };
 
-    let hits = crate::embeddings::tfidf::search_tfidf_native(query, &model_blob, limit);
+    // Get or update the in-memory parsed-model cache
+    let model = match crate::embeddings::tfidf::get_or_update_tfidf_cache(
+        &generation,
+        &model_blob,
+        is_binary,
+    ) {
+        Some(m) => m,
+        None => return vec![],
+    };
+
+    // Arc clone acquired; Mutex released before the search runs
+    let hits = model.search(query, limit);
 
     let mut keys: Vec<SearchKey> = vec![];
     for (section_id, score) in hits {
@@ -465,11 +506,120 @@ fn tfidf_search_sections(conn: &Connection, query: &str, limit: usize) -> Vec<Se
     keys
 }
 
+// ── Staleness check (issue #367) ─────────────────────────────────────────
+
+/// Check whether the stored TF-IDF model is stale.
+///
+/// Returns `Some((current_section_count, model_doc_count, built_at))` when a
+/// model exists and the current section count differs from `doc_count`.
+/// Returns `None` when no model has been built or the model is still fresh.
+///
+/// "Stale" is defined as: the number of sections in the DB does not match
+/// the `doc_count` stored when the model was last built.
+pub fn check_tfidf_staleness(conn: &Connection) -> Option<(i64, i64, String)> {
+    let (doc_count, built_at): (i64, String) = conn
+        .query_row(
+            "SELECT doc_count, COALESCE(built_at,'') FROM tfidf_model WHERE id=1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()?;
+
+    if doc_count == 0 {
+        return None;
+    }
+
+    let current: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sections", [], |r| r.get(0))
+        .unwrap_or(0);
+
+    if current == doc_count {
+        None
+    } else {
+        Some((current, doc_count, built_at))
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embeddings::store::{ensure_embedding_tables, store_tfidf_model};
+
+    // ── Staleness tests (#367) ────────────────────────────────────────────
+
+    #[test]
+    fn staleness_returns_none_when_no_model() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_embedding_tables(&conn).unwrap();
+        assert!(check_tfidf_staleness(&conn).is_none());
+    }
+
+    #[test]
+    fn staleness_returns_none_when_fresh() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_embedding_tables(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY, title TEXT,
+                doc_type TEXT DEFAULT '', session_id TEXT DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS sections (
+                id INTEGER PRIMARY KEY, document_id INTEGER,
+                section_name TEXT, stable_id TEXT, content TEXT
+             );
+             INSERT INTO documents VALUES (1, 'doc', 'note', 'sess');
+             INSERT INTO sections VALUES (1, 1, 'overview', NULL, 'hello world');
+             INSERT INTO sections VALUES (2, 1, 'detail', NULL, 'more content');",
+        )
+        .unwrap();
+        store_tfidf_model(&conn, b"{}", 2).unwrap();
+        assert!(
+            check_tfidf_staleness(&conn).is_none(),
+            "fresh model must return None"
+        );
+    }
+
+    #[test]
+    fn staleness_detects_new_sections() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_embedding_tables(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY, title TEXT,
+                doc_type TEXT DEFAULT '', session_id TEXT DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS sections (
+                id INTEGER PRIMARY KEY, document_id INTEGER,
+                section_name TEXT, stable_id TEXT, content TEXT
+             );
+             INSERT INTO documents VALUES (1, 'doc', 'note', 'sess');
+             INSERT INTO sections VALUES (1, 1, 'overview', NULL, 'hello world');",
+        )
+        .unwrap();
+        // Model built for 1 section; now add another
+        store_tfidf_model(&conn, b"{}", 1).unwrap();
+        conn.execute(
+            "INSERT INTO sections VALUES (2, 1, 'detail', NULL, 'extra content')",
+            [],
+        )
+        .unwrap();
+        let stale = check_tfidf_staleness(&conn);
+        assert!(stale.is_some(), "should detect new section as stale");
+        let (current, model_doc, _) = stale.unwrap();
+        assert_eq!(current, 2);
+        assert_eq!(model_doc, 1);
+    }
+
+    #[test]
+    fn staleness_returns_none_for_zero_doc_count() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_embedding_tables(&conn).unwrap();
+        // doc_count=0 means no model built yet — return None
+        store_tfidf_model(&conn, b"{}", 0).unwrap();
+        assert!(check_tfidf_staleness(&conn).is_none());
+    }
 
     // -- RRF merge --
 
@@ -553,7 +703,7 @@ mod tests {
     #[test]
     fn hybrid_search_empty_db_returns_empty() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let results = run_hybrid_search(&conn, "rust embeddings", None, 10);
+        let results = run_hybrid_search(&conn, "rust embeddings", None, 10, 60.0);
         assert!(results.is_empty(), "empty DB should return no results");
     }
 
@@ -642,5 +792,143 @@ mod tests {
             section_name: "intro".to_string(),
         };
         assert_eq!(k1, k2);
+    }
+
+    // -- rrf_merge / rrf_k tests --
+
+    #[test]
+    fn rrf_k1_correct_formula() {
+        // With k=1 and rank=0 (first item): score = 1/(1+0+1) = 0.5
+        let list = vec![SearchKey::Knowledge(42)];
+        let merged = rrf_merge(&[list], 1.0);
+        assert_eq!(merged.len(), 1);
+        let (key, score) = &merged[0];
+        assert_eq!(*key, SearchKey::Knowledge(42));
+        let expected = 1.0_f64 / (1.0 + 1.0); // k=1, rank=0 → 1/(k+rank+1)=1/2
+        assert!(
+            (score - expected).abs() < 1e-9,
+            "score={score} expected={expected}"
+        );
+    }
+
+    #[test]
+    fn rrf_k1_vs_k60_ordering_preserved() {
+        // Two items: item A ranked 1st in one list, item B ranked 2nd.
+        // With any positive k, the 1st-ranked item should have a higher score.
+        let list = vec![SearchKey::Knowledge(1), SearchKey::Knowledge(2)];
+        for k in [1.0_f64, 10.0, 60.0, 1000.0] {
+            let merged = rrf_merge(&[list.clone()], k);
+            assert_eq!(merged.len(), 2);
+            assert!(
+                merged[0].1 > merged[1].1,
+                "k={k}: first item should have higher score than second"
+            );
+            assert_eq!(merged[0].0, SearchKey::Knowledge(1));
+        }
+    }
+
+    #[test]
+    fn rrf_large_k_scores_nearly_uniform() {
+        // With a very large k, all scores are close to 1/k (nearly equal).
+        let keys: Vec<SearchKey> = (0..5).map(SearchKey::Knowledge).collect();
+        let merged = rrf_merge(&[keys], 1_000_000.0);
+        assert_eq!(merged.len(), 5);
+        let scores: Vec<f64> = merged.iter().map(|(_, s)| *s).collect();
+        let max_diff = scores[0] - scores[scores.len() - 1];
+        assert!(
+            max_diff < 1e-4,
+            "large k should produce nearly uniform scores; max_diff={max_diff}"
+        );
+    }
+
+    // -- Backward compatibility: old schema without model_bin (#355/#356) --
+
+    /// Build the old-style `tfidf_model` table (without `model_bin`) and
+    /// populate sections/documents, then verify that `tfidf_search_sections`
+    /// falls back gracefully and returns results using only `model_blob`.
+    fn setup_old_schema_with_model(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "CREATE TABLE tfidf_model (
+                id INTEGER PRIMARY KEY,
+                model_blob BLOB,
+                doc_count INTEGER DEFAULT 0,
+                built_at TEXT
+             );
+             CREATE TABLE IF NOT EXISTS documents (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT,
+                 doc_type TEXT DEFAULT '',
+                 session_id TEXT DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS sections (
+                 id INTEGER PRIMARY KEY,
+                 document_id INTEGER,
+                 section_name TEXT,
+                 stable_id TEXT,
+                 content TEXT
+             );
+             INSERT INTO documents VALUES (1, 'Rust ownership', 'note', 'sess1');
+             INSERT INTO sections VALUES (1, 1, 'intro', NULL, 'ownership rules prevent data races in Rust');
+             INSERT INTO sections VALUES (2, 1, 'detail', NULL, 'borrow checker enforces lifetime safety');",
+        )
+        .unwrap();
+
+        // Build a real JSON model from the section content using section IDs as doc_ids.
+        let texts = &[
+            "ownership rules prevent data races in Rust",
+            "borrow checker enforces lifetime safety",
+        ];
+        let doc_ids = &[1i64, 2i64];
+        let model_blob = crate::embeddings::tfidf::build_tfidf_model(texts, doc_ids);
+
+        conn.execute(
+            "INSERT INTO tfidf_model (id, model_blob, doc_count, built_at) VALUES (1, ?1, 2, '2024-01-01')",
+            rusqlite::params![model_blob],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tfidf_search_old_schema_no_model_bin_returns_results() {
+        // Simulates a pre-migration DB: tfidf_model has no model_bin column.
+        // tfidf_search_sections must fall back to the JSON blob and succeed.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Invalidate any process-global cache from other tests.
+        crate::embeddings::tfidf::invalidate_tfidf_cache();
+        setup_old_schema_with_model(&conn);
+
+        let keys = tfidf_search_sections(&conn, "rust ownership", 10);
+        assert!(
+            !keys.is_empty(),
+            "TF-IDF search must return results on old schema without model_bin"
+        );
+    }
+
+    #[test]
+    fn tfidf_search_old_schema_no_model_bin_empty_query_returns_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::embeddings::tfidf::invalidate_tfidf_cache();
+        setup_old_schema_with_model(&conn);
+
+        // Empty query should return empty (no error / no panic).
+        let keys = tfidf_search_sections(&conn, "", 10);
+        assert!(
+            keys.is_empty(),
+            "empty query on old schema should return no results"
+        );
+    }
+
+    #[test]
+    fn tfidf_search_old_schema_missing_tfidf_table_returns_empty() {
+        // Old schema where tfidf_model table doesn't even exist yet.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::embeddings::tfidf::invalidate_tfidf_cache();
+
+        // No tfidf_model table at all — both query attempts should fail gracefully.
+        let keys = tfidf_search_sections(&conn, "rust", 10);
+        assert!(
+            keys.is_empty(),
+            "missing tfidf_model table must return empty on old schema path"
+        );
     }
 }

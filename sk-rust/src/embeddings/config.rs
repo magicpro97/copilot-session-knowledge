@@ -38,6 +38,8 @@ pub struct EmbedConfig {
     pub fallback: String,
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: u32,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
 }
@@ -50,6 +52,9 @@ fn default_fallback() -> String {
 }
 fn default_batch_size() -> u32 {
     100
+}
+fn default_rrf_k() -> u32 {
+    60
 }
 
 impl Default for EmbedConfig {
@@ -99,6 +104,7 @@ impl Default for EmbedConfig {
             active_provider: "auto".to_string(),
             fallback: "tfidf".to_string(),
             batch_size: 100,
+            rrf_k: 60,
             providers,
         }
     }
@@ -157,6 +163,9 @@ pub fn load_config() -> EmbedConfig {
     }
     if let Some(n) = raw.get("batch_size").and_then(|v| v.as_u64()) {
         base.batch_size = n as u32;
+    }
+    if let Some(n) = raw.get("rrf_k").and_then(|v| v.as_u64()) {
+        base.rrf_k = n as u32;
     }
 
     // Merge providers — only update fields that are present in the user file
@@ -271,6 +280,7 @@ pub fn save_config(config: &EmbedConfig) -> std::io::Result<std::path::PathBuf> 
         "active_provider": config.active_provider,
         "fallback":        config.fallback,
         "batch_size":      config.batch_size,
+        "rrf_k":           config.rrf_k,
         "providers":       serde_json::Value::Object(providers_map),
     });
 

@@ -45,11 +45,11 @@ use crate::db::write::open_writable;
 use crate::embeddings::config::{
     get_api_key, load_config, resolve_provider, save_config, AUTO_PRIORITY,
 };
-use crate::embeddings::search::run_hybrid_search;
+use crate::embeddings::search::{check_tfidf_staleness, run_hybrid_search};
 use crate::embeddings::store::{
-    ensure_embedding_tables, store_batch_embeddings, store_tfidf_model,
+    ensure_embedding_tables, store_batch_embeddings, store_tfidf_model_with_binary,
 };
-use crate::embeddings::tfidf::build_tfidf_model;
+use crate::embeddings::tfidf::{build_tfidf_model, invalidate_tfidf_cache, TfIdfModel};
 
 /// Dispatch `sk index embed [args]`.
 pub fn run_embed_command(args: &[String]) -> ExitCode {
@@ -60,6 +60,7 @@ pub fn run_embed_command(args: &[String]) -> ExitCode {
     let has_rebuild_tfidf = args.iter().any(|a| a == "--rebuild-tfidf");
     let has_build = args.iter().any(|a| a == "--build");
     let has_force = args.iter().any(|a| a == "--force");
+    let has_auto_rebuild = args.iter().any(|a| a == "--auto-rebuild-tfidf");
     let search_idx = args.iter().position(|a| a == "--search");
 
     // Positional search: no flags at all, treat all non-option tokens as query
@@ -94,7 +95,7 @@ pub fn run_embed_command(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
         let limit = parse_limit(args, 10);
-        return run_search(&query, limit);
+        return run_search(&query, limit, has_auto_rebuild);
     }
     if is_positional {
         let query: String = args
@@ -105,7 +106,7 @@ pub fn run_embed_command(args: &[String]) -> ExitCode {
             .join(" ");
         let limit = parse_limit(args, 10);
         if !query.is_empty() {
-            return run_search(&query, limit);
+            return run_search(&query, limit, has_auto_rebuild);
         }
     }
 
@@ -271,7 +272,7 @@ fn run_providers() -> ExitCode {
 /// ## Failure surfacing (#366)
 /// If neither a query vector nor a TF-IDF model is available, an informative
 /// message is printed so users know how to improve recall.
-fn run_search(query: &str, limit: usize) -> ExitCode {
+fn run_search(query: &str, limit: usize, auto_rebuild: bool) -> ExitCode {
     let db = match KnowledgeDb::open() {
         Ok(db) => db,
         Err(e) => {
@@ -279,6 +280,27 @@ fn run_search(query: &str, limit: usize) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+
+    // ── #367: staleness guard ─────────────────────────────────────────────
+    if let Some((current, model_doc, built_at)) = check_tfidf_staleness(&db.conn) {
+        if auto_rebuild {
+            eprintln!(
+                "sk index embed: TF-IDF model stale \
+                 (model={model_doc} sections, DB={current}) — rebuilding…"
+            );
+            if run_rebuild_tfidf_inner(&db.conn).is_err() {
+                eprintln!("sk index embed: rebuild failed, proceeding with stale model");
+            }
+        } else {
+            eprintln!(
+                "sk index embed: TF-IDF model may be stale \
+                 (built at {built_at}: {model_doc} sections indexed, \
+                 DB now has {current}).\n  \
+                 Run 'sk index embed --rebuild-tfidf' to refresh, or pass \
+                 --auto-rebuild-tfidf to rebuild automatically."
+            );
+        }
+    }
 
     // ── #360: try to compute a live query embedding ───────────────────────
     // When native-embed is compiled in and a provider with a key is
@@ -315,7 +337,8 @@ fn run_search(query: &str, limit: usize) -> ExitCode {
     #[cfg(not(feature = "native-embed"))]
     let query_vec: Option<Vec<f32>> = None;
 
-    let results = run_hybrid_search(&db.conn, query, query_vec.as_deref(), limit);
+    let rrf_k = load_config().rrf_k as f64;
+    let results = run_hybrid_search(&db.conn, query, query_vec.as_deref(), limit, rrf_k);
 
     if results.is_empty() {
         // #366: inform users how to improve recall when results are empty.
@@ -632,30 +655,41 @@ fn run_rebuild_tfidf() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    // Fetch all sections
-    let mut stmt = match conn.prepare(
-        "SELECT s.id, s.content FROM sections s \
-         JOIN documents d ON s.document_id = d.id",
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sk index embed --rebuild-tfidf: query failed: {e}");
-            return ExitCode::from(1);
+    match run_rebuild_tfidf_inner(&conn) {
+        Ok(doc_count) => {
+            println!("✓ TF-IDF model rebuilt ({doc_count} documents).");
+            ExitCode::SUCCESS
         }
-    };
+        Err(e) => {
+            eprintln!("sk index embed --rebuild-tfidf: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
 
-    let rows: Vec<(i64, String)> =
-        match stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
-            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
-            Err(e) => {
-                eprintln!("sk index embed --rebuild-tfidf: failed to fetch sections: {e}");
-                return ExitCode::from(1);
-            }
-        };
+/// Inner rebuild helper — shared by `run_rebuild_tfidf` and the auto-rebuild
+/// path in `run_search`.  Builds TF-IDF model over all sections, dual-writes
+/// JSON + binary, and invalidates the in-memory cache.
+///
+/// Returns the number of documents indexed on success.
+fn run_rebuild_tfidf_inner(conn: &rusqlite::Connection) -> Result<usize, String> {
+    // Fetch all sections
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.content FROM sections s \
+             JOIN documents d ON s.document_id = d.id",
+        )
+        .map_err(|e| format!("query failed: {e}"))?;
+
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| format!("failed to fetch sections: {e}"))?
+        .filter_map(|r| r.ok())
+        .collect();
 
     if rows.is_empty() {
         println!("No sections found in DB — nothing to build.");
-        return ExitCode::SUCCESS;
+        return Ok(0);
     }
 
     let texts: Vec<String> = rows.iter().map(|(_, c)| c.clone()).collect();
@@ -664,18 +698,29 @@ fn run_rebuild_tfidf() -> ExitCode {
 
     println!("Building TF-IDF model over {doc_count} sections...");
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let model_blob = build_tfidf_model(&text_refs, &doc_ids);
+    let json_blob = build_tfidf_model(&text_refs, &doc_ids);
 
-    if let Err(e) = store_tfidf_model(&conn, &model_blob, doc_count) {
-        eprintln!("sk index embed --rebuild-tfidf: failed to store model: {e}");
-        return ExitCode::from(1);
-    }
+    // Build binary blob for fast Rust loading (#356)
+    let bin_blob = match TfIdfModel::from_json_blob(&json_blob) {
+        Some(model) => model.to_binary(),
+        None => {
+            eprintln!("sk index embed: binary serialization failed — storing JSON only");
+            Vec::new()
+        }
+    };
+
+    store_tfidf_model_with_binary(conn, &json_blob, &bin_blob, doc_count)
+        .map_err(|e| format!("failed to store model: {e}"))?;
+
+    // Invalidate in-memory cache so next search loads fresh model (#355)
+    invalidate_tfidf_cache();
 
     println!(
-        "✓ TF-IDF model built and stored ({doc_count} documents, {} bytes).",
-        model_blob.len()
+        "  json={} bytes, bin={} bytes",
+        json_blob.len(),
+        bin_blob.len()
     );
-    ExitCode::SUCCESS
+    Ok(doc_count)
 }
 
 // ── --build ──────────────────────────────────────────────────────────────
@@ -910,13 +955,28 @@ fn run_build(force: bool) -> ExitCode {
         let doc_count = texts.len();
         println!("Building TF-IDF model over {doc_count} sections...");
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let model_blob = build_tfidf_model(&text_refs, &doc_ids);
-        let blob_len = model_blob.len();
-        if let Err(e) = store_tfidf_model(&conn, &model_blob, doc_count) {
+        let json_blob = build_tfidf_model(&text_refs, &doc_ids);
+
+        // Build binary blob for fast Rust loading (#356)
+        let bin_blob = match TfIdfModel::from_json_blob(&json_blob) {
+            Some(model) => model.to_binary(),
+            None => {
+                eprintln!(
+                    "sk index embed --build: binary serialization failed — storing JSON only"
+                );
+                Vec::new()
+            }
+        };
+
+        let blob_len = json_blob.len();
+        let bin_len = bin_blob.len();
+        if let Err(e) = store_tfidf_model_with_binary(&conn, &json_blob, &bin_blob, doc_count) {
             eprintln!("sk index embed --build: failed to store TF-IDF model: {e}");
             return ExitCode::from(1);
         }
-        println!("✓ TF-IDF model built ({doc_count} docs, {blob_len} bytes).");
+        // Invalidate in-memory cache so next search loads fresh model (#355)
+        invalidate_tfidf_cache();
+        println!("✓ TF-IDF model built ({doc_count} docs, json={blob_len}B, bin={bin_len}B).");
     }
 
     println!("\nDone.");
@@ -1072,5 +1132,83 @@ mod tests {
         // Simulate the EOF path: read_line wrote 0 bytes
         let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r');
         assert!(trimmed.is_empty());
+    }
+
+    // ── #367 auto-rebuild flag detection ────────────────────────────────
+
+    #[test]
+    fn auto_rebuild_tfidf_flag_detected() {
+        let args: Vec<String> = vec![
+            "--search".to_string(),
+            "query".to_string(),
+            "--auto-rebuild-tfidf".to_string(),
+        ];
+        assert!(args.iter().any(|a| a == "--auto-rebuild-tfidf"));
+    }
+
+    #[test]
+    fn auto_rebuild_absent_by_default() {
+        let args: Vec<String> = vec!["--search".to_string(), "query".to_string()];
+        assert!(!args.iter().any(|a| a == "--auto-rebuild-tfidf"));
+    }
+
+    // ── #355 / #356 rebuild_inner writes binary ─────────────────────────
+
+    #[test]
+    fn rebuild_tfidf_inner_returns_zero_on_empty_db() {
+        use crate::embeddings::store::ensure_embedding_tables;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_embedding_tables(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY, title TEXT,
+                doc_type TEXT DEFAULT '', session_id TEXT DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS sections (
+                id INTEGER PRIMARY KEY, document_id INTEGER,
+                section_name TEXT, stable_id TEXT, content TEXT
+             );",
+        )
+        .unwrap();
+        let result = run_rebuild_tfidf_inner(&conn);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0, "empty DB should yield 0 docs");
+    }
+
+    #[test]
+    fn rebuild_tfidf_inner_dual_writes_binary() {
+        use crate::embeddings::store::ensure_embedding_tables;
+        use crate::embeddings::tfidf::BINARY_MAGIC;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_embedding_tables(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY, title TEXT,
+                doc_type TEXT DEFAULT '', session_id TEXT DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS sections (
+                id INTEGER PRIMARY KEY, document_id INTEGER,
+                section_name TEXT, stable_id TEXT, content TEXT
+             );
+             INSERT INTO documents VALUES (1, 'Test Doc', 'note', 'sess-1');
+             INSERT INTO sections VALUES
+                (1, 1, 'overview', NULL, 'hello world rust tfidf test'),
+                (2, 1, 'detail', NULL, 'another section with more words');",
+        )
+        .unwrap();
+        let result = run_rebuild_tfidf_inner(&conn);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+
+        // Verify binary blob was written with correct magic bytes
+        let bin: Vec<u8> = conn
+            .query_row("SELECT model_bin FROM tfidf_model WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .expect("model_bin should be present");
+        assert!(
+            bin.starts_with(BINARY_MAGIC),
+            "binary blob must start with SKTIDF magic"
+        );
     }
 }

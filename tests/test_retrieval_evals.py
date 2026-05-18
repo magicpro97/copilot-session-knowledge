@@ -69,6 +69,7 @@ def _load_module(name: str, file_path: Path):
 
 _qs = _load_module("qs_re", TOOLS_DIR / "query-session.py")
 _br = _load_module("briefing_re", TOOLS_DIR / "briefing.py")
+_em = _load_module("embed_re", TOOLS_DIR / "embed.py")
 
 
 # ─── Shared DB schema (kept in sync with test_memory_contract.py) ──────────
@@ -147,6 +148,29 @@ def _make_db(path: str) -> sqlite3.Connection:
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     db.executescript(_DB_SCHEMA)
+    db.commit()
+    return db
+
+
+def _make_feedback_db(path: str) -> sqlite3.Connection:
+    """Create a DB with both the knowledge schema and the search_feedback table."""
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    db.executescript(_DB_SCHEMA)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS search_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT,
+            result_id TEXT,
+            result_kind TEXT,
+            verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+            comment TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL,
+            origin_replica_id TEXT DEFAULT 'local',
+            stable_id TEXT
+        );
+    """)
     db.commit()
     return db
 
@@ -2008,9 +2032,140 @@ def test_agent_id_and_epistemic_humility_schema():
             pass
 
 
+# ── #374: feedback bias activates after one vote ─────────────────────────────
+
+
+def test_feedback_bias_one_vote():
+    print("\n👍 19. #374 feedback bias activates after one vote")
+    with tempfile.TemporaryDirectory() as td:
+        # ── embed._apply_feedback_bias ────────────────────────────────────
+        db = _make_feedback_db(os.path.join(td, "fb.db"))
+        db.execute(
+            "INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at)"
+            " VALUES ('python tips', '1', 'knowledge', 1, '2024-01-01T00:00:00')"
+        )
+        db.commit()
+
+        merged = [(("knowledge", 1), 0.01)]
+        _result, meta = _em._apply_feedback_bias(db, "python tips", merged)
+        bias = meta.get(("knowledge", 1), (0.0, 0))[0]
+        test("#374 embed: one thumbs-up gives non-zero positive bias", bias > 0, f"bias for key1={bias}")
+
+        bias_unvoted = meta.get(("knowledge", 999), (0.0, 0))[0]
+        test("#374 embed: unvoted result has zero bias", bias_unvoted == 0.0, f"bias={bias_unvoted}")
+
+        db.execute("UPDATE search_feedback SET verdict=-1")
+        db.commit()
+        _result2, meta2 = _em._apply_feedback_bias(db, "python tips", merged)
+        bias_neg = meta2.get(("knowledge", 1), (0.0, 0))[0]
+        test("#374 embed: one thumbs-down gives non-zero negative bias", bias_neg < 0, f"bias={bias_neg}")
+
+        db.execute("UPDATE search_feedback SET verdict=0")
+        db.commit()
+        _result3, meta3 = _em._apply_feedback_bias(db, "python tips", merged)
+        bias_zero = meta3.get(("knowledge", 1), (0.0, 0))[0]
+        test("#374 embed: zero votes → zero bias", bias_zero == 0.0, f"bias={bias_zero}")
+
+        db.execute("DELETE FROM search_feedback")
+        for _ in range(10):
+            db.execute(
+                "INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at)"
+                " VALUES ('python tips', '1', 'knowledge', 1, '2024-01-01T00:00:00')"
+            )
+        db.commit()
+        _result4, meta4 = _em._apply_feedback_bias(db, "python tips", merged)
+        bias_cap = meta4.get(("knowledge", 1), (0.0, 0))[0]
+        test("#374 embed: many up-votes → bias capped at +0.15", abs(bias_cap - 0.15) < 1e-9, f"bias={bias_cap}")
+
+        db.close()
+
+        # ── briefing._apply_feedback_bias_to_knowledge ────────────────────
+        # Use equal _semantic_score values so normalization → [1.0, 1.0];
+        # the +0.05 bias then tips entry A above entry B.
+        db2 = _make_feedback_db(os.path.join(td, "fb2.db"))
+        db2.execute(
+            "INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at)"
+            " VALUES ('python tips', '7', 'knowledge', 1, '2024-01-01T00:00:00')"
+        )
+        db2.commit()
+
+        entries = [
+            {"id": 7, "title": "entry A", "_semantic_score": 0.8},
+            {"id": 8, "title": "entry B", "_semantic_score": 0.8},
+        ]
+        reranked = _br._apply_feedback_bias_to_knowledge(db2, "python tips", entries)
+        test("#374 briefing: returns all entries after one-vote rerank", len(reranked) == 2, f"len={len(reranked)}")
+        top_title = reranked[0].get("title") if reranked else None
+        test(
+            "#374 briefing: one thumbs-up promotes lower-scored entry to top",
+            top_title == "entry A",
+            f"top entry={top_title!r}",
+        )
+        db2.close()
+
+
+# ── #375: configurable RRF k ──────────────────────────────────────────────────
+
+
+def test_rrf_k_configurable():
+    import inspect
+
+    print("\n🔢 20. #375 configurable RRF k")
+
+    keys = [1, 2, 3]
+    result_k1 = _em.reciprocal_rank_fusion([keys], k=1)
+    result_k60 = _em.reciprocal_rank_fusion([keys], k=60)
+
+    score_k1 = result_k1[0][1]
+    expected_k1 = 1.0 / (1 + 0 + 1)
+    test(
+        "#375 rrf k=1: score formula 1/(k+rank+1)",
+        abs(score_k1 - expected_k1) < 1e-9,
+        f"score={score_k1:.6f} expected={expected_k1:.6f}",
+    )
+
+    score_k60 = result_k60[0][1]
+    expected_k60 = 1.0 / (60 + 0 + 1)
+    test(
+        "#375 rrf k=60: score formula 1/(k+rank+1)",
+        abs(score_k60 - expected_k60) < 1e-9,
+        f"score={score_k60:.6f} expected={expected_k60:.6f}",
+    )
+
+    order_k1 = [k for k, _ in result_k1]
+    order_k60 = [k for k, _ in result_k60]
+    test(
+        "#375 rrf: ordering consistent across k values (k=1 vs k=60)",
+        order_k1 == order_k60,
+        f"k1={order_k1} k60={order_k60}",
+    )
+
+    test(
+        "#375 DEFAULT_CONFIG contains rrf_k=60",
+        _em.DEFAULT_CONFIG.get("rrf_k") == 60,
+        f"got {_em.DEFAULT_CONFIG.get('rrf_k')}",
+    )
+
+    cfg = _em.load_config()
+    test("#375 load_config returns rrf_k key", "rrf_k" in cfg, f"keys={list(cfg.keys())}")
+    test("#375 load_config rrf_k default is 60", cfg.get("rrf_k") == 60, f"got {cfg.get('rrf_k')}")
+
+    sig = inspect.signature(_em.hybrid_search)
+    test(
+        "#375 hybrid_search accepts config parameter",
+        "config" in sig.parameters,
+        f"params={list(sig.parameters.keys())}",
+    )
+
+    qs_sig = inspect.signature(_qs.semantic_search)
+    test(
+        "#375 semantic_search accepts rrf_k param",
+        "rrf_k" in qs_sig.parameters,
+        f"params={list(qs_sig.parameters.keys())}",
+    )
+
+
 def main() -> int:
-    print("=" * 60)
-    print("test_retrieval_evals.py — golden-query regression harness")
     print("=" * 60)
 
     test_sanitize_fts_query()
@@ -2033,6 +2188,9 @@ def main() -> int:
     test_briefing_semantic_rewritten_query()  # #369 briefing side
     # Wave 2b: agent metadata / epistemic humility
     test_agent_id_and_epistemic_humility_schema()  # #351 #402
+    # Wave 3: retrieval tuning
+    test_feedback_bias_one_vote()  # #374
+    test_rrf_k_configurable()  # #375
 
     print()
     print("=" * 60)

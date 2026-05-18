@@ -23,6 +23,7 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
 import sys
 import types
 import unittest
@@ -60,6 +61,7 @@ finally:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_message(payload: dict) -> bytes:
     """Encode a dict as a Content-Length-framed JSON-RPC message."""
     body = json.dumps(payload).encode("utf-8")
@@ -74,6 +76,7 @@ def _stream_from(payload: dict) -> io.BytesIO:
 # ---------------------------------------------------------------------------
 # Test suites
 # ---------------------------------------------------------------------------
+
 
 class TestJsonRpcError(unittest.TestCase):
     def test_attributes_stored_correctly(self):
@@ -99,7 +102,8 @@ class TestToolsList(unittest.TestCase):
         self.tools = {t["name"]: t for t in mcp.TOOLS}
 
     def test_exactly_two_tools(self):
-        self.assertEqual(len(mcp.TOOLS), 2)
+        # Updated: query_memory added in issue #404; now 3 tools total
+        self.assertEqual(len(mcp.TOOLS), 3)
 
     def test_briefing_tool_present(self):
         self.assertIn("briefing", self.tools)
@@ -154,51 +158,83 @@ class TestHandleRequest(unittest.TestCase):
         return mcp._handle_request(message)
 
     def test_initialize_returns_protocol_version(self):
-        should_exit, result = self._call({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05"},
-        })
+        should_exit, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"},
+            }
+        )
         self.assertFalse(should_exit)
         self.assertEqual(result["protocolVersion"], "2024-11-05")
 
     def test_initialize_capabilities_include_tools(self):
-        _, result = self._call({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
-        })
+        _, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }
+        )
         self.assertIn("tools", result["capabilities"])
 
     def test_initialize_server_info_name(self):
-        _, result = self._call({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
-        })
+        _, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }
+        )
         self.assertEqual(result["serverInfo"]["name"], "copilot-session-knowledge")
 
     def test_ping_returns_empty_dict(self):
-        should_exit, result = self._call({
-            "jsonrpc": "2.0", "id": 2, "method": "ping", "params": {},
-        })
+        should_exit, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "ping",
+                "params": {},
+            }
+        )
         self.assertFalse(should_exit)
         self.assertEqual(result, {})
 
     def test_shutdown_sets_exit_flag(self):
-        should_exit, result = self._call({
-            "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {},
-        })
+        should_exit, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "shutdown",
+                "params": {},
+            }
+        )
         self.assertTrue(should_exit)
         self.assertEqual(result, {})
 
     def test_tools_list_returns_all_tools(self):
-        _, result = self._call({
-            "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {},
-        })
+        _, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/list",
+                "params": {},
+            }
+        )
         names = {t["name"] for t in result["tools"]}
         self.assertIn("briefing", names)
         self.assertIn("query_session", names)
 
     def test_notifications_initialized_is_notification(self):
-        should_exit, result = self._call({
-            "jsonrpc": "2.0", "method": "notifications/initialized",
-        })
+        should_exit, result = self._call(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }
+        )
         self.assertFalse(should_exit)
         self.assertIsNone(result)
 
@@ -246,81 +282,99 @@ class TestHandleToolsCall(unittest.TestCase):
 
     def test_briefing_invalid_mode_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "hello", "mode": "notamode"},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "hello", "mode": "notamode"},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_briefing_limit_too_low_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "hello", "limit": 0},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "hello", "limit": 0},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_briefing_limit_too_high_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "hello", "limit": 21},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "hello", "limit": 21},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_briefing_limit_non_int_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "hello", "limit": "5"},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "hello", "limit": "5"},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_briefing_valid_returns_content_block(self):
         fake_output = json.dumps({"entries": {"mistakes": []}})
         with patch.object(mcp, "_capture_module_main", return_value=(0, fake_output, "")):
-            result = mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "fix auth bug"},
-            })
+            result = mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "fix auth bug"},
+                }
+            )
         self.assertIn("content", result)
         self.assertEqual(result["content"][0]["type"], "text")
 
     def test_briefing_valid_structured_content_parsed(self):
         fake_output = json.dumps({"entries": {"patterns": []}})
         with patch.object(mcp, "_capture_module_main", return_value=(0, fake_output, "")):
-            result = mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "design new feature"},
-            })
+            result = mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "design new feature"},
+                }
+            )
         self.assertIn("structuredContent", result)
         self.assertIn("entries", result["structuredContent"])
 
     def test_briefing_runner_failure_raises_internal_error(self):
         with patch.object(mcp, "_capture_module_main", return_value=(1, "", "db not found")):
             with self.assertRaises(mcp.JsonRpcError) as ctx:
-                mcp._handle_tools_call({
-                    "name": "briefing",
-                    "arguments": {"task": "something"},
-                })
+                mcp._handle_tools_call(
+                    {
+                        "name": "briefing",
+                        "arguments": {"task": "something"},
+                    }
+                )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INTERNAL_ERROR)
 
     def test_briefing_non_json_output_has_no_structured_content(self):
         with patch.object(mcp, "_capture_module_main", return_value=(0, "plain text output", "")):
-            result = mcp._handle_tools_call({
-                "name": "briefing",
-                "arguments": {"task": "research task"},
-            })
+            result = mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "research task"},
+                }
+            )
         self.assertNotIn("structuredContent", result)
 
     def test_briefing_all_valid_modes_accepted(self):
         fake_output = "{}"
         for mode in mcp.VALID_BRIEFING_MODES:
             with patch.object(mcp, "_capture_module_main", return_value=(0, fake_output, "")):
-                result = mcp._handle_tools_call({
-                    "name": "briefing",
-                    "arguments": {"task": "test", "mode": mode},
-                })
+                result = mcp._handle_tools_call(
+                    {
+                        "name": "briefing",
+                        "arguments": {"task": "test", "mode": mode},
+                    }
+                )
             self.assertIn("content", result, f"mode={mode} should be accepted")
 
     # -- query_session validation -------------------------------------------
@@ -337,34 +391,42 @@ class TestHandleToolsCall(unittest.TestCase):
 
     def test_query_session_non_bool_semantic_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "auth bug", "semantic": "yes"},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "auth bug", "semantic": "yes"},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_query_session_limit_too_high_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "auth", "limit": 51},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "auth", "limit": 51},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_query_session_limit_too_low_raises(self):
         with self.assertRaises(mcp.JsonRpcError) as ctx:
-            mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "auth", "limit": 0},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "auth", "limit": 0},
+                }
+            )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
     def test_query_session_valid_returns_content_block(self):
         with patch.object(mcp, "_capture_module_main", return_value=(0, "result text", "")):
-            result = mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "auth bug"},
-            })
+            result = mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "auth bug"},
+                }
+            )
         self.assertIn("content", result)
         self.assertIn("structuredContent", result)
         self.assertEqual(result["structuredContent"]["query"], "auth bug")
@@ -377,10 +439,12 @@ class TestHandleToolsCall(unittest.TestCase):
             return (0, "some results", "")
 
         with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
-            mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "latency", "semantic": True},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "latency", "semantic": True},
+                }
+            )
         self.assertIn("--semantic", captured_argv)
 
     def test_query_session_semantic_false_not_passed(self):
@@ -391,27 +455,33 @@ class TestHandleToolsCall(unittest.TestCase):
             return (0, "some results", "")
 
         with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
-            mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "latency", "semantic": False},
-            })
+            mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "latency", "semantic": False},
+                }
+            )
         self.assertNotIn("--semantic", captured_argv)
 
     def test_query_session_empty_output_returns_no_results(self):
         with patch.object(mcp, "_capture_module_main", return_value=(0, "", "")):
-            result = mcp._handle_tools_call({
-                "name": "query_session",
-                "arguments": {"query": "nothing"},
-            })
+            result = mcp._handle_tools_call(
+                {
+                    "name": "query_session",
+                    "arguments": {"query": "nothing"},
+                }
+            )
         self.assertEqual(result["content"][0]["text"], "No results.")
 
     def test_query_session_runner_failure_raises_internal_error(self):
         with patch.object(mcp, "_capture_module_main", return_value=(1, "", "connection failed")):
             with self.assertRaises(mcp.JsonRpcError) as ctx:
-                mcp._handle_tools_call({
-                    "name": "query_session",
-                    "arguments": {"query": "something"},
-                })
+                mcp._handle_tools_call(
+                    {
+                        "name": "query_session",
+                        "arguments": {"query": "something"},
+                    }
+                )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INTERNAL_ERROR)
 
     # -- unknown tool -------------------------------------------------------
@@ -502,7 +572,7 @@ class TestReadWriteMessage(unittest.TestCase):
         header_end = raw.index(b"\r\n\r\n")
         header = raw[:header_end].decode("ascii")
         declared_length = int(header.split(":")[1].strip())
-        actual_body = raw[header_end + 4:]
+        actual_body = raw[header_end + 4 :]
         self.assertEqual(declared_length, len(actual_body))
 
     def test_write_read_unicode_payload(self):
@@ -543,6 +613,7 @@ class TestCaptureModuleMain(unittest.TestCase):
     def test_exit_code_from_system_exit_int(self):
         def main_fn():
             raise SystemExit(2)
+
         mod = self._make_module(main_fn)
         code, out, err = mcp._capture_module_main(mod, [])
         self.assertEqual(code, 2)
@@ -550,6 +621,7 @@ class TestCaptureModuleMain(unittest.TestCase):
     def test_exit_code_zero_on_system_exit_none(self):
         def main_fn():
             raise SystemExit(None)
+
         mod = self._make_module(main_fn)
         code, out, err = mcp._capture_module_main(mod, [])
         self.assertEqual(code, 0)
@@ -557,6 +629,7 @@ class TestCaptureModuleMain(unittest.TestCase):
     def test_exit_code_one_on_system_exit_string(self):
         def main_fn():
             raise SystemExit("error message")
+
         mod = self._make_module(main_fn)
         code, out, err = mcp._capture_module_main(mod, [])
         self.assertEqual(code, 1)
@@ -596,6 +669,400 @@ class TestErrorCodeConstants(unittest.TestCase):
 
     def test_internal_error_code(self):
         self.assertEqual(mcp.JSONRPC_INTERNAL_ERROR, -32603)
+
+
+# ---------------------------------------------------------------------------
+# Issue #399 - Agent tags as coordination bus
+# Tests: tag filter, cross-agent visibility, default behavior
+# ---------------------------------------------------------------------------
+
+
+class TestAgentTagFilter(unittest.TestCase):
+    """Tests for agent_tag / msg_tag filtering in query_session and briefing tools."""
+
+    def test_query_session_schema_has_agent_tag(self):
+        tools = {t["name"]: t for t in mcp.TOOLS}
+        self.assertIn("agent_tag", tools["query_session"]["inputSchema"]["properties"])
+
+    def test_query_session_schema_has_msg_tag(self):
+        tools = {t["name"]: t for t in mcp.TOOLS}
+        self.assertIn("msg_tag", tools["query_session"]["inputSchema"]["properties"])
+
+    def test_briefing_schema_has_agent_tag(self):
+        tools = {t["name"]: t for t in mcp.TOOLS}
+        self.assertIn("agent_tag", tools["briefing"]["inputSchema"]["properties"])
+
+    def test_briefing_schema_has_msg_tag(self):
+        tools = {t["name"]: t for t in mcp.TOOLS}
+        self.assertIn("msg_tag", tools["briefing"]["inputSchema"]["properties"])
+
+    def test_query_session_agent_tag_passed_as_cli_flag(self):
+        captured = []
+
+        def fake_capture(module, argv):
+            captured.extend(argv)
+            return (0, "result", "")
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call({"name": "query_session", "arguments": {"query": "auth", "agent_tag": "reviewer"}})
+        self.assertIn("--agent-tag", captured)
+        self.assertIn("reviewer", captured)
+
+    def test_query_session_msg_tag_passed_as_cli_flag(self):
+        captured = []
+
+        def fake_capture(module, argv):
+            captured.extend(argv)
+            return (0, "result", "")
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call({"name": "query_session", "arguments": {"query": "auth", "msg_tag": "msg:review"}})
+        self.assertIn("--msg-tag", captured)
+        self.assertIn("msg:review", captured)
+
+    def test_query_session_default_behavior_no_tag_flags(self):
+        """When agent_tag / msg_tag are absent, no tag flags are forwarded."""
+        captured = []
+
+        def fake_capture(module, argv):
+            captured.extend(argv)
+            return (0, "result", "")
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call({"name": "query_session", "arguments": {"query": "auth"}})
+        self.assertNotIn("--agent-tag", captured)
+        self.assertNotIn("--msg-tag", captured)
+
+    def test_briefing_agent_tag_passed_as_cli_flag(self):
+        captured = []
+
+        def fake_capture(module, argv):
+            captured.extend(argv)
+            return (0, "{}", "")
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call({"name": "briefing", "arguments": {"task": "fix auth", "agent_tag": "agent1"}})
+        self.assertIn("--agent-tag", captured)
+        self.assertIn("agent1", captured)
+
+    def test_briefing_msg_tag_passed_as_cli_flag(self):
+        captured = []
+
+        def fake_capture(module, argv):
+            captured.extend(argv)
+            return (0, "{}", "")
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call({"name": "briefing", "arguments": {"task": "fix auth", "msg_tag": "msg:review"}})
+        self.assertIn("--msg-tag", captured)
+        self.assertIn("msg:review", captured)
+
+    def test_briefing_default_behavior_no_tag_flags(self):
+        captured = []
+
+        def fake_capture(module, argv):
+            captured.extend(argv)
+            return (0, "{}", "")
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call({"name": "briefing", "arguments": {"task": "fix auth"}})
+        self.assertNotIn("--agent-tag", captured)
+        self.assertNotIn("--msg-tag", captured)
+
+    def test_optional_string_empty_returns_empty(self):
+        self.assertEqual(mcp._optional_string({}, "agent_tag"), "")
+
+    def test_optional_string_none_returns_empty(self):
+        self.assertEqual(mcp._optional_string({"agent_tag": None}, "agent_tag"), "")
+
+    def test_optional_string_wrong_type_raises(self):
+        with self.assertRaises(mcp.JsonRpcError) as ctx:
+            mcp._optional_string({"agent_tag": 123}, "agent_tag")
+        self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
+
+    def test_optional_string_truncated_to_max_length(self):
+        value = "x" * 300
+        result = mcp._optional_string({"k": value}, "k", max_length=200)
+        self.assertEqual(len(result), 200)
+
+    # ------------------------------------------------------------------
+    # Regression tests: tag values must not leak into query text (#399)
+    # These call the real script modules with patched backends.
+    # ------------------------------------------------------------------
+
+    def test_briefing_agent_tag_value_not_in_query(self):
+        """Regression #399: --agent-tag value must not appear in briefing query text."""
+        captured_query: list[str] = []
+
+        def fake_generate_briefing(query, **kw):
+            captured_query.append(query)
+            return ("", None)
+
+        with patch.object(mcp.briefing_mod, "generate_briefing", side_effect=fake_generate_briefing):
+            mcp._capture_module_main(
+                mcp.briefing_mod,
+                ["fix auth", "--pack", "--mode", "auto", "--limit", "3", "--agent-tag", "architect"],
+            )
+
+        self.assertTrue(captured_query, "generate_briefing was not called")
+        self.assertIn("fix auth", captured_query[0])
+        self.assertNotIn("architect", captured_query[0])
+
+    def test_briefing_msg_tag_value_not_in_query(self):
+        """Regression #399: --msg-tag value must not appear in briefing query text."""
+        captured_query: list[str] = []
+
+        def fake_generate_briefing(query, **kw):
+            captured_query.append(query)
+            return ("", None)
+
+        with patch.object(mcp.briefing_mod, "generate_briefing", side_effect=fake_generate_briefing):
+            mcp._capture_module_main(
+                mcp.briefing_mod,
+                ["fix auth", "--pack", "--mode", "auto", "--limit", "3", "--msg-tag", "msg:review"],
+            )
+
+        self.assertTrue(captured_query, "generate_briefing was not called")
+        self.assertIn("fix auth", captured_query[0])
+        self.assertNotIn("msg:review", captured_query[0])
+
+    def test_query_session_agent_tag_value_not_in_query(self):
+        """Regression #399: --agent-tag value must not appear in query-session search query."""
+        captured_query: list[str] = []
+        qs = mcp.query_session_mod
+
+        def fake_search(query, *args, **kw):
+            captured_query.append(query)
+            return {"hit_count": 0, "selected_entry_ids": []}
+
+        with (
+            patch.object(qs, "search", side_effect=fake_search),
+            patch.object(qs, "search_sessions_fts", return_value=[]),
+            patch.object(qs, "search_knowledge", return_value={"hit_count": 0, "selected_entry_ids": []}),
+            patch.object(qs, "_record_recall_event", return_value=None),
+        ):
+            mcp._capture_module_main(qs, ["fix auth", "--agent-tag", "architect"])
+
+        self.assertTrue(captured_query, "search was not called")
+        for q in captured_query:
+            self.assertNotIn("architect", q)
+        self.assertIn("fix auth", captured_query[0])
+
+    def test_query_session_msg_tag_value_not_in_query(self):
+        """Regression #399: --msg-tag value must not appear in query-session search query."""
+        captured_query: list[str] = []
+        qs = mcp.query_session_mod
+
+        def fake_search(query, *args, **kw):
+            captured_query.append(query)
+            return {"hit_count": 0, "selected_entry_ids": []}
+
+        with (
+            patch.object(qs, "search", side_effect=fake_search),
+            patch.object(qs, "search_sessions_fts", return_value=[]),
+            patch.object(qs, "search_knowledge", return_value={"hit_count": 0, "selected_entry_ids": []}),
+            patch.object(qs, "_record_recall_event", return_value=None),
+        ):
+            mcp._capture_module_main(qs, ["fix auth", "--msg-tag", "msg:review"])
+
+        self.assertTrue(captured_query, "search was not called")
+        for q in captured_query:
+            self.assertNotIn("msg:review", q)
+        self.assertIn("fix auth", captured_query[0])
+
+    def test_briefing_both_tags_not_in_query(self):
+        """Regression #399: both --agent-tag and --msg-tag values stay out of query."""
+        captured_query: list[str] = []
+
+        def fake_generate_briefing(query, **kw):
+            captured_query.append(query)
+            return ("", None)
+
+        with patch.object(mcp.briefing_mod, "generate_briefing", side_effect=fake_generate_briefing):
+            mcp._capture_module_main(
+                mcp.briefing_mod,
+                ["fix auth", "--pack", "--mode", "auto", "--limit", "3", "--agent-tag", "agent1", "--msg-tag", "msg:r"],
+            )
+
+        self.assertTrue(captured_query, "generate_briefing was not called")
+        self.assertNotIn("agent1", captured_query[0])
+        self.assertNotIn("msg:r", captured_query[0])
+        self.assertIn("fix auth", captured_query[0])
+
+
+# ---------------------------------------------------------------------------
+# Issue #404 - MCP adapter for local memory DB (query_memory tool)
+# Tests: initialize, tool call, invalid request, auth
+# ---------------------------------------------------------------------------
+
+
+class TestQueryMemoryTool(unittest.TestCase):
+    """Tests for the query_memory MCP tool added in issue #404."""
+
+    def setUp(self):
+        self.tools = {t["name"]: t for t in mcp.TOOLS}
+
+    # -- tool registration (initialize) ---
+
+    def test_query_memory_tool_present(self):
+        self.assertIn("query_memory", self.tools)
+
+    def test_query_memory_tool_has_description(self):
+        self.assertTrue(self.tools["query_memory"]["description"])
+
+    def test_query_memory_schema_no_required_params(self):
+        schema = self.tools["query_memory"]["inputSchema"]
+        self.assertEqual(schema.get("required", []), [])
+
+    def test_query_memory_schema_has_agent_tag(self):
+        self.assertIn("agent_tag", self.tools["query_memory"]["inputSchema"]["properties"])
+
+    def test_query_memory_schema_has_msg_tag(self):
+        self.assertIn("msg_tag", self.tools["query_memory"]["inputSchema"]["properties"])
+
+    def test_query_memory_schema_has_category(self):
+        self.assertIn("category", self.tools["query_memory"]["inputSchema"]["properties"])
+
+    def test_query_memory_schema_has_limit(self):
+        self.assertIn("limit", self.tools["query_memory"]["inputSchema"]["properties"])
+
+    def test_query_memory_schema_has_token(self):
+        self.assertIn("token", self.tools["query_memory"]["inputSchema"]["properties"])
+
+    def test_tools_list_includes_query_memory(self):
+        _, result = mcp._handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        names = {t["name"] for t in result["tools"]}
+        self.assertIn("query_memory", names)
+
+    # -- tool call ---
+
+    def _make_in_memory_db(self):
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute("""CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT '',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tags TEXT DEFAULT '',
+            agent_id TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            occurrence_count INTEGER DEFAULT 1
+        )""")
+        db.execute(
+            "INSERT INTO knowledge_entries VALUES (1,'s1','mistake','Bug in auth','Auth fails on timeout','msg:review,p1','agent1',0.9,1)"
+        )
+        db.execute(
+            "INSERT INTO knowledge_entries VALUES (2,'s2','pattern','Retry pattern','Wrap in retry logic','p2','agent2',0.8,1)"
+        )
+        db.commit()
+        return db
+
+    def test_query_memory_returns_entries_with_mock_db(self):
+        db = self._make_in_memory_db()
+        original_path = mcp._DB_PATH
+        try:
+            mcp._DB_PATH = type(
+                "P",
+                (),
+                {
+                    "exists": lambda self: True,
+                    "as_uri": lambda self: "file::memory:",
+                    "__str__": lambda self: ":memory:",
+                },
+            )()
+            with patch("sqlite3.connect", return_value=db):
+                result = mcp._run_query_memory({})
+        finally:
+            mcp._DB_PATH = original_path
+        self.assertIn("structuredContent", result)
+        self.assertIn("entries", result["structuredContent"])
+
+    def test_query_memory_missing_db_raises_internal_error(self):
+        class FakePath:
+            def exists(self):
+                return False
+
+            def as_uri(self):
+                return "file:///no/such.db"
+
+        original_path = mcp._DB_PATH
+        try:
+            mcp._DB_PATH = FakePath()
+            with self.assertRaises(mcp.JsonRpcError) as ctx:
+                mcp._run_query_memory({})
+            self.assertEqual(ctx.exception.code, mcp.JSONRPC_INTERNAL_ERROR)
+        finally:
+            mcp._DB_PATH = original_path
+
+    # -- invalid request ---
+
+    def test_query_memory_limit_too_high_raises(self):
+        with self.assertRaises(mcp.JsonRpcError) as ctx:
+            mcp._run_query_memory({"limit": 99})
+        self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
+
+    def test_query_memory_limit_zero_raises(self):
+        with self.assertRaises(mcp.JsonRpcError) as ctx:
+            mcp._run_query_memory({"limit": 0})
+        self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
+
+    def test_query_memory_agent_tag_wrong_type_raises(self):
+        with self.assertRaises(mcp.JsonRpcError) as ctx:
+            mcp._run_query_memory({"agent_tag": 42})
+        self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
+
+    def test_query_memory_dispatched_via_handle_tools_call(self):
+        called = []
+
+        def fake_run(arguments):
+            called.append(arguments)
+            return {"content": [], "structuredContent": {"entries": [], "count": 0, "query": None}}
+
+        with patch.object(mcp, "_run_query_memory", side_effect=fake_run):
+            mcp._handle_tools_call({"name": "query_memory", "arguments": {}})
+        self.assertTrue(called)
+
+    # -- auth ---
+
+    def test_auth_passes_when_no_token_configured(self):
+        env = {k: v for k, v in os.environ.items() if k != "COPILOT_MCP_TOKEN"}
+        with patch.dict(os.environ, env, clear=True):
+            mcp._check_auth({})  # must not raise
+
+    def test_auth_passes_when_token_matches(self):
+        with patch.dict(os.environ, {"COPILOT_MCP_TOKEN": "secret123"}):
+            mcp._check_auth({"token": "secret123"})  # must not raise
+
+    def test_auth_fails_when_token_missing(self):
+        with patch.dict(os.environ, {"COPILOT_MCP_TOKEN": "secret123"}):
+            with self.assertRaises(mcp.JsonRpcError) as ctx:
+                mcp._check_auth({})
+        self.assertEqual(ctx.exception.code, mcp._MCP_AUTH_ERROR)
+
+    def test_auth_fails_when_token_wrong(self):
+        with patch.dict(os.environ, {"COPILOT_MCP_TOKEN": "correct"}):
+            with self.assertRaises(mcp.JsonRpcError) as ctx:
+                mcp._check_auth({"token": "wrong"})
+        self.assertEqual(ctx.exception.code, mcp._MCP_AUTH_ERROR)
+
+    def test_auth_fails_on_non_string_token(self):
+        with patch.dict(os.environ, {"COPILOT_MCP_TOKEN": "secret"}):
+            with self.assertRaises(mcp.JsonRpcError) as ctx:
+                mcp._check_auth({"token": 12345})
+        self.assertEqual(ctx.exception.code, mcp._MCP_AUTH_ERROR)
+
+    def test_query_memory_auth_error_propagates(self):
+        with patch.dict(os.environ, {"COPILOT_MCP_TOKEN": "secret"}):
+            with self.assertRaises(mcp.JsonRpcError) as ctx:
+                mcp._run_query_memory({"token": "bad"})
+        self.assertEqual(ctx.exception.code, mcp._MCP_AUTH_ERROR)
+
+    # -- three tools total ---
+
+    def test_exactly_three_tools(self):
+        self.assertEqual(len(mcp.TOOLS), 3)
 
 
 # ---------------------------------------------------------------------------

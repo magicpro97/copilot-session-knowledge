@@ -113,7 +113,11 @@ pub fn ensure_embedding_tables(conn: &Connection) -> rusqlite::Result<()> {
             doc_count  INTEGER DEFAULT 0,
             built_at   TEXT
         );",
-    )
+    )?;
+    // Add binary column to tfidf_model if it does not exist yet (#356).
+    // ALTER TABLE returns an error when the column already exists; we ignore it.
+    let _ = conn.execute("ALTER TABLE tfidf_model ADD COLUMN model_bin BLOB", []);
+    Ok(())
 }
 
 // ── Vector search ──────────────────────────────────────────────────────
@@ -312,6 +316,27 @@ pub fn store_tfidf_model(
         "INSERT OR REPLACE INTO tfidf_model (id, model_blob, doc_count, built_at) \
          VALUES (1, ?, ?, ?)",
         rusqlite::params![model_blob, doc_count as i64, now],
+    )?;
+    Ok(())
+}
+
+/// Dual-write the TF-IDF model: JSON blob (Python-compatible) + binary blob (Rust fast path).
+///
+/// Rust searches will prefer `model_bin` when available; Python reads `model_blob` only.
+/// A missing or corrupt `model_bin` falls back transparently to `model_blob`.
+///
+/// This is the preferred write path for all native Rust rebuild code paths (#356).
+pub fn store_tfidf_model_with_binary(
+    conn: &Connection,
+    json_blob: &[u8],
+    bin_blob: &[u8],
+    doc_count: usize,
+) -> rusqlite::Result<()> {
+    let now = now_iso();
+    conn.execute(
+        "INSERT OR REPLACE INTO tfidf_model (id, model_blob, model_bin, doc_count, built_at) \
+         VALUES (1, ?, ?, ?, ?)",
+        rusqlite::params![json_blob, bin_blob, doc_count as i64, now],
     )?;
     Ok(())
 }

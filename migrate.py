@@ -1609,6 +1609,35 @@ if __name__ == "__main__":
                 "ALTER TABLE knowledge_entries ADD COLUMN caveats TEXT DEFAULT ''",
             ],
         ),
+        # v30: issues #394/#395 — Episode batch capture and session compile tables.
+        # episode_batches: periodic tool-event episode summaries (WBS-069/Issue #394).
+        #   - episode_hash UNIQUE: deduplication contract; same episode never stored twice.
+        #   - session_id index: fast per-session queries for briefing surface.
+        # compile_cursors: hash-gated session compile checkpoints (WBS-070/Issue #395).
+        #   - session_id PRIMARY KEY: one cursor row per session.
+        #   - source_hash: content hash of source entries; skip recompile when unchanged.
+        (
+            30,
+            "episode_batch_compile",
+            [
+                """CREATE TABLE IF NOT EXISTS episode_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    episode_hash TEXT NOT NULL UNIQUE,
+                    tool_fingerprint TEXT NOT NULL DEFAULT '',
+                    threshold_count INTEGER NOT NULL DEFAULT 10,
+                    summary TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_ep_session ON episode_batches(session_id)",
+                "CREATE INDEX IF NOT EXISTS idx_ep_created ON episode_batches(created_at)",
+                """CREATE TABLE IF NOT EXISTS compile_cursors (
+                    session_id TEXT PRIMARY KEY,
+                    source_hash TEXT NOT NULL DEFAULT '',
+                    compiled_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )""",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
