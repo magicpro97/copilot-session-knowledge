@@ -163,7 +163,7 @@ For `sk-rust/**` changes, `sk CI` includes a blocking startup benchmark
 regression gate. `benchmark.py startup` supports `--baseline-file` and
 `--regression-threshold`; CI creates the first `.benchmarks/sk-startup-baseline.json`
 baseline when absent and fails later runs only when median startup time exceeds the
-cached baseline by more than 20%. CI also runs a non-blocking RustSec `cargo audit`
+cached baseline by more than 20% and a 5ms absolute floor. CI also runs a non-blocking RustSec `cargo audit`
 advisory. The workflow installs `cargo-audit`, runs `cargo audit --file Cargo.lock`,
 and keeps `continue-on-error: true` on the audit step until the documented TODO is
 removed after the baseline is clean. The install step remains blocking so missing
