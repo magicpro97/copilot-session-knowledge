@@ -22,6 +22,7 @@
 - [Security](#security)
 - [Testing](#testing)
 - [FAQ](#faq)
+- [Board Import Automation](#board-import-automation)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -35,6 +36,7 @@
 [Telemetry & Contracts](docs/TELEMETRY.md) ·
 [Operator Playbook](docs/OPERATOR-PLAYBOOK.md) ·
 [Resilience Runbook](docs/RESILIENCE-RUNBOOK.md) ·
+[Board Import](docs/BOARD-IMPORT.md) ·
 [Connectivity Troubleshooting](docs/CONNECTIVITY-TROUBLESHOOTING.md)
 
 ## Why?
@@ -588,6 +590,28 @@ Motivated by a C1-class bug where a misindented top-level block caused a `Syntax
 - **`hooks/rules/syntax_gate.py`** — `preToolUse` hook; blocks `edit`/`create` on `*.py` files if the new content has a syntax error. Registered in the unified hook runner via `hooks/rules/__init__.py`.
 - **`.github/workflows/ci.yml`** — GitHub Actions CI; runs syntax check then all tests on every push and pull request (ubuntu-latest, Python 3.11).
 - **`requirements-dev.txt`** — optional dev-only deps (`ruff`, `pytest-cov`); core runtime and all quality gates work without installing it.
+
+## Board Import Automation
+
+Batch-create GitHub issues from a WBS JSONL file and add them to a Project v2 board with priority fields set — using only `gh` CLI, stdlib Python, and PowerShell GraphQL (no extra dependencies).
+
+```bash
+# 1. Validate JSONL offline (no network)
+python wbs-issue-gen.py --validate wbs-issues.jsonl
+
+# 2. Generate example payloads for testing
+python wbs-issue-gen.py --generate 5 --output wbs-issues.jsonl
+
+# 3. Create issues via GitHub REST (requires GITHUB_TOKEN and REPO env vars)
+#    See docs/BOARD-IMPORT.md for the full operator script
+
+# 4. Add to Project v2 board and set Priority field (PowerShell)
+#    See docs/BOARD-IMPORT.md Step 4
+```
+
+The `wbs-issue-gen.py` validator/generator (at repo root) handles schema validation, dry-run introspection, and example generation — all offline. Labels, milestone, assignees, priority, and a `context` metadata block (never sent to GitHub) are supported.
+
+📖 **Full operator reference:** [docs/BOARD-IMPORT.md](docs/BOARD-IMPORT.md)
 
 ## Contributing
 

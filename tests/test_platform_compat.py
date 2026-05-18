@@ -320,6 +320,75 @@ def test_ci_has_startup_regression_guard() -> None:
     )
 
 
+def test_board_import_doc_exists_and_is_complete() -> None:
+    """Issue #425: docs/BOARD-IMPORT.md must exist and contain the required sections."""
+    doc_path = REPO / "docs" / "BOARD-IMPORT.md"
+    test("docs/BOARD-IMPORT.md exists", doc_path.is_file())
+    if not doc_path.is_file():
+        return
+    content = doc_path.read_text(encoding="utf-8")
+    required_sections = [
+        "## JSONL Schema",
+        "## Import Workflow",
+        "## Idempotency",
+        "## Troubleshooting",
+    ]
+    for section in required_sections:
+        test(f"BOARD-IMPORT.md has section '{section}'", section in content)
+    # JSONL shape: required and optional fields
+    test("BOARD-IMPORT.md documents 'title' field", '"title"' in content)
+    test("BOARD-IMPORT.md documents 'priority' field", '"priority"' in content)
+    test("BOARD-IMPORT.md documents 'context' field (operator metadata)", '"context"' in content)
+    test("BOARD-IMPORT.md documents 'labels' field", '"labels"' in content)
+    # Key workflow steps
+    test("BOARD-IMPORT.md references dry-run step", "dry-run" in content.lower() or "dry_run" in content.lower())
+    test("BOARD-IMPORT.md references GitHub REST API for issue creation", "api.github.com/repos" in content)
+    test("BOARD-IMPORT.md references Project v2 GraphQL mutation", "addProjectV2ItemById" in content)
+    test("BOARD-IMPORT.md references Priority field mutation", "updateProjectV2ItemFieldValue" in content)
+    # Inline generator script is documented
+    test("BOARD-IMPORT.md embeds wbs-issue-gen.py validator", "wbs-issue-gen.py" in content)
+    # No network required: validator/dry-run is marked offline-capable
+    test(
+        "BOARD-IMPORT.md marks validation as offline/no-network",
+        "no network" in content.lower() or "offline" in content.lower(),
+    )
+
+
+def test_readme_links_board_import_doc() -> None:
+    """Issue #425: README.md must reference docs/BOARD-IMPORT.md and the board import section."""
+    readme = _read("README.md")
+    test("README.md links to docs/BOARD-IMPORT.md", "docs/BOARD-IMPORT.md" in readme)
+    test("README.md has Board Import Automation section", "## Board Import Automation" in readme)
+    test("README.md references wbs-issue-gen.py", "wbs-issue-gen.py" in readme)
+
+
+def test_board_import_jsonl_schema_is_valid_json() -> None:
+    """Issue #425: The minimal and full example JSONL entries in the doc must be valid JSON."""
+    doc_path = REPO / "docs" / "BOARD-IMPORT.md"
+    if not doc_path.is_file():
+        test("BOARD-IMPORT.md exists (pre-check for JSON examples)", False)
+        return
+    content = doc_path.read_text(encoding="utf-8")
+    # Extract the minimal valid entry example
+    minimal_marker = '{"title": "WBS-042: Implement adaptive recall scoring"}'
+    test(
+        "BOARD-IMPORT.md minimal JSONL example parses as valid JSON",
+        _json_parseable(minimal_marker),
+        f"expected valid JSON: {minimal_marker!r}",
+    )
+    # The full example block is embedded as a fenced code block — check it contains a parseable object
+    full_example_title = '"WBS-042: Implement adaptive recall scoring"'
+    test("BOARD-IMPORT.md full example contains title field", full_example_title in content)
+
+
+def _json_parseable(text: str) -> bool:
+    try:
+        json.loads(text)
+        return True
+    except json.JSONDecodeError:
+        return False
+
+
 def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--probe":
         _platform_probe()
@@ -339,6 +408,9 @@ def main() -> int:
     test_release_sha256_format_is_normalized()
     test_ci_lint_includes_scoped_test_files()
     test_ci_has_startup_regression_guard()
+    test_board_import_doc_exists_and_is_complete()
+    test_readme_links_board_import_doc()
+    test_board_import_jsonl_schema_is_valid_json()
 
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

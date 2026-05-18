@@ -221,25 +221,43 @@ fn main() -> ExitCode {
         Some(Commands::Heal { args }) => run_fallback("copilot-cli-healer.py", &args),
 
         Some(Commands::Index { args }) => {
-            // Native handler for `sk index embed`; all other index subcommands
-            // fall through to the Python script resolver.
-            if args.first().map(|s| s.as_str()) == Some("embed") {
-                let rest = args.get(1..).unwrap_or(&[]).to_vec();
-                commands::embed::run_embed_command(&rest)
-            } else {
-                let (script, rest) = resolve_group("index", &args);
-                run_fallback(&script, &rest)
+            // Native handlers for `sk index embed`, `sk index status`, `sk index health`.
+            // All other index subcommands fall through to the Python script resolver.
+            match args.first().map(|s| s.as_str()) {
+                Some("embed") => {
+                    let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                    commands::embed::run_embed_command(&rest)
+                }
+                Some("status") => {
+                    let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                    commands::index_native::run_index_status_command(&rest)
+                }
+                Some("health") => {
+                    let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                    commands::index_native::run_index_health_command(&rest)
+                }
+                _ => {
+                    let (script, rest) = resolve_group("index", &args);
+                    run_fallback(&script, &rest)
+                }
             }
         }
         Some(Commands::Sync { args }) => {
-            // Native handler for `sk sync run`; all other sync subcommands
-            // fall through to the Python script resolver.
-            if args.first().map(|s| s.as_str()) == Some("run") {
-                let rest = args.get(1..).unwrap_or(&[]).to_vec();
-                commands::sync_run::run_sync_run_command(&rest)
-            } else {
-                let (script, rest) = resolve_group("sync", &args);
-                run_fallback(&script, &rest)
+            // Native handlers for `sk sync run` and `sk sync status`.
+            // All other sync subcommands fall through to the Python script resolver.
+            match args.first().map(|s| s.as_str()) {
+                Some("run") => {
+                    let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                    commands::sync_run::run_sync_run_command(&rest)
+                }
+                Some("status") => {
+                    let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                    commands::sync_native::run_sync_status_command(&rest)
+                }
+                _ => {
+                    let (script, rest) = resolve_group("sync", &args);
+                    run_fallback(&script, &rest)
+                }
             }
         }
         Some(Commands::Checkpoint { args }) => {

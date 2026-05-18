@@ -3402,6 +3402,171 @@ except Exception as _e:
     test("CR-01: v22/v23 collision-repair regression", False, str(_e))
 
 
+# ---------------------------------------------------------------------------
+# SD-01 – SD-04: soft-delete duplicate detection regression (Wave 2b fix)
+#
+# Before the fix, add_entry()'s duplicate-detection SELECT did not filter
+# `deleted_at IS NULL`, so re-learning a same category/title after a
+# soft-delete would UPDATE the ghost row without clearing deleted_at —
+# making the new knowledge permanently invisible to read paths.
+# ---------------------------------------------------------------------------
+
+try:
+    import importlib as _sd_importlib
+
+    _learn_sd = _sd_importlib.import_module("learn")
+
+    # SD-01 – SD-03: re-learning after soft-delete creates a NEW row (not updating ghost)
+    # Use a file-based DB because add_entry() commits and closes the connection.
+    with tempfile.TemporaryDirectory(prefix="learn-softdelete-") as _sd_tmp:
+        _sd_db_path = Path(_sd_tmp) / "knowledge.db"
+        _sd_setup = sqlite3.connect(str(_sd_db_path))
+        _sd_setup.executescript("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT 'test-session',
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 0.7,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                stable_id TEXT,
+                deleted_at TEXT DEFAULT NULL
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags, category, wing, room, facts
+            );
+        """)
+        # Insert a soft-deleted ghost row
+        _sd_setup.execute(
+            "INSERT INTO knowledge_entries (category, title, content, deleted_at) VALUES (?,?,?,?)",
+            ("mistake", "soft-delete-dedup-test", "old ghost content", "2024-01-01T00:00:00"),
+        )
+        _sd_setup.commit()
+        _sd_ghost_id = _sd_setup.execute(
+            "SELECT id FROM knowledge_entries WHERE title = 'soft-delete-dedup-test'"
+        ).fetchone()[0]
+        _sd_setup.close()
+
+        # Patch learn.DB_PATH so add_entry() opens our temp DB
+        _orig_db_path_sd = _learn_sd.DB_PATH
+        _learn_sd.DB_PATH = _sd_db_path
+        try:
+            _sd_new_id = _learn_sd.add_entry(
+                category="mistake",
+                title="soft-delete-dedup-test",
+                content="new visible content",
+                session_id="test-session",
+                skip_scan=True,
+                skip_gate=True,
+            )
+        finally:
+            _learn_sd.DB_PATH = _orig_db_path_sd
+
+        # Reopen to verify results
+        _sd_check = sqlite3.connect(str(_sd_db_path))
+        _sd_check.row_factory = sqlite3.Row
+        _sd_rows = _sd_check.execute(
+            "SELECT id, deleted_at, content FROM knowledge_entries WHERE title = 'soft-delete-dedup-test'"
+        ).fetchall()
+        _sd_ghost_row = next((r for r in _sd_rows if r["id"] == _sd_ghost_id), None)
+        _sd_live_rows = [r for r in _sd_rows if r["deleted_at"] is None]
+        _sd_check.close()
+
+        test(
+            "SD-01: re-learn after soft-delete creates new row (total rows = 2)",
+            len(_sd_rows) == 2,
+            f"rows={[(r['id'], r['deleted_at']) for r in _sd_rows]}",
+        )
+        test(
+            "SD-02: re-learned entry is visible (deleted_at IS NULL) with new content",
+            len(_sd_live_rows) == 1 and _sd_live_rows[0]["content"] == "new visible content",
+            f"live_rows={[(r['id'], r['deleted_at'], r['content']) for r in _sd_live_rows]}",
+        )
+        test(
+            "SD-03: ghost row still has deleted_at set (not cleared by re-learn)",
+            _sd_ghost_row is not None and _sd_ghost_row["deleted_at"] is not None,
+            f"ghost_deleted_at={_sd_ghost_row['deleted_at'] if _sd_ghost_row else None}",
+        )
+
+    # SD-04: without deleted_at column, duplicate learning still updates existing row (no regression)
+    with tempfile.TemporaryDirectory(prefix="learn-nodelete-") as _sd_nosd_tmp:
+        _sd_nosd_path = Path(_sd_nosd_tmp) / "knowledge.db"
+        _sd_nosd_setup = sqlite3.connect(str(_sd_nosd_path))
+        _sd_nosd_setup.executescript("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT 'test-session',
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 0.7,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                stable_id TEXT
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags, category, wing, room, facts
+            );
+        """)
+        _sd_nosd_setup.commit()
+        _sd_nosd_setup.close()
+
+        _orig_db_path_sd2 = _learn_sd.DB_PATH
+        _learn_sd.DB_PATH = _sd_nosd_path
+        try:
+            _learn_sd.add_entry(
+                category="pattern",
+                title="no-softdelete-dedup",
+                content="first content",
+                session_id="test-session",
+                skip_scan=True,
+                skip_gate=True,
+            )
+            _learn_sd.add_entry(
+                category="pattern",
+                title="no-softdelete-dedup",
+                content="second content that is longer than first content",
+                session_id="test-session",
+                skip_scan=True,
+                skip_gate=True,
+            )
+        finally:
+            _learn_sd.DB_PATH = _orig_db_path_sd2
+
+        _sd_nosd_check = sqlite3.connect(str(_sd_nosd_path))
+        _sd_nosd_rows = _sd_nosd_check.execute(
+            "SELECT id, occurrence_count FROM knowledge_entries WHERE title = 'no-softdelete-dedup'"
+        ).fetchall()
+        _sd_nosd_check.close()
+        test(
+            "SD-04: without deleted_at column, duplicate learning updates existing row (no regression)",
+            len(_sd_nosd_rows) == 1 and _sd_nosd_rows[0][1] == 2,
+            f"rows={[(r[0], r[1]) for r in _sd_nosd_rows]}",
+        )
+
+except Exception as _e:
+    test("SD-01: soft-delete dedup regression suite", False, str(_e))
+
+# ---------------------------------------------------------------------------
+
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
     print("🎉 All tests passed!")

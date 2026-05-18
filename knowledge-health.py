@@ -75,23 +75,27 @@ def compute_health(stale_days: int = 30) -> dict:
     """Compute comprehensive health metrics for the knowledge base."""
     db = get_db()
 
-    # Total entries
-    total = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+    # Detect soft-delete column (#387): filter it out of all counts
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+    # Total entries (excluding soft-deleted)
+    total = db.execute(f"SELECT COUNT(*) FROM knowledge_entries WHERE 1=1 {_nd}").fetchone()[0]
     if total == 0:
         db.close()
         return {"score": 0, "total": 0, "message": "Empty knowledge base"}
 
     # Category distribution
-    cats = db.execute("""
+    cats = db.execute(f"""
         SELECT category, COUNT(*) as cnt
-        FROM knowledge_entries GROUP BY category
+        FROM knowledge_entries WHERE 1=1 {_nd} GROUP BY category
     """).fetchall()
     cat_counts = {r["category"]: r["cnt"] for r in cats}
 
     # Categorization rate (entries with non-empty category)
-    uncategorized = db.execute("""
+    uncategorized = db.execute(f"""
         SELECT COUNT(*) FROM knowledge_entries
-        WHERE category IS NULL OR category = ''
+        WHERE (category IS NULL OR category = '') {_nd}
     """).fetchone()[0]
     categorized_pct = ((total - uncategorized) / total) * 100 if total > 0 else 0
 
@@ -108,9 +112,9 @@ def compute_health(stale_days: int = 30) -> dict:
     # Staleness: entries older than stale_days
     cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - stale_days * 86400))
     stale = db.execute(
-        """
+        f"""
         SELECT COUNT(*) FROM knowledge_entries
-        WHERE last_seen < ? AND last_seen IS NOT NULL AND last_seen != ''
+        WHERE last_seen < ? AND last_seen IS NOT NULL AND last_seen != '' {_nd}
     """,
         (cutoff,),
     ).fetchone()[0]
@@ -119,9 +123,9 @@ def compute_health(stale_days: int = 30) -> dict:
     # Freshness: entries from last 7 days
     week_ago = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 7 * 86400))
     fresh = db.execute(
-        """
+        f"""
         SELECT COUNT(*) FROM knowledge_entries
-        WHERE first_seen >= ? AND first_seen IS NOT NULL
+        WHERE first_seen >= ? AND first_seen IS NOT NULL {_nd}
     """,
         (week_ago,),
     ).fetchone()[0]
@@ -160,32 +164,32 @@ def compute_health(stale_days: int = 30) -> dict:
     embed_pct = min((embeddings / total) * 100, 100) if total > 0 else 0
 
     # Confidence distribution
-    high_conf = db.execute("""
-        SELECT COUNT(*) FROM knowledge_entries WHERE confidence >= 0.8
+    high_conf = db.execute(f"""
+        SELECT COUNT(*) FROM knowledge_entries WHERE confidence >= 0.8 {_nd}
     """).fetchone()[0]
-    low_conf = db.execute("""
-        SELECT COUNT(*) FROM knowledge_entries WHERE confidence < 0.5
+    low_conf = db.execute(f"""
+        SELECT COUNT(*) FROM knowledge_entries WHERE confidence < 0.5 {_nd}
     """).fetchone()[0]
 
     # Wing/room coverage
     wings = 0
     rooms = 0
     try:
-        wings = db.execute("""
+        wings = db.execute(f"""
             SELECT COUNT(DISTINCT wing) FROM knowledge_entries
-            WHERE wing IS NOT NULL AND wing != ''
+            WHERE wing IS NOT NULL AND wing != '' {_nd}
         """).fetchone()[0]
-        rooms = db.execute("""
+        rooms = db.execute(f"""
             SELECT COUNT(DISTINCT room) FROM knowledge_entries
-            WHERE room IS NOT NULL AND room != ''
+            WHERE room IS NOT NULL AND room != '' {_nd}
         """).fetchone()[0]
     except sqlite3.OperationalError:
         pass
 
     # Sessions contributing knowledge
-    sessions = db.execute("""
+    sessions = db.execute(f"""
         SELECT COUNT(DISTINCT session_id) FROM knowledge_entries
-        WHERE session_id IS NOT NULL AND session_id != ''
+        WHERE session_id IS NOT NULL AND session_id != '' {_nd}
     """).fetchone()[0]
 
     # Concept tag coverage (informational stat only — does NOT affect weighted score)
@@ -606,6 +610,10 @@ def compute_insights(stale_days: int = 30) -> dict:
     health = compute_health(stale_days=stale_days)
     db = get_db()
 
+    # Detect soft-delete column (#387) for filtering
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
     total = health.get("total", 0)
     high_conf = health.get("high_confidence", 0)
     low_conf = health.get("low_confidence", 0)
@@ -720,11 +728,11 @@ def compute_insights(stale_days: int = 30) -> dict:
             )
 
         try:
-            noise_count = db.execute("""
+            noise_count = db.execute(f"""
                 SELECT COUNT(*) FROM (
                     SELECT title, COUNT(*) as cnt
                     FROM knowledge_entries
-                    WHERE confidence < 0.5
+                    WHERE confidence < 0.5 {_nd}
                     GROUP BY title
                     HAVING cnt >= 3
                 )
@@ -811,6 +819,32 @@ def compute_insights(stale_days: int = 30) -> dict:
                     ),
                 }
             )
+
+        # ---- Token budget audit (#397) ----
+        _TOKEN_BUDGET = 100_000
+        try:
+            if "est_tokens" in _ke_cols:
+                total_tokens = db.execute(
+                    f"SELECT COALESCE(SUM(est_tokens), 0) FROM knowledge_entries WHERE est_tokens IS NOT NULL {_nd}"
+                ).fetchone()[0]
+                total_tokens = int(total_tokens or 0)
+                if total_tokens > _TOKEN_BUDGET:
+                    over_pct = round((total_tokens / _TOKEN_BUDGET - 1) * 100, 1)
+                    alerts.append(
+                        {
+                            "id": "token-budget-exceeded",
+                            "title": f"Context pack exceeds token budget ({total_tokens:,} > {_TOKEN_BUDGET:,})",
+                            "severity": "warning",
+                            "detail": (
+                                f"Active entries use {total_tokens:,} est_tokens, "
+                                f"{over_pct:.1f}% over the {_TOKEN_BUDGET:,}-token budget. "
+                                "Run knowledge-health.py --evict-candidates to find low-value entries to remove."
+                            ),
+                        }
+                    )
+        except sqlite3.OperationalError:
+            pass
+
     actions = []
     _action_seq = [0]
 
@@ -897,7 +931,7 @@ def compute_insights(stale_days: int = 30) -> dict:
     # ---- Recurring noise titles ----
     recurring_noise = []
     try:
-        noise_rows = db.execute("""
+        noise_rows = db.execute(f"""
             SELECT title,
                    CASE
                        WHEN COUNT(DISTINCT category) = 1 THEN MIN(category)
@@ -906,7 +940,7 @@ def compute_insights(stale_days: int = 30) -> dict:
                    COUNT(*) as entry_count,
                    AVG(confidence) as avg_confidence
             FROM knowledge_entries
-            WHERE confidence < 0.5
+            WHERE confidence < 0.5 {_nd}
             GROUP BY title
             HAVING entry_count >= 2
             ORDER BY entry_count DESC, avg_confidence ASC, title ASC
@@ -928,9 +962,9 @@ def compute_insights(stale_days: int = 30) -> dict:
     hot_files = []
     try:
         file_refs: dict = {}
-        rows = db.execute("""
+        rows = db.execute(f"""
             SELECT affected_files FROM knowledge_entries
-            WHERE affected_files IS NOT NULL AND affected_files != ''
+            WHERE affected_files IS NOT NULL AND affected_files != '' {_nd}
         """).fetchall()
         for row in rows:
             raw = row[0]
@@ -957,11 +991,11 @@ def compute_insights(stale_days: int = 30) -> dict:
     for cat in ("mistake", "pattern", "decision", "tool"):
         try:
             cat_rows = db.execute(
-                """
+                f"""
                 SELECT id, title, confidence, occurrence_count,
                        last_seen, content, session_id
                 FROM knowledge_entries
-                WHERE category = ?
+                WHERE category = ? {_nd}
                 ORDER BY confidence DESC, occurrence_count DESC
                 LIMIT 10
             """,
@@ -1424,6 +1458,113 @@ def format_sync_report(stats: dict) -> str:
     return "\n".join(lines)
 
 
+def compute_confidence_decay(stale_days: int = 90, decay_rate: float = 0.05) -> dict:
+    """Apply confidence decay to entries not recalled recently (#400).
+
+    Reduces confidence by decay_rate for active entries whose last_seen is
+    older than stale_days. Operates only when the decay is non-trivial (>0).
+    Returns a summary with decayed_count and list of updated entries.
+    """
+    if decay_rate <= 0:
+        return {"decayed_count": 0, "entries": []}
+
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - stale_days * 86400))
+    try:
+        rows = db.execute(
+            f"""
+            SELECT id, title, confidence
+            FROM knowledge_entries
+            WHERE last_seen < ? AND last_seen IS NOT NULL AND last_seen != ''
+              AND confidence > 0 {_nd}
+            ORDER BY confidence ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        db.close()
+        return {"decayed_count": 0, "entries": []}
+
+    updated = []
+    for row in rows:
+        new_conf = max(0.0, round(float(row["confidence"] or 0) - decay_rate, 4))
+        try:
+            db.execute(
+                "UPDATE knowledge_entries SET confidence = ? WHERE id = ?",
+                (new_conf, row["id"]),
+            )
+            updated.append(
+                {
+                    "id": int(row["id"]),
+                    "title": str(row["title"] or ""),
+                    "old_confidence": float(row["confidence"] or 0),
+                    "new_confidence": new_conf,
+                }
+            )
+        except sqlite3.OperationalError:
+            pass
+    db.commit()
+    db.close()
+    return {"decayed_count": len(updated), "entries": updated}
+
+
+def compute_eviction_candidates(limit: int = 20) -> dict:
+    """Score active entries and return low-value eviction candidates (#401).
+
+    Score = confidence * (1 / max(age_days, 1)) * occurrence_count
+    Lower score = more evictable. Returns the bottom `limit` entries.
+    """
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+    now_ts = time.time()
+    try:
+        rows = db.execute(
+            f"""
+            SELECT id, title, category, confidence, occurrence_count, first_seen, last_seen
+            FROM knowledge_entries
+            WHERE 1=1 {_nd}
+            ORDER BY id ASC
+            """,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        db.close()
+        return {"candidates": []}
+
+    scored = []
+    for row in rows:
+        try:
+            first = row["first_seen"] or ""
+            if first:
+                age_days = max((now_ts - time.mktime(time.strptime(first[:10], "%Y-%m-%d"))) / 86400, 1)
+            else:
+                age_days = 1
+            conf = float(row["confidence"] or 0.0)
+            occ = max(int(row["occurrence_count"] or 1), 1)
+            score = conf * (1.0 / age_days) * occ
+            scored.append(
+                {
+                    "id": int(row["id"]),
+                    "title": str(row["title"] or ""),
+                    "category": str(row["category"] or ""),
+                    "confidence": round(conf, 4),
+                    "occurrence_count": occ,
+                    "age_days": round(age_days, 1),
+                    "eviction_score": round(score, 6),
+                }
+            )
+        except (ValueError, OverflowError, KeyError):
+            pass
+
+    db.close()
+    scored.sort(key=lambda x: x["eviction_score"])
+    return {"candidates": scored[:limit]}
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1445,6 +1586,40 @@ def main():
             print(json.dumps(sync_stats, indent=2, ensure_ascii=False))
         else:
             print(format_sync_report(sync_stats))
+        return
+
+    if "--decay-confidence" in args:
+        stale_days = 90
+        decay_rate = 0.05
+        if "--stale" in args:
+            idx = args.index("--stale")
+            stale_days = int(args[idx + 1]) if idx + 1 < len(args) else 90
+        if "--decay-rate" in args:
+            idx = args.index("--decay-rate")
+            decay_rate = float(args[idx + 1]) if idx + 1 < len(args) else 0.05
+        result = compute_confidence_decay(stale_days=stale_days, decay_rate=decay_rate)
+        if "--json" in args:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            count = result["decayed_count"]
+            print(f"Confidence decay applied: {count} entries updated (stale_days={stale_days}, rate={decay_rate})")
+        return
+
+    if "--evict-candidates" in args:
+        limit = 20
+        if "--limit" in args:
+            idx = args.index("--limit")
+            limit = int(args[idx + 1]) if idx + 1 < len(args) else 20
+        result = compute_eviction_candidates(limit=limit)
+        if "--json" in args:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            candidates = result["candidates"]
+            print(f"Eviction candidates ({len(candidates)}):")
+            for c in candidates:
+                print(
+                    f"  [{c['id']}] {c['title'][:60]}  score={c['eviction_score']:.6f}  conf={c['confidence']}  age={c['age_days']}d"
+                )
         return
 
     if "--insights" in args:

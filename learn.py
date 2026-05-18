@@ -95,14 +95,103 @@ _WING_RULES = [
             "sns",
             "websocket",
             "nefoap",
+            "database",
+            "sql",
+            "sqlite",
+            "postgres",
+            "mysql",
+            "mongo",
+            "redis",
+            "rest",
+            "graphql",
+            "http",
+            "webhook",
+            "grpc",
+            "microservice",
+            "endpoint",
+            "server",
         },
         "backend",
     ),
-    ({"expo", "react", "react-native", "screen", "component", "css", "ui", "navigation", "hook"}, "frontend"),
-    ({"jest", "playwright", "e2e", "test", "testing", "coverage"}, "testing"),
-    ({"vpc", "cloudwatch", "cdk", "cloudformation", "infrastructure", "deploy", "pipeline"}, "infrastructure"),
-    ({"git", "ci", "cd", "docker", "devops", "proxy", "tls", "npm", "yarn", "package-manager"}, "devops"),
-    ({"typescript", "javascript", "eslint", "prettier", "i18n", "mermaid", "openapi"}, "shared"),
+    (
+        {
+            "expo",
+            "react",
+            "react-native",
+            "screen",
+            "component",
+            "css",
+            "ui",
+            "navigation",
+            "hook",
+            "vue",
+            "angular",
+            "svelte",
+            "tailwind",
+            "nextjs",
+            "nuxt",
+        },
+        "frontend",
+    ),
+    (
+        {"jest", "playwright", "e2e", "test", "testing", "coverage", "pytest", "vitest", "unittest", "mock", "fixture"},
+        "testing",
+    ),
+    (
+        {
+            "vpc",
+            "cloudwatch",
+            "cdk",
+            "cloudformation",
+            "infrastructure",
+            "deploy",
+            "pipeline",
+            "kubernetes",
+            "helm",
+            "terraform",
+            "ansible",
+            "k8s",
+        },
+        "infrastructure",
+    ),
+    (
+        {
+            "git",
+            "ci",
+            "cd",
+            "docker",
+            "devops",
+            "proxy",
+            "tls",
+            "npm",
+            "yarn",
+            "package-manager",
+            "github-actions",
+            "gitlab-ci",
+            "makefile",
+            "build",
+        },
+        "devops",
+    ),
+    (
+        {
+            "typescript",
+            "javascript",
+            "eslint",
+            "prettier",
+            "i18n",
+            "mermaid",
+            "openapi",
+            "python",
+            "rust",
+            "golang",
+            "java",
+            "kotlin",
+            "swift",
+        },
+        "shared",
+    ),
+    ({"knowledge", "memory", "briefing", "learn", "recall", "extract", "session", "sk", "session-knowledge"}, "memory"),
 ]
 
 # Room auto-detection rules: tag/title patterns → room
@@ -122,6 +211,16 @@ _ROOM_RULES = [
     ({"playwright", "e2e"}, "e2e"),
     ({"excel", "spreadsheet", "tsv", "csv"}, "data-export"),
     ({"cdk", "cloudformation", "stack"}, "cdk"),
+    ({"sqlite", "postgres", "mysql", "mongo", "redis", "database", "sql"}, "database"),
+    ({"rest", "graphql", "api", "endpoint", "http", "webhook"}, "api"),
+    ({"kubernetes", "helm", "k8s", "pod", "deployment"}, "kubernetes"),
+    ({"knowledge", "memory", "briefing", "learn", "recall"}, "memory"),
+    ({"session", "session-knowledge", "sk"}, "session"),
+    ({"docker", "dockerfile", "container", "compose"}, "docker"),
+    ({"github-actions", "gitlab-ci", "pipeline", "ci", "cd"}, "ci-cd"),
+    ({"typescript", "javascript", "eslint", "prettier"}, "js-ts"),
+    ({"python", "pip", "venv", "conda"}, "python"),
+    ({"rust", "cargo", "tokio", "wasm"}, "rust"),
 ]
 
 
@@ -749,6 +848,9 @@ def add_entry(
     valence: str = "",
     intensity: float = None,
     priority: str = "",
+    agent_id: str = "",
+    certainty: str = "",
+    caveats: str = "",
 ) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
 
@@ -774,6 +876,9 @@ def add_entry(
     has_error_lifecycle_columns = all(c in ke_columns for c in ("error_type", "root_cause", "severity", "fix_steps"))
     has_valence_intensity_columns = all(c in ke_columns for c in ("valence", "intensity"))
     has_priority_column = "priority" in ke_columns
+    has_agent_id_column = "agent_id" in ke_columns
+    has_epistemic_humility_columns = all(c in ke_columns for c in ("certainty", "caveats"))
+    has_deleted_at_column = "deleted_at" in ke_columns
     if code_location_set and not has_code_location_columns:
         print(
             "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
@@ -831,7 +936,7 @@ def add_entry(
 
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
-    # Check for existing entry with same title in same category
+    # Check for existing entry with same title in same category (exclude soft-deleted rows)
     existing_sql = """
         SELECT id, occurrence_count, content, session_id
     """
@@ -842,6 +947,10 @@ def add_entry(
     existing_sql += """
         FROM knowledge_entries
         WHERE category = ? AND title = ?
+    """
+    if has_deleted_at_column:
+        existing_sql += " AND deleted_at IS NULL"
+    existing_sql += """
         ORDER BY confidence DESC LIMIT 1
     """
     existing = db.execute(existing_sql, (category, title)).fetchone()
@@ -920,6 +1029,15 @@ def add_entry(
         if has_priority_column and priority:
             update_sql += " priority = CASE WHEN ? != '' THEN ? ELSE priority END,"
             update_params.extend([priority, priority])
+        if has_agent_id_column and agent_id:
+            update_sql += " agent_id = CASE WHEN ? != '' THEN ? ELSE agent_id END,"
+            update_params.extend([agent_id, agent_id])
+        if has_epistemic_humility_columns and (certainty or caveats):
+            update_sql += (
+                " certainty = CASE WHEN ? != '' THEN ? ELSE certainty END,"
+                " caveats = CASE WHEN ? != '' THEN ? ELSE caveats END,"
+            )
+            update_params.extend([certainty or "", certainty or "", caveats or "", caveats or ""])
         update_sql += " est_tokens = ? WHERE id = ?"
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
@@ -1097,6 +1215,18 @@ def add_entry(
             db.execute(
                 "UPDATE knowledge_entries SET priority = ? WHERE id = ?",
                 (priority, entry_id),
+            )
+        # Set agent_id column if available (#351)
+        if has_agent_id_column and agent_id:
+            db.execute(
+                "UPDATE knowledge_entries SET agent_id = ? WHERE id = ?",
+                (agent_id, entry_id),
+            )
+        # Set epistemic humility columns if available (#402)
+        if has_epistemic_humility_columns and (certainty or caveats):
+            db.execute(
+                "UPDATE knowledge_entries SET certainty = ?, caveats = ? WHERE id = ?",
+                (certainty or "", caveats or "", entry_id),
             )
         if has_stable_id_column:
             inserted_stable_id = db.execute(
@@ -1305,15 +1435,18 @@ def import_from_file(filepath: str) -> int:
 
 
 def list_recent(limit: int = 10):
-    """List recently added/updated knowledge entries."""
+    """List recently added/updated knowledge entries (excludes soft-deleted)."""
     db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in ke_columns else ""
 
     print(f"\nRecent Knowledge Entries (last {limit})\n")
     rows = db.execute(
-        """
+        f"""
         SELECT id, category, title, confidence, occurrence_count,
                last_seen, session_id, est_tokens
         FROM knowledge_entries
+        WHERE 1=1 {_nd}
         ORDER BY last_seen DESC
         LIMIT ?
     """,
@@ -1442,6 +1575,32 @@ def add_relation(subject: str, predicate: str, obj: str, session_id: str = None)
     db.close()
 
 
+def soft_delete_entry(entry_id: int) -> bool:
+    """Soft-delete a knowledge entry by setting deleted_at timestamp.
+
+    Returns True if the entry was found and marked deleted, False otherwise.
+    The entry is not physically removed from the DB and can be restored by
+    clearing the deleted_at column.  All read paths filter WHERE deleted_at IS NULL.
+    """
+    db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    if "deleted_at" not in ke_columns:
+        print("  ⚠ DB schema missing deleted_at column. Run migrate.py to enable soft-delete.", file=sys.stderr)
+        db.close()
+        return False
+    row = db.execute("SELECT id, title, category FROM knowledge_entries WHERE id = ?", (entry_id,)).fetchone()
+    if not row:
+        print(f"  ⚠ Entry #{entry_id} not found.", file=sys.stderr)
+        db.close()
+        return False
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute("UPDATE knowledge_entries SET deleted_at = ? WHERE id = ?", (now, entry_id))
+    db.commit()
+    db.close()
+    print(f"  🗑 Soft-deleted #{entry_id} [{row['category']}] {row['title'][:60]}")
+    return True
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1505,10 +1664,25 @@ def main():
         add_relation(positional[0], positional[1], positional[2])
         return
 
+    # Handle --soft-delete command (#387)
+    if "--soft-delete" in args:
+        idx = args.index("--soft-delete")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        try:
+            entry_id = int(raw_id)
+        except (ValueError, TypeError):
+            print(f"Error: --soft-delete requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        result = soft_delete_entry(entry_id)
+        if not result:
+            sys.exit(1)
+        return
+
     # Parse category flag
     category = None
     for flag, cat in [
         ("--mistake", "mistake"),
+        ("--error-pattern", "mistake"),  # #403 shorthand for structured error mistakes
         ("--pattern", "pattern"),
         ("--decision", "decision"),
         ("--tool", "tool"),
@@ -1547,6 +1721,9 @@ def main():
     valence = ""
     intensity = None
     priority = ""
+    agent_id = ""
+    certainty = ""
+    caveats = ""
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -1643,6 +1820,26 @@ def main():
             sys.exit(1)
         priority = raw_priority
 
+    if "--agent-id" in args:
+        idx = args.index("--agent-id")
+        agent_id = args[idx + 1] if idx + 1 < len(args) else ""
+
+    if "--certainty" in args:
+        idx = args.index("--certainty")
+        raw_certainty = args[idx + 1] if idx + 1 < len(args) else ""
+        _valid_certainties = ("high", "medium", "low", "uncertain", "")
+        if raw_certainty not in _valid_certainties:
+            print(
+                f"Error: --certainty must be one of: high, medium, low, uncertain (got {raw_certainty!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        certainty = raw_certainty
+
+    if "--caveats" in args:
+        idx = args.index("--caveats")
+        caveats = args[idx + 1] if idx + 1 < len(args) else ""
+
     # Collect all --fact and --file values (repeatable flags)
     for i, a in enumerate(args):
         if a == "--fact" and i + 1 < len(args):
@@ -1657,7 +1854,16 @@ def main():
         if skip_next:
             skip_next = False
             continue
-        if a in ("--mistake", "--pattern", "--decision", "--tool", "--feature", "--refactor", "--discovery"):
+        if a in (
+            "--mistake",
+            "--error-pattern",
+            "--pattern",
+            "--decision",
+            "--tool",
+            "--feature",
+            "--refactor",
+            "--discovery",
+        ):
             continue
         if a in (
             "--tags",
@@ -1677,6 +1883,9 @@ def main():
             "--valence",
             "--intensity",
             "--priority",
+            "--agent-id",
+            "--certainty",
+            "--caveats",
             "--cerebrum-output",
             "--cerebrum-sections",
         ):
@@ -1753,6 +1962,9 @@ def main():
         valence=valence,
         intensity=intensity,
         priority=priority,
+        agent_id=agent_id,
+        certainty=certainty,
+        caveats=caveats,
     )
 
     if entry_id >= 0 and category == "pattern":

@@ -182,14 +182,10 @@ def run_all_tests() -> int:
         statuses = [r[0] for r in results if r is not None]
         bodies = [r[1] for r in results if r is not None]
         accepted_counts = sum(
-            1
-            for body in bodies
-            if isinstance(body, dict) and body.get("accepted_txn_ids") == ["txn-004"]
+            1 for body in bodies if isinstance(body, dict) and body.get("accepted_txn_ids") == ["txn-004"]
         )
         duplicate_counts = sum(
-            1
-            for body in bodies
-            if isinstance(body, dict) and body.get("duplicate_txn_ids") == ["txn-004"]
+            1 for body in bodies if isinstance(body, dict) and body.get("duplicate_txn_ids") == ["txn-004"]
         )
         test("T5a: both concurrent requests returned", len(results) == 2, str(results))
         test("T5b: concurrent duplicate never 500", statuses == [200, 200], str(results))
@@ -220,7 +216,9 @@ def run_all_tests() -> int:
             {"replica_id": "replica-a", "txns": [mismatched]},
         )
         test("T7a: mismatched replica rejected", status == 400, str(data))
-        test("T7b: mismatch error code", isinstance(data, dict) and data.get("error") == "replica_id_mismatch", str(data))
+        test(
+            "T7b: mismatch error code", isinstance(data, dict) and data.get("error") == "replica_id_mismatch", str(data)
+        )
         q5 = urllib.parse.urlencode({"replica_id": "replica-a", "after": "", "limit": "100"})
         status, data = _request(host, port, "GET", f"/sync/pull?{q5}")
         ids_after_mismatch = [t.get("txn_id") for t in data.get("txns", [])]
@@ -261,7 +259,9 @@ def run_all_tests() -> int:
             {"replica_id": "replica-a", "txns": [valid_before_failure, failing_after_validation]},
         )
         test("T9a: batch insert failure returns 500", status == 500, str(data))
-        test("T9b: insert_failed error code", isinstance(data, dict) and data.get("error") == "insert_failed", str(data))
+        test(
+            "T9b: insert_failed error code", isinstance(data, dict) and data.get("error") == "insert_failed", str(data)
+        )
         q7 = urllib.parse.urlencode({"replica_id": "replica-a", "after": "", "limit": "300"})
         status, data = _request(host, port, "GET", f"/sync/pull?{q7}")
         ids_after_insert_failure = [t.get("txn_id") for t in data.get("txns", [])]

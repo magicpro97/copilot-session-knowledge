@@ -259,8 +259,18 @@ fn run_providers() -> ExitCode {
 
 // ── --search ────────────────────────────────────────────────────────────
 
-/// FTS5-based hybrid search.  Includes stored-vector cosine similarity when
-/// embeddings have been pre-built.  No HTTP calls.
+/// Hybrid search: FTS5 + stored-vector cosine + TF-IDF fallback.
+///
+/// ## Semantic query vector (#360)
+/// With the `native-embed` feature enabled, the query string is embedded via
+/// the configured provider (one-shot HTTP call) and the resulting vector is
+/// passed to `run_hybrid_search` for stored-vector cosine reranking.  When
+/// no provider is configured (or the key is absent / the call fails), the
+/// command falls back gracefully to FTS + TF-IDF — no error exit.
+///
+/// ## Failure surfacing (#366)
+/// If neither a query vector nor a TF-IDF model is available, an informative
+/// message is printed so users know how to improve recall.
 fn run_search(query: &str, limit: usize) -> ExitCode {
     let db = match KnowledgeDb::open() {
         Ok(db) => db,
@@ -270,15 +280,77 @@ fn run_search(query: &str, limit: usize) -> ExitCode {
         }
     };
 
-    // No query vector: FTS-only path (always works without network)
-    let results = run_hybrid_search(&db.conn, query, None, limit);
+    // ── #360: try to compute a live query embedding ───────────────────────
+    // When native-embed is compiled in and a provider with a key is
+    // configured, embed the query for vector-augmented hybrid search.
+    // Any failure is soft: fall through to FTS-only path.
+    #[cfg(feature = "native-embed")]
+    let query_vec: Option<Vec<f32>> = {
+        use crate::embeddings::config::{get_api_key, load_config, resolve_provider};
+        use crate::embeddings::http::call_embedding_api;
+
+        let cfg = load_config();
+        if let Some((_name, prov)) = resolve_provider(&cfg) {
+            let key = get_api_key(&prov);
+            if !key.is_empty() {
+                match call_embedding_api(&[query.to_string()], &prov, 1) {
+                    Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
+                    Ok(_) => None,
+                    Err(e) => {
+                        // #366: surface the failure as a warning, not a hard error.
+                        eprintln!(
+                            "sk index embed: semantic query failed ({e}) — falling back to FTS+TF-IDF"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    #[cfg(not(feature = "native-embed"))]
+    let query_vec: Option<Vec<f32>> = None;
+
+    let results = run_hybrid_search(&db.conn, query, query_vec.as_deref(), limit);
 
     if results.is_empty() {
+        // #366: inform users how to improve recall when results are empty.
+        let has_tfidf = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM tfidf_model WHERE id=1 AND doc_count>0",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        let has_embeddings = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0)
+            > 0;
         println!("No results for: {query}");
+        if !has_tfidf && !has_embeddings {
+            eprintln!("  Tip: run 'sk index embed --build' to enable semantic search.");
+        }
         return ExitCode::SUCCESS;
     }
 
-    println!("\nHybrid search: {} results for '{query}'\n", results.len());
+    let search_mode = if query_vec.is_some() {
+        "semantic+FTS"
+    } else {
+        "FTS+TF-IDF"
+    };
+    println!(
+        "\nHybrid search ({search_mode}): {} results for '{query}'\n",
+        results.len()
+    );
     for (i, r) in results.iter().enumerate() {
         let sid_short = if r.session_id.len() > 8 {
             &r.session_id[..8]

@@ -1582,6 +1582,206 @@ test(
     "Integrity" in _il_report or "dangling" in _il_report.lower() or "Dangling" in _il_report,
 )
 
+# ===========================================================================
+# Soft-delete filtering (#387)
+# ===========================================================================
+
+section("soft-delete filtering in compute_health and compute_insights")
+
+_KE_SCHEMA_WITH_SOFTDELETE = _KE_SCHEMA.rstrip().rstrip(")").rstrip() + ",\n    deleted_at TEXT DEFAULT NULL\n)"
+
+uri_sd = _new_uri()
+db_sd = sqlite3.connect(uri_sd, uri=True)
+db_sd.row_factory = sqlite3.Row
+db_sd.execute(_KE_SCHEMA_WITH_SOFTDELETE)
+db_sd.execute(_SCHEMA_VER_SCHEMA)
+db_sd.execute(_RELATIONS_SCHEMA)
+db_sd.execute(_ENTITY_REL_SCHEMA)
+db_sd.execute(_EMBEDDINGS_SCHEMA)
+# Insert 3 active entries and 1 soft-deleted
+db_sd.execute(
+    "INSERT INTO knowledge_entries (category, title, confidence, first_seen, last_seen, deleted_at)"
+    " VALUES ('mistake', 'active1', 0.6, '2025-01-01', '2025-01-01', NULL)"
+)
+db_sd.execute(
+    "INSERT INTO knowledge_entries (category, title, confidence, first_seen, last_seen, deleted_at)"
+    " VALUES ('pattern', 'active2', 0.8, '2025-01-01', '2025-01-01', NULL)"
+)
+db_sd.execute(
+    "INSERT INTO knowledge_entries (category, title, confidence, first_seen, last_seen, deleted_at)"
+    " VALUES ('decision', 'active3', 0.7, '2025-01-01', '2025-01-01', NULL)"
+)
+db_sd.execute(
+    "INSERT INTO knowledge_entries (category, title, confidence, first_seen, last_seen, deleted_at)"
+    " VALUES ('mistake', 'deleted_entry', 0.9, '2025-01-01', '2025-01-01', '2025-06-01')"
+)
+db_sd.commit()
+kh.get_db = _get_db_factory(uri_sd)
+h_sd = kh.compute_health()
+kh.get_db = orig_get_db
+db_sd.close()
+
+test("compute_health excludes soft-deleted entries from total", h_sd["total"] == 3, f"total={h_sd['total']}")
+test("compute_health score is still a number", isinstance(h_sd["score"], (int, float)))
+
+# ===========================================================================
+# Token budget audit (#397)
+# ===========================================================================
+
+section("token budget audit in compute_insights")
+
+uri_tb = _new_uri()
+db_tb = _make_db(uri_tb)
+# Insert entries with large est_tokens sum (>100000)
+_insert_entries(
+    db_tb,
+    [{"category": "mistake", "title": f"big{i}", "confidence": 0.5, "est_tokens": 12000} for i in range(10)],
+)
+# Update est_tokens via raw SQL since _insert_entries doesn't handle it
+db_tb.execute("UPDATE knowledge_entries SET est_tokens = 12000")
+db_tb.commit()
+kh.get_db = _get_db_factory(uri_tb)
+ins_tb = kh.compute_insights()
+kh.get_db = orig_get_db
+db_tb.close()
+
+_tb_alert_ids = {a["id"] for a in ins_tb.get("quality_alerts", [])}
+test(
+    "token-budget-exceeded alert fires when est_tokens sum > 100000",
+    "token-budget-exceeded" in _tb_alert_ids,
+    f"alerts={_tb_alert_ids}",
+)
+
+# Small DB should NOT trigger token budget alert
+uri_tb_small = _new_uri()
+db_tb_small = _make_db(uri_tb_small)
+_insert_entries(db_tb_small, [{"category": "mistake", "title": "tiny", "confidence": 0.5}])
+db_tb_small.execute("UPDATE knowledge_entries SET est_tokens = 100")
+db_tb_small.commit()
+kh.get_db = _get_db_factory(uri_tb_small)
+ins_tb_small = kh.compute_insights()
+kh.get_db = orig_get_db
+db_tb_small.close()
+_tb_small_alert_ids = {a["id"] for a in ins_tb_small.get("quality_alerts", [])}
+test(
+    "token-budget-exceeded alert absent when est_tokens sum small",
+    "token-budget-exceeded" not in _tb_small_alert_ids,
+)
+
+# ===========================================================================
+# compute_confidence_decay (#400)
+# ===========================================================================
+
+section("compute_confidence_decay function")
+
+uri_cd = _new_uri()
+db_cd = _make_db(uri_cd)
+# Insert one stale entry (old last_seen) and one fresh entry
+_insert_entries(
+    db_cd,
+    [
+        {"category": "mistake", "title": "stale_entry", "confidence": 0.5, "last_seen": "2020-01-01"},
+        {"category": "pattern", "title": "fresh_entry", "confidence": 0.8, "last_seen": "2099-01-01"},
+    ],
+)
+kh.get_db = _get_db_factory(uri_cd)
+result_cd = kh.compute_confidence_decay(stale_days=90, decay_rate=0.05)
+kh.get_db = orig_get_db
+
+test("compute_confidence_decay returns dict", isinstance(result_cd, dict))
+test("compute_confidence_decay has decayed_count", "decayed_count" in result_cd)
+test("compute_confidence_decay has entries list", "entries" in result_cd and isinstance(result_cd["entries"], list))
+test("stale entry was decayed", result_cd["decayed_count"] >= 1, f"count={result_cd['decayed_count']}")
+test(
+    "decayed entry confidence reduced",
+    any(e["new_confidence"] < e["old_confidence"] for e in result_cd["entries"]),
+    f"entries={result_cd['entries']}",
+)
+# Fresh entry (last_seen far in future) should not be decayed
+test(
+    "fresh entry not in decayed list",
+    not any(e["title"] == "fresh_entry" for e in result_cd["entries"]),
+)
+db_cd.close()
+
+# Zero decay_rate should do nothing
+uri_cd0 = _new_uri()
+db_cd0 = _make_db(uri_cd0)
+_insert_entries(db_cd0, [{"category": "mistake", "title": "nodecay", "confidence": 0.5, "last_seen": "2020-01-01"}])
+kh.get_db = _get_db_factory(uri_cd0)
+result_cd0 = kh.compute_confidence_decay(stale_days=90, decay_rate=0.0)
+kh.get_db = orig_get_db
+db_cd0.close()
+test("zero decay_rate returns 0 decayed", result_cd0["decayed_count"] == 0)
+
+# ===========================================================================
+# compute_eviction_candidates (#401)
+# ===========================================================================
+
+section("compute_eviction_candidates function")
+
+uri_ev = _new_uri()
+db_ev = _make_db(uri_ev)
+_insert_entries(
+    db_ev,
+    [
+        # Low-value: old, low confidence, single occurrence
+        {
+            "category": "mistake",
+            "title": "low_value",
+            "confidence": 0.1,
+            "occurrence_count": 1,
+            "first_seen": "2020-01-01",
+        },
+        # High-value: recent, high confidence, many occurrences
+        {
+            "category": "pattern",
+            "title": "high_value",
+            "confidence": 0.95,
+            "occurrence_count": 50,
+            "first_seen": "2025-06-01",
+        },
+        {
+            "category": "pattern",
+            "title": "mid_value",
+            "confidence": 0.6,
+            "occurrence_count": 5,
+            "first_seen": "2024-01-01",
+        },
+    ],
+)
+kh.get_db = _get_db_factory(uri_ev)
+result_ev = kh.compute_eviction_candidates(limit=5)
+kh.get_db = orig_get_db
+db_ev.close()
+
+test("compute_eviction_candidates returns dict", isinstance(result_ev, dict))
+test("eviction result has candidates list", "candidates" in result_ev)
+candidates = result_ev["candidates"]
+test("eviction returns candidates", len(candidates) >= 1)
+test(
+    "lowest-scored candidate is first",
+    candidates[0]["eviction_score"] <= candidates[-1]["eviction_score"] if len(candidates) > 1 else True,
+)
+test("each candidate has id field", all("id" in c for c in candidates))
+test("each candidate has title field", all("title" in c for c in candidates))
+test("each candidate has eviction_score", all("eviction_score" in c for c in candidates))
+test(
+    "low_value entry is top eviction candidate",
+    candidates[0]["title"] == "low_value" if candidates else False,
+    f"top candidate: {candidates[0]['title'] if candidates else 'none'}",
+)
+
+# Limit parameter respected
+uri_ev2 = _new_uri()
+db_ev2 = _make_db(uri_ev2)
+_insert_entries(db_ev2, [{"category": "mistake", "title": f"e{i}", "confidence": 0.5} for i in range(10)])
+kh.get_db = _get_db_factory(uri_ev2)
+result_ev2 = kh.compute_eviction_candidates(limit=3)
+kh.get_db = orig_get_db
+db_ev2.close()
+test("eviction limit parameter respected", len(result_ev2["candidates"]) <= 3)
+
 print(f"\n{'=' * 50}")
 print(f"Results: {_PASS} passed, {_FAIL} failed")
 if _ERRORS:

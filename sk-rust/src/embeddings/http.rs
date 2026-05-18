@@ -63,13 +63,28 @@ pub fn call_embedding_api(
     prov: &ProviderConfig,
     max_retries: u32,
 ) -> Result<Vec<Vec<f32>>, EmbedApiError> {
-    let api_key = get_api_key(prov);
-    let url = format!("{}/embeddings", prov.base_url.trim_end_matches('/'));
-
+    // Build a one-shot client; callers that embed multiple batches should
+    // use `call_embedding_api_with_client` directly via `batch_embed`.
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| EmbedApiError::Network(e.to_string()))?;
+    call_embedding_api_with_client(&client, texts, prov, max_retries)
+}
+
+/// Call an OpenAI-compatible `/embeddings` endpoint using a pre-built client.
+///
+/// This is the inner implementation used by both `call_embedding_api` (which
+/// builds its own one-shot client) and `batch_embed` (which reuses a single
+/// client across all batches, per issue #354).
+pub fn call_embedding_api_with_client(
+    client: &reqwest::blocking::Client,
+    texts: &[String],
+    prov: &ProviderConfig,
+    max_retries: u32,
+) -> Result<Vec<Vec<f32>>, EmbedApiError> {
+    let api_key = get_api_key(prov);
+    let url = format!("{}/embeddings", prov.base_url.trim_end_matches('/'));
 
     let dims_opt: Option<u32> = if prov.dimensions > 0 {
         Some(prov.dimensions)
@@ -120,7 +135,6 @@ pub fn call_embedding_api(
                         EmbedApiError::Other("missing 'data' field in API response".into())
                     })?;
 
-                    // Parse and sort by index to match input order
                     let mut indexed: Vec<(usize, Vec<f32>)> = data
                         .iter()
                         .filter_map(|item| {
@@ -182,7 +196,6 @@ pub fn call_embedding_api(
         }
     }
 
-    // Classify the last error
     if last_err.contains("429") || last_err.contains("Rate limit") {
         Err(EmbedApiError::RateLimit(last_err))
     } else if last_err.contains("Network") || last_err.contains("Connection") {
@@ -198,8 +211,12 @@ pub fn call_embedding_api(
 
 /// Embed texts in batches, respecting the configured batch size.
 ///
-/// Splits `texts` into chunks of `batch_size`, calls `call_embedding_api`
+/// Splits `texts` into chunks of `batch_size`, calls the embedding API
 /// for each chunk, and returns all vectors in input order.
+///
+/// ## Client reuse (#354)
+/// A single `reqwest::blocking::Client` is created once and shared across
+/// all batch calls, avoiding repeated TLS handshake overhead.
 ///
 /// Matches Python's `embed_batch()`:
 /// - Prints `batch N/M (K items)... ✓` progress lines
@@ -209,6 +226,12 @@ pub fn batch_embed(
     prov: &ProviderConfig,
     batch_size: usize,
 ) -> Result<Vec<Vec<f32>>, EmbedApiError> {
+    // #354: build the client once and reuse it across all batches.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| EmbedApiError::Network(e.to_string()))?;
+
     let total = texts.len();
     let effective_batch = batch_size.max(1);
     let num_batches = total.div_ceil(effective_batch);
@@ -223,7 +246,7 @@ pub fn batch_embed(
         let _ = std::io::Write::flush(&mut std::io::stdout());
 
         let chunk_owned: Vec<String> = chunk.to_vec();
-        let vecs = call_embedding_api(&chunk_owned, prov, 3)?;
+        let vecs = call_embedding_api_with_client(&client, &chunk_owned, prov, 3)?;
         all_vecs.extend(vecs);
         println!(" ✓");
 

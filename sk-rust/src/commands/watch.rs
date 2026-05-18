@@ -146,7 +146,7 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
     };
 
     run_daemon_loop(&running, &loop_cfg, || {
-        let age = check_and_index(
+        let (age, state_changed) = check_and_index(
             &mut state,
             &watch_dirs,
             &tools_dir,
@@ -154,7 +154,12 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
             &db_path,
             opts.changed_only,
         );
-        save_watch_state(&state_file, &state);
+        // #353: only persist watch state to disk when files actually changed.
+        // On idle ticks (no new/modified files) the in-memory state is already
+        // up-to-date; writing JSON on every tick burns I/O unnecessarily.
+        if state_changed {
+            save_watch_state(&state_file, &state);
+        }
         age
     });
 
@@ -239,8 +244,10 @@ fn is_watchable(path: &Path) -> bool {
 ///
 /// All indexing is now native Rust; `watch.rs` never spawns Python (wave 20).
 ///
-/// Returns the age (seconds) of the most recently modified file — fed into
-/// the adaptive interval calculation.
+/// Returns `(age, state_changed)` where `age` is the age (seconds) of the
+/// most recently modified file — fed into the adaptive interval calculation —
+/// and `state_changed` is `true` when any files changed (new or modified),
+/// indicating the caller should persist the updated state.
 fn check_and_index(
     state: &mut WatchState,
     watch_dirs: &[PathBuf],
@@ -248,7 +255,7 @@ fn check_and_index(
     session_state_dir: &Path,
     db_path: &Path,
     changed_only: bool,
-) -> Option<u64> {
+) -> (Option<u64>, bool) {
     let current = scan_files(watch_dirs);
 
     // Detect new or changed files (mtime or size changed).
@@ -405,6 +412,10 @@ fn check_and_index(
         state.last_index = Some(chrono::Utc::now().to_rfc3339());
     }
 
+    // #353: record whether any files changed so the caller can skip the
+    // state write on idle ticks (no disk I/O when nothing was modified).
+    let had_changes = !changed.is_empty();
+
     state.signatures = current;
 
     // Return age of most recently modified file for adaptive intervals.
@@ -412,11 +423,12 @@ fn check_and_index(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    state
+    let age = state
         .signatures
         .values()
         .map(|&(mtime, _)| now_secs.saturating_sub(mtime))
-        .min()
+        .min();
+    (age, had_changes)
 }
 
 // ── State persistence ─────────────────────────────────────────────────────────

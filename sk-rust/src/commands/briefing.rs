@@ -3,7 +3,7 @@ use std::process::{Command, ExitCode};
 use crate::commands::fallback::run_fallback;
 use crate::db::connection::KnowledgeDb;
 use crate::db::fts::{
-    sanitize_fts_query, search_by_wing_room, search_fts, search_recent_by_category,
+    sanitize_fts_query, search_by_wing_room, search_fts_filtered, search_recent_by_category,
     search_top_by_category, KnowledgeEntry,
 };
 
@@ -105,18 +105,10 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
             if fts_query == "\"\"" || (wing.is_none() && room.is_none() && fts_query.is_empty()) {
                 // No FTS query — use direct wing/room filter
                 search_by_wing_room(&db.conn, wing, room, cat, limit)
-            } else if wing.is_some() || room.is_some() {
-                // FTS + wing/room: search FTS then filter in memory by wing/room
-                let fts_results = search_fts(&db.conn, &fts_query, cat, limit * 2);
-                fts_results
-                    .into_iter()
-                    .filter(|e| {
-                        wing.map_or(true, |w| e.wing == w) && room.map_or(true, |r| e.room == r)
-                    })
-                    .take(limit)
-                    .collect()
             } else {
-                search_fts(&db.conn, &fts_query, cat, limit)
+                // #378: push wing/room into SQL rather than filtering in memory,
+                // so the DB engine can use indexes and we avoid over-fetching.
+                search_fts_filtered(&db.conn, &fts_query, cat, wing, room, limit)
             };
 
         if entries.is_empty() {

@@ -38,17 +38,47 @@ pub fn deserialize_vector(blob: &[u8]) -> Vec<f32> {
 ///
 /// Returns 0.0 for zero-length vectors, zero-norm vectors, or mismatched lengths.
 /// Mirrors Python's `cosine_similarity_vectors()` in embed.py.
+///
+/// ## Optimisation (#359)
+/// Uses a single pass over both vectors (computing dot, ‖a‖², ‖b‖² together)
+/// with 4-wide loop unrolling to encourage the compiler's auto-vectoriser.
+/// The scalar tail handles any remaining elements, giving a pure-Rust scalar
+/// fallback that is correct on all targets.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
+
+    let n = a.len();
+    let mut dot = 0.0f32;
+    let mut norm_a_sq = 0.0f32;
+    let mut norm_b_sq = 0.0f32;
+
+    // 4-wide unrolled inner loop — single pass, no separate norm sweeps.
+    let chunks = n / 4;
+    for i in 0..chunks {
+        let base = i * 4;
+        // SAFETY: base + 3 < n because chunks = n/4 and base = i*4 ≤ (n/4-1)*4 = n - 4
+        let (a0, a1, a2, a3) = (a[base], a[base + 1], a[base + 2], a[base + 3]);
+        let (b0, b1, b2, b3) = (b[base], b[base + 1], b[base + 2], b[base + 3]);
+        dot += a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
+        norm_a_sq += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3;
+        norm_b_sq += b0 * b0 + b1 * b1 + b2 * b2 + b3 * b3;
+    }
+
+    // Scalar tail for remainder elements.
+    let tail_start = chunks * 4;
+    for i in tail_start..n {
+        let (ai, bi) = (a[i], b[i]);
+        dot += ai * bi;
+        norm_a_sq += ai * ai;
+        norm_b_sq += bi * bi;
+    }
+
+    if norm_a_sq == 0.0 || norm_b_sq == 0.0 {
         return 0.0;
     }
-    dot / (norm_a * norm_b)
+    dot / (norm_a_sq.sqrt() * norm_b_sq.sqrt())
 }
 
 // ── Schema ─────────────────────────────────────────────────────────────

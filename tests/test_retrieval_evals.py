@@ -1879,6 +1879,135 @@ def test_briefing_semantic_rewritten_query() -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def test_agent_id_and_epistemic_humility_schema():
+    """Tests for agent_id and epistemic humility (certainty/caveats) schema awareness (#351, #402)."""
+    print("\n--- test_agent_id_and_epistemic_humility_schema ---")
+
+    # DB with agent_id, certainty, caveats columns (v27/v29 schema)
+    _EXTENDED_KE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        document_id INTEGER,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        tags TEXT DEFAULT '',
+        confidence REAL DEFAULT 1.0,
+        occurrence_count INTEGER DEFAULT 1,
+        first_seen TEXT,
+        last_seen TEXT,
+        source TEXT DEFAULT 'copilot',
+        topic_key TEXT,
+        revision_count INTEGER DEFAULT 1,
+        content_hash TEXT,
+        wing TEXT DEFAULT '',
+        room TEXT DEFAULT '',
+        facts TEXT DEFAULT '[]',
+        est_tokens INTEGER DEFAULT 0,
+        task_id TEXT DEFAULT '',
+        affected_files TEXT DEFAULT '[]',
+        agent_id TEXT DEFAULT '',
+        certainty TEXT DEFAULT '',
+        caveats TEXT DEFAULT ''
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+        title, content, tags, category, wing, room, facts
+    );
+    CREATE TABLE IF NOT EXISTS entity_relations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL,
+        noted_at TEXT, session_id TEXT,
+        UNIQUE(subject, predicate, object)
+    );
+    CREATE TABLE IF NOT EXISTS knowledge_relations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        relation_type TEXT NOT NULL,
+        confidence REAL DEFAULT 0.5
+    );
+    INSERT OR IGNORE INTO sessions (id, path, indexed_at)
+    VALUES ('re-session-001', '/test/retrieval-evals', '2024-01-01T00:00:00');
+    """
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_path = tf.name
+
+    try:
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        # sessions table needed for the FK
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY, path TEXT NOT NULL,
+                summary TEXT DEFAULT '', total_checkpoints INTEGER DEFAULT 0,
+                total_research INTEGER DEFAULT 0, total_files INTEGER DEFAULT 0,
+                has_plan INTEGER DEFAULT 0, source TEXT DEFAULT 'copilot', indexed_at TEXT
+            )
+        """)
+        db.executescript(_EXTENDED_KE_SCHEMA)
+        db.commit()
+
+        # Insert an entry with agent_id and epistemic humility fields
+        db.execute(
+            """
+            INSERT INTO knowledge_entries
+                (session_id, category, title, content, agent_id, certainty, caveats,
+                 wing, confidence, tags, first_seen, last_seen)
+            VALUES ('re-session-001', 'pattern', 'epistemic test', 'test content',
+                    'copilot-sonnet', 'high', 'review before prod', 'backend', 0.9, '', '2024-01-01', '2024-01-01')
+            """
+        )
+        rowid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute(
+            "INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts) VALUES (?, ?, ?, ?, ?, ?, '', '[]')",
+            (rowid, "epistemic test", "test content", "", "pattern", "backend"),
+        )
+        db.commit()
+
+        # Verify round-trip: agent_id, certainty, caveats stored correctly
+        row = db.execute("SELECT agent_id, certainty, caveats FROM knowledge_entries WHERE id = ?", (rowid,)).fetchone()
+        test("agent_id stored correctly", row["agent_id"] == "copilot-sonnet", f"got {row['agent_id']!r}")
+        test("certainty stored correctly", row["certainty"] == "high", f"got {row['certainty']!r}")
+        test("caveats stored correctly", row["caveats"] == "review before prod", f"got {row['caveats']!r}")
+
+        # Verify querying by agent_id filters correctly
+        rows_by_agent = db.execute(
+            "SELECT id, title FROM knowledge_entries WHERE agent_id = 'copilot-sonnet'"
+        ).fetchall()
+        test("agent_id filter returns entry", len(rows_by_agent) >= 1)
+        test(
+            "agent_id filter returns correct title",
+            any(r["title"] == "epistemic test" for r in rows_by_agent),
+        )
+
+        # Insert entry with different agent; verify isolation
+        db.execute(
+            """
+            INSERT INTO knowledge_entries
+                (session_id, category, title, content, agent_id, certainty, caveats,
+                 wing, confidence, tags, first_seen, last_seen)
+            VALUES ('re-session-001', 'mistake', 'other agent', 'other content',
+                    'copilot-haiku', 'low', '', 'backend', 0.5, '', '2024-01-01', '2024-01-01')
+            """
+        )
+        db.commit()
+        rows_sonnet = db.execute("SELECT id FROM knowledge_entries WHERE agent_id = 'copilot-sonnet'").fetchall()
+        rows_haiku = db.execute("SELECT id FROM knowledge_entries WHERE agent_id = 'copilot-haiku'").fetchall()
+        test("agent_id filter is exclusive (sonnet only)", len(rows_sonnet) == 1)
+        test("agent_id filter is exclusive (haiku only)", len(rows_haiku) == 1)
+
+        db.close()
+    finally:
+        try:
+            import os as _os
+
+            _os.unlink(db_path)
+        except OSError:
+            pass
+
+
 def main() -> int:
     print("=" * 60)
     print("test_retrieval_evals.py — golden-query regression harness")
@@ -1902,6 +2031,8 @@ def main() -> int:
     test_status_note_suppression_universal()  # #377
     test_no_hit_insights()  # #380
     test_briefing_semantic_rewritten_query()  # #369 briefing side
+    # Wave 2b: agent metadata / epistemic humility
+    test_agent_id_and_epistemic_humility_schema()  # #351 #402
 
     print()
     print("=" * 60)

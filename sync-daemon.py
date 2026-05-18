@@ -59,6 +59,8 @@ SYNC_COMPACTION_PENDING_OP_THRESHOLD = 50000
 SYNC_COMPACTION_BATCH_SIZE = 50
 SYNC_COMMITTED_RETENTION_DAYS = 7
 SYNC_FAILURE_RETENTION_ROWS = 100
+DLQ_MAX_PUSH_RETRIES = 5
+DLQ_EXHAUSTED_RETENTION_ROWS = 200
 
 SYNC_TABLE_PRIORITY = {
     "sessions": 10,
@@ -118,6 +120,21 @@ CREATE TABLE IF NOT EXISTS sync_failures (
     retry_count INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id);
+CREATE TABLE IF NOT EXISTS sync_push_dlq (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    txn_id TEXT NOT NULL UNIQUE,
+    replica_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    enqueued_at TEXT NOT NULL,
+    last_retry_at TEXT DEFAULT '',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 5,
+    status TEXT NOT NULL DEFAULT 'pending_retry' CHECK(status IN ('pending_retry', 'exhausted', 'recovered')),
+    last_error_code TEXT DEFAULT '',
+    last_error_message TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_sync_push_dlq_status ON sync_push_dlq(status);
+CREATE INDEX IF NOT EXISTS idx_sync_push_dlq_txn ON sync_push_dlq(txn_id);
 CREATE TABLE IF NOT EXISTS sync_table_policies (
     table_name TEXT PRIMARY KEY,
     sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
@@ -155,6 +172,7 @@ REQUIRED_SYNC_TABLES = {
     "sync_ops",
     "sync_cursors",
     "sync_failures",
+    "sync_push_dlq",
     "sync_table_policies",
 }
 
@@ -828,12 +846,14 @@ def prune_committed_sync_logs(
     *,
     retention_days: int = SYNC_COMMITTED_RETENTION_DAYS,
     failure_rows: int = SYNC_FAILURE_RETENTION_ROWS,
+    dlq_rows: int = DLQ_EXHAUSTED_RETENTION_ROWS,
 ) -> dict:
     cutoff = datetime.now(timezone.utc).replace(microsecond=0).timestamp() - max(1, retention_days) * 86400
     cutoff_text = datetime.fromtimestamp(cutoff, timezone.utc).isoformat().replace("+00:00", "Z")
     deleted_ops = 0
     deleted_txns = 0
     deleted_failures = 0
+    deleted_dlq = 0
     savepoint_open = False
     try:
         db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
@@ -872,6 +892,7 @@ def prune_committed_sync_logs(
             ).rowcount
             or 0
         )
+        deleted_dlq = prune_push_dlq(db, max_exhausted_rows=dlq_rows)
         db.execute("RELEASE SAVEPOINT sync_queue_prune")
         savepoint_open = False
     except sqlite3.DatabaseError:
@@ -885,6 +906,7 @@ def prune_committed_sync_logs(
         "deleted_committed_txns": deleted_txns,
         "deleted_committed_ops": deleted_ops,
         "deleted_failures": deleted_failures,
+        "deleted_dlq": deleted_dlq,
     }
 
 
@@ -907,6 +929,162 @@ def _gateway_txn_ids(response: dict, field: str) -> list[str]:
     return txn_ids
 
 
+def _enqueue_failed_push(
+    db: sqlite3.Connection,
+    txns: list[dict],
+    error_code: str,
+    error_message: str,
+    max_retries: int = DLQ_MAX_PUSH_RETRIES,
+) -> None:
+    """Record failed-push txns in the dead-letter queue.
+
+    Uses upsert to increment retry_count on repeated failures for the same
+    txn_id.  Skips entries with empty txn_id.  The full txn payload is stored
+    so that operator recovery can inspect or replay the original data.
+    """
+    now = utc_now()
+    for txn in txns:
+        txn_id = str(txn.get("txn_id", "") or "")
+        replica_id = str(txn.get("replica_id", "") or "")
+        if not txn_id:
+            continue
+        payload_json = json.dumps(txn, separators=(",", ":"), ensure_ascii=False)
+        db.execute(
+            """
+            INSERT INTO sync_push_dlq
+                (txn_id, replica_id, payload_json, enqueued_at, last_retry_at,
+                 retry_count, max_retries, status, last_error_code, last_error_message)
+            VALUES (?, ?, ?, ?, ?, 1, ?, 'pending_retry', ?, ?)
+            ON CONFLICT(txn_id) DO UPDATE SET
+                retry_count = sync_push_dlq.retry_count + 1,
+                last_retry_at = excluded.last_retry_at,
+                last_error_code = excluded.last_error_code,
+                last_error_message = excluded.last_error_message
+            """,
+            (
+                txn_id,
+                replica_id,
+                payload_json,
+                now,
+                now,
+                max(1, max_retries),
+                error_code[:200],
+                error_message[:500],
+            ),
+        )
+
+
+def _promote_exhausted_dlq_entries(db: sqlite3.Connection) -> int:
+    """Promote pending_retry DLQ entries that reached max_retries to exhausted.
+
+    Simultaneously marks the corresponding sync_txns rows as 'failed' so they
+    are excluded from future collect_pending_txns calls.  Returns the number
+    of newly exhausted entries.
+    """
+    cur = db.execute(
+        """
+        UPDATE sync_push_dlq
+        SET status = 'exhausted'
+        WHERE status = 'pending_retry'
+          AND retry_count >= max_retries
+        """
+    )
+    exhausted_count = int(cur.rowcount or 0)
+    if exhausted_count > 0:
+        db.execute(
+            """
+            UPDATE sync_txns
+            SET status = 'failed'
+            WHERE txn_id IN (
+                SELECT txn_id FROM sync_push_dlq WHERE status = 'exhausted'
+            )
+            AND status = 'pending'
+            """
+        )
+    return exhausted_count
+
+
+def _recover_dlq_on_success(db: sqlite3.Connection, txn_ids: list[str]) -> None:
+    """Mark DLQ entries for successfully pushed txn_ids as recovered."""
+    if not txn_ids:
+        return
+    placeholders = ", ".join("?" for _ in txn_ids)
+    db.execute(
+        f"""
+        UPDATE sync_push_dlq
+        SET status = 'recovered'
+        WHERE txn_id IN ({placeholders})
+          AND status IN ('pending_retry', 'exhausted')
+        """,
+        list(txn_ids),
+    )
+
+
+def recover_push_dlq(db: sqlite3.Connection, txn_ids: list[str] | None = None) -> int:
+    """Reset exhausted DLQ entries back to pending_retry and restore sync_txns to pending.
+
+    Operator recovery path for issue #408.  When *txn_ids* is None all
+    exhausted entries are recovered; otherwise only the specified subset.
+
+    Returns the count of entries that were recovered.
+    """
+    now = utc_now()
+    if txn_ids is not None:
+        if not txn_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in txn_ids)
+        rows = db.execute(
+            f"SELECT txn_id FROM sync_push_dlq WHERE status = 'exhausted' AND txn_id IN ({placeholders})",
+            list(txn_ids),
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT txn_id FROM sync_push_dlq WHERE status = 'exhausted'").fetchall()
+    ids_to_recover = [str(r[0]) for r in rows]
+    if not ids_to_recover:
+        return 0
+    placeholders = ", ".join("?" for _ in ids_to_recover)
+    db.execute(
+        f"""
+        UPDATE sync_push_dlq
+        SET status = 'pending_retry', retry_count = 0, last_retry_at = ?
+        WHERE txn_id IN ({placeholders})
+        """,
+        [now, *ids_to_recover],
+    )
+    db.execute(
+        f"""
+        UPDATE sync_txns
+        SET status = 'pending'
+        WHERE txn_id IN ({placeholders})
+          AND status = 'failed'
+        """,
+        ids_to_recover,
+    )
+    return len(ids_to_recover)
+
+
+def prune_push_dlq(db: sqlite3.Connection, max_exhausted_rows: int = DLQ_EXHAUSTED_RETENTION_ROWS) -> int:
+    """Prune old exhausted and recovered DLQ entries, keeping the most recent rows.
+
+    pending_retry entries are never pruned (they represent active retry state).
+    Returns the number of deleted rows.
+    """
+    cur = db.execute(
+        """
+        DELETE FROM sync_push_dlq
+        WHERE status IN ('exhausted', 'recovered')
+          AND id NOT IN (
+              SELECT id FROM sync_push_dlq
+              WHERE status IN ('exhausted', 'recovered')
+              ORDER BY enqueued_at DESC, id DESC
+              LIMIT ?
+          )
+        """,
+        (max(0, max_exhausted_rows),),
+    )
+    return int(cur.rowcount or 0)
+
+
 def push_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int = 50) -> dict:
     txns = collect_pending_txns(db, limit=limit, replica_id=replica_id)
     if not txns:
@@ -915,12 +1093,20 @@ def push_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
     sent_txn_ids = {str(t.get("txn_id", "") or "") for t in txns}
     payload = {"replica_id": replica_id, "txns": txns}
     endpoint = base_url.rstrip("/") + "/sync/push"
-    response = _request_json(
-        endpoint,
-        method="POST",
-        payload=payload,
-        timeout=PUSH_TIMEOUT_SECONDS,
-    )
+    try:
+        response = _request_json(
+            endpoint,
+            method="POST",
+            payload=payload,
+            timeout=PUSH_TIMEOUT_SECONDS,
+        )
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        error_code = "push_network_error"
+        if isinstance(exc, urllib.error.HTTPError):
+            error_code = f"push_http_{exc.code}"
+        _enqueue_failed_push(db, txns, error_code, str(exc))
+        _promote_exhausted_dlq_entries(db)
+        raise
 
     accepted = _gateway_txn_ids(response, "accepted_txn_ids")
     duplicates = _gateway_txn_ids(response, "duplicate_txn_ids")
@@ -934,6 +1120,7 @@ def push_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
         raise ValueError("gateway response referenced unsent txn_ids: " + ", ".join(sorted(unexpected)[:5]))
     latest = str(response.get("latest_txn_id", "") or "")
     mark_txns_committed(db, accepted + duplicates)
+    _recover_dlq_on_success(db, accepted + duplicates)
     if latest:
         set_sync_state(db, "last_pushed_txn_id", latest)
     set_sync_state(db, "last_push_at", utc_now())

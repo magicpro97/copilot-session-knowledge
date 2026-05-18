@@ -106,22 +106,19 @@ pub fn fts_knowledge_search(
 
 /// FTS5 search on `knowledge_fts` (document sections).
 ///
-/// Uses manual prefix-match FTS query construction for the sections table
-/// (which has a different schema than `ke_fts`).
+/// Uses the shared `sanitize_fts_query` from `db::fts` (#368) so that
+/// special characters and FTS5 operators are stripped consistently, matching
+/// the behaviour of `ke_fts` searches and Python's `_sanitize_fts_query()`.
 pub fn fts_sections_search(
     conn: &Connection,
     query: &str,
     limit: usize,
 ) -> Vec<(SearchKey, SearchResult)> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .filter(|t| t.len() > 1)
-        .map(|t| format!("\"{}\"*", t.replace('"', "")))
-        .collect();
-    if terms.is_empty() {
+    // #368: Use the shared sanitizer instead of rolling our own.
+    let fts_query = sanitize_fts_query(query);
+    if fts_query == "\"\"" {
         return vec![];
     }
-    let fts_query = terms.join(" ");
 
     let sql = "SELECT fts.document_id, fts.title, fts.section_name, fts.doc_type, \
                COALESCE(fts.session_id,''), \

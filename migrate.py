@@ -1576,6 +1576,39 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_pr_repo_root ON project_registry(repo_root)",
             ],
         ),
+        # v27: issue #351 — agent_id for multi-agent memory routing.
+        # Allows entries to be tagged with the writing agent's ID and
+        # filtered per-agent when building context packs or briefings.
+        (
+            27,
+            "agent_id",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN agent_id TEXT DEFAULT ''",
+                "CREATE INDEX IF NOT EXISTS idx_ke_agent_id ON knowledge_entries(agent_id)",
+            ],
+        ),
+        # v28: issue #387 — Soft-delete for stale/low-value entries.
+        # deleted_at IS NULL → active; non-NULL ISO timestamp → soft-deleted.
+        # All read paths filter WHERE deleted_at IS NULL (or column absent).
+        (
+            28,
+            "soft_delete",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN deleted_at TEXT DEFAULT NULL",
+                "CREATE INDEX IF NOT EXISTS idx_ke_deleted_at ON knowledge_entries(deleted_at)",
+            ],
+        ),
+        # v29: issue #402 — Epistemic humility fields.
+        # certainty: human-readable qualifier ("high", "medium", "low", "uncertain").
+        # caveats: freeform exceptions/conditions where the entry may not apply.
+        (
+            29,
+            "epistemic_humility",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN certainty TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN caveats TEXT DEFAULT ''",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
