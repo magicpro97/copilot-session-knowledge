@@ -211,11 +211,15 @@ def test_collect_health_uses_requested_db_path(tmp_path):
     finally:
         b._load_module = orig_loader
 
-    test("_collect_health: requested DB passed into module",
-         data.get("db_path") == str(db), f"got={data.get('db_path')}")
+    test(
+        "_collect_health: requested DB passed into module", data.get("db_path") == str(db), f"got={data.get('db_path')}"
+    )
     test("_collect_health: payload marked available", data.get("available") is True, f"got={data}")
-    test("_collect_health: module DB_PATH restored",
-         FakeHealth.DB_PATH == tmp_path / "missing.db", f"got={FakeHealth.DB_PATH}")
+    test(
+        "_collect_health: module DB_PATH restored",
+        FakeHealth.DB_PATH == tmp_path / "missing.db",
+        f"got={FakeHealth.DB_PATH}",
+    )
 
 
 def test_collect_health_catches_system_exit(tmp_path):
@@ -237,10 +241,8 @@ def test_collect_health_catches_system_exit(tmp_path):
     finally:
         b._load_module = orig_loader
 
-    test("_collect_health: SystemExit returns unavailable",
-         data.get("available") is False, f"got={data}")
-    test("_collect_health: SystemExit captured in error",
-         "SystemExit(1)" in data.get("error", ""), f"got={data}")
+    test("_collect_health: SystemExit returns unavailable", data.get("available") is False, f"got={data}")
+    test("_collect_health: SystemExit captured in error", "SystemExit(1)" in data.get("error", ""), f"got={data}")
 
 
 # ── 4. cmd_list ──────────────────────────────────────────────────────────────
@@ -321,8 +323,11 @@ def test_cmd_list_json_has_retro_gap(tmp_path):
         b.cmd_list(db, limit=10, as_json=True)
     data = json.loads(buf.getvalue())
     test("cmd_list --json: retro_gap key present", "retro_gap" in data[0], f"keys={list(data[0])}")
-    test("cmd_list --json: retro_gap value correct (25.0)", data[0]["retro_gap"] == 25.0,
-         f"got={data[0].get('retro_gap')}")
+    test(
+        "cmd_list --json: retro_gap value correct (25.0)",
+        data[0]["retro_gap"] == 25.0,
+        f"got={data[0].get('retro_gap')}",
+    )
 
 
 def test_cmd_list_json_has_health_gap(tmp_path):
@@ -341,8 +346,11 @@ def test_cmd_list_json_has_health_gap(tmp_path):
         b.cmd_list(db, limit=10, as_json=True)
     data = json.loads(buf.getvalue())
     test("cmd_list --json: health_gap key present", "health_gap" in data[0], f"keys={list(data[0])}")
-    test("cmd_list --json: health_gap value correct (20.0)", data[0]["health_gap"] == 20.0,
-         f"got={data[0].get('health_gap')}")
+    test(
+        "cmd_list --json: health_gap value correct (20.0)",
+        data[0]["health_gap"] == 20.0,
+        f"got={data[0].get('health_gap')}",
+    )
 
 
 def test_cmd_list_json_health_gap_none_when_health_null(tmp_path):
@@ -360,8 +368,11 @@ def test_cmd_list_json_health_gap_none_when_health_null(tmp_path):
     with redirect_stdout(buf):
         b.cmd_list(db, limit=10, as_json=True)
     data = json.loads(buf.getvalue())
-    test("cmd_list --json: health_gap is None when health unavailable",
-         data[0]["health_gap"] is None, f"got={data[0].get('health_gap')}")
+    test(
+        "cmd_list --json: health_gap is None when health unavailable",
+        data[0]["health_gap"] is None,
+        f"got={data[0].get('health_gap')}",
+    )
 
 
 # ── 5. cmd_compare ───────────────────────────────────────────────────────────
@@ -755,26 +766,22 @@ def test_delta_str_none():
 
 def test_gap_to_target_basic():
     b = _load_bench()
-    test("_gap_to_target: 75.0 → 25.0", b._gap_to_target(75.0) == 25.0,
-         f"got={b._gap_to_target(75.0)}")
+    test("_gap_to_target: 75.0 → 25.0", b._gap_to_target(75.0) == 25.0, f"got={b._gap_to_target(75.0)}")
 
 
 def test_gap_to_target_none():
     b = _load_bench()
-    test("_gap_to_target: None → None", b._gap_to_target(None) is None,
-         f"got={b._gap_to_target(None)}")
+    test("_gap_to_target: None → None", b._gap_to_target(None) is None, f"got={b._gap_to_target(None)}")
 
 
 def test_gap_to_target_at_100():
     b = _load_bench()
-    test("_gap_to_target: 100.0 → 0.0", b._gap_to_target(100.0) == 0.0,
-         f"got={b._gap_to_target(100.0)}")
+    test("_gap_to_target: 100.0 → 0.0", b._gap_to_target(100.0) == 0.0, f"got={b._gap_to_target(100.0)}")
 
 
 def test_gap_to_target_over_100():
     b = _load_bench()
-    test("_gap_to_target: 105.0 → 0.0 (clamped)", b._gap_to_target(105.0) == 0.0,
-         f"got={b._gap_to_target(105.0)}")
+    test("_gap_to_target: 105.0 → 0.0 (clamped)", b._gap_to_target(105.0) == 0.0, f"got={b._gap_to_target(105.0)}")
 
 
 def test_gap_progress_str_closer():
@@ -828,28 +835,37 @@ def test_git_head_msg_returns_str():
 def test_migrate_v14_creates_table(tmp_path):
     """Run migrate.py as a subprocess and check v14 created benchmark_snapshots."""
     import subprocess as _sp
+
     db = tmp_path / "test_migrate.db"
     try:
         result = _sp.run(
             [sys.executable, str(MIGRATE_PY), str(db)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         conn = sqlite3.connect(str(db))
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         conn.close()
-        test("migrate v14: benchmark_snapshots table created", "benchmark_snapshots" in tables,
-             f"stderr={result.stderr[:200]}")
+        test(
+            "migrate v14: benchmark_snapshots table created",
+            "benchmark_snapshots" in tables,
+            f"stderr={result.stderr[:200]}",
+        )
     except Exception as e:
         test("migrate v14: benchmark_snapshots table created", False, str(e))
 
 
 def test_migrate_v14_correct_version(tmp_path):
     import subprocess as _sp
+
     db = tmp_path / "test_migrate2.db"
     try:
         _sp.run(
             [sys.executable, str(MIGRATE_PY), str(db)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         conn = sqlite3.connect(str(db))
         ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
@@ -876,6 +892,7 @@ def test_main_invalid_mode(tmp_path):
     buf = io.StringIO()
     rc = 0
     import io as _io
+
     err_buf = _io.StringIO()
     with redirect_stdout(buf):
         try:
@@ -888,7 +905,7 @@ def test_main_invalid_mode(tmp_path):
 # ── Runner ───────────────────────────────────────────────────────────────────
 
 
-def run_all():
+def run_all():  # noqa: PLR0915
     import tempfile
 
     def _tmp():
@@ -979,7 +996,7 @@ def run_all():
     test_main_no_cmd()
     test_main_invalid_mode(_tmp())
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     if FAIL == 0:
         print(f"✅ All {PASS} tests passed.")
     else:

@@ -44,12 +44,14 @@ jobs:
           ruff check
           *.py
           browse/ hooks/ scripts/
+          tests/test_platform_compat.py tests/test_binary_install.py tests/test_benchmark.py
 
       - name: Ruff format check
         run: >
           ruff format --check
           *.py
           browse/ hooks/ scripts/
+          tests/test_platform_compat.py tests/test_binary_install.py tests/test_benchmark.py
 
       - name: Complexity advisory (Ruff C90/PLR)
         continue-on-error: true
@@ -57,6 +59,11 @@ jobs:
           ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915 --statistics
           *.py
           browse/ hooks/ scripts/
+
+      - name: Complexity gate — scoped test files (WBS-096 blocking)
+        run: >
+          ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915
+          tests/test_platform_compat.py tests/test_binary_install.py tests/test_benchmark.py
 
       - name: Build browse-ui static artifact
         run: |
@@ -93,6 +100,63 @@ jobs:
 
       - name: Run hook security tests
         run: python tests/test_hook_security.py
+
+  # WBS-091: Windows onboarding smoke — install launcher, verify CRLF, invoke sk.cmd.
+  windows-onboarding-smoke:
+    name: Windows onboarding smoke (WBS-091)
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install sk launcher into isolated temp home
+        shell: pwsh
+        run: |
+          $smokeHome = "$env:RUNNER_TEMP\smoke-home"
+          $toolsDir  = "$smokeHome\.copilot\tools"
+          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+          # Copy repo into the simulated ~/.copilot/tools so sk.cmd can call sk.py
+          Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\*" "$toolsDir\"
+          # Override USERPROFILE so install.py writes into the isolated home
+          $env:USERPROFILE = $smokeHome
+          Set-Location $toolsDir
+          python install.py --install-sk --quiet
+          $skCmd = "$smokeHome\.copilot\bin\sk.cmd"
+          if (-not (Test-Path $skCmd)) { throw "sk.cmd not created at $skCmd" }
+          Write-Host "OK  sk.cmd installed at $skCmd"
+
+      - name: Verify sk.cmd has CRLF line endings
+        shell: pwsh
+        run: |
+          $skCmd = "$env:RUNNER_TEMP\smoke-home\.copilot\bin\sk.cmd"
+          $bytes = [System.IO.File]::ReadAllBytes($skCmd)
+          $hasCRLF = $false
+          for ($i = 0; $i -lt ($bytes.Length - 1); $i++) {
+            if ($bytes[$i] -eq 0x0D -and $bytes[$i + 1] -eq 0x0A) { $hasCRLF = $true; break }
+          }
+          if (-not $hasCRLF) { throw "FAIL: sk.cmd lacks CRLF line endings" }
+          Write-Host "OK  sk.cmd has CRLF line endings"
+          # Negative fixture: LF-only bytes must NOT trigger CRLF detection
+          $lfOnly = [System.Text.Encoding]::UTF8.GetBytes("@echo off`npython test`n")
+          $falsePositive = $false
+          for ($i = 0; $i -lt ($lfOnly.Length - 1); $i++) {
+            if ($lfOnly[$i] -eq 0x0D -and $lfOnly[$i + 1] -eq 0x0A) { $falsePositive = $true; break }
+          }
+          if ($falsePositive) { throw "Negative CRLF fixture broken: LF-only bytes reported as CRLF" }
+          Write-Host "OK  Negative CRLF fixture verified"
+
+      - name: Invoke sk.cmd --version
+        shell: cmd
+        run: |
+          set "USERPROFILE=%RUNNER_TEMP%\smoke-home"
+          "%RUNNER_TEMP%\smoke-home\.copilot\bin\sk.cmd" --version
 
   remote-terminal:
     runs-on: ubuntu-latest

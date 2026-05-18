@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import traceback
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 if os.name == "nt":
@@ -149,7 +150,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             from browse.routes.serve_v2 import serve_v2
 
             body, ct, status = serve_v2(rel_path_asset)
-            self._send(body, ct, status, nonce, csp_header=build_v2_csp_header(), send_body=send_body)
+            # WBS-084: Pass nonce to build_v2_csp_header so unsafe-inline is not needed.
+            self._send(body, ct, status, nonce, csp_header=build_v2_csp_header(nonce), send_body=send_body)
             return
 
         # /v2/* — compatibility redirect: strip the /v2 prefix and redirect to canonical path
@@ -257,15 +259,19 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             try:
                 body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
             except Exception as exc:
+                req_id = str(uuid.uuid4())
                 print(
-                    f"500 while handling {path}: {exc}",
+                    f"[error] request_id={req_id} method=GET path={path} 500: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
                 traceback.print_exc(file=sys.stderr)
-                body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
+                body = b"500 Internal Server Error"
                 ct = "text/plain"
                 status = 500
+                # Inject request ID into CORS headers dict for _send
+                cors_resp_headers = dict(cors_resp_headers)
+                cors_resp_headers["X-Request-ID"] = req_id
 
             # SSE streaming: body is a callable factory(stop_event) → generator.
             # Detected by Content-Type; avoids Content-Length header issues.
@@ -319,7 +325,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             status,
             nonce,
             set_cookie=token_val if should_set_cookie else None,
-            csp_header=build_v2_csp_header(),
+            csp_header=build_v2_csp_header(nonce),  # WBS-084: pass nonce
             send_body=send_body,
             secure_cookie=secure_cookie,
         )
@@ -581,9 +587,18 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         try:
             body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
         except Exception as exc:
-            body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
+            req_id = str(uuid.uuid4())
+            print(
+                f"[error] request_id={req_id} method={method} path={path} 500: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc(file=sys.stderr)
+            body = b"500 Internal Server Error"
             ct = "text/plain"
             status = 500
+            cors_resp_headers = dict(cors_resp_headers)
+            cors_resp_headers["X-Request-ID"] = req_id
 
         self._send(
             body,

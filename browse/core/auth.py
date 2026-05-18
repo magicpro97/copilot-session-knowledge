@@ -161,3 +161,61 @@ def check_origin(request_headers: object, host: str) -> tuple:
         return True, is_https
 
     return False, is_https
+
+
+# ── Loopback / open-auth guard (WBS-087) ─────────────────────────────────────
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "127.0.0.0"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True when *host* is a loopback/localhost address."""
+    h = (host or "").strip().lower()
+    # Strip port if present
+    if h.startswith("["):
+        # IPv6 bracket form: [::1]:port → extract ::1
+        h = h.split("]")[0].lstrip("[")
+    elif ":" in h:
+        # Could be IPv4:port (one colon) or bare IPv6 address (multiple colons).
+        # Only strip port for IPv4:port (exactly one colon).
+        if h.count(":") == 1:
+            h = h.rsplit(":", 1)[0]
+        # For bare IPv6 (e.g. ::1) keep as-is
+    return h in _LOOPBACK_HOSTS
+
+
+def check_open_auth_safety(
+    host: str,
+    token: str,
+    allow_open_auth: bool = False,
+) -> "tuple[bool, str]":
+    """Check whether starting with an empty token on the given host is safe.
+
+    Returns ``(safe: bool, warning: str)``.
+
+    - If *token* is non-empty: always safe (auth is enabled).
+    - If *host* is a loopback address: safe (only local access possible).
+    - If *host* is non-loopback and *token* is empty: not safe unless
+      *allow_open_auth* is True (which bypasses the check with a warning).
+
+    Callers should print *warning* when it is non-empty.
+    """
+    if token:
+        # Auth enabled: always safe
+        return True, ""
+
+    if _is_loopback_host(host):
+        # Loopback: open-auth is acceptable (local only)
+        return True, ""
+
+    # Non-loopback + no token
+    warning = (
+        f"[browse] WARNING: server bound to {host!r} with no auth token configured. "
+        "Any client on the network can access this instance. "
+        "Set a token with --token or pass --allow-open-auth to suppress this warning."
+    )
+    if allow_open_auth:
+        # Explicitly bypassed: safe but still warn
+        return True, warning
+
+    return False, warning

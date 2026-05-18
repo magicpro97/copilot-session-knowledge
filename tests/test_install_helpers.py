@@ -688,19 +688,26 @@ class _FakeWinreg:
     HKEY_CURRENT_USER = object()
     KEY_READ = 1
     KEY_WRITE = 2
+    KEY_SET_VALUE = 2  # minimal right needed for SetValueEx
     REG_EXPAND_SZ = 2
 
     def __init__(self, path_value: str):
         self.path_value = path_value
         self.last_written = None
+        self.last_open_flags: list[int] = []
+        self.last_written_name: str | None = None
+        self.last_queried_name: str | None = None
 
-    def OpenKey(self, *_args):
+    def OpenKey(self, _root, _subkey, _reserved=0, access=0):
+        self.last_open_flags.append(access)
         return "fake-key"
 
-    def QueryValueEx(self, _key, _name):
+    def QueryValueEx(self, _key, name):
+        self.last_queried_name = name
         return self.path_value, self.REG_EXPAND_SZ
 
-    def SetValueEx(self, _key, _name, _reserved, _kind, value):
+    def SetValueEx(self, _key, name, _reserved, _kind, value):
+        self.last_written_name = name
         self.last_written = value
         self.path_value = value
 
@@ -784,6 +791,313 @@ finally:
         sys.modules["winreg"] = _orig_winreg
 
 
+# ── WBS-001: registry uses "Path" (canonical) and KEY_SET_VALUE ───────────────
+
+print("\n🔑 install registry key name + access rights (#326 #332)")
+
+_orig_sk_dir_reg = _install.SK_LAUNCHER_DIR
+_orig_winreg_reg = sys.modules.get("winreg")
+_install.SK_LAUNCHER_DIR = Path(r"C:\Users\tester\.copilot\bin")
+
+_fake_reg_fresh = _FakeWinreg(r"C:\Windows\System32")
+sys.modules["winreg"] = _fake_reg_fresh
+
+try:
+    _install._inject_launcher_path_windows(quiet=True)
+    test(
+        "registry write uses canonical 'Path' key name (not 'PATH')",
+        _fake_reg_fresh.last_written_name == "Path",
+        f"got: {_fake_reg_fresh.last_written_name!r}",
+    )
+    test(
+        "registry open uses KEY_SET_VALUE (not KEY_WRITE)",
+        any(f & _fake_reg_fresh.KEY_SET_VALUE for f in _fake_reg_fresh.last_open_flags),
+        f"flags: {_fake_reg_fresh.last_open_flags}",
+    )
+    test(
+        "registry query uses canonical 'Path' key name",
+        _fake_reg_fresh.last_queried_name == "Path",
+        f"got: {_fake_reg_fresh.last_queried_name!r}",
+    )
+finally:
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_reg
+    if _orig_winreg_reg is None:
+        sys.modules.pop("winreg", None)
+    else:
+        sys.modules["winreg"] = _orig_winreg_reg
+
+
+# ── WBS-001: WM_SETTINGCHANGE broadcast (#326) ────────────────────────────────
+
+print("\n📣 install WM_SETTINGCHANGE broadcast (#326)")
+
+_broadcast_calls: list[str] = []
+_orig_broadcast = _install._broadcast_windows_path_change
+_orig_sk_dir_bc = _install.SK_LAUNCHER_DIR
+_orig_winreg_bc = sys.modules.get("winreg")
+_install.SK_LAUNCHER_DIR = Path(r"C:\Users\tester\.copilot\bin")
+_install._broadcast_windows_path_change = lambda quiet=False: _broadcast_calls.append("broadcast") or True  # type: ignore[assignment]
+
+try:
+    # no-op case — entry already present
+    sys.modules["winreg"] = _FakeWinreg(r"C:\Users\tester\.copilot\bin;C:\Windows\System32")
+    _install._inject_launcher_path_windows(quiet=True)
+    noop_calls = len(_broadcast_calls)
+
+    # fresh inject — should broadcast
+    _broadcast_calls.clear()
+    sys.modules["winreg"] = _FakeWinreg(r"C:\Windows\System32")
+    _install._inject_launcher_path_windows(quiet=True)
+    fresh_calls = len(_broadcast_calls)
+
+    test("WM_SETTINGCHANGE NOT broadcast on no-op install", noop_calls == 0, f"calls: {noop_calls}")
+    test("WM_SETTINGCHANGE broadcast once on fresh install", fresh_calls == 1, f"calls: {fresh_calls}")
+finally:
+    _install._broadcast_windows_path_change = _orig_broadcast  # type: ignore[assignment]
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_bc
+    if _orig_winreg_bc is None:
+        sys.modules.pop("winreg", None)
+    else:
+        sys.modules["winreg"] = _orig_winreg_bc
+
+
+# ── WBS-004 / WBS-005: launcher content (#329 #330) ──────────────────────────
+
+print("\n📜 install launcher content py-3 + SK_TOOLS_DIR (#329 #330)")
+
+# _sk_launcher_content() is platform-specific; test the current platform
+_launcher_content = _install._sk_launcher_content()
+
+if os.name == "nt":
+    test(
+        "Windows launcher is a .cmd file (starts with @echo off)",
+        _launcher_content.strip().lower().startswith("@echo off"),
+        _launcher_content[:80],
+    )
+    test(
+        "Windows launcher references py -3 as fallback",
+        "py -3" in _launcher_content,
+        _launcher_content[:300],
+    )
+    test(
+        "Windows launcher references SK_TOOLS_DIR env var",
+        "SK_TOOLS_DIR" in _launcher_content,
+        "SK_TOOLS_DIR missing from Windows launcher",
+    )
+    test(
+        "Windows launcher does not hardcode only USERPROFILE without SK_TOOLS_DIR fallback",
+        "SK_TOOLS_DIR" in _launcher_content,
+        _launcher_content[:200],
+    )
+else:
+    test(
+        "POSIX launcher is a sh script",
+        _launcher_content.strip().startswith("#!/bin/sh"),
+        _launcher_content[:80],
+    )
+    test(
+        "POSIX launcher references SK_TOOLS_DIR env var",
+        "SK_TOOLS_DIR" in _launcher_content,
+        "SK_TOOLS_DIR missing from POSIX launcher",
+    )
+
+
+# ── WBS-008: diagnostics CRLF / py-3 / SK_TOOLS_DIR (#333) ───────────────────
+
+print("\n🩺 install diagnostics crlf + py3 + SK_TOOLS_DIR (#333)")
+
+# Test the launcher content directly for CRLF, py-3, SK_TOOLS_DIR
+_launcher_diag_content = _install._sk_launcher_content()
+
+if os.name == "nt":
+    test(
+        "launcher content has CRLF line endings on Windows",
+        b"\r\n" in _launcher_diag_content.encode() if isinstance(_launcher_diag_content, str) else b"\r\n" in _launcher_diag_content,
+        "Expected CRLF line endings in Windows launcher",
+    )
+    test(
+        "launcher content includes py -3 (WBS-008/004)",
+        "py -3" in _launcher_diag_content,
+        "Expected 'py -3' in Windows launcher content",
+    )
+    test(
+        "launcher content references SK_TOOLS_DIR (WBS-008/005)",
+        "SK_TOOLS_DIR" in _launcher_diag_content,
+        "Expected SK_TOOLS_DIR in Windows launcher content",
+    )
+
+import tempfile as _tempfile
+import shutil as _shutil_diag
+
+_diag_tmpdir = Path(_tempfile.mkdtemp(prefix="sk-diag-"))
+try:
+    # Patch SK_LAUNCHER_DIR and _sk_launcher_script_paths to point at a temp stale launcher
+    _orig_sk_dir_diag = _install.SK_LAUNCHER_DIR
+    _orig_sk_script_paths = _install._sk_launcher_script_paths
+
+    _stale_cmd = _diag_tmpdir / "sk.cmd"
+    # Write a stale launcher without CRLF, without py-3, without SK_TOOLS_DIR
+    _stale_cmd.write_bytes(b"@echo off\npython sk.py %*\n")
+
+    _install.SK_LAUNCHER_DIR = _diag_tmpdir
+    _install._sk_launcher_script_paths = lambda: [_stale_cmd]  # type: ignore[assignment]
+
+    # Patch other diagnostics functions to avoid side effects
+    _orig_launcher_probe = _install._launcher_probe
+    _orig_current_path = _install._current_path_has_launcher_dir
+    _orig_which_diag = _install._which_command
+    _orig_read_path = getattr(_install, "_read_windows_user_path", None)
+    _install._launcher_probe = lambda: (None, False, "no probe")  # type: ignore[assignment]
+    _install._current_path_has_launcher_dir = lambda *_a, **_kw: False  # type: ignore[assignment]
+    _install._which_command = lambda *_a: None  # type: ignore[assignment]
+    if _orig_read_path is not None:
+        _install._read_windows_user_path = lambda: (None, "skip")  # type: ignore[assignment]
+
+    import io as _io_diag
+    import sys as _sys_diag
+
+    _diag_out = _io_diag.StringIO()
+    _old_stdout_diag = _sys_diag.stdout
+    _sys_diag.stdout = _diag_out
+    try:
+        _diag_issues = _install._launcher_diagnostics()
+    finally:
+        _sys_diag.stdout = _old_stdout_diag
+
+    _diag_output_str = _diag_out.getvalue()
+
+    if os.name == "nt":
+        test(
+            "_launcher_diagnostics reports CRLF issue for stale launcher",
+            "crlf" in _diag_output_str.lower() or "line ending" in _diag_output_str.lower(),
+            f"output: {_diag_output_str[:300]!r}",
+        )
+        test(
+            "_launcher_diagnostics reports missing py -3 for stale launcher",
+            "py -3" in _diag_output_str,
+            f"output: {_diag_output_str[:300]!r}",
+        )
+        test(
+            "_launcher_diagnostics reports missing SK_TOOLS_DIR for stale launcher",
+            "SK_TOOLS_DIR" in _diag_output_str,
+            f"output: {_diag_output_str[:300]!r}",
+        )
+        test(
+            "_launcher_diagnostics returns nonzero issues for stale launcher",
+            _diag_issues > 0,
+            f"issues: {_diag_issues}",
+        )
+finally:
+    try:
+        _install.SK_LAUNCHER_DIR = _orig_sk_dir_diag  # type: ignore[possibly-undefined]
+        _install._sk_launcher_script_paths = _orig_sk_script_paths  # type: ignore[possibly-undefined, assignment]
+        _install._launcher_probe = _orig_launcher_probe  # type: ignore[possibly-undefined, assignment]
+        _install._current_path_has_launcher_dir = _orig_current_path  # type: ignore[possibly-undefined, assignment]
+        _install._which_command = _orig_which_diag  # type: ignore[possibly-undefined, assignment]
+        if _orig_read_path is not None:
+            _install._read_windows_user_path = _orig_read_path  # type: ignore[possibly-undefined, assignment]
+    except NameError:
+        pass
+    _shutil_diag.rmtree(_diag_tmpdir, ignore_errors=True)
+
+
+# ── WBS-012: dry-run and non-interactive (#337) ───────────────────────────────
+
+print("\n🔧 install dry-run + non-interactive (#337)")
+
+import io as _io
+
+_dry_buf = _io.StringIO()
+_orig_print = print  # noqa: F841 — keep reference to restore
+_install_tmpdir = Path(_tempfile.mkdtemp(prefix="sk-install-dryrun-"))
+
+try:
+    # dry_run=True: no files should be written
+    _launcher_paths_before = list(_install._sk_launcher_script_paths())
+
+    import unittest.mock as _mock
+
+    _written_files: list = []
+    _orig_write_launcher = getattr(_install, "_write_launcher_file", None)
+
+    # Patch file-writing side effects to observe without writing
+    _orig_sk_dir_dry = _install.SK_LAUNCHER_DIR
+    _install.SK_LAUNCHER_DIR = _install_tmpdir / "bin"
+    _install.SK_LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
+
+    captured_out = _io.StringIO()
+    import sys as _sys_inner
+
+    _old_stdout = _sys_inner.stdout
+    _sys_inner.stdout = captured_out
+    try:
+        _install.install_sk_launcher(quiet=False, dry_run=True)
+    finally:
+        _sys_inner.stdout = _old_stdout
+
+    _dry_output = captured_out.getvalue()
+
+    test(
+        "dry-run output contains '[dry-run]' indicator",
+        "[dry-run]" in _dry_output,
+        f"output was: {_dry_output[:200]!r}",
+    )
+
+    # No sk.cmd should be written under dry_run
+    _launcher_cmd = _install.SK_LAUNCHER_DIR / "sk.cmd"
+    _launcher_sh = _install.SK_LAUNCHER_DIR / "sk"
+    _files_written = _launcher_cmd.exists() or _launcher_sh.exists()
+    test(
+        "dry-run does NOT write launcher files",
+        not _files_written,
+        f"cmd={_launcher_cmd.exists()} sh={_launcher_sh.exists()}",
+    )
+
+finally:
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_dry  # type: ignore[possibly-undefined]
+    import shutil as _shutil2
+
+    _shutil2.rmtree(_install_tmpdir, ignore_errors=True)
+
+
+# non-interactive: uninstall() must not call input()
+_ni_input_calls: list[str] = []
+
+
+def _fake_input(prompt: str = "") -> str:
+    _ni_input_calls.append(prompt)
+    return "n"
+
+
+_orig_builtins_input = __builtins__["input"] if isinstance(__builtins__, dict) else getattr(__builtins__, "input")  # type: ignore[index]
+import builtins as _builtins
+
+_real_input = _builtins.input
+_builtins.input = _fake_input  # type: ignore[assignment]
+try:
+    _install_uninstall_tmpdir = Path(_tempfile.mkdtemp(prefix="sk-ni-"))
+    _orig_home_ni = _install.COPILOT_DIR
+    _install.COPILOT_DIR = _install_uninstall_tmpdir / ".copilot"
+    try:
+        _install.uninstall(non_interactive=True)
+    except SystemExit:
+        pass
+    except Exception:
+        pass
+    finally:
+        _install.COPILOT_DIR = _orig_home_ni
+        import shutil as _shutil3
+
+        _shutil3.rmtree(_install_uninstall_tmpdir, ignore_errors=True)
+    test(
+        "uninstall(non_interactive=True) does NOT call input()",
+        len(_ni_input_calls) == 0,
+        f"input() called {len(_ni_input_calls)} time(s): {_ni_input_calls}",
+    )
+finally:
+    _builtins.input = _real_input
+
+
 # ── Doctor launcher diagnostics ───────────────────────────────────────────────
 
 print("\n🩺 install doctor launcher diagnostics")
@@ -805,7 +1119,7 @@ try:
     _doctor_manifest.write_text(json.dumps({"files": {}, "version": "1.0.0"}), encoding="utf-8")
     _doctor_launcher = _doctor_home / ".copilot" / "bin" / ("sk.cmd" if os.name == "nt" else "sk")
     _doctor_launcher.parent.mkdir(parents=True, exist_ok=True)
-    _doctor_launcher.write_text("launcher", encoding="utf-8")
+    _doctor_launcher.write_bytes(_install._sk_launcher_content().encode())
 
     _install.SK_LAUNCHER_DIR = _doctor_launcher.parent
     _install.show_status = lambda: True

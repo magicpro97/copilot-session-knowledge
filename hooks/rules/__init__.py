@@ -25,7 +25,7 @@ def get_rules_for_event(event):
     from .briefing import AutoBriefingRule, EnforceBriefingRule
     from .constitution_gate import ConstitutionGateRule
     from .edit_tracker import TestReminderRule, TrackEditsRule
-    from .error_kb import ErrorKBRule
+    from .error_kb import ErrorFixNudgeRule, ErrorKBRule
     from .file_size_advisory import FileSizeAdvisoryRule
     from .integrity import IntegrityRule
     from .learn_gate import EnforceLearnRule
@@ -43,6 +43,7 @@ def get_rules_for_event(event):
     from .syntax_gate import SyntaxGateRule
     from .tentacle import TentacleEnforceRule, TentacleSuggestRule
     from .token_tracker import TokenTrackerRule
+    from .user_prompt_audit import UserPromptAuditRule
     from .verification_gate import VerificationGateRule
 
     ALL_RULES = [
@@ -78,11 +79,15 @@ def get_rules_for_event(event):
         # VerificationGateRule also handles postToolUse (already registered above)
         # errorOccurred
         ErrorKBRule(),
+        # postToolUse — error-fix nudge (WBS-024)
+        ErrorFixNudgeRule(),
         # sessionEnd
         SessionEndRule(),
         RecurrenceDetectorRule(),
         # agentStop / subagentStop
         SubagentStopRule(),
+        # userPromptSubmitted (WBS-025)
+        UserPromptAuditRule(),
     ]
 
     return [r for r in ALL_RULES if event in r.events]

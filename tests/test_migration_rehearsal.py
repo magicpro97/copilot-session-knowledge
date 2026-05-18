@@ -250,5 +250,244 @@ class MigrationRehearsalTests(unittest.TestCase):
         )
 
 
+def _load_migrate_module():
+    """Import migrate.py as a module for direct function-level testing."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("migrate_mod_test", str(MIGRATE))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class BatchBackfillTests(unittest.TestCase):
+    """#382 WBS-057: Verify stable_id backfill uses batched cursor (≤1000 rows at a time)."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="batch-backfill-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_backfill_batch_size_constant_exists_and_is_bounded(self):
+        """BACKFILL_BATCH_SIZE constant must exist in migrate.py and be ≤1000."""
+        mod = _load_migrate_module()
+        self.assertTrue(
+            hasattr(mod, "_BACKFILL_BATCH_SIZE"),
+            "_BACKFILL_BATCH_SIZE constant missing from migrate.py",
+        )
+        self.assertLessEqual(
+            mod._BACKFILL_BATCH_SIZE,
+            1000,
+            "_BACKFILL_BATCH_SIZE must be ≤1000",
+        )
+        self.assertGreater(
+            mod._BACKFILL_BATCH_SIZE,
+            0,
+            "_BACKFILL_BATCH_SIZE must be positive",
+        )
+
+    def test_backfill_large_table_assigns_stable_ids_correctly(self):
+        """Backfill correctly assigns stable_ids to 5000 rows."""
+        db_path = self.tmpdir / "large.db"
+        result = _run_migrate(str(db_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        with sqlite3.connect(db_path) as db:
+            # Clear stable_ids to force backfill
+            db.execute("UPDATE knowledge_entries SET stable_id = NULL")
+            db.executemany(
+                "INSERT INTO knowledge_entries(session_id, category, title, content) VALUES (?,?,?,?)",
+                [("batch-sess", "mistake", f"batch-entry-{i}", f"batch-content-{i}") for i in range(5000)],
+            )
+            db.commit()
+
+        result = _run_migrate(str(db_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        total = _db_scalar(db_path, "SELECT COUNT(*) FROM knowledge_entries")
+        with_stable = _db_scalar(
+            db_path,
+            "SELECT COUNT(*) FROM knowledge_entries WHERE stable_id IS NOT NULL AND stable_id != ''",
+        )
+        self.assertEqual(total, with_stable, "All rows must have stable_ids after backfill")
+
+    def test_backfill_does_not_exceed_batch_size_per_fetch(self):
+        """Verify the backfill implementation does not call fetchall() with all rows at once."""
+        db_path = self.tmpdir / "batch-check.db"
+        result = _run_migrate(str(db_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        mod = _load_migrate_module()
+        batch_size = getattr(mod, "_BACKFILL_BATCH_SIZE", 10000)
+
+        # Instrument a connection to track max rows returned in a single fetch
+        max_fetched = [0]
+
+        class _TrackingCursor(sqlite3.Cursor):
+            def fetchall(self):
+                rows = super().fetchall()
+                if len(rows) > max_fetched[0]:
+                    max_fetched[0] = len(rows)
+                return rows
+
+            def fetchmany(self, size=-1):
+                rows = super().fetchmany(size)
+                if len(rows) > max_fetched[0]:
+                    max_fetched[0] = len(rows)
+                return rows
+
+        class _TrackingConn(sqlite3.Connection):
+            def cursor(self, factory=sqlite3.Cursor):
+                return super().cursor(_TrackingCursor)
+
+            def execute(self, sql, parameters=()):
+                cur = self.cursor(_TrackingCursor)
+                cur.execute(sql, parameters)
+                return cur
+
+        # Insert 3× batch_size rows
+        n = batch_size * 3
+        with sqlite3.connect(db_path) as plain_db:
+            plain_db.execute("UPDATE knowledge_entries SET stable_id = NULL")
+            plain_db.executemany(
+                "INSERT OR IGNORE INTO knowledge_entries(session_id, category, title, content) VALUES (?,?,?,?)",
+                [("tr-sess", "mistake", f"tr-entry-{i}", f"body-{i}") for i in range(n)],
+            )
+            plain_db.commit()
+
+        conn = _TrackingConn(str(db_path))
+        try:
+            mod._backfill_stable_ids(conn)
+        finally:
+            conn.close()
+
+        # In a properly batched implementation, no single fetch returns more than batch_size rows
+        self.assertLessEqual(
+            max_fetched[0],
+            batch_size,
+            f"fetchall/fetchmany returned {max_fetched[0]} rows; expected ≤{batch_size} (batch_size)",
+        )
+
+    def test_backfill_stable_ids_no_duplicates_after_large_insert(self):
+        """After backfilling 5000 rows, no stable_id duplicates remain."""
+        db_path = self.tmpdir / "no-dupe.db"
+        result = _run_migrate(str(db_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        with sqlite3.connect(db_path) as db:
+            db.execute("UPDATE knowledge_entries SET stable_id = NULL")
+            db.executemany(
+                "INSERT INTO knowledge_entries(session_id, category, title, content) VALUES (?,?,?,?)",
+                [("nd-sess", "pattern", f"nd-{i}", f"c-{i}") for i in range(5000)],
+            )
+            db.commit()
+
+        result = _run_migrate(str(db_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        dupes = _db_scalar(
+            db_path,
+            """
+            SELECT COUNT(*) FROM (
+                SELECT stable_id FROM knowledge_entries
+                WHERE stable_id IS NOT NULL AND stable_id != ''
+                GROUP BY stable_id HAVING COUNT(*) > 1
+            )
+            """,
+        )
+        self.assertEqual(dupes, 0, "No stable_id duplicates should remain after backfill")
+
+
+class SavepointRepairTests(unittest.TestCase):
+    """#383 WBS-058: Verify _repair_legacy_priority_collision uses SAVEPOINT for atomicity."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="savepoint-repair-"))
+        self.mod = _load_migrate_module()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_legacy_db(self, path: Path) -> None:
+        """Create a DB in the legacy v22='file_annotations' state."""
+        with sqlite3.connect(str(path)) as db:
+            db.executescript("""
+                CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    migrated_at TEXT DEFAULT (datetime('now')),
+                    name TEXT DEFAULT ''
+                );
+                INSERT INTO schema_version(version, name) VALUES (22, 'file_annotations');
+                CREATE TABLE knowledge_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL
+                );
+                INSERT INTO knowledge_entries(session_id, category, title, content)
+                VALUES ('s1', 'mistake', 'test entry', 'body');
+            """)
+
+    def test_repair_succeeds_on_legacy_v22_state(self):
+        """Repair adds priority column and updates schema_version name."""
+        db_path = self.tmpdir / "success.db"
+        self._make_legacy_db(db_path)
+
+        with sqlite3.connect(str(db_path)) as db:
+            repaired, renamed = self.mod._repair_legacy_priority_collision(db)
+
+        self.assertTrue(repaired or renamed, "Expected repair to detect and fix legacy state")
+        with sqlite3.connect(str(db_path)) as db:
+            cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+            name = db.execute("SELECT name FROM schema_version WHERE version=22").fetchone()[0]
+        self.assertIn("priority", cols, "priority column should be added by repair")
+        self.assertEqual(name, "priority", "schema_version name should be updated to 'priority'")
+
+    def test_repair_is_idempotent(self):
+        """Running repair a second time returns (False, False) without error."""
+        db_path = self.tmpdir / "idempotent.db"
+        self._make_legacy_db(db_path)
+
+        with sqlite3.connect(str(db_path)) as db:
+            self.mod._repair_legacy_priority_collision(db)
+
+        with sqlite3.connect(str(db_path)) as db:
+            repaired2, renamed2 = self.mod._repair_legacy_priority_collision(db)
+
+        self.assertFalse(repaired2, "Second repair should report nothing to fix")
+        self.assertFalse(renamed2, "Second rename should report nothing to rename")
+
+    def test_repair_savepoint_rolls_back_alter_on_update_failure(self):
+        """If the schema_version UPDATE fails, the SAVEPOINT rolls back the ALTER TABLE too."""
+        db_path = self.tmpdir / "rollback.db"
+        self._make_legacy_db(db_path)
+
+        # Subclass Connection to inject failure on the UPDATE schema_version statement
+        class _FailOnUpdate(sqlite3.Connection):
+            _inject = True
+
+            def execute(self, sql, parameters=()):
+                if _FailOnUpdate._inject and "UPDATE schema_version SET name" in sql:
+                    _FailOnUpdate._inject = False
+                    raise sqlite3.OperationalError("injected UPDATE failure for savepoint test")
+                return super().execute(sql, parameters)
+
+        db = _FailOnUpdate(str(db_path))
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.mod._repair_legacy_priority_collision(db)
+        finally:
+            db.close()
+
+        # After rollback: priority column must NOT be present and schema_version name unchanged
+        with sqlite3.connect(str(db_path)) as verify:
+            cols = {r[1] for r in verify.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+            name = verify.execute("SELECT name FROM schema_version WHERE version=22").fetchone()[0]
+        self.assertNotIn("priority", cols, "ALTER TABLE must be rolled back by SAVEPOINT on failure")
+        self.assertEqual(name, "file_annotations", "schema_version name must be unchanged after rollback")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

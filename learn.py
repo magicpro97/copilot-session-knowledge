@@ -275,7 +275,35 @@ _CONCEPT_STOPWORDS = frozenset(
 
 # Injection scanning patterns (inspired by Hermes Agent memory security)
 # Block prompt injection, role hijacking, credential exfiltration, invisible Unicode
+# WBS-019: expanded with JWT, bearer, and AWS-like secret patterns
 import re
+
+
+class _ContextAwareHexMatcher:
+    """Matches long lowercase-hex strings only when NOT in a git/checksum context.
+
+    Prevents false-positive blocking of 40-char git commit SHAs and 64-char
+    SHA-256 checksums while still catching bare secret hex tokens that appear
+    without any identifying reference keyword nearby.
+
+    Duck-types the compiled regex interface: implements .search(text) returning
+    a match object (or None) so it can be used transparently in _INJECTION_PATTERNS.
+    """
+
+    _HEX_RE = re.compile(r"(?<![A-Za-z0-9])([0-9a-f]{40,})(?![A-Za-z0-9])")
+    # Keywords that indicate the hex string is a commit SHA or checksum reference,
+    # not a raw secret.  Checked in the 100-char window *before* the hex run.
+    _SAFE_CTX_RE = re.compile(r"(?i)\b(?:commit|sha\d*|hash|checksum|digest|fingerprint)\b")
+
+    def search(self, text: str):
+        """Return the first match for a secret-context hex run; None if all safe."""
+        for m in self._HEX_RE.finditer(text):
+            pre = text[max(0, m.start() - 100) : m.start()]
+            if self._SAFE_CTX_RE.search(pre):
+                continue  # preceded by commit/hash/checksum keyword — likely legitimate
+            return m  # no safe context — treat as potential credential
+        return None
+
 
 _INJECTION_PATTERNS = [
     (
@@ -299,6 +327,31 @@ _INJECTION_PATTERNS = [
     (re.compile(r"(?i)\bACT\s+AS\b"), "role hijacking: 'act as'"),
     (re.compile(r"(?i)\bpretend\s+(you\s+are|to\s+be)\b"), "role hijacking: 'pretend to be'"),
     (re.compile(r"(?i)\b(curl|wget|nc|ncat)\s+.*\|\s*(ba)?sh\b"), "remote code execution pattern"),
+    # WBS-019: JWT tokens (3-part base64url separated by dots, header starts with eyJ)
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+        "credential leak: JWT token",
+    ),
+    # WBS-019: Authorization header with bearer token
+    (
+        re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S{16,}"),
+        "credential leak: Authorization Bearer token",
+    ),
+    # WBS-019: AWS-style secret keys (AKIA... access key or 40-char base62 secret)
+    (
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        "credential leak: AWS access key ID",
+    ),
+    (
+        re.compile(r"(?i)\b(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret)\s*[:=]\s*[A-Za-z0-9/+]{30,}"),
+        "credential leak: AWS secret access key",
+    ),
+    # WBS-019: generic long hex token (context-aware — skips git commit SHAs and checksums)
+    # See _ContextAwareHexMatcher below for the false-positive mitigation logic.
+    (
+        _ContextAwareHexMatcher(),
+        "credential leak: long hex secret/token",
+    ),
 ]
 
 _CODE_LANGUAGE_MAP = {

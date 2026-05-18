@@ -82,15 +82,51 @@ def download_file(url: str, dest: Path) -> None:
         sys.exit(1)
 
 
+def _check_safe_member(member_name: str, dest_dir: Path) -> Path:
+    """Validate an archive member path to reject traversal attacks (WBS-003).
+
+    Returns the resolved target Path on success.
+    Raises ValueError when the path would escape dest_dir.
+    """
+    if not member_name:
+        raise ValueError("Unsafe archive member: empty name")
+    if "\x00" in member_name:
+        raise ValueError(f"Unsafe archive member: null byte in path {member_name!r}")
+    dest_resolved = dest_dir.resolve()
+    mem_path = Path(member_name)
+    if mem_path.is_absolute():
+        raise ValueError(f"Unsafe archive member: absolute path {member_name!r}")
+    target = (dest_dir / member_name).resolve()
+    try:
+        target.relative_to(dest_resolved)
+    except ValueError as err:
+        raise ValueError(f"Unsafe archive member: path traversal detected in {member_name!r}") from err
+    return target
+
+
 def verify_checksum(file_path: Path, checksum_url: str) -> bool:
-    """Verify SHA-256 checksum if available."""
+    """Verify SHA-256 checksum (WBS-009: hard-fail when sidecar absent).
+
+    Returns True only when checksum is verified.
+    Returns False (hard-fail) when sidecar is unavailable or hash mismatches,
+    unless SK_SKIP_CHECKSUM=1 is set (escape hatch, prints a warning).
+    On mismatch the archive is deleted to avoid installation of tampered binaries.
+    """
+    skip = os.environ.get("SK_SKIP_CHECKSUM", "").strip() == "1"
     try:
         req = urllib.request.Request(checksum_url)
         with urllib.request.urlopen(req, timeout=10) as resp:
             expected = resp.read().decode().strip().split()[0].lower()
     except Exception:
-        print("  Warning: Checksum file not available, skipping verification")
-        return True
+        if skip:
+            print("  Warning: Checksum sidecar not available (SK_SKIP_CHECKSUM=1 bypass active)", file=sys.stderr)
+            return True
+        print(
+            "Error: Checksum sidecar unavailable — aborting install.",
+            file=sys.stderr,
+        )
+        print("  Set SK_SKIP_CHECKSUM=1 to bypass (not recommended).", file=sys.stderr)
+        return False
 
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
@@ -102,6 +138,10 @@ def verify_checksum(file_path: Path, checksum_url: str) -> bool:
         print("Error: Checksum mismatch!", file=sys.stderr)
         print(f"  Expected: {expected}", file=sys.stderr)
         print(f"  Got:      {actual}", file=sys.stderr)
+        try:
+            file_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         return False
 
     print("  Checksum verified ✓")
@@ -109,18 +149,60 @@ def verify_checksum(file_path: Path, checksum_url: str) -> bool:
 
 
 def extract_archive(archive_path: Path, dest_dir: Path, os_name: str) -> None:
-    """Extract tar.gz or zip archive."""
+    """Extract tar.gz or zip archive safely, rejecting path traversal (WBS-003).
+
+    Validates every member path before extraction.  Raises ValueError on any
+    traversal attempt.  Cleans up partially extracted files on any error.
+    Supports Python 3.6+ including 3.11/3.12/3.14.
+    """
+    import tarfile as _tarfile
+
     archive_name = archive_path.name.lower()
+    extracted: list[Path] = []
+
+    def _cleanup():
+        for p in extracted:
+            try:
+                if p.is_file() or p.is_symlink():
+                    p.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     if archive_name.endswith(".zip") or zipfile.is_zipfile(archive_path):
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(dest_dir)
+        try:
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                for name in zf.namelist():
+                    if name.endswith("/"):
+                        continue  # directory entry
+                    target = _check_safe_member(name, dest_dir)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    data = zf.read(name)
+                    target.write_bytes(data)
+                    extracted.append(target)
+        except Exception:
+            _cleanup()
+            raise
         return
 
-    import tarfile
-
-    if archive_name.endswith((".tar.gz", ".tgz")) or tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path, "r:*") as tf:
-            tf.extractall(dest_dir)
+    if archive_name.endswith((".tar.gz", ".tgz")) or _tarfile.is_tarfile(archive_path):
+        try:
+            with _tarfile.open(archive_path, "r:*") as tf:
+                for member in tf.getmembers():
+                    if not member.isfile():
+                        continue
+                    target = _check_safe_member(member.name, dest_dir)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    src = tf.extractfile(member)
+                    if src is None:
+                        continue
+                    with src:
+                        target.write_bytes(src.read())
+                    if os_name != "windows":
+                        target.chmod(member.mode & 0o777 or 0o644)
+                    extracted.append(target)
+        except Exception:
+            _cleanup()
+            raise
         return
 
     raise ValueError(f"Unsupported archive format: {archive_path.name}")

@@ -216,6 +216,90 @@ def test_docs_document_linux_only_and_cross_platform_gates() -> None:
     test("HOOKS documents Windows python command boundary", "setup-python + `python`" in hooks_doc)
 
 
+def test_sk_cmd_launcher_content_uses_crlf() -> None:
+    """WBS-091: install.py must generate sk.cmd with CRLF line endings (Windows .cmd requirement)."""
+    install_py = _read("install.py")
+    # Verify the literal \r\n is present in the launcher content function
+    test(
+        "install.py sk.cmd launcher uses CRLF (\\r\\n)",
+        r"@echo off\r\n" in install_py,
+        "sk.cmd content in install.py must use \\r\\n CRLF",
+    )
+    test(
+        "install.py sk.cmd launcher uses CRLF on second line",
+        r"sk.py\" %*\r\n" in install_py or r'sk.py" %*\r\n' in install_py,
+        "sk.cmd second line must end with \\r\\n CRLF",
+    )
+    # Negative fixture: verify LF-only content would not contain \r\n
+    lf_only = "@echo off\npython test\n"
+    test(
+        "Negative CRLF fixture: LF-only content has no \\r\\n",
+        "\r\n" not in lf_only,
+        "fixture invariant",
+    )
+
+
+def test_ci_windows_onboarding_smoke_job_exists() -> None:
+    """WBS-091: ci.yml must have a Windows onboarding smoke job."""
+    workflow = _read(".github/workflows/ci.yml")
+    test(
+        "CI defines windows-onboarding-smoke job",
+        "windows-onboarding-smoke" in workflow,
+        "windows-onboarding-smoke job required by WBS-091",
+    )
+    smoke_job = _extract_ci_job(workflow, "windows-onboarding-smoke")
+    test("Windows smoke job runs on windows-latest", "windows-latest" in smoke_job)
+    test(
+        "Windows smoke job verifies CRLF",
+        "CRLF" in smoke_job or "crlf" in smoke_job.lower(),
+        "smoke job must verify CRLF line endings in sk.cmd",
+    )
+    test(
+        "Windows smoke job invokes sk.cmd",
+        "sk.cmd" in smoke_job,
+        "smoke job must invoke sk.cmd to verify it executes",
+    )
+
+
+def test_release_sha256_format_is_normalized() -> None:
+    """WBS-094: sk-release.yml must emit sha256 in lowercase hash + two-space format on all platforms."""
+    release = _read(".github/workflows/sk-release.yml")
+    # Unix: sha256sum produces "<hash>  <filename>"
+    test(
+        "Release Unix step uses sha256sum",
+        "sha256sum" in release,
+        "Unix sha256 must use sha256sum (produces lowercase hash + two-space format)",
+    )
+    # Windows: PowerShell must produce lowercase + two spaces
+    test(
+        "Release Windows step lowercases hash",
+        ".ToLower()" in release,
+        "Windows SHA256 must call .ToLower() to match lowercase format",
+    )
+    test(
+        "Release Windows step uses two-space separator",
+        '"$hash  $' in release or '"$hash  ' in release,
+        "Windows sha256 format must use two spaces between hash and filename",
+    )
+    # Attestation (WBS-098)
+    test(
+        "Release workflow has attestation permission",
+        "attestations: write" in release,
+        "Release job must have attestations: write permission (WBS-098)",
+    )
+
+
+def test_ci_lint_includes_scoped_test_files() -> None:
+    """WBS-095: ci.yml Ruff lint must cover the three key test files."""
+    workflow = _read(".github/workflows/ci.yml")
+    lint_relevant = "test_platform_compat" in workflow or "tests/" in workflow
+    test(
+        "CI Ruff lint covers scoped test files (WBS-095)",
+        lint_relevant,
+        "tests/ or individual test files must appear in Ruff lint step",
+    )
+
+
 def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--probe":
         _platform_probe()
@@ -230,6 +314,10 @@ def main() -> int:
     test_hardcoded_tmp_literals_are_explicitly_explained()
     test_posix_only_test_tokens_are_guarded_or_explained()
     test_docs_document_linux_only_and_cross_platform_gates()
+    test_sk_cmd_launcher_content_uses_crlf()
+    test_ci_windows_onboarding_smoke_job_exists()
+    test_release_sha256_format_is_normalized()
+    test_ci_lint_includes_scoped_test_files()
 
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

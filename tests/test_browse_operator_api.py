@@ -838,6 +838,7 @@ def test_oc45_list_runs_includes_running_in_memory_run_for_reload_reconnect():
 
 def test_oc29_persist_run_evicts_terminal_in_memory_entry():
     import uuid
+    from browse.core.operator_console import _ACTIVE_RUNS_SSE_GRACE
 
     session = create_session("history-evict")
     run_id = str(uuid.uuid4())
@@ -860,9 +861,15 @@ def test_oc29_persist_run_evicts_terminal_in_memory_entry():
 
     with _RUNS_LOCK:
         still_present = run_id in _ACTIVE_RUNS
+        has_evict_after = isinstance(_ACTIVE_RUNS.get(run_id), dict) and "_evict_after" in _ACTIVE_RUNS.get(run_id, {})
 
     persisted_runs = list_runs(session["id"])
-    test("OC29: terminal run evicted from memory after persist", not still_present)
+    # WBS-090: terminal runs are NOT immediately removed — they get an SSE grace window
+    # (_evict_after is set). The actual pop happens via evict_active_runs() after grace expires.
+    test(
+        "OC29: terminal run marked for deferred eviction (SSE grace window) after persist",
+        still_present and has_evict_after,
+    )
     test(
         "OC29: persisted run still available via history listing",
         any(item.get("id") == run_id for item in persisted_runs),

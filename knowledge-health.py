@@ -509,6 +509,98 @@ def _compute_sync_advisory(
     }
 
 
+def _compute_integrity_lints(db: sqlite3.Connection) -> dict:
+    """Compute orphan/dangling/contradiction/stable_id integrity lints.
+
+    Returns a dict with:
+      - dangling_relations: int — knowledge_relations referencing missing entries
+      - stable_id_collisions: int — stable_id values shared by multiple rows
+      - contradictions: list[dict] — entries with Always/Never conflict on same tags
+    All counts are 0 and lists are empty when their tables are absent (fail-open).
+    """
+    result: dict = {
+        "dangling_relations": 0,
+        "stable_id_collisions": 0,
+        "contradictions": [],
+    }
+
+    # Dangling relations: source_id or target_id points to a missing knowledge entry
+    try:
+        result["dangling_relations"] = db.execute("""
+            SELECT COUNT(*) FROM knowledge_relations kr
+            WHERE NOT EXISTS (SELECT 1 FROM knowledge_entries ke WHERE ke.id = kr.source_id)
+               OR NOT EXISTS (SELECT 1 FROM knowledge_entries ke WHERE ke.id = kr.target_id)
+        """).fetchone()[0]
+    except sqlite3.OperationalError:
+        pass
+
+    # Stable_id collisions: same stable_id on more than one row
+    try:
+        result["stable_id_collisions"] = db.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT stable_id FROM knowledge_entries
+                WHERE stable_id IS NOT NULL AND stable_id != ''
+                GROUP BY stable_id
+                HAVING COUNT(*) > 1
+            )
+        """).fetchone()[0]
+    except sqlite3.OperationalError:
+        pass
+
+    # Contradiction detection: entries sharing the same non-empty tags where
+    # one title starts with "Always" (case-insensitive) and another with "Never"
+    try:
+        rows = db.execute("""
+            SELECT a.id, a.title, n.id, n.title, a.tags
+            FROM knowledge_entries a
+            JOIN knowledge_entries n
+              ON LOWER(a.tags) = LOWER(n.tags)
+             AND a.id < n.id
+            WHERE (
+                       (a.title LIKE 'Always%' AND n.title LIKE 'Never%')
+                    OR (a.title LIKE 'Never%' AND n.title LIKE 'Always%')
+                  )
+              AND a.tags IS NOT NULL AND a.tags != ''
+            LIMIT 20
+        """).fetchall()
+        for row in rows:
+            result["contradictions"].append(
+                {
+                    "entry_a_id": int(row[0]),
+                    "entry_a_title": str(row[1] or ""),
+                    "entry_b_id": int(row[2]),
+                    "entry_b_title": str(row[3] or ""),
+                    "shared_tags": str(row[4] or ""),
+                }
+            )
+    except sqlite3.OperationalError:
+        pass
+
+    return result
+
+
+def _compute_db_size_lint() -> dict:
+    """Check the database file size against a configurable byte budget.
+
+    Reads SK_DB_SIZE_BUDGET_MB from the environment (default 500 MB).
+    Returns a dict with size_bytes, budget_bytes, over_budget, size_mb, budget_mb.
+    Fails open (size_bytes=0) when the file is missing or unreadable.
+    """
+    budget_mb = int(os.environ.get("SK_DB_SIZE_BUDGET_MB", "500"))
+    budget_bytes = budget_mb * 1024 * 1024
+    try:
+        size_bytes = int(DB_PATH.stat().st_size) if DB_PATH.exists() else 0
+    except OSError:
+        size_bytes = 0
+    return {
+        "size_bytes": size_bytes,
+        "budget_bytes": budget_bytes,
+        "over_budget": size_bytes > budget_bytes,
+        "size_mb": round(size_bytes / (1024 * 1024), 1),
+        "budget_mb": round(budget_mb, 1),
+    }
+
+
 def compute_insights(stale_days: int = 30) -> dict:
     """Derive actionable insights from the knowledge base."""
     health = compute_health(stale_days=stale_days)
@@ -894,7 +986,54 @@ def compute_insights(stale_days: int = 30) -> dict:
         except sqlite3.OperationalError:
             entries[f"{cat}s"] = []
 
+    # ---- Integrity lints (run BEFORE db.close()) ----
+    integrity_lints = _compute_integrity_lints(db)
+
     db.close()
+
+    # ---- DB size budget ----
+    db_size_budget = _compute_db_size_lint()
+
+    # ---- Integrity-lint alerts ----
+    if integrity_lints.get("dangling_relations", 0) > 0:
+        alerts.append(
+            {
+                "id": "dangling-relations",
+                "title": "Dangling relations detected",
+                "severity": "warning",
+                "detail": f"{integrity_lints['dangling_relations']} knowledge_relations reference missing entries.",
+            }
+        )
+    if integrity_lints.get("stable_id_collisions", 0) > 0:
+        alerts.append(
+            {
+                "id": "stable-id-collision",
+                "title": "Stable-ID collisions detected",
+                "severity": "warning",
+                "detail": f"{integrity_lints['stable_id_collisions']} stable_id value(s) shared by multiple entries.",
+            }
+        )
+    if integrity_lints.get("contradictions"):
+        alerts.append(
+            {
+                "id": "contradiction-pairs",
+                "title": "Contradiction pairs detected",
+                "severity": "warning",
+                "detail": f"{len(integrity_lints['contradictions'])} potential contradiction pair(s) detected.",
+            }
+        )
+    if db_size_budget.get("over_budget"):
+        alerts.append(
+            {
+                "id": "db-size-over-budget",
+                "title": "Database over size budget",
+                "severity": "warning",
+                "detail": (
+                    f"Database size {db_size_budget['size_mb']} MB exceeds budget "
+                    f"{db_size_budget['budget_mb']} MB. Consider archiving old sessions."
+                ),
+            }
+        )
 
     # ---- Summary ----
     score = health.get("score", 0)
@@ -936,6 +1075,8 @@ def compute_insights(stale_days: int = 30) -> dict:
         "entries": entries,
         "sync_advisory": sync_advisory,
         "toward_100": health.get("toward_100", {}),
+        "integrity_lints": integrity_lints,
+        "db_size_budget": db_size_budget,
     }
 
 
@@ -1042,6 +1183,36 @@ def format_insights_report(insights: dict) -> str:
             lines.append(f"  • {reason}")
         checklist = sync_adv.get("checklist", "docs/SYNC-MATRIX.md")
         lines.append(f"  Reference: {checklist}")
+        lines.append("")
+
+    # ---- Integrity lints ----
+    integrity_lints = insights.get("integrity_lints", {})
+    db_size_budget = insights.get("db_size_budget", {})
+    show_lints = (
+        integrity_lints.get("dangling_relations", 0) > 0
+        or integrity_lints.get("stable_id_collisions", 0) > 0
+        or integrity_lints.get("contradictions")
+        or db_size_budget.get("over_budget")
+    )
+    if show_lints:
+        lines.append("🔍 Integrity Lints")
+        if integrity_lints.get("dangling_relations", 0) > 0:
+            lines.append(
+                f"  🟡 Dangling relations: {integrity_lints['dangling_relations']} knowledge_relations reference missing entries"
+            )
+        if integrity_lints.get("stable_id_collisions", 0) > 0:
+            lines.append(
+                f"  🟡 Stable-ID collisions: {integrity_lints['stable_id_collisions']} stable_id value(s) shared by >1 entry"
+            )
+        if integrity_lints.get("contradictions"):
+            lines.append(
+                f"  🟡 Contradictions: {len(integrity_lints['contradictions'])} Always/Never pair(s) with shared tags"
+            )
+        if db_size_budget.get("over_budget"):
+            lines.append(
+                f"  🟡 DB over budget: {db_size_budget.get('size_mb', 0)} MB "
+                f"(budget {db_size_budget.get('budget_mb', 500)} MB) — consider archiving old sessions"
+            )
         lines.append("")
 
     return "\n".join(lines)

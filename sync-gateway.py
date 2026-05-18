@@ -6,6 +6,7 @@ This is intentionally not a production multi-tenant sync service.
 """
 
 import argparse
+import hmac
 import json
 import os
 import sqlite3
@@ -37,6 +38,31 @@ REQUIRED_OP_FIELDS = {
     "op_index",
     "created_at",
 }
+
+# WBS-081: Maximum POST body size (10 MB default, overridable via env var).
+_DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_BODY_BYTES: int = int(os.environ.get("SYNC_MAX_BODY_BYTES", str(_DEFAULT_MAX_BODY_BYTES)))
+
+
+def _check_gateway_auth(handler: "BaseHTTPRequestHandler", token: str) -> bool:
+    """Return True if the request is authorized.
+
+    When *token* is empty, all requests are allowed (no-auth mode).
+    Otherwise requires ``Authorization: Bearer <token>`` to match *token*
+    using a constant-time comparison.  Health endpoint (/healthz) is always
+    unauthenticated.
+    """
+    if not token:
+        return True
+    auth = handler.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        provided = auth[len("Bearer ") :]
+        if provided:
+            try:
+                return hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8"))
+            except Exception:
+                return False
+    return False
 
 
 class GatewayStore:
@@ -195,7 +221,7 @@ def _validate_txn(txn: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def make_handler(store: GatewayStore):
+def make_handler(store: GatewayStore, token: str = ""):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -213,6 +239,11 @@ def make_handler(store: GatewayStore):
                         "service": "sync-reference-mock-gateway",
                     },
                 )
+                return
+
+            # WBS-080: Auth required for all non-health endpoints.
+            if not _check_gateway_auth(self, token):
+                _error(self, 401, "unauthorized")
                 return
 
             if parsed.path != "/sync/pull":
@@ -258,6 +289,11 @@ def make_handler(store: GatewayStore):
                 _error(self, 404, "not_found")
                 return
 
+            # WBS-080: Auth required.
+            if not _check_gateway_auth(self, token):
+                _error(self, 401, "unauthorized")
+                return
+
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
@@ -265,6 +301,11 @@ def make_handler(store: GatewayStore):
                 return
             if length <= 0:
                 _error(self, 400, "missing_body")
+                return
+
+            # WBS-081: Body size cap — reject oversized payloads before reading.
+            if length > MAX_BODY_BYTES:
+                _error(self, 413, "payload_too_large")
                 return
 
             raw = self.rfile.read(length)
@@ -317,9 +358,9 @@ def make_handler(store: GatewayStore):
     return Handler
 
 
-def create_server(host: str, port: int, db_path: Path) -> tuple[ThreadingHTTPServer, GatewayStore]:
+def create_server(host: str, port: int, db_path: Path, token: str = "") -> tuple[ThreadingHTTPServer, GatewayStore]:
     store = GatewayStore(db_path)
-    server = ThreadingHTTPServer((host, port), make_handler(store))
+    server = ThreadingHTTPServer((host, port), make_handler(store, token=token))
     return server, store
 
 
@@ -332,9 +373,14 @@ def main() -> int:
         default=str(Path.home() / ".copilot" / "session-state" / "sync-gateway-reference.db"),
         help="SQLite file used for reference/mock storage",
     )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("SYNC_GATEWAY_TOKEN", ""),
+        help="Bearer token required for push/pull (empty = no auth); also SYNC_GATEWAY_TOKEN env var",
+    )
     args = parser.parse_args()
 
-    server, store = create_server(args.host, args.port, Path(args.db))
+    server, store = create_server(args.host, args.port, Path(args.db), token=args.token)
     host, port = server.server_address
     print(f"sync-gateway reference/mock listening on http://{host}:{port}")
     try:

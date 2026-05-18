@@ -76,6 +76,7 @@ def _skip_if_no_ib(fn):
 # (matches the spec: same logic will live in install-binary.py)
 # ---------------------------------------------------------------------------
 
+
 def _detect_platform_ref(system: str, machine: str):
     """Reference implementation of the detect_platform spec."""
     arch_map = {
@@ -100,6 +101,7 @@ def _detect_platform_ref(system: str, machine: str):
 # (expected behavior that install-binary.py will implement)
 # ---------------------------------------------------------------------------
 
+
 def _verify_checksum_ref(file_path: Path, expected_hex: str) -> bool:
     """Compute SHA256 of file_path and compare to expected_hex."""
     h = hashlib.sha256()
@@ -113,15 +115,16 @@ def _verify_checksum_ref(file_path: Path, expected_hex: str) -> bool:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestDetectPlatform(unittest.TestCase):
     """Test OS/architecture detection for all 5 supported targets."""
 
     COMBOS = [
-        ("Linux",   "x86_64",  ("linux",   "x64")),
-        ("Linux",   "aarch64", ("linux",   "arm64")),
-        ("Darwin",  "x86_64",  ("darwin",  "x64")),
-        ("Darwin",  "arm64",   ("darwin",  "arm64")),
-        ("Windows", "AMD64",   ("windows", "x64")),
+        ("Linux", "x86_64", ("linux", "x64")),
+        ("Linux", "aarch64", ("linux", "arm64")),
+        ("Darwin", "x86_64", ("darwin", "x64")),
+        ("Darwin", "arm64", ("darwin", "arm64")),
+        ("Windows", "AMD64", ("windows", "x64")),
     ]
 
     def _get_detect_fn(self):
@@ -132,8 +135,7 @@ class TestDetectPlatform(unittest.TestCase):
 
     def test_detect_platform_linux_x64(self):
         fn = self._get_detect_fn()
-        with patch("platform.system", return_value="Linux"), \
-             patch("platform.machine", return_value="x86_64"):
+        with patch("platform.system", return_value="Linux"), patch("platform.machine", return_value="x86_64"):
             if fn is not None:
                 result = fn()
             else:
@@ -142,8 +144,7 @@ class TestDetectPlatform(unittest.TestCase):
 
     def test_detect_platform_linux_arm64(self):
         fn = self._get_detect_fn()
-        with patch("platform.system", return_value="Linux"), \
-             patch("platform.machine", return_value="aarch64"):
+        with patch("platform.system", return_value="Linux"), patch("platform.machine", return_value="aarch64"):
             if fn is not None:
                 result = fn()
             else:
@@ -152,8 +153,7 @@ class TestDetectPlatform(unittest.TestCase):
 
     def test_detect_platform_darwin_x64(self):
         fn = self._get_detect_fn()
-        with patch("platform.system", return_value="Darwin"), \
-             patch("platform.machine", return_value="x86_64"):
+        with patch("platform.system", return_value="Darwin"), patch("platform.machine", return_value="x86_64"):
             if fn is not None:
                 result = fn()
             else:
@@ -162,8 +162,7 @@ class TestDetectPlatform(unittest.TestCase):
 
     def test_detect_platform_darwin_arm64(self):
         fn = self._get_detect_fn()
-        with patch("platform.system", return_value="Darwin"), \
-             patch("platform.machine", return_value="arm64"):
+        with patch("platform.system", return_value="Darwin"), patch("platform.machine", return_value="arm64"):
             if fn is not None:
                 result = fn()
             else:
@@ -172,8 +171,7 @@ class TestDetectPlatform(unittest.TestCase):
 
     def test_detect_platform_windows_x64(self):
         fn = self._get_detect_fn()
-        with patch("platform.system", return_value="Windows"), \
-             patch("platform.machine", return_value="AMD64"):
+        with patch("platform.system", return_value="Windows"), patch("platform.machine", return_value="AMD64"):
             if fn is not None:
                 result = fn()
             else:
@@ -263,6 +261,7 @@ class TestVerifyChecksum(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_test_file(self, content: bytes = b"hello copilot binary\n") -> Path:
@@ -384,6 +383,7 @@ class TestAutoUpdateVersionCheck(unittest.TestCase):
         mock_open = self._make_mock_urlopen(self.FAKE_API_RESPONSE)
         with patch("urllib.request.urlopen", mock_open):
             import urllib.request
+
             with urllib.request.urlopen("https://api.github.com/repos/x/y/releases/latest") as r:
                 data = json.loads(r.read())
         self.assertEqual(data["tag_name"], "v1.5.0")
@@ -391,12 +391,14 @@ class TestAutoUpdateVersionCheck(unittest.TestCase):
     def test_api_failure_is_fail_open(self):
         """When GitHub API fails, the update check should not crash."""
         import urllib.error
+
         mock_open = self._make_mock_urlopen(b"", raise_exc=urllib.error.URLError("timeout"))
 
         remote_tag = None
         try:
             with patch("urllib.request.urlopen", mock_open):
                 import urllib.request
+
                 with urllib.request.urlopen("https://api.github.com/...") as r:
                     remote_tag = json.loads(r.read()).get("tag_name")
         except Exception:
@@ -443,6 +445,7 @@ class TestExtractArchive(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
     def _create_targz(self, binary_name: str, content: bytes, nested: bool = False) -> Path:
@@ -570,6 +573,7 @@ class TestRefreshRustBinaryWindowsLock(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
     def _simulate_atomic_replace(self, src: Path, dst: Path):
@@ -622,10 +626,11 @@ class TestRefreshRustBinaryWindowsLock(unittest.TestCase):
             call_completed = True
 
         self.assertTrue(call_completed)  # function completed without crashing
-        self.assertFalse(result)         # returned False indicating failure
+        self.assertFalse(result)  # returned False indicating failure
 
     def test_successful_replace_returns_true(self):
         """When os.replace succeeds, the refresh function should return True."""
+
         def refresh_binary_fail_open(src: str, dst: str) -> bool:
             try:
                 os.replace(src, dst)
@@ -651,6 +656,7 @@ class TestRefreshRustBinaryWindowsLock(unittest.TestCase):
                 raise PermissionError(f"locked attempt {attempts[0]}")
             # Third attempt succeeds — call the real os.replace
             import shutil
+
             shutil.copy2(src, dst)
 
         src = self.tmpdir / "new.exe"
@@ -674,9 +680,11 @@ class TestRefreshRustBinaryWindowsLock(unittest.TestCase):
     @_skip_if_no_ib
     def test_module_handles_permission_error(self):
         """If install-binary.py has a refresh/install function, test PermissionError."""
-        fn = getattr(_IB_MODULE, "refresh_rust_binary", None) or \
-             getattr(_IB_MODULE, "install_binary", None) or \
-             getattr(_IB_MODULE, "update_binary", None)
+        fn = (
+            getattr(_IB_MODULE, "refresh_rust_binary", None)
+            or getattr(_IB_MODULE, "install_binary", None)
+            or getattr(_IB_MODULE, "update_binary", None)
+        )
 
         if fn is None:
             self.skipTest("No refresh/install function found in install-binary.py")
@@ -698,6 +706,7 @@ class TestRefreshRustBinaryWindowsLock(unittest.TestCase):
 # End-to-end install flow tests using SK_LOCAL_ARCHIVE
 # ---------------------------------------------------------------------------
 
+
 class TestLocalArchiveInstallFlow(unittest.TestCase):
     """
     End-to-end install proof using SK_LOCAL_ARCHIVE env var override.
@@ -717,13 +726,14 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
     # ---- archive helpers ----
 
     def _make_zip_with_exe(self, exe_name: str, content: bytes) -> Path:
         """Create a .zip archive containing exe_name with given content."""
-        archive = self.archive_dir / f"sk-windows-x64.zip"
+        archive = self.archive_dir / "sk-windows-x64.zip"
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(exe_name, content)
@@ -732,7 +742,7 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
 
     def _make_targz_with_binary(self, bin_name: str, content: bytes) -> Path:
         """Create a .tar.gz archive containing bin_name with given content."""
-        archive = self.archive_dir / f"sk-linux-x64.tar.gz"
+        archive = self.archive_dir / "sk-linux-x64.tar.gz"
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
             info = tarfile.TarInfo(name=bin_name)
@@ -766,6 +776,7 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
             "SK_INSTALL_DIR": str(self.install_dir),
         }
         import subprocess
+
         result = subprocess.run(
             [sys.executable, str(REPO / "install-binary.py")],
             env=env,
@@ -793,6 +804,7 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
             "SK_INSTALL_DIR": str(self.install_dir),
         }
         import subprocess
+
         result = subprocess.run(
             [sys.executable, str(REPO / "install-binary.py")],
             env=env,
@@ -819,6 +831,7 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
             "SK_INSTALL_DIR": str(self.install_dir),
         }
         import subprocess
+
         result = subprocess.run(
             [sys.executable, str(REPO / "install-binary.py")],
             env=env,
@@ -837,6 +850,7 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
             "SK_INSTALL_DIR": str(self.install_dir),
         }
         import subprocess
+
         result = subprocess.run(
             [sys.executable, str(REPO / "install-binary.py")],
             env=env,
@@ -862,6 +876,7 @@ class TestLocalArchiveInstallFlow(unittest.TestCase):
             "SK_INSTALL_DIR": str(self.install_dir),
         }
         import subprocess
+
         # Force Linux platform detection so the code picks tar.gz extraction
         result = subprocess.run(
             [sys.executable, str(REPO / "install-binary.py")],
@@ -905,6 +920,7 @@ class TestWindowsE2EInstallProof(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
     def _stage_zip(self, src_exe: Path) -> Path:
@@ -945,6 +961,7 @@ class TestWindowsE2EInstallProof(unittest.TestCase):
             "SK_INSTALL_DIR": str(self.install_dir),
         }
         import subprocess
+
         install_result = subprocess.run(
             [sys.executable, str(REPO / "install-binary.py")],
             env=env,
@@ -952,7 +969,8 @@ class TestWindowsE2EInstallProof(unittest.TestCase):
             text=True,
         )
         self.assertEqual(
-            install_result.returncode, 0,
+            install_result.returncode,
+            0,
             msg=f"Installer failed:\nstdout={install_result.stdout}\nstderr={install_result.stderr}",
         )
 
@@ -970,7 +988,7 @@ class TestWindowsE2EInstallProof(unittest.TestCase):
         self.assertIn("sk", run_result.stdout.lower(), msg=f"Unexpected output: {run_result.stdout!r}")
 
         # Record evidence in stdout for the handoff
-        print(f"\n[PROOF] Windows install evidence:")
+        print("\n[PROOF] Windows install evidence:")
         print(f"  Source binary:    {self.REAL_SK}")
         print(f"  Staged archive:   {archive}")
         print(f"  Install dir:      {self.install_dir}")
@@ -979,12 +997,338 @@ class TestWindowsE2EInstallProof(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestPythonDiscovery — WBS-092: Windows PATH/Python interpreter discovery
+# ---------------------------------------------------------------------------
+
+
+class TestPythonDiscovery(unittest.TestCase):
+    """
+    WBS-092: Test that the Python resolver selects the correct interpreter
+    across different PATH configurations: only python, only python3, only py, none.
+
+    The resolver logic priority:
+      1. 'python'  (present on Windows as the primary name)
+      2. 'python3' (present on Linux/macOS; also on Windows via Python Launcher alias)
+      3. 'py'      (Windows Python Launcher)
+      4. SystemExit / None if none found
+    """
+
+    def _resolve_python(self, available: list[str]) -> str | None:
+        """Reference implementation of the Python resolver spec.
+
+        Searches `available` (ordered list of commands that 'exist' on PATH)
+        in priority order and returns the first match, or None if none found.
+        """
+        for candidate in ("python", "python3", "py"):
+            if candidate in available:
+                return candidate
+        return None
+
+    def test_only_python_resolves_to_python(self):
+        """When only 'python' is on PATH, resolver returns 'python'."""
+        result = self._resolve_python(["python"])
+        self.assertEqual(result, "python")
+
+    def test_only_python3_resolves_to_python3(self):
+        """When only 'python3' is on PATH, resolver returns 'python3'."""
+        result = self._resolve_python(["python3"])
+        self.assertEqual(result, "python3")
+
+    def test_only_py_resolves_to_py(self):
+        """When only Windows 'py' launcher is on PATH, resolver returns 'py'."""
+        result = self._resolve_python(["py"])
+        self.assertEqual(result, "py")
+
+    def test_none_available_returns_none(self):
+        """When no known Python command is on PATH, resolver returns None."""
+        result = self._resolve_python([])
+        self.assertIsNone(result)
+
+    def test_python_preferred_over_python3(self):
+        """'python' wins when both 'python' and 'python3' are on PATH."""
+        result = self._resolve_python(["python", "python3"])
+        self.assertEqual(result, "python")
+
+    def test_python_preferred_over_py(self):
+        """'python' wins when both 'python' and 'py' are on PATH."""
+        result = self._resolve_python(["python", "py"])
+        self.assertEqual(result, "python")
+
+    def test_python3_preferred_over_py(self):
+        """'python3' wins when 'python3' and 'py' are on PATH (but not 'python')."""
+        result = self._resolve_python(["python3", "py"])
+        self.assertEqual(result, "python3")
+
+    def test_all_three_resolves_to_python(self):
+        """When all three are present, 'python' is the highest priority."""
+        result = self._resolve_python(["python", "python3", "py"])
+        self.assertEqual(result, "python")
+
+    def test_unknown_commands_ignored(self):
+        """Unknown commands on PATH are not returned."""
+        result = self._resolve_python(["node", "ruby", "bash"])
+        self.assertIsNone(result)
+
+    def test_only_py_with_others_ignored(self):
+        """'py' resolves when it's the only Python candidate among other tools."""
+        result = self._resolve_python(["node", "py", "ruby"])
+        self.assertEqual(result, "py")
+
+    @_skip_if_no_ib
+    def test_module_resolve_python_callable(self):
+        """If install-binary.py exposes a Python resolver, it must be callable."""
+        # The module may expose resolve_python, find_python, or detect_python_cmd
+        resolver = None
+        for name in ("resolve_python", "find_python", "detect_python_cmd"):
+            if hasattr(_IB_MODULE, name):
+                resolver = getattr(_IB_MODULE, name)
+                break
+        if resolver is None:
+            self.skipTest("No Python resolver found in install-binary.py (not yet implemented)")
+        # At minimum: calling with no arguments should not crash
+        try:
+            result = resolver()
+            # Result should be a str or None
+            self.assertIsInstance(result, (str, type(None)))
+        except TypeError:
+            # Resolver may require arguments — that's acceptable
+            pass
+
+    def test_windows_ci_matrix_uses_setup_python(self):
+        """The CI python-platform-safety job must use setup-python for Windows compat."""
+        import re
+
+        workflow_path = REPO / ".github" / "workflows" / "ci.yml"
+        if not workflow_path.exists():
+            self.skipTest("ci.yml not found")
+        content = workflow_path.read_text(encoding="utf-8")
+        # Find the python-platform-safety job block
+        match = re.search(
+            r"(?ms)^  python-platform-safety:\n(?P<block>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+            content,
+        )
+        self.assertIsNotNone(match, "python-platform-safety job not found in ci.yml")
+        block = match.group("block")
+        self.assertIn("actions/setup-python", block, "setup-python action must be used for Windows compat")
+        # 'python' (not python3) should be used on this cross-platform job
+        self.assertNotIn("python3 ", block, "Windows runners require 'python' not 'python3'")
+
+
+# ---------------------------------------------------------------------------
+# WBS-003: Safe archive extraction (path traversal rejection)
+# ---------------------------------------------------------------------------
+
+
+class TestSafeArchiveExtraction(unittest.TestCase):
+    """WBS-003: extract_archive must reject path traversal in tar.gz and zip."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.dest = self.tmpdir / "dest"
+        self.dest.mkdir()
+        self.archives = self.tmpdir / "archives"
+        self.archives.mkdir()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.tmpdir), ignore_errors=True)
+
+    def _make_traversal_tar(self, evil_path: str = "../../evil.sh") -> Path:
+        archive = self.archives / "evil.tar.gz"
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            content = b"#!/bin/sh\nrm -rf /\n"
+            info = tarfile.TarInfo(name=evil_path)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        archive.write_bytes(buf.getvalue())
+        return archive
+
+    def _make_traversal_zip(self, evil_path: str = "../../evil.exe") -> Path:
+        archive = self.archives / "evil.zip"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(evil_path, b"evil payload")
+        archive.write_bytes(buf.getvalue())
+        return archive
+
+    def _make_normal_tar(self) -> Path:
+        archive = self.archives / "sk-linux-x64.tar.gz"
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            content = b"#!/bin/sh\necho sk\n"
+            info = tarfile.TarInfo(name="sk")
+            info.size = len(content)
+            info.mode = 0o755
+            tf.addfile(info, io.BytesIO(content))
+        archive.write_bytes(buf.getvalue())
+        return archive
+
+    def _make_normal_zip(self) -> Path:
+        archive = self.archives / "sk-windows-x64.zip"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("sk.exe", b"MZ\x90\x00 stub exe")
+        archive.write_bytes(buf.getvalue())
+        return archive
+
+    @_skip_if_no_ib
+    def test_tar_traversal_rejected(self):
+        """Malicious tar with ../../evil path must be rejected."""
+        archive = self._make_traversal_tar("../../evil.sh")
+        with self.assertRaises((ValueError, Exception)):
+            _IB_MODULE.extract_archive(archive, self.dest, "linux")
+
+    @_skip_if_no_ib
+    def test_zip_traversal_rejected(self):
+        """Malicious zip with ../../evil path must be rejected."""
+        archive = self._make_traversal_zip("../../evil.exe")
+        with self.assertRaises((ValueError, Exception)):
+            _IB_MODULE.extract_archive(archive, self.dest, "windows")
+
+    @_skip_if_no_ib
+    def test_normal_tar_extracts_successfully(self):
+        """Normal tar.gz without traversal must extract cleanly."""
+        archive = self._make_normal_tar()
+        _IB_MODULE.extract_archive(archive, self.dest, "linux")
+        extracted = list(self.dest.iterdir())
+        self.assertGreater(len(extracted), 0, "No files extracted from normal tar.gz")
+
+    @_skip_if_no_ib
+    def test_normal_zip_extracts_successfully(self):
+        """Normal zip without traversal must extract cleanly."""
+        archive = self._make_normal_zip()
+        _IB_MODULE.extract_archive(archive, self.dest, "windows")
+        extracted = list(self.dest.iterdir())
+        self.assertGreater(len(extracted), 0, "No files extracted from normal zip")
+
+    @_skip_if_no_ib
+    def test_traversal_rejected_no_partial_files_outside_dest(self):
+        """After rejection, no partial files should exist outside dest_dir."""
+        archive = self._make_traversal_tar("../../outside.txt")
+        parent = self.dest.parent
+        files_before = set(parent.iterdir())
+        try:
+            _IB_MODULE.extract_archive(archive, self.dest, "linux")
+        except Exception:
+            pass
+        files_after = set(parent.iterdir())
+        new_files = files_after - files_before
+        outside = [f for f in new_files if f != self.dest and not str(f).startswith(str(self.dest))]
+        self.assertEqual(outside, [], f"Partial files outside dest_dir: {outside}")
+
+    def test_check_safe_member_function_exists(self):
+        """install-binary.py must expose _check_safe_member helper."""
+        if _IB_MODULE is None:
+            self.skipTest("install-binary.py not importable")
+        self.assertTrue(
+            hasattr(_IB_MODULE, "_check_safe_member"),
+            "_check_safe_member not found in install-binary.py",
+        )
+
+    def test_check_safe_member_rejects_dotdot(self):
+        """_check_safe_member must raise ValueError for path traversal."""
+        if _IB_MODULE is None:
+            self.skipTest("install-binary.py not importable")
+        if not hasattr(_IB_MODULE, "_check_safe_member"):
+            self.skipTest("_check_safe_member not in module")
+        with self.assertRaises(ValueError):
+            _IB_MODULE._check_safe_member("../../evil.sh", self.dest)
+
+    def test_check_safe_member_allows_safe_path(self):
+        """_check_safe_member must return a Path for safe member names."""
+        if _IB_MODULE is None:
+            self.skipTest("install-binary.py not importable")
+        if not hasattr(_IB_MODULE, "_check_safe_member"):
+            self.skipTest("_check_safe_member not in module")
+        result = _IB_MODULE._check_safe_member("sk", self.dest)
+        self.assertIsNotNone(result)
+
+
+# ---------------------------------------------------------------------------
+# WBS-009: Hard-fail checksum (no sidecar = abort)
+# ---------------------------------------------------------------------------
+
+
+class TestHardFailChecksum(unittest.TestCase):
+    """WBS-009: verify_checksum must hard-fail when sidecar is absent."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.archive = self.tmpdir / "sk-test.tar.gz"
+        self.archive.write_bytes(b"fake archive content")
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.tmpdir), ignore_errors=True)
+
+    @_skip_if_no_ib
+    def test_missing_sidecar_hard_fails_without_bypass(self):
+        """When sidecar fetch fails without SK_SKIP_CHECKSUM=1, verify_checksum returns False."""
+        import urllib.error
+
+        mock_fail = MagicMock(side_effect=urllib.error.URLError("404"))
+        env = {k: v for k, v in os.environ.items() if k != "SK_SKIP_CHECKSUM"}
+        with patch.dict(os.environ, env, clear=True):
+            with patch("urllib.request.urlopen", mock_fail):
+                result = _IB_MODULE.verify_checksum(self.archive, "https://example.com/sk.sha256")
+        self.assertFalse(result, "verify_checksum should return False when sidecar unavailable")
+
+    @_skip_if_no_ib
+    def test_missing_sidecar_passes_with_bypass(self):
+        """When SK_SKIP_CHECKSUM=1 and sidecar absent, verify_checksum returns True."""
+        import urllib.error
+
+        mock_fail = MagicMock(side_effect=urllib.error.URLError("404"))
+        with patch.dict(os.environ, {"SK_SKIP_CHECKSUM": "1"}):
+            with patch("urllib.request.urlopen", mock_fail):
+                result = _IB_MODULE.verify_checksum(self.archive, "https://example.com/sk.sha256")
+        self.assertTrue(result, "verify_checksum should return True when SK_SKIP_CHECKSUM=1")
+
+    @_skip_if_no_ib
+    def test_mismatch_deletes_archive(self):
+        """When hash mismatches, verify_checksum must delete the archive."""
+        content = b"authentic binary"
+        self.archive.write_bytes(content)
+        wrong_hash = "a" * 64
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = (wrong_hash + "  sk-test.tar.gz\n").encode()
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = _IB_MODULE.verify_checksum(self.archive, "https://example.com/sk.sha256")
+        self.assertFalse(result, "verify_checksum should return False on mismatch")
+        self.assertFalse(self.archive.exists(), "Archive should be deleted on checksum mismatch")
+
+    @_skip_if_no_ib
+    def test_correct_hash_still_passes(self):
+        """A correct hash must still return True (no regression)."""
+        import hashlib as _hl
+
+        content = b"good binary payload"
+        self.archive.write_bytes(content)
+        good_hash = _hl.sha256(content).hexdigest()
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = (good_hash + "  sk-test.tar.gz\n").encode()
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = _IB_MODULE.verify_checksum(self.archive, "https://example.com/sk.sha256")
+        self.assertTrue(result)
+        self.assertTrue(self.archive.exists(), "Archive must not be deleted on correct hash")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     if _IB_MODULE is None:
-        print(f"  ⚠  install-binary.py not found — module-dependent tests will be skipped")
+        print("  \u26a0  install-binary.py not found \u2014 module-dependent tests will be skipped")
         print(f"     ({_IB_MISSING_REASON})")
         print()
     unittest.main(verbosity=2)

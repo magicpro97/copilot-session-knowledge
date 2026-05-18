@@ -63,14 +63,40 @@ ARCHIVE="${BINARY_NAME}-download.tar.gz"
 echo "Downloading ${DOWNLOAD_URL} ..."
 curl -fsSL -o "${ARCHIVE}" "${DOWNLOAD_URL}"
 
-# Verify checksum
+# Portable SHA-256 helper: tries sha256sum (Linux), shasum -a 256 (macOS),
+# then openssl dgst -sha256 (fallback). WBS-002.
+_sha256() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
+  else
+    echo "Error: No SHA-256 tool found (sha256sum, shasum, openssl not available)" >&2
+    exit 1
+  fi
+}
+
+# Verify checksum — WBS-009: hard-fail if sidecar absent unless SK_SKIP_CHECKSUM=1
 echo "Verifying checksum..."
-EXPECTED=$(curl -fsSL "${CHECKSUM_URL}" | awk '{print $1}')
-ACTUAL=$(sha256sum "${ARCHIVE}" | awk '{print $1}')
-if [ "${EXPECTED}" != "${ACTUAL}" ]; then
-  echo "Checksum mismatch! expected=${EXPECTED} got=${ACTUAL}" >&2
-  rm -f "${ARCHIVE}"
-  exit 1
+if [ "${SK_SKIP_CHECKSUM:-0}" = "1" ]; then
+  echo "  Warning: SK_SKIP_CHECKSUM=1 — skipping checksum verification" >&2
+else
+  EXPECTED=$(curl -fsSL "${CHECKSUM_URL}" 2>/dev/null | awk '{print $1}')
+  if [ -z "${EXPECTED}" ]; then
+    echo "Error: Checksum sidecar unavailable (${CHECKSUM_URL}). Set SK_SKIP_CHECKSUM=1 to bypass." >&2
+    rm -f "${ARCHIVE}"
+    exit 1
+  fi
+  ACTUAL=$(_sha256 "${ARCHIVE}")
+  if [ "${EXPECTED}" != "${ACTUAL}" ]; then
+    echo "Checksum mismatch! expected=${EXPECTED} got=${ACTUAL}" >&2
+    rm -f "${ARCHIVE}"
+    exit 1
+  fi
+  echo "  Checksum verified ✓"
 fi
 
 # Extract binary from archive

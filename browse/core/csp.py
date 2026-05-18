@@ -31,11 +31,21 @@ def build_csp_header(nonce: str) -> str:
     )
 
 
-def build_v2_csp_header() -> str:
-    """Build CSP for static /v2 export (inline scripts without nonce attributes)."""
+def build_v2_csp_header(nonce: str = "") -> str:
+    """Build CSP for static /v2 export.
+
+    When *nonce* is provided, uses ``'nonce-{nonce}'`` for script-src so no
+    ``unsafe-inline`` is needed (WBS-084 fix).  When *nonce* is absent, falls
+    back to ``unsafe-inline`` for backward compatibility with pre-built exports
+    that cannot have nonces injected at serve-time.
+    """
+    if nonce:
+        script_src = f"'self' 'nonce-{nonce}'"
+    else:
+        script_src = "'self' 'unsafe-inline'"
     return (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        f"default-src 'self'; "
+        f"script-src {script_src}; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "

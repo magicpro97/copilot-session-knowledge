@@ -118,6 +118,11 @@ _ACTIVE_RUNS: dict[str, dict] = {}
 _RUNS_LOCK = threading.Lock()
 _TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "timeout", "cancelled"})
 
+# WBS-090: Cap and TTL eviction for _ACTIVE_RUNS.
+_ACTIVE_RUNS_CAP: int = 100  # max total entries; configurable in tests
+_ACTIVE_RUNS_TTL: int = 3600  # seconds: how long a terminal run remains in memory
+_ACTIVE_RUNS_SSE_GRACE: int = 30  # seconds: SSE grace window after completion
+
 # ── SSE resume-token store (issue #60) ───────────────────────────────────────
 # Maps opaque UUID4 token → {session_id, run_id, from_idx, expires_at}
 # Tokens are single-use and short-lived; consumed on first valid read.
@@ -146,7 +151,57 @@ def _is_valid_id(value: str) -> bool:
     return bool(value and _UUID4_RE.match(value))
 
 
-# ── SSE resume token helpers (issue #60) ─────────────────────────────────────
+# ── WBS-090: _ACTIVE_RUNS cap + TTL eviction ──────────────────────────────────
+
+
+def evict_active_runs() -> None:
+    """Evict terminal runs from _ACTIVE_RUNS based on TTL and cap.
+
+    Policy (executed with _RUNS_LOCK held internally):
+    1. Remove terminal runs whose ``_evict_after`` monotonic timestamp has passed.
+    2. If the count still exceeds ``_ACTIVE_RUNS_CAP``, evict the oldest terminal
+       runs (by ``_finished_monotonic``) until the cap is met.
+    3. Running (non-terminal) runs are NEVER evicted.
+
+    The ``_evict_after`` key is set when a run transitions to a terminal status
+    (= ``time.monotonic() + _ACTIVE_RUNS_SSE_GRACE``), so SSE clients have a
+    grace window to reconnect before the run is eligible for eviction.
+    """
+    now = time.monotonic()
+    with _RUNS_LOCK:
+        # Pass 1: TTL eviction — remove expired terminal runs.
+        to_remove = [
+            rid
+            for rid, run in _ACTIVE_RUNS.items()
+            if run.get("status") in _TERMINAL_RUN_STATUSES
+            and now >= run.get("_evict_after", now)  # default: evict immediately if no key
+        ]
+        for rid in to_remove:
+            _ACTIVE_RUNS.pop(rid, None)
+
+        # Pass 2: Cap enforcement — if still over cap, evict oldest terminal runs.
+        if len(_ACTIVE_RUNS) > _ACTIVE_RUNS_CAP:
+            terminal = sorted(
+                [(rid, run) for rid, run in _ACTIVE_RUNS.items() if run.get("status") in _TERMINAL_RUN_STATUSES],
+                key=lambda x: x[1].get("_finished_monotonic", 0.0),
+            )
+            overflow = len(_ACTIVE_RUNS) - _ACTIVE_RUNS_CAP
+            for rid, _ in terminal[:overflow]:
+                _ACTIVE_RUNS.pop(rid, None)
+
+
+def _mark_run_terminal(run_id: str) -> None:
+    """Mark an in-memory run as eligible for TTL eviction.
+
+    Must be called with _RUNS_LOCK held.  Sets ``_evict_after`` to
+    ``now + _ACTIVE_RUNS_SSE_GRACE`` so SSE clients have a reconnect window.
+    """
+    run = _ACTIVE_RUNS.get(run_id)
+    if run is None:
+        return
+    now = time.monotonic()
+    run["_finished_monotonic"] = now
+    run["_evict_after"] = now + _ACTIVE_RUNS_SSE_GRACE
 
 
 def _purge_expired_tokens() -> None:
@@ -881,7 +936,13 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
 
 
 def _persist_run(run_id: str) -> None:
-    """Write run state to disk (omitting the proc handle)."""
+    """Write run state to disk (omitting the proc handle).
+
+    WBS-090: When a run reaches terminal status, mark it with _evict_after
+    (= now + SSE grace window) instead of immediately removing it, so that
+    SSE clients in flight have time to drain their stream.  The run will be
+    removed by evict_active_runs() after the grace period expires.
+    """
     with _RUNS_LOCK:
         run = _ACTIVE_RUNS.get(run_id)
     if not run:
@@ -896,7 +957,10 @@ def _persist_run(run_id: str) -> None:
             with _RUNS_LOCK:
                 current = _ACTIVE_RUNS.get(run_id)
                 if isinstance(current, dict) and current.get("status") == data.get("status"):
-                    _ACTIVE_RUNS.pop(run_id, None)
+                    # Mark for TTL eviction with SSE grace period instead of immediate removal.
+                    _mark_run_terminal(run_id)
+            # Run lazy eviction to enforce cap after every terminal transition.
+            evict_active_runs()
     except Exception:
         pass
 
@@ -1019,6 +1083,13 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
             }
             for item in staged_meta
         ]
+
+    with _RUNS_LOCK:
+        # WBS-090: Evict before inserting to keep the registry bounded.
+        # evict_active_runs() acquires _RUNS_LOCK internally, so call it outside.
+        pass
+
+    evict_active_runs()
 
     with _RUNS_LOCK:
         _ACTIVE_RUNS[run_id] = run

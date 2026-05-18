@@ -384,7 +384,100 @@ def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
             db.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(stable_id)")
 
 
-# Extraction patterns — regex + heuristics for each category
+# ── WBS-013: Secret / injection scanner ──────────────────────────────────────
+# Mirror of learn.py._INJECTION_PATTERNS (kept in sync with WBS-019 expansions).
+# Applied before every DB insert in extract_from_sections() — fail-open (skip entry).
+
+
+class _ContextAwareHexMatcher:
+    """Matches long lowercase-hex strings only when NOT in a git/checksum context.
+
+    Prevents false-positive blocking of 40-char git commit SHAs and 64-char
+    SHA-256 checksums while still catching bare secret hex tokens that appear
+    without any identifying reference keyword nearby.
+
+    Duck-types the compiled regex interface: implements .search(text) returning
+    a match object (or None) so it can be used transparently in pattern lists.
+    """
+
+    _HEX_RE = re.compile(r"(?<![A-Za-z0-9])([0-9a-f]{40,})(?![A-Za-z0-9])")
+    _SAFE_CTX_RE = re.compile(r"(?i)\b(?:commit|sha\d*|hash|checksum|digest|fingerprint)\b")
+
+    def search(self, text: str):
+        """Return the first match for a secret-context hex run; None if all safe."""
+        for m in self._HEX_RE.finditer(text):
+            pre = text[max(0, m.start() - 100) : m.start()]
+            if self._SAFE_CTX_RE.search(pre):
+                continue
+            return m
+        return None
+
+
+_EXTRACT_INJECTION_PATTERNS = [
+    (
+        re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"),
+        "prompt injection: 'ignore previous instructions'",
+    ),
+    (re.compile(r"(?i)\byou\s+are\s+now\b"), "role hijacking: 'you are now'"),
+    (re.compile(r"(?i)\bsystem\s*:\s*"), "role injection: 'system:' prefix"),
+    (re.compile(r"(?i)\b(assistant|user|human)\s*:\s*"), "role injection: fake role prefix"),
+    (re.compile(r"(?i)\bforget\s+(everything|all|your)\b"), "memory manipulation: 'forget everything'"),
+    (re.compile(r"(?i)\bdo\s+not\s+follow\b"), "instruction override: 'do not follow'"),
+    (
+        re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S+"),
+        "credential leak: API key/password/token",
+    ),
+    (re.compile(r"(?i)ssh-rsa\s+AAAA"), "credential leak: SSH public key"),
+    (re.compile(r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----"), "credential leak: private key"),
+    (re.compile(r"(?i)\beval\s*\("), "code injection: eval()"),
+    (re.compile(r"(?i)\bexec\s*\("), "code injection: exec()"),
+    (re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]"), "invisible Unicode characters (zero-width)"),
+    (re.compile(r"(?i)\bACT\s+AS\b"), "role hijacking: 'act as'"),
+    (re.compile(r"(?i)\bpretend\s+(you\s+are|to\s+be)\b"), "role hijacking: 'pretend to be'"),
+    (re.compile(r"(?i)\b(curl|wget|nc|ncat)\s+.*\|\s*(ba)?sh\b"), "remote code execution pattern"),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+        "credential leak: JWT token",
+    ),
+    (
+        re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S{16,}"),
+        "credential leak: Authorization Bearer token",
+    ),
+    (
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        "credential leak: AWS access key ID",
+    ),
+    (
+        re.compile(r"(?i)\b(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret)\s*[:=]\s*[A-Za-z0-9/+]{30,}"),
+        "credential leak: AWS secret access key",
+    ),
+    # WBS-019: generic long hex token (context-aware — skips git commit SHAs and checksums)
+    (
+        _ContextAwareHexMatcher(),
+        "credential leak: long hex secret/token",
+    ),
+]
+
+
+def _scan_extract_chunk(title: str, content: str) -> str:
+    """Scan title + content for injection/credential patterns.
+
+    Returns the first matching description, or empty string if clean.
+    Used by extract_from_sections() to skip unsafe chunks before DB insert.
+    Fail-open: any exception returns empty string (scan miss is preferable to
+    blocking extraction entirely).
+    """
+    try:
+        text = f"{title}\n{content}"
+        for pattern, description in _EXTRACT_INJECTION_PATTERNS:
+            if pattern.search(text):
+                return description
+    except Exception:
+        pass
+    return ""
+
+
+# ── Extraction patterns — regex + heuristics for each category ────────────────
 MISTAKE_INDICATORS = [
     r"(?:mistake|error|bug|wrong|incorrect|broken|fail|crash|fix(?:ed)?)\b",
     r"(?:should\s+(?:have|not)|shouldn't|don't|avoid|never|careful)",
@@ -1307,6 +1400,16 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                 tags = extract_tags(chunk)
                 content_hash = _compute_content_hash(category, title, chunk)
                 topic_key = _generate_topic_key(category, title)
+
+                # WBS-013: security scan — skip entries with credentials/injection
+                unsafe_reason = _scan_extract_chunk(title, chunk)
+                if unsafe_reason:
+                    print(
+                        f"  [extract] SKIPPED unsafe chunk ({unsafe_reason}): {title[:60]!r}",
+                        file=sys.stderr,
+                    )
+                    skipped += 1
+                    continue
 
                 # Hash-based dedup: skip if exact content already exists
                 if content_hash in existing_hashes:

@@ -545,6 +545,175 @@ with _mock.patch.object(_aut, "_has_tracked_local_changes", return_value=True), 
          _warn_text)
 
 
+# ─── 11. WBS-056: auto-backup before migration ──────────────────────────────
+
+print("\n🗄  WBS-056: auto-backup before migration")
+
+import re as _re2
+import tempfile as _tempfile
+import shutil as _shutil2
+
+# Check _backup_db function exists
+test("WBS-056: _backup_db() helper exists",
+     hasattr(_aut, "_backup_db"),
+     "_backup_db not found in auto-update-tools.py")
+
+# Check run_migrations() source contains backup logic
+_mig_marker = "def run_migrations():"
+_mig_start = aut_src.index(_mig_marker) + len(_mig_marker)
+# Find the next top-level function definition (starts with "def " at column 0)
+_next_def = _re2.search(r'\ndef [a-zA-Z_]', aut_src[_mig_start:])
+_mig_body = aut_src[_mig_start: _mig_start + (_next_def.start() if _next_def else 4000)]
+test("WBS-056: run_migrations() calls _backup_db",
+     "_backup_db" in _mig_body,
+     "run_migrations should call _backup_db before running migrate")
+
+test("WBS-056: run_migrations() aborts if backup fails (None check)",
+     "backup_path is None" in _mig_body or "if backup_path" in _mig_body,
+     "run_migrations should abort when _backup_db returns None")
+
+# Verify _backup_db creates a file with a timestamp-based name
+_bk_tmpdir = REPO / ".test-backup-wbs056"
+_bk_tmpdir.mkdir(exist_ok=True)
+try:
+    _fake_db = _bk_tmpdir / "test.db"
+    _fake_db.write_bytes(b"SQLite fake db")
+    _backup = _aut._backup_db(_fake_db)
+    test("WBS-056: _backup_db returns a Path on success",
+         _backup is not None and isinstance(_backup, type(REPO)),
+         f"got {_backup!r}")
+    test("WBS-056: _backup_db creates backup file",
+         _backup is not None and _backup.exists(),
+         f"backup file not created: {_backup}")
+    test("WBS-056: backup file name contains 'backup'",
+         _backup is not None and "backup" in _backup.name,
+         f"backup name: {_backup.name if _backup else 'None'}")
+finally:
+    _shutil2.rmtree(str(_bk_tmpdir), ignore_errors=True)
+
+# Verify backup failure causes run_migrations() to abort (no migrate subprocess)
+with _mock.patch.object(_aut, "DB_PATH", REPO / "nonexistent-db-for-test.db"), \
+     _mock.patch.object(_aut, "_backup_db", return_value=None) as _mock_bk, \
+     _mock.patch("subprocess.run") as _mock_sub, \
+     _mock.patch.object(_aut, "warn") as _mock_wn:
+    # Set DB_PATH to exist by patching exists check
+    with _mock.patch.object(type(REPO / "nonexistent-db-for-test.db"), "exists", return_value=True):
+        _aut.run_migrations()
+    test("WBS-056: run_migrations() aborts when backup fails (no subprocess call)",
+         not _mock_sub.called,
+         f"subprocess.run called even though backup failed: {_mock_sub.call_args_list!r}")
+
+
+# ─── 12. WBS-059: retry on database locked ──────────────────────────────────
+
+print("\n🔁 WBS-059: retry on 'database is locked'")
+
+# Check _DB_LOCKED_PHRASES constant exists
+test("WBS-059: _DB_LOCKED_PHRASES constant defined",
+     hasattr(_aut, "_DB_LOCKED_PHRASES"),
+     "_DB_LOCKED_PHRASES not in auto-update-tools.py")
+
+test("WBS-059: _DB_LOCKED_PHRASES includes 'database is locked'",
+     hasattr(_aut, "_DB_LOCKED_PHRASES") and
+     any("database is locked" in p.lower() for p in _aut._DB_LOCKED_PHRASES),
+     f"got {getattr(_aut, '_DB_LOCKED_PHRASES', None)!r}")
+
+# Verify locked stderr triggers retry (not break)
+test("WBS-059: run_migrations() detects locked stderr",
+     "is_locked" in _mig_body or "_DB_LOCKED_PHRASES" in _mig_body,
+     "run_migrations should check for locked DB phrases in stderr")
+
+# Simulate: first call locked, second call succeeds
+_locked_result = subprocess.CompletedProcess(
+    [], 1, stdout="", stderr="database is locked"
+)
+_success_result = subprocess.CompletedProcess(
+    [], 0, stdout="", stderr=""
+)
+_calls = []
+
+def _fake_migrate_run(*args, **kwargs):
+    _calls.append(len(_calls))
+    if len(_calls) == 1:
+        return _locked_result
+    return _success_result
+
+with _mock.patch.object(_aut, "DB_PATH", REPO / ".test-wbs059.db"), \
+     _mock.patch.object(_aut, "_backup_db", return_value=REPO / ".test-wbs059.backup.db"), \
+     _mock.patch("subprocess.run", side_effect=_fake_migrate_run), \
+     _mock.patch.object(_aut, "warn") as _mock_warn_lock, \
+     _mock.patch("time.sleep"):
+    with _mock.patch.object(type(REPO / ".test-wbs059.db"), "exists", return_value=True):
+        _aut.run_migrations()
+
+test("WBS-059: locked then success → retried (called twice)",
+     len(_calls) == 2,
+     f"subprocess.run called {len(_calls)} time(s), expected 2")
+
+# Simulate: locked exhausted (all 3 attempts locked)
+_exhaust_calls = []
+_locked_only = subprocess.CompletedProcess([], 1, stdout="", stderr="database is locked")
+
+def _always_locked(*args, **kwargs):
+    _exhaust_calls.append(1)
+    return _locked_only
+
+_exhaust_warns = []
+with _mock.patch.object(_aut, "DB_PATH", REPO / ".test-wbs059.db"), \
+     _mock.patch.object(_aut, "_backup_db", return_value=REPO / ".test-wbs059.backup.db"), \
+     _mock.patch("subprocess.run", side_effect=_always_locked), \
+     _mock.patch.object(_aut, "warn", side_effect=lambda m: _exhaust_warns.append(m)), \
+     _mock.patch("time.sleep"):
+    with _mock.patch.object(type(REPO / ".test-wbs059.db"), "exists", return_value=True):
+        _aut.run_migrations()
+
+test("WBS-059: locked exhausted → all 3 attempts made",
+     len(_exhaust_calls) == 3,
+     f"expected 3 attempts, got {len(_exhaust_calls)}")
+
+_hint_in_warn = any("rollback" in w.lower() or "manually" in w.lower() for w in _exhaust_warns)
+test("WBS-059: exhausted locked prints helpful hint",
+     _hint_in_warn,
+     f"no rollback/manual hint in warns: {_exhaust_warns!r}")
+
+
+# ─── 13. WBS-068: atomic writes in deploy_skills() ──────────────────────────
+
+print("\n⚡ WBS-068: atomic writes in deploy_skills()")
+
+_ds_start = aut_src.index("def deploy_skills():")
+_ds_body = aut_src[_ds_start:].split("\ndef ")[0]
+
+test("WBS-068: deploy_skills uses _atomic_write_text (not write_text)",
+     "_atomic_write_text" in _ds_body,
+     "deploy_skills still uses write_text() directly")
+
+test("WBS-068: deploy_skills uses _atomic_write_bytes (not write_bytes)",
+     "_atomic_write_bytes" in _ds_body,
+     "deploy_skills still uses write_bytes() directly")
+
+# The raw .write_text() / .write_bytes() calls should no longer appear
+_direct_write_text = ".write_text(" in _ds_body
+_direct_write_bytes = ".write_bytes(" in _ds_body and "_atomic_write_bytes(" not in _ds_body.replace("_atomic_write_bytes(", "REPLACED")
+# Allow write_bytes on reads (read_bytes is fine, but .write_bytes outside atomic is not)
+# More precise: count lines
+_lines_with_raw_wt = [
+    l.strip() for l in _ds_body.splitlines()
+    if ".write_text(" in l and "_atomic_write_text" not in l and "read_text" not in l
+]
+test("WBS-068: no direct .write_text() left in deploy_skills",
+     len(_lines_with_raw_wt) == 0,
+     f"still has direct write_text: {_lines_with_raw_wt!r}")
+
+_lines_with_raw_wb = [
+    l.strip() for l in _ds_body.splitlines()
+    if ".write_bytes(" in l and "_atomic_write_bytes" not in l and "read_bytes" not in l
+]
+test("WBS-068: no direct .write_bytes() left in deploy_skills",
+     len(_lines_with_raw_wb) == 0,
+     f"still has direct write_bytes: {_lines_with_raw_wb!r}")
+
+
 # ─── Summary ────────────────────────────────────────────────────────────────
 
 print(f"\n{'─' * 50}")

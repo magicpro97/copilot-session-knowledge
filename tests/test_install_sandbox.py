@@ -75,6 +75,7 @@ class _FakeWinreg:
     HKEY_CURRENT_USER = object()
     KEY_READ = 1
     KEY_WRITE = 2
+    KEY_SET_VALUE = 2  # minimal right needed for SetValueEx
     REG_EXPAND_SZ = 2
 
     def __init__(self, path_value: str = ""):

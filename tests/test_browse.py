@@ -361,17 +361,17 @@ def run_all_tests() -> int:
     _, _, code5 = serve_static(None, "vendor/cytoscape.min.js")
     test("T12: static serves valid file (200 or 404 if missing)", code5 in (200, 404))
 
-    # ── T13: canonical root CSP uses unsafe-inline (Next.js, no nonce) ──────
-    print("\n-- T13: canonical root CSP (unsafe-inline, no nonce)")
+    # ── T13: canonical root CSP uses nonce (WBS-084: no longer unsafe-inline) ──
+    print("\n-- T13: canonical root CSP (nonce-based, no unsafe-inline)")
     import re as _re
     db13 = _make_test_db()
     server13, host13, port13 = _start_server(db13, token="tok")
     try:
         status13, hdrs13, body13 = _get(host13, port13, "/?token=tok")
         csp13 = hdrs13.get("content-security-policy", "")
-        # Root now serves Next.js which uses unsafe-inline (not nonce-based)
-        test("T13: CSP has no nonce (canonical Next.js root)", "nonce-" not in csp13)
-        test("T13: canonical root CSP uses unsafe-inline for scripts", "'unsafe-inline'" in csp13)
+        # WBS-084: Root now uses per-request nonce instead of unsafe-inline.
+        test("T13: CSP has nonce (WBS-084: nonce replaces unsafe-inline)", "nonce-" in csp13)
+        test("T13: CSP has no unsafe-inline in script-src (WBS-084)", not ("'unsafe-inline'" in csp13 and "script-src" in csp13.split("'unsafe-inline'")[0].split(";")[-1]))
         test("T13: CSP has no unsafe-eval", "unsafe-eval" not in csp13)
         test("T13: root page is HTML", b"<!DOCTYPE html>" in body13 or b"<html" in body13.lower())
         test("T13: root page is non-empty", len(body13) > 100)

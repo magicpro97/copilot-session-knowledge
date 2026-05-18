@@ -126,8 +126,12 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    # WBS-098: only publish on version tags or explicit main-branch dispatch
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     permissions:
       contents: write
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -138,6 +142,19 @@ jobs:
         with:
           path: artifacts/
           merge-multiple: true
+
+      # WBS-098: Generate SLSA provenance attestation for all release archives.
+      # Attestations are signed with the GitHub OIDC token and verifiable via
+      # `gh attestation verify <artifact> --repo magicpro97/copilot-session-knowledge`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/sk-linux-x64.tar.gz
+            artifacts/sk-linux-arm64.tar.gz
+            artifacts/sk-darwin-x64.tar.gz
+            artifacts/sk-darwin-arm64.tar.gz
+            artifacts/sk-windows-x64.zip
 
       - name: Generate changelog
         id: changelog

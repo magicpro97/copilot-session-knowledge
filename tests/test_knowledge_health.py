@@ -1055,6 +1055,436 @@ test("low-confidence DB has lower pct than high-confidence DB", _low_conf_pct < 
 
 kh.get_db = orig_get_db
 
+# ===========================================================================
+# Integrity lints — dangling relation detection (#386, WBS-061)
+# ===========================================================================
+
+section("integrity_lints — dangling relation detection (#386)")
+
+_KR_FULL_SCHEMA = """CREATE TABLE knowledge_relations (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER,
+    target_id INTEGER,
+    relation_type TEXT,
+    stable_id TEXT,
+    source_stable_id TEXT DEFAULT '',
+    target_stable_id TEXT DEFAULT ''
+)"""
+
+# DB with 1 valid relation + 1 dangling (target_id=999 does not exist)
+uri_dangle = _new_uri()
+db_dangle = sqlite3.connect(uri_dangle, uri=True)
+db_dangle.row_factory = sqlite3.Row
+db_dangle.execute(_KE_SCHEMA)
+db_dangle.execute(_KR_FULL_SCHEMA)
+db_dangle.execute(_SCHEMA_VER_SCHEMA)
+db_dangle.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')")
+db_dangle.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'pattern', 'e2', 'c2', 's1')")
+db_dangle.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (1, 2, 'related')")
+db_dangle.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (1, 999, 'orphaned')")
+db_dangle.commit()
+
+kh.get_db = _get_db_factory(uri_dangle)
+ins_dangle = kh.compute_insights()
+kh.get_db = orig_get_db
+db_dangle.close()
+
+test("integrity_lints key present in compute_insights",
+     "integrity_lints" in ins_dangle)
+lint_dangle = ins_dangle.get("integrity_lints", {})
+test("dangling_relations count == 1",
+     lint_dangle.get("dangling_relations", -1) == 1)
+test("dangling-relations alert fires",
+     any(a.get("id") == "dangling-relations" for a in ins_dangle.get("quality_alerts", [])))
+test("dangling-relations alert is warning severity",
+     any(a.get("id") == "dangling-relations" and a.get("severity") == "warning"
+         for a in ins_dangle.get("quality_alerts", [])))
+
+# DB with only valid relations — no alert
+uri_valid_rel = _new_uri()
+db_valid_rel = sqlite3.connect(uri_valid_rel, uri=True)
+db_valid_rel.row_factory = sqlite3.Row
+db_valid_rel.execute(_KE_SCHEMA)
+db_valid_rel.execute(_KR_FULL_SCHEMA)
+db_valid_rel.execute(_SCHEMA_VER_SCHEMA)
+db_valid_rel.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')")
+db_valid_rel.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'pattern', 'e2', 'c2', 's1')")
+db_valid_rel.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (1, 2, 'related')")
+db_valid_rel.commit()
+
+kh.get_db = _get_db_factory(uri_valid_rel)
+ins_valid_rel = kh.compute_insights()
+kh.get_db = orig_get_db
+db_valid_rel.close()
+
+test("dangling-relations alert absent when all relations valid",
+     not any(a.get("id") == "dangling-relations" for a in ins_valid_rel.get("quality_alerts", [])))
+test("dangling_relations count is 0 for valid DB",
+     ins_valid_rel.get("integrity_lints", {}).get("dangling_relations", -1) == 0)
+
+# ===========================================================================
+# Integrity lints — contradiction detection (#388, WBS-063)
+# ===========================================================================
+
+section("integrity_lints — contradiction detection (#388)")
+
+uri_contra = _new_uri()
+db_contra = sqlite3.connect(uri_contra, uri=True)
+db_contra.row_factory = sqlite3.Row
+db_contra.execute(_KE_SCHEMA)
+db_contra.execute(_SCHEMA_VER_SCHEMA)
+# Two contradicting entries with the same tags
+db_contra.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (1, 'pattern', 'Always use X for production', 'Use X', 'tool-x,production', 's1')"
+)
+db_contra.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (2, 'pattern', 'Never use X in production', 'Avoid X', 'tool-x,production', 's1')"
+)
+# Non-contradicting entry
+db_contra.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (3, 'pattern', 'Always use linting', 'Lint code', 'quality', 's1')"
+)
+db_contra.commit()
+
+kh.get_db = _get_db_factory(uri_contra)
+ins_contra = kh.compute_insights()
+kh.get_db = orig_get_db
+db_contra.close()
+
+lint_contra = ins_contra.get("integrity_lints", {})
+test("contradictions key present in integrity_lints",
+     "contradictions" in lint_contra)
+test("contradiction pair detected (Always/Never same tags)",
+     len(lint_contra.get("contradictions", [])) >= 1)
+test("contradiction-pairs alert fires",
+     any(a.get("id") == "contradiction-pairs" for a in ins_contra.get("quality_alerts", [])))
+if lint_contra.get("contradictions"):
+    c = lint_contra["contradictions"][0]
+    test("contradiction entry has entry_a_id", "entry_a_id" in c)
+    test("contradiction entry has entry_b_id", "entry_b_id" in c)
+    test("contradiction entry has shared_tags", "shared_tags" in c)
+
+# Empty DB — no contradiction alert
+uri_no_contra = _new_uri()
+db_no_contra = sqlite3.connect(uri_no_contra, uri=True)
+db_no_contra.row_factory = sqlite3.Row
+db_no_contra.execute(_KE_SCHEMA)
+db_no_contra.execute(_SCHEMA_VER_SCHEMA)
+db_no_contra.commit()
+
+kh.get_db = _get_db_factory(uri_no_contra)
+ins_no_contra = kh.compute_insights()
+kh.get_db = orig_get_db
+db_no_contra.close()
+
+test("contradiction-pairs alert absent for empty DB",
+     not any(a.get("id") == "contradiction-pairs" for a in ins_no_contra.get("quality_alerts", [])))
+test("contradictions list empty for empty DB",
+     ins_no_contra.get("integrity_lints", {}).get("contradictions", None) == [])
+
+# Non-contradicting DB (all "Always", no "Never") — no alert
+uri_always_only = _new_uri()
+db_always_only = sqlite3.connect(uri_always_only, uri=True)
+db_always_only.row_factory = sqlite3.Row
+db_always_only.execute(_KE_SCHEMA)
+db_always_only.execute(_SCHEMA_VER_SCHEMA)
+db_always_only.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (1, 'pattern', 'Always use X', 'Use X', 'tool-x', 's1')"
+)
+db_always_only.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (2, 'pattern', 'Always use Y', 'Use Y', 'tool-x', 's1')"
+)
+db_always_only.commit()
+
+kh.get_db = _get_db_factory(uri_always_only)
+ins_always_only = kh.compute_insights()
+kh.get_db = orig_get_db
+db_always_only.close()
+
+test("contradiction-pairs absent when no Never/Always pair exists",
+     not any(a.get("id") == "contradiction-pairs" for a in ins_always_only.get("quality_alerts", [])))
+
+# SQL precedence regression: Always/Never pair with NULL tags must NOT fire
+# (first OR branch was previously unguarded by tags filter due to AND > OR precedence)
+section("integrity_lints — contradiction SQL precedence regression (null/empty tags)")
+
+uri_null_tags = _new_uri()
+db_null_tags = sqlite3.connect(uri_null_tags, uri=True)
+db_null_tags.row_factory = sqlite3.Row
+db_null_tags.execute(_KE_SCHEMA)
+db_null_tags.execute(_SCHEMA_VER_SCHEMA)
+# Always/Never pair whose tags are NULL — must NOT be flagged as contradictions
+db_null_tags.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (1, 'pattern', 'Always do X', 'Do X', NULL, 's1')"
+)
+db_null_tags.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (2, 'pattern', 'Never do X', 'Avoid X', NULL, 's1')"
+)
+# Also add an Always/Never pair with an empty-string tag — also must NOT fire
+db_null_tags.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (3, 'pattern', 'Always do Y', 'Do Y', '', 's1')"
+)
+db_null_tags.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, tags, session_id) VALUES (4, 'pattern', 'Never do Y', 'Avoid Y', '', 's1')"
+)
+db_null_tags.commit()
+
+kh.get_db = _get_db_factory(uri_null_tags)
+ins_null_tags = kh.compute_insights()
+kh.get_db = orig_get_db
+db_null_tags.close()
+
+test("contradiction-pairs absent when Always/Never pair has NULL tags (SQL precedence regression)",
+     not any(a.get("id") == "contradiction-pairs" for a in ins_null_tags.get("quality_alerts", [])))
+test("contradictions list empty when tags are NULL/empty (SQL precedence regression)",
+     ins_null_tags.get("integrity_lints", {}).get("contradictions", None) == [])
+
+# ===========================================================================
+# Integrity lints — stable_id collision detection (#390, WBS-065)
+# ===========================================================================
+
+section("integrity_lints — stable_id collision detection (#390)")
+
+uri_sid_coll = _new_uri()
+db_sid_coll = sqlite3.connect(uri_sid_coll, uri=True)
+db_sid_coll.row_factory = sqlite3.Row
+db_sid_coll.execute(_KE_SCHEMA)
+db_sid_coll.execute(_SCHEMA_VER_SCHEMA)
+# Two entries sharing the same stable_id but different content (collision)
+_SAME_SID = "deadbeef1234567890abcdef"
+db_sid_coll.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, stable_id, session_id) VALUES (1, 'mistake', 'entry A', 'content A', ?, 's1')",
+    (_SAME_SID,),
+)
+db_sid_coll.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, stable_id, session_id) VALUES (2, 'mistake', 'entry B', 'content B different', ?, 's2')",
+    (_SAME_SID,),
+)
+# One unique entry
+db_sid_coll.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, stable_id, session_id) VALUES (3, 'pattern', 'unique entry', 'unique content', 'uniquestableid999', 's1')"
+)
+db_sid_coll.commit()
+
+kh.get_db = _get_db_factory(uri_sid_coll)
+ins_sid_coll = kh.compute_insights()
+kh.get_db = orig_get_db
+db_sid_coll.close()
+
+lint_sid = ins_sid_coll.get("integrity_lints", {})
+test("stable_id_collisions key present in integrity_lints",
+     "stable_id_collisions" in lint_sid)
+test("stable_id_collisions count == 1 for duplicate stable_id",
+     lint_sid.get("stable_id_collisions", -1) == 1)
+test("stable-id-collision alert fires",
+     any(a.get("id") == "stable-id-collision" for a in ins_sid_coll.get("quality_alerts", [])))
+
+# DB with all unique stable_ids — no alert
+uri_sid_ok = _new_uri()
+db_sid_ok = sqlite3.connect(uri_sid_ok, uri=True)
+db_sid_ok.row_factory = sqlite3.Row
+db_sid_ok.execute(_KE_SCHEMA)
+db_sid_ok.execute(_SCHEMA_VER_SCHEMA)
+db_sid_ok.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, stable_id, session_id) VALUES (1, 'mistake', 'e1', 'c1', 'stable001', 's1')"
+)
+db_sid_ok.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, stable_id, session_id) VALUES (2, 'mistake', 'e2', 'c2', 'stable002', 's1')"
+)
+db_sid_ok.commit()
+
+kh.get_db = _get_db_factory(uri_sid_ok)
+ins_sid_ok = kh.compute_insights()
+kh.get_db = orig_get_db
+db_sid_ok.close()
+
+test("stable-id-collision alert absent when all stable_ids unique",
+     not any(a.get("id") == "stable-id-collision" for a in ins_sid_ok.get("quality_alerts", [])))
+test("stable_id_collisions == 0 for unique DB",
+     ins_sid_ok.get("integrity_lints", {}).get("stable_id_collisions", -1) == 0)
+
+# DB with no stable_ids set (all NULL) — no collision alert
+uri_sid_null = _new_uri()
+db_sid_null = sqlite3.connect(uri_sid_null, uri=True)
+db_sid_null.row_factory = sqlite3.Row
+db_sid_null.execute(_KE_SCHEMA)
+db_sid_null.execute(_SCHEMA_VER_SCHEMA)
+db_sid_null.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')")
+db_sid_null.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'mistake', 'e2', 'c2', 's1')")
+db_sid_null.commit()
+
+kh.get_db = _get_db_factory(uri_sid_null)
+ins_sid_null = kh.compute_insights()
+kh.get_db = orig_get_db
+db_sid_null.close()
+
+test("stable-id-collision absent when all stable_ids are NULL",
+     not any(a.get("id") == "stable-id-collision" for a in ins_sid_null.get("quality_alerts", [])))
+
+# ===========================================================================
+# Integrity lints — DB size budget warning (#391, WBS-066)
+# ===========================================================================
+
+section("integrity_lints — DB size budget (#391)")
+
+import tempfile as _tempfile
+import shutil as _shutil
+
+_size_tmp = Path(_tempfile.mkdtemp(prefix="kh-size-test-"))
+try:
+    # Create a real file to test size budget
+    _db_small_path = _size_tmp / "small.db"
+    _small_conn = sqlite3.connect(str(_db_small_path))
+    _small_conn.execute("CREATE TABLE t (x TEXT)")
+    _small_conn.close()
+
+    # Test: below threshold — no alert
+    _old_db_path = kh.DB_PATH
+    kh.DB_PATH = _db_small_path
+    _budget_env_bak = os.environ.pop("SK_DB_SIZE_BUDGET_MB", None)
+    os.environ["SK_DB_SIZE_BUDGET_MB"] = "500"  # 500 MB budget, tiny DB is under it
+
+    lint_small = kh._compute_db_size_lint()
+    test("_compute_db_size_lint returns dict", isinstance(lint_small, dict))
+    test("db_size_lint has size_bytes key", "size_bytes" in lint_small)
+    test("db_size_lint has budget_bytes key", "budget_bytes" in lint_small)
+    test("db_size_lint has over_budget key", "over_budget" in lint_small)
+    test("db_size_lint has size_mb key", "size_mb" in lint_small)
+    test("db_size_lint has budget_mb key", "budget_mb" in lint_small)
+    test("small DB not over budget at 500MB threshold",
+         lint_small.get("over_budget") is False)
+
+    # Test: above threshold (set tiny threshold so small file exceeds it)
+    os.environ["SK_DB_SIZE_BUDGET_MB"] = "0"  # 0 MB = anything exceeds it
+    lint_over = kh._compute_db_size_lint()
+    test("tiny threshold triggers over_budget=True",
+         lint_over.get("over_budget") is True)
+
+    # Test: config override (env var)
+    os.environ["SK_DB_SIZE_BUDGET_MB"] = "1"  # 1 MB; small DB is under it
+    lint_1mb = kh._compute_db_size_lint()
+    test("budget_mb == 1.0 when SK_DB_SIZE_BUDGET_MB=1",
+         lint_1mb.get("budget_mb") == 1.0)
+    test("small DB is under 1MB budget",
+         lint_1mb.get("over_budget") is False)
+
+    # Test: nonexistent path — graceful degradation
+    kh.DB_PATH = _size_tmp / "nonexistent.db"
+    lint_missing = kh._compute_db_size_lint()
+    test("size_bytes == 0 when file does not exist",
+         lint_missing.get("size_bytes") == 0)
+    test("over_budget False when file missing",
+         lint_missing.get("over_budget") is False)
+
+    # Restore
+    if _budget_env_bak is not None:
+        os.environ["SK_DB_SIZE_BUDGET_MB"] = _budget_env_bak
+    else:
+        os.environ.pop("SK_DB_SIZE_BUDGET_MB", None)
+    kh.DB_PATH = _old_db_path
+
+    # Test: compute_insights surfaces db_size_budget key
+    uri_sz = _new_uri()
+    db_sz = _make_db(uri_sz)
+    _insert_entries(db_sz, [{"category": "mistake", "title": "sz1", "confidence": 0.7}])
+    kh.get_db = _get_db_factory(uri_sz)
+    _sz_db_path_bak = kh.DB_PATH
+    kh.DB_PATH = _db_small_path  # real file
+    os.environ["SK_DB_SIZE_BUDGET_MB"] = "500"
+    ins_sz = kh.compute_insights()
+    kh.get_db = orig_get_db
+    kh.DB_PATH = _sz_db_path_bak
+    os.environ.pop("SK_DB_SIZE_BUDGET_MB", None)
+
+    test("db_size_budget key present in compute_insights output",
+         "db_size_budget" in ins_sz)
+    sz_budget = ins_sz.get("db_size_budget", {})
+    test("db_size_budget has over_budget key", "over_budget" in sz_budget)
+    test("db_size_budget has size_mb key", "size_mb" in sz_budget)
+    test("db_size_budget has budget_mb key", "budget_mb" in sz_budget)
+
+    # Test: over-budget triggers alert in compute_insights
+    os.environ["SK_DB_SIZE_BUDGET_MB"] = "0"  # everything exceeds it
+    kh.get_db = _get_db_factory(uri_sz)
+    kh.DB_PATH = _db_small_path
+    ins_over_budget = kh.compute_insights()
+    kh.get_db = orig_get_db
+    kh.DB_PATH = _sz_db_path_bak
+    os.environ.pop("SK_DB_SIZE_BUDGET_MB", None)
+    db_sz.close()
+
+    test("db-size-over-budget alert fires when DB exceeds threshold",
+         any(a.get("id") == "db-size-over-budget" for a in ins_over_budget.get("quality_alerts", [])))
+    test("db-size-over-budget alert absent when DB under threshold",
+         not any(a.get("id") == "db-size-over-budget" for a in ins_sz.get("quality_alerts", [])))
+
+finally:
+    _shutil.rmtree(str(_size_tmp), ignore_errors=True)
+
+# ===========================================================================
+# integrity_lints JSON serialisability
+# ===========================================================================
+
+section("integrity_lints — JSON serialisability")
+
+try:
+    json.dumps(ins_dangle.get("integrity_lints", {}))
+    test("integrity_lints is JSON serializable (dangling)", True)
+except TypeError as e:
+    test("integrity_lints is JSON serializable (dangling)", False, str(e))
+
+try:
+    json.dumps(ins_contra.get("integrity_lints", {}))
+    test("integrity_lints is JSON serializable (contradiction)", True)
+except TypeError as e:
+    test("integrity_lints is JSON serializable (contradiction)", False, str(e))
+
+try:
+    json.dumps(ins_sid_coll.get("integrity_lints", {}))
+    test("integrity_lints is JSON serializable (stable_id collision)", True)
+except TypeError as e:
+    test("integrity_lints is JSON serializable (stable_id collision)", False, str(e))
+
+# ===========================================================================
+# format_insights_report — integrity lint rendering
+# ===========================================================================
+
+section("format_insights_report — integrity lint section")
+
+_il_sample = {
+    "generated_at": "2025-01-01T00:00:00+00:00",
+    "summary": "Test",
+    "overview": {
+        "health_score": 50, "total_entries": 5, "sessions": 1,
+        "high_confidence_pct": 20.0, "low_confidence_pct": 30.0,
+        "stale_pct": 0.0, "relation_density": 0.0, "embedding_pct": 0.0,
+    },
+    "quality_alerts": [
+        {"id": "dangling-relations", "title": "1 dangling relation(s)", "severity": "warning",
+         "detail": "Some relations reference missing entries."},
+        {"id": "stable-id-collision", "title": "1 stable_id collision(s)", "severity": "warning",
+         "detail": "Duplicate stable_ids detected."},
+        {"id": "contradiction-pairs", "title": "1 contradiction pair(s)", "severity": "info",
+         "detail": "Contradicting entries detected."},
+        {"id": "db-size-over-budget", "title": "DB size exceeds budget (10.0 MB / 0.0 MB)", "severity": "warning",
+         "detail": "Consider archiving."},
+    ],
+    "recommended_actions": [],
+    "recurring_noise_titles": [],
+    "hot_files": [],
+    "entries": {},
+    "integrity_lints": {
+        "dangling_relations": 1,
+        "stable_id_collisions": 1,
+        "contradictions": [{"entry_a_id": 1, "entry_a_title": "Always use X", "entry_b_id": 2, "entry_b_title": "Never use X", "shared_tags": "tool-x"}],
+    },
+    "db_size_budget": {"size_bytes": 10485760, "budget_bytes": 0, "over_budget": True, "size_mb": 10.0, "budget_mb": 0.0},
+    "sync_advisory": {"status": "ok", "reasons": [], "checklist": "docs/SYNC-MATRIX.md"},
+}
+_il_report = kh.format_insights_report(_il_sample)
+test("format_insights_report renders integrity lints section",
+     "Integrity" in _il_report or "dangling" in _il_report.lower() or "Dangling" in _il_report)
+
 print(f"\n{'=' * 50}")
 print(f"Results: {_PASS} passed, {_FAIL} failed")
 if _ERRORS:

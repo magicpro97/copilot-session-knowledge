@@ -767,11 +767,27 @@ def _sk_launcher_managed_paths() -> "list[Path]":
 
 
 def _sk_launcher_content() -> str:
-    """Return the launcher script body for the current platform."""
+    """Return the launcher script body for the current platform.
+
+    WBS-004: prefer py -3, fallback to python on Windows.
+    WBS-005: honor SK_TOOLS_DIR env var on both platforms.
+    """
     if os.name == "nt":
-        return '@echo off\r\npython "%USERPROFILE%\\.copilot\\tools\\sk.py" %*\r\n'
-    # POSIX: sh-compatible, expands $HOME at runtime so it survives home dir changes
-    return '#!/bin/sh\nexec python3 "$HOME/.copilot/tools/sk.py" "$@"\n'
+        # WBS-005: honor SK_TOOLS_DIR; WBS-004: prefer py -3, fallback to python
+        return (
+            "@echo off\r\n"
+            "setlocal\r\n"
+            'set "TOOLS_DIR=%USERPROFILE%\\.copilot\\tools"\r\n'
+            'if defined SK_TOOLS_DIR set "TOOLS_DIR=%SK_TOOLS_DIR%"\r\n'
+            "where py >nul 2>&1\r\n"
+            "if %ERRORLEVEL% equ 0 (\r\n"
+            '    py -3 "%TOOLS_DIR%\\sk.py" %*\r\n'
+            ") else (\r\n"
+            '    python "%TOOLS_DIR%\\sk.py" %*\r\n'
+            ")\r\n"
+        )
+    # POSIX: WBS-005: honor SK_TOOLS_DIR, fallback to $HOME/.copilot/tools
+    return '#!/bin/sh\nTOOLS_DIR="${SK_TOOLS_DIR:-$HOME/.copilot/tools}"\nexec python3 "$TOOLS_DIR/sk.py" "$@"\n'
 
 
 def _shell_profiles() -> "list[Path]":
@@ -826,7 +842,11 @@ def _remove_launcher_path_block_from_text(text: str) -> tuple[str, int]:
 
 
 def _inject_launcher_path_windows(quiet: bool = False) -> bool:
-    """Try adding ~/.copilot/bin to user PATH in Windows Registry."""
+    """Try adding ~/.copilot/bin to user PATH in Windows Registry.
+
+    WBS-007: uses canonical 'Path' key and minimal KEY_READ | KEY_SET_VALUE access.
+    WBS-001: sends WM_SETTINGCHANGE after actual mutation; no broadcast on no-op.
+    """
     bin_str = str(SK_LAUNCHER_DIR)
     try:
         import winreg
@@ -835,20 +855,21 @@ def _inject_launcher_path_windows(quiet: bool = False) -> bool:
             winreg.HKEY_CURRENT_USER,
             "Environment",
             0,
-            winreg.KEY_READ | winreg.KEY_WRITE,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,  # WBS-007: minimal rights
         )
         try:
-            cur_path, _ = winreg.QueryValueEx(key, "PATH")
+            cur_path, _ = winreg.QueryValueEx(key, "Path")  # WBS-007: canonical "Path"
         except FileNotFoundError:
             cur_path = ""
         entries = [entry for entry in cur_path.split(";") if entry.strip()]
         launcher_key = _windows_path_entry_key(bin_str)
         if not any(_windows_path_entry_key(entry) == launcher_key for entry in entries):
             new_path = f"{bin_str};{cur_path}" if cur_path else bin_str
-            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)  # WBS-007
             if not quiet:
                 print(f"  {OK} Added sk launcher dir to Windows user PATH")
             winreg.CloseKey(key)
+            _broadcast_windows_path_change(quiet=quiet)  # WBS-001
             return True
         else:
             if not quiet:
@@ -862,7 +883,10 @@ def _inject_launcher_path_windows(quiet: bool = False) -> bool:
 
 
 def _remove_launcher_path_windows(quiet: bool = False) -> bool:
-    """Try removing ~/.copilot/bin from the Windows user PATH."""
+    """Try removing ~/.copilot/bin from the Windows user PATH.
+
+    WBS-007: uses canonical 'Path' key and minimal KEY_READ | KEY_SET_VALUE access.
+    """
     bin_str = str(SK_LAUNCHER_DIR)
     try:
         import winreg
@@ -871,10 +895,10 @@ def _remove_launcher_path_windows(quiet: bool = False) -> bool:
             winreg.HKEY_CURRENT_USER,
             "Environment",
             0,
-            winreg.KEY_READ | winreg.KEY_WRITE,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,  # WBS-007: minimal rights
         )
         try:
-            cur_path, _ = winreg.QueryValueEx(key, "PATH")
+            cur_path, _ = winreg.QueryValueEx(key, "Path")  # WBS-007: canonical "Path"
         except FileNotFoundError:
             cur_path = ""
         entries = [entry for entry in cur_path.split(";") if entry]
@@ -883,7 +907,7 @@ def _remove_launcher_path_windows(quiet: bool = False) -> bool:
         if filtered != entries:
             winreg.SetValueEx(
                 key,
-                "PATH",
+                "Path",  # WBS-007: canonical "Path"
                 0,
                 winreg.REG_EXPAND_SZ,
                 ";".join(filtered),
@@ -947,21 +971,58 @@ def _emit_windows_current_path_hint(quiet: bool = False) -> None:
 
 
 def _read_windows_user_path() -> tuple[str | None, str | None]:
-    """Return the Windows user PATH registry value, or an error string."""
-    if os.name != "nt":
-        return None, None
+    """Read the Windows user PATH from HKCU\\Environment.
+
+    Returns (path_value, error_message). On success error_message is None.
+    On failure path_value is None and error_message describes the problem.
+    Uses canonical 'Path' key name (WBS-007).
+    """
     try:
         import winreg
 
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ)
         try:
-            value, _kind = winreg.QueryValueEx(key, "Path")
+            value, _ = winreg.QueryValueEx(key, "Path")
         except FileNotFoundError:
             value = ""
-        winreg.CloseKey(key)
+        finally:
+            winreg.CloseKey(key)
         return value, None
     except Exception as exc:
         return None, str(exc)
+
+
+def _broadcast_windows_path_change(quiet: bool = False) -> bool:
+    """Send WM_SETTINGCHANGE to notify windows that user PATH has changed.
+
+    WBS-001: called after actual registry PATH mutation; not called on no-op.
+    Fail-open: returns False without raising if broadcast is unavailable.
+    """
+    try:
+        import ctypes
+
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        result = ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            "Environment",
+            SMTO_ABORTIFHUNG,
+            5000,
+            None,
+        )
+        if result == 0 and not quiet:
+            print(
+                f"  {WARN} PATH broadcast (WM_SETTINGCHANGE) returned 0; "
+                "new terminals should still inherit the change after restart."
+            )
+        return result != 0
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not broadcast PATH change: {exc}")
+        return False
 
 
 def _which_command(name: str) -> str | None:
@@ -1013,12 +1074,27 @@ def _launcher_probe() -> tuple[Path | None, bool, str]:
     return script, result.returncode == 0, detail
 
 
-def install_sk_launcher(quiet: bool = False) -> bool:
+def install_sk_launcher(quiet: bool = False, dry_run: bool = False) -> bool:
     """Create/update the managed sk launcher in ~/.copilot/bin/.
 
     Idempotent — safe to call on every install or update.
     Returns True if any launcher file was created or updated.
+
+    WBS-012: dry_run=True prints intended writes without filesystem mutation.
     """
+    if dry_run:
+        for script in _sk_launcher_script_paths():
+            action = "update" if script.is_file() else "create"
+            print(f"  [dry-run] Would {action}: {_tilde(script)}")
+        if os.name != "nt":
+            profiles = [p for p in _shell_profiles() if p.exists()] or [_preferred_shell_profile()]
+            for profile in profiles:
+                content = profile.read_text(encoding="utf-8") if profile.exists() else ""
+                if _SK_PATH_MARKER_START not in content and str(SK_LAUNCHER_DIR) not in content:
+                    print(f"  [dry-run] Would add sk PATH block to: {_tilde(profile)}")
+        else:
+            print("  [dry-run] Would update Windows user PATH registry (Path key)")
+        return False
     SK_LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
     content = _sk_launcher_content()
     content_bytes = content.encode("utf-8")
@@ -1626,8 +1702,11 @@ def run_self_test():
 # ===================================================================
 
 
-def uninstall() -> int:
-    """Remove installed tools. Preserves session-state data."""
+def uninstall(non_interactive: bool = False) -> int:
+    """Remove installed tools. Preserves session-state data.
+
+    WBS-012: non_interactive=True skips the confirmation prompt and proceeds.
+    """
     print("\nUninstall \u2014 Session Knowledge Tools")
     print("=" * 50)
 
@@ -1698,15 +1777,18 @@ def uninstall() -> int:
     print(f"    {_pip_uninstall_command()}")
 
     print()
-    try:
-        answer = input("  Proceed with uninstall? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("\n  Cancelled.")
-        return 0
+    if non_interactive:
+        print("  Proceeding (non-interactive mode).")
+    else:
+        try:
+            answer = input("  Proceed with uninstall? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Cancelled.")
+            return 0
 
-    if answer not in ("y", "yes"):
-        print("  Cancelled.")
-        return 0
+        if answer not in ("y", "yes"):
+            print("  Cancelled.")
+            return 0
 
     removed = 0
     had_error = False
@@ -2000,6 +2082,39 @@ def _launcher_diagnostics() -> int:
         else:
             print(f"  {INFO} `python3` is not on PATH; use `python` or `py` on Windows.")
 
+        # WBS-008: CRLF and SK_TOOLS_DIR checks on sk.cmd
+        for script in _sk_launcher_script_paths():
+            if script.is_file():
+                raw = script.read_bytes()
+                if b"\r\n" in raw:
+                    print(f"  {OK} {script.name} uses CRLF line endings (correct for Windows)")
+                else:
+                    print(f"  {WARN} {script.name} missing CRLF line endings — reinstall launcher to fix")
+                    issues += 1
+                content_str = raw.decode("utf-8", errors="replace")
+                if "py -3" in content_str:
+                    print(f"  {OK} {script.name} uses py -3 (Python Launcher preferred)")
+                else:
+                    print(f"  {WARN} {script.name} missing py -3 — reinstall launcher to fix")
+                    issues += 1
+                if "SK_TOOLS_DIR" in content_str:
+                    print(f"  {OK} {script.name} honors SK_TOOLS_DIR env var")
+                else:
+                    print(f"  {WARN} {script.name} missing SK_TOOLS_DIR support — reinstall launcher to fix")
+                    issues += 1
+
+        # WBS-008: check SK_TOOLS_DIR env var
+        sk_tools_dir_env = os.environ.get("SK_TOOLS_DIR")
+        if sk_tools_dir_env:
+            p = Path(sk_tools_dir_env)
+            if p.is_dir():
+                print(f"  {OK} SK_TOOLS_DIR set and valid: {sk_tools_dir_env}")
+            else:
+                print(f"  {WARN} SK_TOOLS_DIR set but directory missing: {sk_tools_dir_env}")
+                issues += 1
+        else:
+            print(f"  {INFO} SK_TOOLS_DIR not set (using default: {_tilde(TOOLS_DIR)})")
+
     return issues
 
 
@@ -2230,7 +2345,7 @@ def unlock_hooks():
     print("  ⚠️  Re-lock after updates: python3 install.py --lock-hooks")
 
 
-def install_git_hooks(target_dir: "Path | None" = None) -> None:
+def install_git_hooks(target_dir: "Path | None" = None, non_interactive: bool = False) -> None:
     """Install pre-commit and pre-push git hooks into a repository's .git/hooks/.
 
     Copies hooks/pre-commit and hooks/pre-push from the tools source tree into
@@ -2240,6 +2355,8 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
 
     The installed hooks reference $HOME/.copilot/tools unconditionally so they
     work correctly in any repo, not just the tools repo itself.
+
+    WBS-012: non_interactive=True skips the overwrite prompt and skips differing hooks.
     """
     print("\nInstall Git Hooks (pre-commit / pre-push)")
 
@@ -2276,7 +2393,7 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
                 print(f"  {INFO} {hook_name} — already up to date")
                 skipped.append(hook_name)
                 continue
-            if not sys.stdin.isatty():
+            if not sys.stdin.isatty() or non_interactive:
                 print(
                     f"  {WARN} {hook_name} already exists and differs — "
                     "skipping (non-interactive). Back it up and re-run to overwrite."
@@ -2352,11 +2469,15 @@ def main():
         _dispatch_healer("--uninstall-schedule")
         return
 
+    # WBS-012: global flags parsed once
+    dry_run = "--dry-run" in args
+    non_interactive = "--non-interactive" in args
+
     if "--install-sk" in args:
         quiet = "--quiet" in args
         if not quiet:
             print("\nInstalling sk launcher...")
-        install_sk_launcher(quiet=quiet)
+        install_sk_launcher(quiet=quiet, dry_run=dry_run)
         return
 
     if "--install-binary" in args:
@@ -2382,7 +2503,7 @@ def main():
         return
 
     if "--install-git-hooks" in args:
-        install_git_hooks()
+        install_git_hooks(non_interactive=non_interactive)
         return
 
     if "--lock-hooks" in args:
@@ -2405,12 +2526,12 @@ def main():
         run_self_test()
         return
 
-    if "--doctor" in args:
+    if "--doctor" in args or "--windows" in args:
         manifest_only = "--manifest" in args
         return doctor(manifest_only=manifest_only)
 
     if "--uninstall" in args:
-        return uninstall()
+        return uninstall(non_interactive=non_interactive)
 
     # Default: show status, then install if needed or show hints
     installed = show_status()

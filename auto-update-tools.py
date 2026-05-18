@@ -1106,7 +1106,8 @@ def refresh_rust_binary() -> bool:
                 warn(f"[rust-binary] Download failed: {exc}")
                 return False
 
-            # Verify SHA-256 (soft-fail if sidecar absent)
+            # Verify SHA-256 — WBS-009: hard-fail if sidecar absent unless SK_SKIP_CHECKSUM=1
+            _skip_cs = os.environ.get("SK_SKIP_CHECKSUM", "").strip() == "1"
             try:
                 req = urllib.request.Request(checksum_url)
                 with urllib.request.urlopen(req, timeout=10) as resp:
@@ -1118,10 +1119,24 @@ def refresh_rust_binary() -> bool:
                 actual = sha256.hexdigest()
                 if expected != actual:
                     warn("[rust-binary] Checksum mismatch — aborting update")
+                    try:
+                        tmp_archive.unlink(missing_ok=True)
+                    except Exception:
+                        pass
                     return False
                 log("[rust-binary] Checksum verified")
             except Exception:
-                log("[rust-binary] Checksum sidecar not available — skipping verification")
+                if _skip_cs:
+                    warn("[rust-binary] Checksum sidecar not available (SK_SKIP_CHECKSUM=1 bypass active)")
+                else:
+                    warn(
+                        "[rust-binary] Checksum sidecar unavailable — aborting update (set SK_SKIP_CHECKSUM=1 to bypass)"
+                    )
+                    try:
+                        tmp_archive.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    return False
 
             # Extract to temp location then atomically replace
             tmp_extract = install_dir / ("sk-extract-" + remote_tag.lstrip("v"))
@@ -1420,15 +1435,46 @@ def write_manifest(sha: str, changes: dict):
 
 
 # ---------------------------------------------------------------------------
+# DB backup helper (WBS-056)
+# ---------------------------------------------------------------------------
+def _backup_db(db_path: Path) -> "Path | None":
+    """Create a timestamped backup of the database before migrations.
+
+    Returns the backup Path on success, None on failure.
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = db_path.with_suffix(f".backup_{ts}.db")
+    try:
+        shutil.copy2(str(db_path), str(backup_path))
+        return backup_path
+    except Exception as e:
+        warn(f"[migrate] DB backup failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Migrate DB
 # ---------------------------------------------------------------------------
+# Phrases that indicate a DB-locked condition in migrate.py stderr (WBS-059)
+_DB_LOCKED_PHRASES = ("database is locked", "sqlite_busy", "database disk image is malformed")
+
+
 def run_migrations():
     if not DB_PATH.exists():
         return
     migrate_script = TOOLS_DIR / "migrate.py"
     if not migrate_script.exists():
         return
-    # P1-1: retry up to 3× with 5 s backoff — handles DB-locked by watch-sessions
+
+    # WBS-056: Create backup before migration; abort if backup fails
+    backup_path = _backup_db(DB_PATH)
+    if backup_path is None:
+        warn("[migrate] Cannot create DB backup — skipping migration for safety")
+        warn(f"[migrate] Run manually: python migrate.py {DB_PATH}")
+        return
+    log(f"[migrate] DB backup created: {backup_path}")
+
+    # WBS-059: retry up to 3× with backoff — handles DB-locked by watch-sessions
     for attempt in range(3):
         try:
             r = subprocess.run(
@@ -1439,14 +1485,23 @@ def run_migrations():
             )
             if r.returncode == 0:
                 return
+            stderr_lower = (r.stderr or "").lower()
+            is_locked = any(phrase in stderr_lower for phrase in _DB_LOCKED_PHRASES)
+            if is_locked:
+                warn(f"[migrate] DB locked (attempt {attempt + 1}/3) — retrying...")
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+                continue
             warn(f"Migration returned {r.returncode}: {r.stderr[:200]}")
-            break  # non-zero exit (not a timeout) — don't retry
+            warn(f"[migrate] To rollback: copy {backup_path} → {DB_PATH}")
+            break  # non-zero exit (not a lock) — don't retry
         except subprocess.TimeoutExpired:
             warn(f"Migration timed out (attempt {attempt + 1}/3) — DB may be locked")
             if attempt < 2:
                 time.sleep(5)
     else:
-        warn("Migration failed after 3 attempts; run manually: python migrate.py")
+        warn(f"Migration failed after 3 attempts; run manually: python migrate.py {DB_PATH}")
+        warn(f"[migrate] To rollback: copy {backup_path} → {DB_PATH}")
 
 
 # ---------------------------------------------------------------------------
@@ -1513,7 +1568,7 @@ def deploy_skills():
                 if skill_path.exists():
                     try:
                         if skill_path.read_text(encoding="utf-8") != template_content:
-                            skill_path.write_text(template_content, encoding="utf-8")
+                            _atomic_write_text(skill_path, template_content)
                             ok(f"Updated {host_name} SKILL.md in {project_root.name}")
                     except Exception:
                         pass
@@ -1531,7 +1586,7 @@ def deploy_skills():
                 if target.exists():
                     try:
                         if target.read_text(encoding="utf-8") != skill_content:
-                            target.write_text(skill_content, encoding="utf-8")
+                            _atomic_write_text(target, skill_content)
                             ok(f"Updated {host_name} {skill_name}/SKILL.md in {project_root.name}")
                     except Exception:
                         pass
@@ -1548,7 +1603,7 @@ def deploy_skills():
                             try:
                                 content = asset_file.read_bytes()
                                 if asset_target.read_bytes() != content:
-                                    asset_target.write_bytes(content)
+                                    _atomic_write_bytes(asset_target, content)
                                     ok(f"Updated {host_name} {skill_name}/{rel} in {project_root.name}")
                             except Exception:
                                 pass
@@ -1566,7 +1621,7 @@ def deploy_skills():
             if target.exists():
                 try:
                     if target.read_text(encoding="utf-8") != skill_content:
-                        target.write_text(skill_content, encoding="utf-8")
+                        _atomic_write_text(target, skill_content)
                         ok(f"Updated {skill_name}/SKILL.md in {project_root.name}")
                 except Exception:
                     pass
@@ -1583,7 +1638,7 @@ def deploy_skills():
                         try:
                             content = asset_file.read_bytes()
                             if asset_target.read_bytes() != content:
-                                asset_target.write_bytes(content)
+                                _atomic_write_bytes(asset_target, content)
                                 ok(f"Updated {skill_name}/{rel} in {project_root.name}")
                         except Exception:
                             pass
@@ -1603,7 +1658,7 @@ def deploy_skills():
             global_skill_md = global_skill_dir / "SKILL.md"
             try:
                 if not global_skill_md.exists() or global_skill_md.read_text(encoding="utf-8") != skill_content:
-                    global_skill_md.write_text(skill_content, encoding="utf-8")
+                    _atomic_write_text(global_skill_md, skill_content)
                     ok(f"Updated global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
             except Exception:
                 pass
@@ -1620,7 +1675,7 @@ def deploy_skills():
                             continue  # update-only: never create missing asset files
                         content = asset_file.read_bytes()
                         if asset_target.read_bytes() != content:
-                            asset_target.write_bytes(content)
+                            _atomic_write_bytes(asset_target, content)
                             ok(f"Updated global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
                     except Exception:
                         pass
@@ -1638,7 +1693,7 @@ def deploy_skills():
             global_skill_md = global_skill_dir / "SKILL.md"
             try:
                 if not global_skill_md.exists() or global_skill_md.read_text(encoding="utf-8") != skill_content:
-                    global_skill_md.write_text(skill_content, encoding="utf-8")
+                    _atomic_write_text(global_skill_md, skill_content)
                     ok(f"Updated global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
             except Exception:
                 pass
@@ -1655,7 +1710,7 @@ def deploy_skills():
                         existed = asset_target.exists()
                         if not existed or asset_target.read_bytes() != content:
                             asset_target.parent.mkdir(parents=True, exist_ok=True)
-                            asset_target.write_bytes(content)
+                            _atomic_write_bytes(asset_target, content)
                             ok(
                                 f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/{rel} in {global_skills_root}"
                             )

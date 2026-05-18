@@ -12,9 +12,7 @@ Platform events (8 total, per GitHub Copilot docs):
   errorOccurred
 
 This runner handles: sessionStart, sessionEnd, preToolUse, postToolUse,
-agentStop, subagentStop, errorOccurred
-Not currently handled (no rules registered):
-  userPromptSubmitted — prompt logging/auditing not yet implemented
+agentStop, subagentStop, errorOccurred, userPromptSubmitted
 
 Environment variables:
   HOOK_DRY_RUN=1       — Log denials but allow through (testing mode)

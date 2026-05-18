@@ -1071,6 +1071,42 @@ class DreamingScheduler:
         _stripped_path = str(memory_path).strip()
         self.memory_path = _stripped_path if _stripped_path else DEFAULT_DREAM_MEMORY_PATH
 
+    def get_safe_memory_path(self) -> "Path | None":
+        """WBS-089: Return the memory_path confined to allowed roots.
+
+        Allowed roots (in order of precedence):
+        1. Under TOOLS_DIR (the tools directory next to sync-daemon.py)
+        2. Under Path.home() (the user's home directory)
+
+        Absolute paths outside both roots are rejected (return None).
+        Relative paths are resolved relative to TOOLS_DIR.
+        """
+        raw = self.memory_path
+        try:
+            p = Path(raw)
+            if p.is_absolute():
+                resolved = p.resolve()
+            else:
+                # Relative paths are rooted in TOOLS_DIR
+                resolved = (TOOLS_DIR / p).resolve()
+            home = Path.home().resolve()
+            tools = TOOLS_DIR.resolve()
+            # Accept if under TOOLS_DIR or under home
+            try:
+                resolved.relative_to(tools)
+                return resolved
+            except ValueError:
+                pass
+            try:
+                resolved.relative_to(home)
+                return resolved
+            except ValueError:
+                pass
+            # Path is outside all allowed roots
+            return None
+        except (ValueError, OSError):
+            return None
+
     @classmethod
     def from_config(cls, config_path: Path) -> "DreamingScheduler":
         """Load scheduler settings from sync-config.json; fall back to defaults."""
@@ -1167,7 +1203,16 @@ class DreamingScheduler:
         if not dream_script.exists():
             print("[sync] dream sweep skipped: dream.py not found (fail-open)")
             return {"ok": True, "error": "", "skipped": True, "promoted_count": 0}
-        memory_path = self.memory_path if Path(self.memory_path).is_absolute() else str(TOOLS_DIR / self.memory_path)
+        # WBS-089: Confine memory_path to allowed roots (TOOLS_DIR or home).
+        safe_path = self.get_safe_memory_path()
+        if safe_path is None:
+            print(
+                f"[sync] WARNING: dream memory_path {self.memory_path!r} is outside allowed roots — "
+                f"falling back to safe default {DEFAULT_DREAM_MEMORY_PATH!r}",
+                flush=True,
+            )
+            safe_path = (TOOLS_DIR / DEFAULT_DREAM_MEMORY_PATH).resolve()
+        memory_path = str(safe_path)
         cmd = [
             sys.executable,
             str(dream_script),
@@ -1316,7 +1361,30 @@ def pull_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
     while pages < MAX_PULL_PAGES_PER_CYCLE:
         query = urllib.parse.urlencode({"replica_id": replica_id, "after": next_after, "limit": max(1, int(limit))})
         endpoint = base_url.rstrip("/") + "/sync/pull?" + query
-        response = _request_json(endpoint, method="GET", timeout=15)
+        # WBS-082: Handle unknown_after → reset cursor and restart pull from beginning.
+        try:
+            response = _request_json(endpoint, method="GET", timeout=15)
+        except urllib.error.HTTPError as _exc:
+            if _exc.code == 400:
+                try:
+                    _err_body = json.loads(_exc.read().decode("utf-8", errors="replace"))
+                except Exception:
+                    _err_body = {}
+                if _err_body.get("error") == "unknown_after":
+                    print(
+                        f"[sync] WARNING: unknown_after for cursor {next_after!r} — "
+                        "resetting cursor to start and retrying pull from beginning",
+                        flush=True,
+                    )
+                    db.execute(
+                        "UPDATE sync_cursors SET last_txn_id='', updated_at=datetime('now') WHERE replica_id=?",
+                        (replica_id,),
+                    )
+                    db.commit()
+                    next_after = ""
+                    pages += 1  # count as a page to avoid infinite loop on persistent unknown_after
+                    continue
+            raise
 
         txns = response.get("txns", []) or []
         last_seen = next_after

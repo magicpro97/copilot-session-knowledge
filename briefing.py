@@ -86,6 +86,61 @@ def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
         return
 
 
+class _ContextAwareHexMatcher:
+    """Matches long lowercase-hex strings only when NOT in a git/checksum context.
+
+    Prevents false-positive suppression of DB entries that legitimately reference
+    git commit SHAs (40 hex chars) or SHA-256 checksums (64 hex chars).
+
+    Duck-types the compiled regex interface: implements .search(text).
+    """
+
+    _HEX_RE = re.compile(r"(?<![A-Za-z0-9])([0-9a-f]{40,})(?![A-Za-z0-9])")
+    _SAFE_CTX_RE = re.compile(r"(?i)\b(?:commit|sha\d*|hash|checksum|digest|fingerprint)\b")
+
+    def search(self, text: str):
+        """Return the first match for a secret-context hex run; None if all safe."""
+        for m in self._HEX_RE.finditer(text):
+            pre = text[max(0, m.start() - 100) : m.start()]
+            if self._SAFE_CTX_RE.search(pre):
+                continue
+            return m
+        return None
+
+
+# WBS-014: Defense-in-depth credential/injection scan for briefing output.
+# Suppress DB entries whose title or content contain credentials or injection
+# patterns even if they slipped through WBS-013 extraction gate (e.g. from
+# historical imports). Applied in generate_briefing() before entries reach
+# any output formatter. Fail-open: scan errors allow the entry through.
+_BRIEFING_UNSAFE_PATTERNS = [
+    re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S{6,}"),
+    re.compile(r"(?i)ssh-rsa\s+AAAA"),
+    re.compile(r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S{16,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"(?i)\b(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret)\s*[:=]\s*[A-Za-z0-9/+]{30,}"),
+    _ContextAwareHexMatcher(),
+    re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"),
+]
+
+
+def _briefing_entry_is_unsafe(entry: dict) -> bool:
+    """Return True if a briefing entry contains credential/injection patterns.
+
+    Used as a defense-in-depth read-side filter in generate_briefing() so that
+    historical entries with leaked credentials are never emitted to agents even
+    if WBS-013 didn't catch them at write time.  Fail-open: exceptions return
+    False so the entry is included rather than silently dropped.
+    """
+    try:
+        text = f"{entry.get('title', '')}\n{entry.get('content', '')}"
+        return any(pat.search(text) for pat in _BRIEFING_UNSAFE_PATTERNS)
+    except Exception:
+        return False
+
+
 # Read-side filter: suppress Wave-style progress/status-note entries that were
 # mistakenly stored as knowledge (WaveN verification, rust-wave tentacle reports).
 # These are project status updates, not actionable knowledge. Applied in
@@ -2127,7 +2182,17 @@ def generate_briefing(
         # Rerank by composite recency score before truncating so that a recent
         # entry can always surface ahead of an equally-intense stale one.
         merged.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
-        briefing_data[cat] = merged[:cat_limit]
+        # WBS-014: defense-in-depth read-side credential/injection filter
+        safe_entries = []
+        for e in merged[:cat_limit]:
+            if _briefing_entry_is_unsafe(e):
+                print(
+                    f"  [briefing] suppressed unsafe entry: {e.get('title', '')[:60]!r}",
+                    file=sys.stderr,
+                )
+            else:
+                safe_entries.append(e)
+        briefing_data[cat] = safe_entries
 
     # Past related work
     past_work = search_past_work(db, rewritten_query, limit)

@@ -348,6 +348,9 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
     """)
 
 
+_BACKFILL_BATCH_SIZE = 1000
+
+
 def _backfill_stable_ids(db: sqlite3.Connection):
     has_table = lambda t: (
         db.execute(
@@ -358,39 +361,54 @@ def _backfill_stable_ids(db: sqlite3.Connection):
     )
 
     if has_table("documents"):
-        for row in db.execute("""
+        _cur = db.execute("""
             SELECT id, session_id, doc_type, seq, title, COALESCE(stable_id, '')
             FROM documents
-        """).fetchall():
-            did, session_id, doc_type, seq, title, existing = row
-            stable = _stable_sha256("document", session_id, doc_type, int(seq or 0), _normalize_title(title))
-            if existing != stable:
-                db.execute("UPDATE documents SET stable_id = ? WHERE id = ?", (stable, did))
+        """)
+        while True:
+            _batch = _cur.fetchmany(_BACKFILL_BATCH_SIZE)
+            if not _batch:
+                break
+            for row in _batch:
+                did, session_id, doc_type, seq, title, existing = row
+                stable = _stable_sha256("document", session_id, doc_type, int(seq or 0), _normalize_title(title))
+                if existing != stable:
+                    db.execute("UPDATE documents SET stable_id = ? WHERE id = ?", (stable, did))
 
     if has_table("sections") and has_table("documents"):
-        for row in db.execute("""
+        _cur = db.execute("""
             SELECT s.id, d.stable_id, s.section_name, COALESCE(s.stable_id, '')
             FROM sections s
             JOIN documents d ON s.document_id = d.id
             WHERE COALESCE(d.stable_id, '') != ''
-        """).fetchall():
-            sid, document_stable_id, section_name, existing = row
-            stable = _stable_sha256("section", document_stable_id, section_name or "")
-            if existing != stable:
-                db.execute("UPDATE sections SET stable_id = ? WHERE id = ?", (stable, sid))
+        """)
+        while True:
+            _batch = _cur.fetchmany(_BACKFILL_BATCH_SIZE)
+            if not _batch:
+                break
+            for row in _batch:
+                sid, document_stable_id, section_name, existing = row
+                stable = _stable_sha256("section", document_stable_id, section_name or "")
+                if existing != stable:
+                    db.execute("UPDATE sections SET stable_id = ? WHERE id = ?", (stable, sid))
 
     if has_table("knowledge_entries"):
-        for row in db.execute("""
+        _cur = db.execute("""
             SELECT id, session_id, category, title, COALESCE(topic_key, ''), COALESCE(stable_id, '')
             FROM knowledge_entries
-        """).fetchall():
-            kid, session_id, category, title, topic_key, existing = row
-            stable = _stable_sha256("knowledge", session_id, category, title or "", topic_key)
-            if existing != stable:
-                db.execute("UPDATE knowledge_entries SET stable_id = ? WHERE id = ?", (stable, kid))
+        """)
+        while True:
+            _batch = _cur.fetchmany(_BACKFILL_BATCH_SIZE)
+            if not _batch:
+                break
+            for row in _batch:
+                kid, session_id, category, title, topic_key, existing = row
+                stable = _stable_sha256("knowledge", session_id, category, title or "", topic_key)
+                if existing != stable:
+                    db.execute("UPDATE knowledge_entries SET stable_id = ? WHERE id = ?", (stable, kid))
 
     if has_table("knowledge_relations") and has_table("knowledge_entries"):
-        for row in db.execute("""
+        _cur = db.execute("""
             SELECT kr.id,
                    kr.source_id,
                    kr.target_id,
@@ -403,58 +421,73 @@ def _backfill_stable_ids(db: sqlite3.Connection):
             FROM knowledge_relations kr
             LEFT JOIN knowledge_entries s ON kr.source_id = s.id
             LEFT JOIN knowledge_entries t ON kr.target_id = t.id
-        """).fetchall():
-            kr_id, _, _, relation_type, src_existing, tgt_existing, existing, src_sid, tgt_sid = row
-            if not src_sid or not tgt_sid:
-                continue
-            stable = _stable_sha256("knowledge_relation", src_sid, tgt_sid, relation_type or "")
-            if src_existing != src_sid or tgt_existing != tgt_sid or existing != stable:
-                db.execute(
-                    """
-                    UPDATE knowledge_relations
-                    SET source_stable_id = ?, target_stable_id = ?, stable_id = ?
-                    WHERE id = ?
-                """,
-                    (src_sid, tgt_sid, stable, kr_id),
-                )
+        """)
+        while True:
+            _batch = _cur.fetchmany(_BACKFILL_BATCH_SIZE)
+            if not _batch:
+                break
+            for row in _batch:
+                kr_id, _, _, relation_type, src_existing, tgt_existing, existing, src_sid, tgt_sid = row
+                if not src_sid or not tgt_sid:
+                    continue
+                stable = _stable_sha256("knowledge_relation", src_sid, tgt_sid, relation_type or "")
+                if src_existing != src_sid or tgt_existing != tgt_sid or existing != stable:
+                    db.execute(
+                        """
+                        UPDATE knowledge_relations
+                        SET source_stable_id = ?, target_stable_id = ?, stable_id = ?
+                        WHERE id = ?
+                    """,
+                        (src_sid, tgt_sid, stable, kr_id),
+                    )
 
     if has_table("entity_relations"):
-        for row in db.execute("""
+        _cur = db.execute("""
             SELECT id, subject, predicate, object, COALESCE(stable_id, '')
             FROM entity_relations
-        """).fetchall():
-            er_id, subject, predicate, obj, existing = row
-            stable = _stable_sha256("entity_relation", subject or "", predicate or "", obj or "")
-            if existing != stable:
-                db.execute("UPDATE entity_relations SET stable_id = ? WHERE id = ?", (stable, er_id))
+        """)
+        while True:
+            _batch = _cur.fetchmany(_BACKFILL_BATCH_SIZE)
+            if not _batch:
+                break
+            for row in _batch:
+                er_id, subject, predicate, obj, existing = row
+                stable = _stable_sha256("entity_relation", subject or "", predicate or "", obj or "")
+                if existing != stable:
+                    db.execute("UPDATE entity_relations SET stable_id = ? WHERE id = ?", (stable, er_id))
 
     if has_table("search_feedback"):
         local_replica_id = _get_local_replica_id(db)
-        for row in db.execute("""
+        _cur = db.execute("""
             SELECT id, created_at, result_kind, result_id, verdict, query,
                    COALESCE(origin_replica_id, ''), COALESCE(stable_id, '')
             FROM search_feedback
-        """).fetchall():
-            sf_id, created_at, result_kind, result_id, verdict, query, origin_replica_id, existing = row
-            origin = _normalize_search_feedback_origin(origin_replica_id, local_replica_id)
-            stable = _stable_sha256(
-                "search_feedback",
-                created_at or "",
-                result_kind or "",
-                result_id or "",
-                verdict if verdict is not None else "",
-                query or "",
-                origin,
-            )
-            if existing != stable or origin_replica_id != origin:
-                db.execute(
-                    """
-                    UPDATE search_feedback
-                    SET origin_replica_id = ?, stable_id = ?
-                    WHERE id = ?
-                """,
-                    (origin, stable, sf_id),
+        """)
+        while True:
+            _batch = _cur.fetchmany(_BACKFILL_BATCH_SIZE)
+            if not _batch:
+                break
+            for row in _batch:
+                sf_id, created_at, result_kind, result_id, verdict, query, origin_replica_id, existing = row
+                origin = _normalize_search_feedback_origin(origin_replica_id, local_replica_id)
+                stable = _stable_sha256(
+                    "search_feedback",
+                    created_at or "",
+                    result_kind or "",
+                    result_id or "",
+                    verdict if verdict is not None else "",
+                    query or "",
+                    origin,
                 )
+                if existing != stable or origin_replica_id != origin:
+                    db.execute(
+                        """
+                        UPDATE search_feedback
+                        SET origin_replica_id = ?, stable_id = ?
+                        WHERE id = ?
+                    """,
+                        (origin, stable, sf_id),
+                    )
 
 
 def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
@@ -513,29 +546,41 @@ def _repair_legacy_priority_collision(db: sqlite3.Connection):
     if not legacy_row:
         return False, False
 
-    ke_cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
-    repaired = False
-    if "priority" not in ke_cols:
-        for repair_sql in (
-            "ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'",
-            "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
-        ):
-            try:
-                db.execute(repair_sql)
-            except sqlite3.OperationalError as e:
-                if "duplicate" in str(e).lower() or "already exists" in str(e).lower():
-                    pass
-                else:
-                    raise
-        repaired = True
+    db.execute("SAVEPOINT repair_priority")
+    try:
+        ke_cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        repaired = False
+        if "priority" not in ke_cols:
+            for repair_sql in (
+                "ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'",
+                "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
+            ):
+                try:
+                    db.execute(repair_sql)
+                except sqlite3.OperationalError as e:
+                    if "duplicate" in str(e).lower() or "already exists" in str(e).lower():
+                        pass
+                    else:
+                        raise
+            repaired = True
 
-    renamed = (
-        db.execute("UPDATE schema_version SET name='priority' WHERE version=22 AND name='file_annotations'").rowcount
-        > 0
-    )
-    if repaired or renamed:
-        db.commit()
-    return repaired, renamed
+        renamed = (
+            db.execute(
+                "UPDATE schema_version SET name='priority' WHERE version=22 AND name='file_annotations'"
+            ).rowcount
+            > 0
+        )
+        db.execute("RELEASE SAVEPOINT repair_priority")
+        if repaired or renamed:
+            db.commit()
+        return repaired, renamed
+    except Exception:
+        try:
+            db.execute("ROLLBACK TO SAVEPOINT repair_priority")
+            db.execute("RELEASE SAVEPOINT repair_priority")
+        except Exception:
+            pass
+        raise
 
 
 def _ensure_base_schema(db: sqlite3.Connection):
