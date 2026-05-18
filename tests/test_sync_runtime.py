@@ -1468,6 +1468,45 @@ test(
     str(temp_tables_after_rollback),
 )
 
+db9_path = ARTIFACT_DIR / "knowledge-queue-prune-rollback.db"
+make_db(db9_path)
+db9 = sqlite3.connect(str(db9_path))
+sync_daemon.ensure_sync_foundation(db9)
+db9.execute(
+    """
+    INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
+    VALUES ('prune-rollback-txn', 'local-prune', 'committed', '2020-01-01T00:00:00Z', '2020-01-01T00:00:01Z')
+    """
+)
+db9.execute(
+    """
+    INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+    VALUES ('prune-rollback-txn', 'sessions', 'upsert', 'session-prune', '{}', 0, '2020-01-01T00:00:00Z')
+    """
+)
+db9.execute("DROP TABLE sync_failures")
+prune_error = None
+try:
+    sync_daemon.prune_committed_sync_logs(db9, retention_days=1)
+except sqlite3.DatabaseError as exc:
+    prune_error = exc
+prune_rollback_txns = db9.execute("SELECT COUNT(*) FROM sync_txns WHERE txn_id='prune-rollback-txn'").fetchone()[0]
+prune_rollback_ops = db9.execute("SELECT COUNT(*) FROM sync_ops WHERE txn_id='prune-rollback-txn'").fetchone()[0]
+prune_temp_tables = db9.execute(
+    "SELECT COUNT(*) FROM sqlite_temp_master WHERE type='table' AND name='sync_prune_committed_txns'"
+).fetchone()[0]
+db9.close()
+test(
+    "sync queue pruning rolls back failed cleanup",
+    prune_error is not None and prune_rollback_txns == 1 and prune_rollback_ops == 1,
+    f"error={prune_error} txns={prune_rollback_txns} ops={prune_rollback_ops}",
+)
+test(
+    "sync queue pruning cleans temp table after rollback",
+    prune_temp_tables == 0,
+    str(prune_temp_tables),
+)
+
 print("\n🔧 sync-knowledge runtime status summary")
 db = sqlite3.connect(str(db_path))
 status = sync_knowledge._sync_runtime_status(db)

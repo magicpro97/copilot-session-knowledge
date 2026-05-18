@@ -716,49 +716,49 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
             "new_pending_ops": 0,
         }
 
-    db.execute("DROP TABLE IF EXISTS temp.sync_compact_pending_txns")
-    db.execute("DROP TABLE IF EXISTS temp.sync_compact_keep_ops")
-    db.execute(
-        """
-        CREATE TEMP TABLE sync_compact_pending_txns AS
-        SELECT txn_id
-        FROM sync_txns
-        WHERE status = 'pending'
-          AND (? = '' OR replica_id = ?)
-        """,
-        (replica_id or "", replica_id or ""),
-    )
-    db.execute(
-        f"""
-        CREATE TEMP TABLE sync_compact_keep_ops AS
-        SELECT table_name, op_type, row_stable_id, row_payload, created_at,
-               {_table_rank_sql()} AS table_rank
-        FROM (
-            SELECT o.*,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY o.table_name, o.row_stable_id
-                       ORDER BY o.created_at DESC, o.id DESC
-                   ) AS rn
-            FROM sync_ops o
-            JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
-        )
-        WHERE rn = 1
-        """
-    )
-
-    kept_ops = db.execute(
-        """
-        SELECT table_name, op_type, row_stable_id, row_payload, created_at
-        FROM sync_compact_keep_ops
-        ORDER BY table_rank, table_name, row_stable_id
-        """
-    ).fetchall()
-
-    now = utc_now()
     new_txns = 0
     new_ops = 0
     savepoint_open = False
     try:
+        db.execute("DROP TABLE IF EXISTS temp.sync_compact_pending_txns")
+        db.execute("DROP TABLE IF EXISTS temp.sync_compact_keep_ops")
+        db.execute(
+            """
+            CREATE TEMP TABLE sync_compact_pending_txns AS
+            SELECT txn_id
+            FROM sync_txns
+            WHERE status = 'pending'
+              AND (? = '' OR replica_id = ?)
+            """,
+            (replica_id or "", replica_id or ""),
+        )
+        db.execute(
+            f"""
+            CREATE TEMP TABLE sync_compact_keep_ops AS
+            SELECT table_name, op_type, row_stable_id, row_payload, created_at,
+                   {_table_rank_sql()} AS table_rank
+            FROM (
+                SELECT o.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY o.table_name, o.row_stable_id
+                           ORDER BY o.created_at DESC, o.id DESC
+                       ) AS rn
+                FROM sync_ops o
+                JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
+            )
+            WHERE rn = 1
+            """
+        )
+
+        kept_ops = db.execute(
+            """
+            SELECT table_name, op_type, row_stable_id, row_payload, created_at
+            FROM sync_compact_keep_ops
+            ORDER BY table_rank, table_name, row_stable_id
+            """
+        ).fetchall()
+
+        now = utc_now()
         db.execute("SAVEPOINT sync_queue_compact")
         savepoint_open = True
         db.execute("DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)")
@@ -831,39 +831,56 @@ def prune_committed_sync_logs(
 ) -> dict:
     cutoff = datetime.now(timezone.utc).replace(microsecond=0).timestamp() - max(1, retention_days) * 86400
     cutoff_text = datetime.fromtimestamp(cutoff, timezone.utc).isoformat().replace("+00:00", "Z")
-    db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
-    db.execute(
-        """
-        CREATE TEMP TABLE sync_prune_committed_txns AS
-        SELECT txn_id
-        FROM sync_txns
-        WHERE status = 'committed'
-          AND COALESCE(NULLIF(committed_at, ''), created_at) < ?
-        """,
-        (cutoff_text,),
-    )
-    deleted_ops = int(
-        db.execute("DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_prune_committed_txns)").rowcount or 0
-    )
-    deleted_txns = int(
-        db.execute("DELETE FROM sync_txns WHERE txn_id IN (SELECT txn_id FROM sync_prune_committed_txns)").rowcount or 0
-    )
-    deleted_failures = int(
+    deleted_ops = 0
+    deleted_txns = 0
+    deleted_failures = 0
+    savepoint_open = False
+    try:
+        db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
         db.execute(
             """
-            DELETE FROM sync_failures
-            WHERE id NOT IN (
-                SELECT id
-                FROM sync_failures
-                ORDER BY failed_at DESC, id DESC
-                LIMIT ?
-            )
+            CREATE TEMP TABLE sync_prune_committed_txns AS
+            SELECT txn_id
+            FROM sync_txns
+            WHERE status = 'committed'
+              AND COALESCE(NULLIF(committed_at, ''), created_at) < ?
             """,
-            (max(0, failure_rows),),
-        ).rowcount
-        or 0
-    )
-    db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
+            (cutoff_text,),
+        )
+        db.execute("SAVEPOINT sync_queue_prune")
+        savepoint_open = True
+        deleted_ops = int(
+            db.execute("DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_prune_committed_txns)").rowcount
+            or 0
+        )
+        deleted_txns = int(
+            db.execute("DELETE FROM sync_txns WHERE txn_id IN (SELECT txn_id FROM sync_prune_committed_txns)").rowcount
+            or 0
+        )
+        deleted_failures = int(
+            db.execute(
+                """
+                DELETE FROM sync_failures
+                WHERE id NOT IN (
+                    SELECT id
+                    FROM sync_failures
+                    ORDER BY failed_at DESC, id DESC
+                    LIMIT ?
+                )
+                """,
+                (max(0, failure_rows),),
+            ).rowcount
+            or 0
+        )
+        db.execute("RELEASE SAVEPOINT sync_queue_prune")
+        savepoint_open = False
+    except sqlite3.DatabaseError:
+        if savepoint_open:
+            db.execute("ROLLBACK TO SAVEPOINT sync_queue_prune")
+            db.execute("RELEASE SAVEPOINT sync_queue_prune")
+        raise
+    finally:
+        db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
     return {
         "deleted_committed_txns": deleted_txns,
         "deleted_committed_ops": deleted_ops,

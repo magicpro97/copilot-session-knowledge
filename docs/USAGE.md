@@ -516,7 +516,7 @@ python3 ~/.copilot/tools/sync-daemon.py --pull-only
 ```
 
 If `connection_string` is unset, daemon mode remains local-only (idle/no-op for remote sync).
-When backlog is large, daemon coalesces pending `sync_txns` / `sync_ops` to the latest operation per canonical row before push, prunes old committed sync logs, applies adaptive per-cycle limits automatically, paginates pull within one cycle, and refreshes local `knowledge_fts` / `ke_fts` rows touched by pulled canonical changes.
+Every daemon cycle prunes old committed sync logs. When backlog is large, daemon also coalesces pending `sync_txns` / `sync_ops` to the latest operation per canonical row before push, applies adaptive per-cycle limits automatically, paginates pull within one cycle, and refreshes local `knowledge_fts` / `ke_fts` rows touched by pulled canonical changes.
 
 ### Inspect sync status
 
