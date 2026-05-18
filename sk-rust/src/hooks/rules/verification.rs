@@ -92,19 +92,6 @@ pub(crate) fn looks_successful(data: &Value) -> bool {
         _ => return true, // absent / null → assume success (fail-open)
     };
 
-    // Failure indicators (simplified subset of Python _FAIL_RE).
-    let fail_indicators = &[
-        "FAILED",
-        "Failed:",
-        "Errors:",
-        "error TS",
-        "Exit code",
-        "Exit status",
-        " fail ",
-        "failed.",
-        "failures",
-    ];
-
     let output: String = if let Some(obj) = tool_result.as_object() {
         // Check numeric exit code.
         if let Some(code) = obj
@@ -127,7 +114,48 @@ pub(crate) fn looks_successful(data: &Value) -> bool {
         return true;
     };
 
-    !fail_indicators.iter().any(|pat| output.contains(pat))
+    !output_has_failure_indicator(&output)
+}
+
+fn has_nonzero_count_after_prefix(lower: &str, prefix: &str) -> bool {
+    lower.match_indices(prefix).any(|(idx, _)| {
+        let after = &lower[idx + prefix.len()..];
+        let trimmed = after.trim_start();
+        trimmed
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+    })
+}
+
+fn output_has_failure_indicator(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    if contains_ordered_words(output, &["FAILED"]) {
+        return true;
+    }
+    if has_nonzero_count_after_prefix(&lower, "failed:")
+        || has_nonzero_count_after_prefix(&lower, "error:")
+        || has_nonzero_count_after_prefix(&lower, "errors:")
+        || has_nonzero_count_after_prefix(&lower, "exit code")
+        || has_nonzero_count_after_prefix(&lower, "exit status")
+        || has_nonzero_count_after_prefix(&lower, "error ts")
+    {
+        return true;
+    }
+    let mut previous_nonzero_number = false;
+    for token in lower.split_whitespace() {
+        let cleaned = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let is_nonzero_number = cleaned
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+            && cleaned.as_bytes().iter().all(u8::is_ascii_digit);
+        if previous_nonzero_number && (cleaned == "failed" || cleaned == "failure") {
+            return true;
+        }
+        previous_nonzero_number = is_nonzero_number;
+    }
+    false
 }
 
 /// Parse the verification ledger from the HMAC-signed list marker.
@@ -466,26 +494,22 @@ pub(crate) fn is_closeout_action(tool_name: &str, cmd: &str) -> (bool, &'static 
     if tool_name != "bash" {
         return (false, "");
     }
-    if cmd.contains("gh") && cmd.contains("issue") && cmd.contains("close") {
+    if contains_ordered_words(cmd, &["gh", "issue", "close"]) {
         return (true, "gh issue close");
     }
-    if cmd.contains("gh") && cmd.contains("issue") && cmd.contains("comment") {
+    if contains_ordered_words(cmd, &["gh", "issue", "comment"]) {
         return (true, "gh issue comment");
     }
-    if cmd.contains("gh") && cmd.contains("pr") && cmd.contains("merge") {
+    if contains_ordered_words(cmd, &["gh", "pr", "merge"]) {
         return (true, "gh pr merge");
     }
     // tentacle.py handoff --status DONE  |  sk tentacle handoff --status DONE
     let has_tentacle_cmd =
-        cmd.contains("tentacle.py") || (cmd.contains("sk") && cmd.contains("tentacle"));
-    if has_tentacle_cmd
-        && cmd.contains("handoff")
-        && cmd.contains("--status")
-        && cmd.contains("DONE")
-    {
+        cmd.contains("tentacle.py") || contains_ordered_words(cmd, &["sk", "tentacle"]);
+    if has_tentacle_cmd && contains_ordered_words(cmd, &["handoff", "status", "DONE"]) {
         return (true, "tentacle handoff --status DONE");
     }
-    if has_tentacle_cmd && cmd.contains("complete") {
+    if has_tentacle_cmd && contains_ordered_words(cmd, &["complete"]) {
         return (true, "tentacle complete");
     }
     (false, "")

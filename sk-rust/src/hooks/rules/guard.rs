@@ -123,17 +123,9 @@ pub(crate) fn read_tentacle_info() -> String {
 }
 
 /// Detect `git commit` or `git push` in a bash command string.
-///
-/// Uses simple string matching to avoid depending on the optional `regex`
-/// crate.  With the `native-hooks` feature enabled, a full word-boundary
-/// regex would be used instead; for now this covers all practical cases.
 pub(crate) fn command_is_git_commit_or_push(command: &str) -> bool {
-    // Quick reject: must contain "git"
-    if !command.contains("git") {
-        return false;
-    }
-    // Accept if the command contains "commit" or "push" (common cases).
-    command.contains("commit") || command.contains("push")
+    contains_ordered_shell_tokens(command, &["git", "commit"])
+        || contains_ordered_shell_tokens(command, &["git", "push"])
 }
 
 impl HookRule for SubagentGitGuardRule {
@@ -216,7 +208,7 @@ impl HookRule for PnpmLockfileGuardRule {
         let command = tool_args.get("command")?.as_str()?;
 
         // Only fire on `git commit` commands.
-        if !command.contains("git") || !command.contains("commit") {
+        if !contains_ordered_shell_tokens(command, &["git", "commit"]) {
             return None;
         }
 

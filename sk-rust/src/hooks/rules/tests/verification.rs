@@ -139,6 +139,35 @@ fn looks_successful_detects_failed_in_output() {
 }
 
 #[test]
+fn looks_successful_detects_counted_failure_patterns() {
+    for output in [
+        "failed: 3",
+        "Errors: 1",
+        "error TS1234",
+        "Exit status 2",
+        "3 failed",
+        "1 failure",
+    ] {
+        let data = json!({"toolResult": output});
+        assert!(
+            !looks_successful(&data),
+            "counted failure pattern must be detected: {output}"
+        );
+    }
+}
+
+#[test]
+fn looks_successful_ignores_zero_count_patterns() {
+    for output in ["Failed: 0", "Errors: 0", "0 failed"] {
+        let data = json!({"toolResult": output});
+        assert!(
+            looks_successful(&data),
+            "zero-count pattern must not be treated as failure: {output}"
+        );
+    }
+}
+
+#[test]
 fn surfaces_from_path_detects_py_surface() {
     assert!(surfaces_from_path("hooks/rules/edit_tracker.py").contains(&SURFACE_PY));
     assert!(!surfaces_from_path("src/main.rs").contains(&SURFACE_PY));
@@ -376,6 +405,12 @@ fn is_closeout_action_rejects_non_closeout_bash() {
 
     let (ok, _) = is_closeout_action("bash", "git status");
     assert!(!ok, "git status must not be a closeout");
+
+    let (ok, _) = is_closeout_action("bash", "echo sigh issue close");
+    assert!(!ok, "substring-only gh matches must not be closeouts");
+
+    let (ok, _) = is_closeout_action("bash", "gh issue disclose 12");
+    assert!(!ok, "substring-only close matches must not be closeouts");
 }
 
 #[test]

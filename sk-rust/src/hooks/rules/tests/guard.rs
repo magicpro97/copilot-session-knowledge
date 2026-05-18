@@ -37,6 +37,10 @@ fn git_guard_denies_git_commit_when_marker_fresh() {
     assert!(command_is_git_commit_or_push("git commit -m 'msg'"));
     assert!(command_is_git_commit_or_push("git push origin main"));
     assert!(!command_is_git_commit_or_push("git log --oneline"));
+    assert!(!command_is_git_commit_or_push(
+        "git log --pretty=format:commit"
+    ));
+    assert!(!command_is_git_commit_or_push("echo gitcommit pushy"));
     assert!(!command_is_git_commit_or_push("echo hello"));
 }
 
@@ -349,7 +353,7 @@ fn pnpm_guard_returns_none_for_non_commit_command() {
     let rule = PnpmLockfileGuardRule;
     let data = json!({
         "toolName": "bash",
-        "toolArgs": {"command": "git status"}
+        "toolArgs": {"command": "git log --pretty=format:commit"}
     });
     assert!(
         rule.evaluate("preToolUse", &data).is_none(),
