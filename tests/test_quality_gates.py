@@ -1193,7 +1193,7 @@ def test_sk_ci_startup_benchmark_regression_gate():
     )
     test(
         "startup benchmark baseline is cached",
-        "ubuntu-latest-sk-startup-baseline-v1" in content and ".benchmarks/sk-startup-baseline.json" in content,
+        "ubuntu-latest-sk-startup-baseline-v2" in content and ".benchmarks/sk-startup-baseline.json" in content,
         "sk-ci.yml should cache the startup benchmark baseline file",
     )
     test(
