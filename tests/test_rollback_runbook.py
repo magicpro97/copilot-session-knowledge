@@ -202,6 +202,25 @@ class RollbackRunbookTests(unittest.TestCase):
         self.assertGreater(removed, 0)
         self.assertEqual(before, _file_snapshot(fake_home))
 
+    def test_launcher_path_block_cleanup_preserves_existing_profile_bytes(self):
+        fake_home = self.tmpdir / "home"
+        fake_home.mkdir()
+        profile_before = "# existing profile\n"
+
+        with _load_install(fake_home) as install:
+            managed_block = (
+                "\n"
+                f"{install._SK_PATH_MARKER_START}\n"
+                f'export PATH="{install.SK_LAUNCHER_DIR}:$PATH"\n'
+                f"{install._SK_PATH_MARKER_END}\n"
+            )
+            profile_after_install = profile_before.rstrip("\n") + "\n" + managed_block
+
+            cleaned, removed = install._remove_launcher_path_block_from_text(profile_after_install)
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(cleaned, profile_before)
+
     def test_db_backup_restore_rollback_preserves_schema_version(self):
         db_path = self.tmpdir / "knowledge.db"
         backup_path = self.tmpdir / "knowledge.db.backup"

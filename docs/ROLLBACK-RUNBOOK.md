@@ -77,10 +77,9 @@ then replace the database and remove WAL sidecars:
 rm -f ~/.copilot/session-state/knowledge.db-wal ~/.copilot/session-state/knowledge.db-shm
 cp /tmp/knowledge.db.backup ~/.copilot/session-state/knowledge.db
 python migrate.py ~/.copilot/session-state/knowledge.db
-python migrate.py ~/.copilot/session-state/knowledge.db
 ```
 
-The second migration run should report `Schema up to date`.
+The migration run should report `Schema up to date`.
 
 ### 2.3 Restore a known-good backup on Windows PowerShell
 
@@ -88,7 +87,6 @@ The second migration run should report `Schema up to date`.
 Remove-Item "$env:USERPROFILE\.copilot\session-state\knowledge.db-wal" -ErrorAction SilentlyContinue
 Remove-Item "$env:USERPROFILE\.copilot\session-state\knowledge.db-shm" -ErrorAction SilentlyContinue
 Copy-Item "C:\Temp\knowledge.db.backup" "$env:USERPROFILE\.copilot\session-state\knowledge.db" -Force
-python migrate.py "$env:USERPROFILE\.copilot\session-state\knowledge.db"
 python migrate.py "$env:USERPROFILE\.copilot\session-state\knowledge.db"
 ```
 
