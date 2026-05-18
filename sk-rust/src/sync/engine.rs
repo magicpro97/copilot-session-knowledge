@@ -25,9 +25,9 @@ use serde_json::Value;
 
 use crate::sync::db::{
     apply_remote_txn, collect_pending_txns, effective_sync_limit, get_or_create_replica_id,
-    lookup_local_id_by_stable_id, mark_txns_committed, open_sync_db, record_failure,
-    refresh_local_retrieval_surfaces, repair_nonlocal_committed_txns, set_sync_state,
-    MAX_PULL_PAGES,
+    lookup_local_id_by_stable_id, maintain_sync_queue, mark_txns_committed, open_sync_db,
+    record_failure, refresh_local_retrieval_surfaces, repair_nonlocal_committed_txns,
+    set_sync_state, MAX_PULL_PAGES,
 };
 
 const PUSH_TIMEOUT_SECS: u64 = 120;
@@ -52,6 +52,24 @@ pub fn run_native_sync_cycle(
     let replica_id = get_or_create_replica_id(&conn).map_err(|e| format!("get_replica_id: {e}"))?;
 
     repair_nonlocal_committed_txns(&conn, &replica_id).map_err(|e| format!("repair_txns: {e}"))?;
+    match maintain_sync_queue(&conn, &replica_id) {
+        Ok(maintenance) => {
+            if maintenance.compaction.compacted {
+                println!(
+                    "[sync] cleanup compacted pending queue txns {}→{} ops {}→{}",
+                    maintenance.compaction.old_pending_txns,
+                    maintenance.compaction.new_pending_txns,
+                    maintenance.compaction.old_pending_ops,
+                    maintenance.compaction.new_pending_ops
+                );
+            }
+        }
+        Err(e) => {
+            let msg = format!("sync queue cleanup failed: {e}");
+            eprintln!("[sync] {msg}");
+            let _ = record_failure(&conn, "sync_queue_cleanup", &msg, "", "", "");
+        }
+    }
 
     if base_url.is_empty() {
         set_sync_state(

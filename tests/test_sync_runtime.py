@@ -1350,6 +1350,124 @@ scaled_limit = sync_daemon._effective_sync_limit(db6, 10)
 db6.close()
 test("relation-heavy backlog increases per-cycle sync limit", scaled_limit >= 100, str(scaled_limit))
 
+# Pending sync queue compaction should coalesce repeated local writes before network health checks.
+db7_path = ARTIFACT_DIR / "knowledge-queue-compaction.db"
+make_db(db7_path)
+db7 = sqlite3.connect(str(db7_path))
+db7.row_factory = sqlite3.Row
+sync_daemon.ensure_sync_foundation(db7)
+for i in range(0, 8):
+    txn_id = f"compact-session-{i}"
+    created_at = f"2026-03-04T00:00:{i:02d}Z"
+    db7.execute(
+        "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES (?, 'local-compact', 'pending', ?, '')",
+        (txn_id, created_at),
+    )
+    db7.execute(
+        """
+        INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+        VALUES (?, 'sessions', 'upsert', 'session-compact', ?, 0, ?)
+        """,
+        (txn_id, json.dumps({"id": "session-compact", "summary": f"v{i}"}), created_at),
+    )
+for i in range(0, 3):
+    txn_id = f"compact-relation-{i}"
+    created_at = f"2026-03-04T00:01:{i:02d}Z"
+    db7.execute(
+        "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES (?, 'local-compact', 'pending', ?, '')",
+        (txn_id, created_at),
+    )
+    db7.execute(
+        """
+        INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+        VALUES (?, 'knowledge_relations', 'upsert', 'rel-compact', ?, 0, ?)
+        """,
+        (txn_id, json.dumps({"stable_id": "rel-compact", "confidence": i}), created_at),
+    )
+db7.commit()
+compaction = sync_daemon.compact_pending_sync_queue(db7, "local-compact", force=True)
+remaining_txns = db7.execute(
+    "SELECT COUNT(*) FROM sync_txns WHERE status='pending' AND replica_id='local-compact'"
+).fetchone()[0]
+remaining_ops = db7.execute(
+    "SELECT COUNT(*) FROM sync_ops o JOIN sync_txns t ON t.txn_id=o.txn_id WHERE t.status='pending' AND t.replica_id='local-compact'"
+).fetchone()[0]
+latest_session_payload = json.loads(
+    db7.execute("SELECT row_payload FROM sync_ops WHERE table_name='sessions' AND row_stable_id='session-compact'").fetchone()[
+        0
+    ]
+)
+latest_relation_payload = json.loads(
+    db7.execute(
+        "SELECT row_payload FROM sync_ops WHERE table_name='knowledge_relations' AND row_stable_id='rel-compact'"
+    ).fetchone()[0]
+)
+db7.close()
+test(
+    "sync queue compaction coalesces duplicate pending rows",
+    compaction["compacted"] is True and remaining_txns == 1 and remaining_ops == 2,
+    f"compaction={compaction} txns={remaining_txns} ops={remaining_ops}",
+)
+test(
+    "sync queue compaction keeps latest row payload",
+    latest_session_payload.get("summary") == "v7" and latest_relation_payload.get("confidence") == 2,
+    f"session={latest_session_payload} relation={latest_relation_payload}",
+)
+
+db8_path = ARTIFACT_DIR / "knowledge-queue-compaction-rollback.db"
+make_db(db8_path)
+db8 = sqlite3.connect(str(db8_path))
+db8.row_factory = sqlite3.Row
+sync_daemon.ensure_sync_foundation(db8)
+for i in range(0, 3):
+    txn_id = f"rollback-session-{i}"
+    created_at = f"2026-03-04T00:02:{i:02d}Z"
+    db8.execute(
+        "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES (?, 'local-rollback', 'pending', ?, '')",
+        (txn_id, created_at),
+    )
+    db8.execute(
+        """
+        INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+        VALUES (?, 'sessions', 'upsert', ?, ?, 0, ?)
+        """,
+        (txn_id, f"session-rollback-{i}", json.dumps({"id": f"session-rollback-{i}"}), created_at),
+    )
+db8.execute(
+    "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES ('collision-txn', 'local-rollback', 'committed', '2026-03-03T00:00:00Z', '2026-03-03T00:00:01Z')"
+)
+db8.commit()
+original_stable_sha256 = sync_daemon._stable_sha256
+rollback_error = None
+try:
+    sync_daemon._stable_sha256 = lambda *parts: "collision-txn"
+    try:
+        sync_daemon.compact_pending_sync_queue(db8, "local-rollback", force=True)
+    except sqlite3.DatabaseError as exc:
+        rollback_error = exc
+finally:
+    sync_daemon._stable_sha256 = original_stable_sha256
+rollback_pending_txns = db8.execute(
+    "SELECT COUNT(*) FROM sync_txns WHERE status='pending' AND replica_id='local-rollback'"
+).fetchone()[0]
+rollback_pending_ops = db8.execute(
+    "SELECT COUNT(*) FROM sync_ops o JOIN sync_txns t ON t.txn_id=o.txn_id WHERE t.status='pending' AND t.replica_id='local-rollback'"
+).fetchone()[0]
+temp_tables_after_rollback = db8.execute(
+    "SELECT COUNT(*) FROM sqlite_temp_master WHERE type='table' AND name LIKE 'sync_compact_%'"
+).fetchone()[0]
+db8.close()
+test(
+    "sync queue compaction rolls back failed rebuild",
+    rollback_error is not None and rollback_pending_txns == 3 and rollback_pending_ops == 3,
+    f"error={rollback_error} txns={rollback_pending_txns} ops={rollback_pending_ops}",
+)
+test(
+    "sync queue compaction cleans temp tables after rollback",
+    temp_tables_after_rollback == 0,
+    str(temp_tables_after_rollback),
+)
+
 print("\n🔧 sync-knowledge runtime status summary")
 db = sqlite3.connect(str(db_path))
 status = sync_knowledge._sync_runtime_status(db)

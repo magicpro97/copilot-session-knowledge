@@ -505,7 +505,7 @@ python3 ~/.copilot/tools/sync-config.py --clear
 
 ### Run sync runtime
 
-> **Current state (`native-sync` in default Cargo features):** the compiled `sk` binary routes `sk sync run` natively — Rust daemon loop, lock, signal, adaptive push/pull, and FTS refresh (`knowledge_fts`/`ke_fts`). The Python `sk.py` shim and any install without a compiled binary delegate to `sync-daemon.py --once` as the fallback.
+> **Current state (`native-sync` in default Cargo features):** the compiled `sk` binary routes `sk sync run` natively — Rust daemon loop, lock, signal, adaptive push/pull, sync queue compaction, and FTS refresh (`knowledge_fts`/`ke_fts`). The Python `sk.py` shim and any install without a compiled binary delegate to `sync-daemon.py --once` as the fallback.
 
 ```bash
 python3 ~/.copilot/tools/sync-daemon.py --once
@@ -516,7 +516,7 @@ python3 ~/.copilot/tools/sync-daemon.py --pull-only
 ```
 
 If `connection_string` is unset, daemon mode remains local-only (idle/no-op for remote sync).
-When backlog is large, daemon applies adaptive per-cycle limits automatically, paginates pull within one cycle, and refreshes local `knowledge_fts` / `ke_fts` rows touched by pulled canonical changes.
+When backlog is large, daemon coalesces pending `sync_txns` / `sync_ops` to the latest operation per canonical row before push, prunes old committed sync logs, applies adaptive per-cycle limits automatically, paginates pull within one cycle, and refreshes local `knowledge_fts` / `ke_fts` rows touched by pulled canonical changes.
 
 ### Inspect sync status
 

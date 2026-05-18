@@ -99,7 +99,7 @@ Ruff is installed.
 | `claude-adapter.py` | Parses Claude Code JSONL sessions into the common DB format |
 | `sync-knowledge.py` | Merges `knowledge.db` files across environments (Windows ↔ WSL); MAX confidence semantics |
 | `sync-config.py` | Single `connection_string` config; `--setup`, `--setup-env`, `--status --json` |
-| `sync-daemon.py` | Local-first push/pull runtime; backlog-aware adaptive limits |
+| `sync-daemon.py` | Local-first push/pull runtime; backlog-aware adaptive limits and automatic sync queue compaction |
 | `sync-status.py` | Local sync diagnostics; `--health-check`, `--audit`, `--json` |
 | `auto-update-tools.py` | Smart git-diff–based update pipeline; `sk-update` alias |
 | `migrate.py` | Versioned schema migrations via `schema_version` table |
