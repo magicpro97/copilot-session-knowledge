@@ -5,6 +5,8 @@
 >
 > **Prerequisites:** familiarity with `sk tentacle goal` commands — see [docs/USAGE.md](USAGE.md#goal-orchestration).
 > **Playbook home:** [docs/OPERATOR-PLAYBOOK.md](OPERATOR-PLAYBOOK.md)
+> **Rollback and fallback:** see [Rollback and Fallback Runbook](ROLLBACK-RUNBOOK.md) for installer,
+> database, Rust binary, hook provisioning, and PR evidence rollback checklists.
 
 ---
 

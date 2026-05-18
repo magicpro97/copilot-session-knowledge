@@ -816,6 +816,15 @@ def _inject_launcher_path(quiet: bool = False) -> None:
             print(f"  {OK} Added sk launcher PATH to {_tilde(profile)}")
 
 
+def _remove_launcher_path_block_from_text(text: str) -> tuple[str, int]:
+    """Remove the managed sk launcher PATH block without leaving an injected blank line."""
+    block_re = re.escape(_SK_PATH_MARKER_START) + r".*?" + re.escape(_SK_PATH_MARKER_END) + r"\n?"
+    updated, removed = re.subn(r"\n" + block_re, "", text, flags=re.DOTALL)
+    if removed:
+        return updated, removed
+    return re.subn(block_re, "", text, flags=re.DOTALL)
+
+
 def _inject_launcher_path_windows(quiet: bool = False) -> bool:
     """Try adding ~/.copilot/bin to user PATH in Windows Registry."""
     bin_str = str(SK_LAUNCHER_DIR)
@@ -1050,8 +1059,6 @@ def uninstall_sk_launcher(quiet: bool = False) -> int:
 
     Returns the number of items removed.
     """
-    import re
-
     removed = 0
     launcher_paths = _sk_launcher_managed_paths()
     safe_scripts, modified_scripts, untracked_scripts = _partition_manifest_removals(launcher_paths)
@@ -1098,11 +1105,10 @@ def uninstall_sk_launcher(quiet: bool = False) -> int:
                 content = profile.read_text(encoding="utf-8")
                 if _SK_PATH_MARKER_START not in content:
                     continue
-                pattern = re.escape(_SK_PATH_MARKER_START) + r".*?" + re.escape(_SK_PATH_MARKER_END) + r"\n?"
-                new_content = re.sub(pattern, "", content, flags=re.DOTALL)
+                new_content, removed_blocks = _remove_launcher_path_block_from_text(content)
                 if new_content != content:
                     _atomic_write_text(profile, new_content)
-                    removed += 1
+                    removed += removed_blocks
                     if not quiet:
                         print(f"  {OK} Removed sk PATH injection from {_tilde(profile)}")
         elif _remove_launcher_path_windows(quiet=quiet):
