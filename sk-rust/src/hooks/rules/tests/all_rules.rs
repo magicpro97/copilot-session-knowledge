@@ -163,3 +163,69 @@ fn all_rules_new_rules_are_informational_only() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wave 2a: FileSizeAdvisoryRule + NewFileAdvisoryRule parity (issue #341)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn all_rules_includes_file_size_advisory() {
+    let rules = all_rules();
+    assert!(
+        rules.iter().any(|r| r.name() == "file-size-advisory"),
+        "all_rules must include file-size-advisory (issue #341 parity)"
+    );
+}
+
+#[test]
+fn all_rules_includes_new_file_advisory() {
+    let rules = all_rules();
+    assert!(
+        rules.iter().any(|r| r.name() == "new-file-advisory"),
+        "all_rules must include new-file-advisory (issue #341 parity)"
+    );
+}
+
+#[test]
+fn advisory_rules_never_deny_on_empty_payload() {
+    // FileSizeAdvisoryRule and NewFileAdvisoryRule must be purely informational.
+    let advisory_names = ["file-size-advisory", "new-file-advisory"];
+    let data = json!({});
+    let rules = all_rules();
+    for rule in rules.iter().filter(|r| advisory_names.contains(&r.name())) {
+        for event in &["preToolUse"] {
+            if let Some(result) = rule.evaluate(event, &data) {
+                assert!(
+                    result.get("permissionDecision").is_none(),
+                    "advisory rule '{}' on event '{}' must never produce permissionDecision; got: {result}",
+                    rule.name(),
+                    event
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn advisory_rules_before_track_edits() {
+    // Both advisory rules should come before track-edits in dispatch order so
+    // the agent sees the advisory before changes are tracked.
+    let rules = all_rules();
+    let fsa = rules.iter().position(|r| r.name() == "file-size-advisory");
+    let nfa = rules.iter().position(|r| r.name() == "new-file-advisory");
+    let te = rules.iter().position(|r| r.name() == "track-edits");
+    assert!(fsa.is_some(), "file-size-advisory must be registered");
+    assert!(nfa.is_some(), "new-file-advisory must be registered");
+    if let (Some(fsa_pos), Some(te_pos)) = (fsa, te) {
+        assert!(
+            fsa_pos < te_pos,
+            "file-size-advisory must precede track-edits"
+        );
+    }
+    if let (Some(nfa_pos), Some(te_pos)) = (nfa, te) {
+        assert!(
+            nfa_pos < te_pos,
+            "new-file-advisory must precede track-edits"
+        );
+    }
+}

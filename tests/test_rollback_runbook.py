@@ -144,7 +144,7 @@ class RollbackRunbookTests(unittest.TestCase):
             "python migrate.py ~/.copilot/session-state/knowledge.db --backup-only",
             'python migrate.py "$env:USERPROFILE\\.copilot\\session-state\\knowledge.db" --backup-only --backup-path "C:\\Temp\\knowledge.db.backup"',
             "cp /tmp/knowledge.db.backup ~/.copilot/session-state/knowledge.db",
-            "Copy-Item \"C:\\Temp\\knowledge.db.backup\"",
+            'Copy-Item "C:\\Temp\\knowledge.db.backup"',
             "bash sk-rust/install.sh",
             "powershell -ExecutionPolicy Bypass -File sk-rust\\install.ps1",
             "python ~/.copilot/tools/sk.py --help",
@@ -245,6 +245,94 @@ class RollbackRunbookTests(unittest.TestCase):
 
         self.assertEqual(_db_scalar(db_path, "PRAGMA quick_check"), "ok")
         self.assertEqual(_db_scalar(db_path, "SELECT MAX(version) FROM schema_version"), latest)
+
+
+class KnownFailureModeTests(unittest.TestCase):
+    """Issue #422: tests for known rollback failure modes.
+
+    Each test covers a specific failure scenario documented in
+    docs/ROLLBACK-RUNBOOK.md §6 "Known failure modes and recovery".
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="rollback-failure-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # ── 6.1 Startup regression: sk exits non-zero after upgrade ───────────
+
+    def test_runbook_covers_startup_regression_failure_mode(self):
+        """§6.1: runbook documents startup regression recovery."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("startup regression", text.lower())
+        self.assertIn("sk.broken", text)
+
+    # ── 6.2 Migration: database is locked ─────────────────────────────────
+
+    def test_runbook_covers_database_locked_failure_mode(self):
+        """§6.2: runbook documents 'database is locked' recovery path."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("database is locked", text.lower())
+
+    def test_migration_succeeds_after_wal_removal(self):
+        """§6.2: removing WAL sidecars before migration does not corrupt DB."""
+        db_path = self.tmpdir / "knowledge.db"
+        # Create a migrated DB to generate WAL files in WAL mode
+        first = _run_migrate(str(db_path))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        # Simulate stale WAL / SHM files (create dummy ones)
+        wal = db_path.with_name(db_path.name + "-wal")
+        shm = db_path.with_name(db_path.name + "-shm")
+        wal.write_bytes(b"")
+        shm.write_bytes(b"")
+        # After removing them, migration must still succeed
+        wal.unlink(missing_ok=True)
+        shm.unlink(missing_ok=True)
+        second = _run_migrate(str(db_path))
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(_db_scalar(db_path, "PRAGMA quick_check"), "ok")
+
+    # ── 6.3 Hook provisioning: tamper protection blocks re-install ─────────
+
+    def test_runbook_covers_hook_tamper_protection_failure_mode(self):
+        """§6.3: runbook documents hook tamper protection recovery."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("--unlock-hooks", text)
+        self.assertIn("--lock-hooks", text)
+
+    # ── 6.4 sk.cmd CRLF failure mode (Windows) ────────────────────────────
+
+    def test_runbook_covers_sk_cmd_crlf_failure_mode(self):
+        """§6.4: runbook documents sk.cmd CRLF failure and re-install recovery."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("CRLF", text)
+        self.assertIn("--uninstall-launcher", text)
+
+    # ── 6.5 DB backup fails silently (OSError) ────────────────────────────
+
+    def test_runbook_covers_backup_verification_pattern(self):
+        """§6.5: runbook documents backup verification before forward migration."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("quick_check", text)
+
+    def test_db_backup_is_non_empty_after_successful_backup(self):
+        """§6.5: --backup-only must produce a non-empty backup file."""
+        db_path = self.tmpdir / "knowledge.db"
+        backup_path = self.tmpdir / "knowledge.db.backup"
+        first = _run_migrate(str(db_path))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        backup = _run_migrate(str(db_path), "--backup-only", "--backup-path", str(backup_path))
+        self.assertEqual(backup.returncode, 0, backup.stderr)
+        self.assertTrue(backup_path.is_file(), "backup file must exist after --backup-only")
+        self.assertGreater(backup_path.stat().st_size, 0, "backup file must be non-empty")
+        # quick_check on the backup must pass
+        self.assertEqual(_db_scalar(backup_path, "PRAGMA quick_check"), "ok")
+
+    def test_runbook_section_6_known_failure_modes_exists(self):
+        """§6: runbook must contain a Section 6 dedicated to known failure modes."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("## 6. Known failure modes", text)
 
 
 if __name__ == "__main__":

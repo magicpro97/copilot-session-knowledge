@@ -374,11 +374,11 @@ impl HookRule for AutoBriefingRule {
                 for entry in entries.flatten() {
                     let fname = entry.file_name();
                     let name = fname.to_string_lossy();
-                    // Preserve permanent system markers.
-                    if matches!(
-                        name.as_ref(),
-                        "hooks-tampered" | "session.log" | "audit.jsonl"
-                    ) {
+                    // Preserve permanent system markers and sync markers (issue #347).
+                    if SESSION_PROTECTED_MARKERS
+                        .iter()
+                        .any(|p| *p == name.as_ref())
+                    {
                         continue;
                     }
                     // Delete own session-specific markers (will re-sign below).
@@ -476,6 +476,9 @@ impl HookRule for AutoBriefingRule {
             .arg(&briefing_script)
             .arg(&project)
             .args(["--budget", "2000", "--session-start"])
+            // Recursion guard (issue #396): prevent briefing.py from
+            // triggering the hook again when it spawns further tool calls.
+            .env("SK_HOOK_ACTIVE", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -860,8 +863,17 @@ pub struct SessionEndRule;
 
 /// The set of marker filenames that are permanent and must never be deleted
 /// during per-session cleanup.
-pub(crate) const SESSION_PROTECTED_MARKERS: &[&str] =
-    &["audit.jsonl", "session.log", "hooks-tampered"];
+///
+/// Sync marker files (`sync-nudge.json`, `sync-flush.json`) are written by
+/// `postToolUse` / `sessionEnd` hooks and consumed by watch-sessions / sync-daemon.
+/// They must survive session cleanup so consumers can read them (issue #347).
+pub(crate) const SESSION_PROTECTED_MARKERS: &[&str] = &[
+    "audit.jsonl",
+    "session.log",
+    "hooks-tampered",
+    "sync-nudge.json",
+    "sync-flush.json",
+];
 
 impl HookRule for SessionEndRule {
     fn name(&self) -> &'static str {
@@ -1129,6 +1141,8 @@ pub(crate) fn try_stop_cleanup(data: &Value) -> Option<String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // suppress Python tracebacks from hook output
+        // Recursion guard (issue #396): prevent tentacle.py from re-triggering hooks.
+        .env("SK_HOOK_ACTIVE", "1")
         .spawn()
     {
         Ok(c) => c,

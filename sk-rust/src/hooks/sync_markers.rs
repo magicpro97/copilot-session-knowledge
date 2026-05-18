@@ -58,10 +58,32 @@ fn try_record_sync_signal(event: &str, data: &Value) -> std::io::Result<()> {
     fs::create_dir_all(&dir)?;
 
     // Atomic write via temp file then rename (mirrors Python os.replace).
+    // On Windows, rename over an existing file can fail with a sharing violation
+    // when another process (e.g. watch-sessions) has the target open for reading.
+    // Retry up to 3 times with a short back-off before giving up (issue #346).
     let tmp = target.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string(&payload).unwrap_or_default())?;
-    fs::rename(&tmp, &target)?;
-
+    let mut last_err = None;
+    for attempt in 0..3u8 {
+        match fs::rename(&tmp, &target) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < 2 {
+                    // Brief back-off before retry (Windows sharing violations are transient).
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+            }
+        }
+    }
+    // All retries exhausted: try a direct overwrite as a last resort (less
+    // atomic but still correct on a single-writer path).
+    if let Err(_write_err) = fs::write(&target, serde_json::to_string(&payload).unwrap_or_default())
+    {
+        // Return the rename error so callers can log it.
+        return Err(last_err.unwrap());
+    }
+    let _ = fs::remove_file(&tmp); // clean up the stranded tmp file
     Ok(())
 }
 

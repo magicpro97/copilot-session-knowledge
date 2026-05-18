@@ -864,6 +864,99 @@ def _rewrite_query_local(query: str, max_terms: int = 15) -> str:
     return " ".join(condensed) if condensed else query.strip()
 
 
+# ── Synonym expansion (issue #371) ────────────────────────────────────────────
+# Conservative, domain-specific synonyms for knowledge-base retrieval.
+_SYNONYM_MAP: dict[str, list[str]] = {
+    "auth": ["auth", "authentication", "login", "token"],
+    "authentication": ["authentication", "auth", "login", "token"],
+    "error": ["error", "bug", "exception", "failure"],
+    "bug": ["bug", "error", "issue", "defect"],
+    "config": ["config", "configuration", "settings", "env"],
+    "configuration": ["configuration", "config", "settings", "env"],
+    "db": ["db", "database", "sqlite", "sql"],
+    "database": ["database", "db", "sqlite", "sql"],
+    "deploy": ["deploy", "deployment", "release", "publish"],
+    "deployment": ["deployment", "deploy", "release", "publish"],
+    "test": ["test", "tests", "testing", "spec"],
+    "testing": ["testing", "test", "tests", "spec"],
+    "perf": ["perf", "performance", "speed", "latency", "slow"],
+    "performance": ["performance", "perf", "speed", "latency", "slow"],
+    "cache": ["cache", "caching", "redis", "ttl", "invalidation"],
+    "caching": ["caching", "cache", "redis", "ttl"],
+    "migration": ["migration", "migrate", "schema", "upgrade"],
+    "migrate": ["migrate", "migration", "schema", "upgrade"],
+    "security": ["security", "vulnerability", "injection", "credential"],
+    "search": ["search", "query", "retrieval", "fts", "fulltext"],
+    "retrieval": ["retrieval", "search", "query", "recall", "fts"],
+    "index": ["index", "indexing", "fts", "fts5"],
+    "indexing": ["indexing", "index", "fts", "fts5"],
+    "embedding": ["embedding", "vector", "semantic", "similarity"],
+    "vector": ["vector", "embedding", "semantic", "similarity"],
+    "session": ["session", "sessions", "history", "conversation"],
+    "hook": ["hook", "hooks", "preToolUse", "postToolUse", "trigger"],
+    "hooks": ["hooks", "hook", "preToolUse", "postToolUse", "trigger"],
+    "api": ["api", "endpoint", "route", "rest", "http"],
+    "endpoint": ["endpoint", "api", "route", "rest", "http"],
+    "log": ["log", "logging", "logs", "output", "stderr"],
+    "logging": ["logging", "log", "logs", "output"],
+    "sync": ["sync", "synchronize", "push", "pull", "remote"],
+    "synchronize": ["synchronize", "sync", "push", "pull", "remote"],
+    "skill": ["skill", "skills", "plugin", "extension"],
+    "skills": ["skills", "skill", "plugin", "extension"],
+    "briefing": ["briefing", "context", "recall", "knowledge"],
+    "knowledge": ["knowledge", "briefing", "recall", "learning"],
+    "refactor": ["refactor", "refactoring", "rewrite", "cleanup"],
+    "refactoring": ["refactoring", "refactor", "rewrite", "cleanup"],
+}
+
+
+def _expand_synonyms(query: str) -> str:
+    """Expand query terms using domain synonym map (issue #371).
+
+    Conservative expansion: only 1-6 token queries are expanded.
+    Returns a space-joined string of unique expanded terms.
+    Use _expand_synonyms_fts for FTS queries that need OR conjunction.
+    """
+    tokens = query.strip().split()
+    if not tokens or len(tokens) > 6:
+        return query.strip()
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        clean = tok.lower().strip(" \t\"'.,;!?")
+        synonyms = _SYNONYM_MAP.get(clean)
+        if synonyms:
+            for s in synonyms:
+                if s not in seen:
+                    expanded.append(s)
+                    seen.add(s)
+        else:
+            if clean not in seen:
+                expanded.append(clean)
+                seen.add(clean)
+    return " ".join(expanded) if expanded else query.strip()
+
+
+def _expand_synonyms_fts(query: str) -> str:
+    """Build an FTS5 OR query from synonym-expanded terms (issue #371).
+
+    Unlike _expand_synonyms which returns space-joined terms (AND semantics
+    in FTS5), this function builds an explicit OR-conjunction query so that
+    any of the expanded synonyms triggers a match.  Safe to pass directly to
+    a ``WHERE ke_fts MATCH ?`` parameter.
+    """
+    expanded = _expand_synonyms(query)
+    _STRIP_OPS = frozenset({"OR", "AND", "NOT", "NEAR"})
+    terms = [t for t in expanded.split() if t and t.upper() not in _STRIP_OPS]
+    _FTS_SPECIAL = set('"*(){}:^')
+    clean_terms = ["".join(c for c in t if c not in _FTS_SPECIAL) for t in terms]
+    clean_terms = [t for t in clean_terms if t]
+    if not clean_terms:
+        return '""'
+    return " OR ".join(f'"{t}"*' for t in clean_terms)
+
+
 def _infer_mode_from_query(query: str) -> tuple[str, bool]:
     """Infer mode from query with conservative confidence gating."""
     q = query.lower()
@@ -1702,20 +1795,33 @@ def search_semantic(
                 for section_id, score in tfidf_results:
                     if score < 0.05:
                         continue
-                    # Map TF-IDF section match to knowledge entries from the same session
+                    # Map TF-IDF section match to knowledge entries.
+                    # Precision improvement (issue #376): prefer same-document entries
+                    # (ke.document_id matches the section's document) before falling back
+                    # to same-session entries.  This avoids retrieving unrelated entries
+                    # from large sessions that happen to contain the matching section.
                     ke_rows = db.execute(
                         """
                         SELECT ke.* FROM knowledge_entries ke
                         WHERE ke.category = ?
-                          AND ke.session_id IN (
-                              SELECT d.session_id FROM sections s
-                              JOIN documents d ON s.document_id = d.id
-                              WHERE s.id = ?
+                          AND (
+                              ke.document_id = (
+                                  SELECT document_id FROM sections WHERE id = ?
+                              )
+                              OR ke.session_id IN (
+                                  SELECT d.session_id FROM sections s
+                                  JOIN documents d ON s.document_id = d.id
+                                  WHERE s.id = ?
+                              )
                           )
-                        ORDER BY ke.confidence DESC
+                        ORDER BY
+                            CASE WHEN ke.document_id = (
+                                SELECT document_id FROM sections WHERE id = ?
+                            ) THEN 0 ELSE 1 END,
+                            ke.confidence DESC
                         LIMIT ?
                     """,
-                        (category, section_id, limit),
+                        (category, section_id, section_id, section_id, limit),
                     ).fetchall()
                     if not ke_rows:
                         # Fallback: get top entries by confidence for this category
@@ -2029,7 +2135,9 @@ def generate_subagent_context(
         fts = search_knowledge_entries(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
         # Widen semantic fetch to match FTS so outer priority-aware rerank sees the
         # full candidate pool before truncation (issue #121 Blocker 4).
-        sem = search_semantic(db, query, cat, fetch_limit, min_confidence=min_confidence)
+        # Issue #369: use rewritten_query consistently so semantic path benefits from
+        # query condensation like the FTS path does.
+        sem = search_semantic(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
         # Merge and dedup by id
         seen = set()
         entries = []
@@ -2170,7 +2278,9 @@ def generate_briefing(
         fts_results = search_knowledge_entries(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
         # Widen semantic fetch symmetrically so the outer priority rerank has the same
         # wide candidate pool for semantic hits as it does for FTS hits (issue #121 Blocker 4).
-        sem_results = search_semantic(db, query, cat, fetch_limit, min_confidence=min_confidence)
+        # Issue #369: use rewritten_query consistently for semantic search so FTS and
+        # semantic paths operate on the same condensed terms.
+        sem_results = search_semantic(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
 
         merged = []
         for r in fts_results + sem_results:
@@ -2183,6 +2293,9 @@ def generate_briefing(
         # entry can always surface ahead of an equally-intense stale one.
         merged.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
         # WBS-014: defense-in-depth read-side credential/injection filter
+        # Issue #377: universal status-note suppression — applied here so ALL
+        # output formats (text, json, pack, compact) consistently omit Wave-style
+        # status-note entries, not just the compact formatter.
         safe_entries = []
         for e in merged[:cat_limit]:
             if _briefing_entry_is_unsafe(e):
@@ -2190,6 +2303,8 @@ def generate_briefing(
                     f"  [briefing] suppressed unsafe entry: {e.get('title', '')[:60]!r}",
                     file=sys.stderr,
                 )
+            elif _STATUS_NOTE_RE.search(e.get("title", "")):
+                pass  # suppress Wave-style status/progress notes universally
             else:
                 safe_entries.append(e)
         briefing_data[cat] = safe_entries

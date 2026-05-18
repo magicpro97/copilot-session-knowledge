@@ -242,7 +242,13 @@ class AutoBriefingRule(Rule):
             for f in MARKERS_DIR.iterdir():
                 try:
                     name = f.name
-                    if name in ("hooks-tampered", "session.log", "audit.jsonl"):
+                    if name in (
+                        "hooks-tampered",
+                        "session.log",
+                        "audit.jsonl",
+                        "sync-nudge.json",
+                        "sync-flush.json",
+                    ):
                         continue
                     # Delete own session markers (will re-sign below).
                     # Also remove the companion .lock file so orphaned locks from

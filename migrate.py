@@ -327,6 +327,7 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("entry_concept_tags", "local_only", ""),
         ("entry_dream_scores", "local_only", ""),
         ("file_annotations", "local_only", ""),
+        ("project_registry", "canonical", "project_id"),
     ]
     db.executemany(
         """
@@ -349,6 +350,227 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
 
 
 _BACKFILL_BATCH_SIZE = 1000
+
+# ── Issue #357: batch FTS rebuild ────────────────────────────────────────────
+_FTS_REBUILD_BATCH_SIZE = 500
+
+# ── Issue #358: cache FTS schema detection ───────────────────────────────────
+# Bump this string whenever the ke_fts DDL changes so old caches are invalidated.
+_KE_FTS_SCHEMA_VERSION = "v3-porter"
+_KE_FTS_SCHEMA_VERSION_KEY = "ke_fts_schema_version"
+
+
+def _get_cached_ke_fts_version(db: sqlite3.Connection) -> str:
+    """Return the cached ke_fts schema version stored in wakeup_config, or ''."""
+    try:
+        row = db.execute("SELECT value FROM wakeup_config WHERE key=?", (_KE_FTS_SCHEMA_VERSION_KEY,)).fetchone()
+        return str(row[0]) if row else ""
+    except sqlite3.OperationalError:
+        return ""
+
+
+def _set_cached_ke_fts_version(db: sqlite3.Connection, version: str) -> None:
+    """Persist the ke_fts schema version in wakeup_config for future cache hits."""
+    try:
+        db.execute(
+            """
+            INSERT INTO wakeup_config (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                updated_at = datetime('now')
+            """,
+            (_KE_FTS_SCHEMA_VERSION_KEY, version),
+        )
+    except sqlite3.OperationalError:
+        pass
+
+
+def _ke_fts_needs_rebuild(db: sqlite3.Connection) -> bool:
+    """Return True when ke_fts must be rebuilt.
+
+    Fast path (#358): if wakeup_config records the current schema version, skip
+    the sqlite_master query entirely.
+    """
+    if _get_cached_ke_fts_version(db) == _KE_FTS_SCHEMA_VERSION:
+        return False
+    fts_row = db.execute("SELECT sql FROM sqlite_master WHERE name='ke_fts'").fetchone()
+    if not fts_row:
+        return False
+    fts_def = fts_row[0] or ""
+    needs = (
+        "wing" not in fts_def
+        or "facts" not in fts_def
+        or "error_type" not in fts_def
+        or "root_cause" not in fts_def
+        or "porter" not in fts_def  # issue #373
+    )
+    return needs
+
+
+def _rebuild_ke_fts_batched(db: sqlite3.Connection, new_ddl: str) -> None:
+    """Rebuild ke_fts using batched inserts to avoid long write locks (#357).
+
+    Uses BEGIN EXCLUSIVE so the DROP→RENAME is atomic; prevents FTS permanent
+    loss if watch-sessions holds a read transaction.
+    """
+    has_table = (
+        db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").fetchone() is not None
+    )
+    if not has_table:
+        return
+
+    db.execute("BEGIN EXCLUSIVE")
+    try:
+        db.execute("DROP TABLE IF EXISTS ke_fts_new")
+        db.execute(new_ddl.replace("ke_fts", "ke_fts_new", 1))
+        # Batched INSERT (#357)
+        cur = db.execute(
+            """
+            SELECT id, title, content, tags, category,
+                   COALESCE(wing,''), COALESCE(room,''),
+                   COALESCE(facts,'[]'), COALESCE(error_type,''),
+                   COALESCE(root_cause,'')
+            FROM knowledge_entries
+            """
+        )
+        while True:
+            batch = cur.fetchmany(_FTS_REBUILD_BATCH_SIZE)
+            if not batch:
+                break
+            db.executemany(
+                """
+                INSERT INTO ke_fts_new(rowid, title, content, tags, category,
+                    wing, room, facts, error_type, root_cause)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch,
+            )
+        db.execute("DROP TABLE IF EXISTS ke_fts")
+        db.execute("ALTER TABLE ke_fts_new RENAME TO ke_fts")
+        db.execute("COMMIT")
+    except Exception:
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        try:
+            db.execute("DROP TABLE IF EXISTS ke_fts_new")
+        except Exception:
+            pass
+        raise
+
+
+# ── Issue #392: chunked WAL checkpoint scheduling ────────────────────────────
+
+
+def _wal_frame_count(wal_path: str, page_size: int) -> int:
+    """Return the number of frames in a WAL file based on its size.
+
+    WAL layout: 32-byte file header followed by frames of (24-byte frame
+    header + page_size bytes).  Returns 0 if the file does not exist, is
+    empty, or is smaller than the WAL header.
+    """
+    try:
+        size = os.path.getsize(wal_path)
+    except OSError:
+        return 0
+    if size <= 32 or page_size <= 0:
+        return 0
+    return (size - 32) // (24 + page_size)
+
+
+def schedule_wal_checkpoint(db: sqlite3.Connection, threshold_pages: int = 1000) -> bool:
+    """Run a PASSIVE WAL checkpoint when the WAL has grown past threshold_pages.
+
+    Returns True if a checkpoint was attempted, False if below threshold or
+    WAL mode is not active.  Uses PASSIVE mode so it never blocks writers.
+
+    The threshold gate is evaluated *before* issuing PRAGMA wal_checkpoint so
+    that hot-path callers with a busy WAL never pay the checkpoint cost when
+    the WAL is still small.
+    """
+    try:
+        mode_row = db.execute("PRAGMA journal_mode").fetchone()
+        if not mode_row or str(mode_row[0]).lower() != "wal":
+            return False
+        # Gate on actual WAL size before running the checkpoint.
+        if threshold_pages > 0:
+            db_list = db.execute("PRAGMA database_list").fetchall()
+            db_path = next((row[2] for row in db_list if row[1] == "main" and row[2]), None)
+            if db_path:
+                page_size_row = db.execute("PRAGMA page_size").fetchone()
+                page_size = page_size_row[0] if page_size_row else 4096
+                if _wal_frame_count(db_path + "-wal", page_size) < threshold_pages:
+                    return False
+            # db_path is empty for in-memory DBs — WAL mode is not reachable
+            # for :memory: so control flow never reaches here in practice.
+        db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+# ── Issue #370: embedding dimension mismatch detection ───────────────────────
+
+
+def detect_embedding_dimension_mismatch(db: sqlite3.Connection) -> list[dict]:
+    """Return a list of mismatch records when stored embeddings use different dims.
+
+    Each record has keys: source_type, model, stored_dimensions, provider.
+    An empty list means no mismatch (or no embeddings table present).
+    """
+    mismatches: list[dict] = []
+    try:
+        has_emb = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='embeddings'").fetchone()
+        if not has_emb:
+            return mismatches
+        rows = db.execute(
+            """
+            SELECT source_type, provider, model, dimensions, COUNT(*) as n
+            FROM embeddings
+            GROUP BY source_type, provider, model, dimensions
+            """
+        ).fetchall()
+        # Group by (source_type, provider, model) — if more than one dim value exists,
+        # or if it differs from embedding_meta's recorded configured dimension,
+        # we have a mismatch.
+        dim_map: dict[tuple, list[int]] = {}
+        for row in rows:
+            key = (str(row[0]), str(row[1]), str(row[2]))
+            dim_map.setdefault(key, []).append(int(row[3]))
+        for (source_type, provider, model), dims in dim_map.items():
+            if len(set(dims)) > 1:
+                mismatches.append(
+                    {
+                        "source_type": source_type,
+                        "provider": provider,
+                        "model": model,
+                        "stored_dimensions": dims,
+                        "issue": "mixed_dimensions",
+                    }
+                )
+        # Also check against configured dimension in embedding_meta
+        try:
+            meta_row = db.execute("SELECT value FROM embedding_meta WHERE key='configured_dimensions'").fetchone()
+            if meta_row and meta_row[0]:
+                configured = int(meta_row[0])
+                for (source_type, provider, model), dims in dim_map.items():
+                    for d in set(dims):
+                        if d != configured:
+                            mismatches.append(
+                                {
+                                    "source_type": source_type,
+                                    "provider": provider,
+                                    "model": model,
+                                    "stored_dimensions": d,
+                                    "configured_dimensions": configured,
+                                    "issue": "dimension_config_mismatch",
+                                }
+                            )
+        except sqlite3.OperationalError:
+            pass
+    except sqlite3.OperationalError:
+        pass
+    return mismatches
 
 
 def _backfill_stable_ids(db: sqlite3.Connection):
@@ -700,6 +922,7 @@ def _ensure_base_schema(db: sqlite3.Connection):
             valence TEXT DEFAULT '',
             intensity REAL DEFAULT 0.5,
             priority TEXT DEFAULT 'P2',
+            project_id TEXT DEFAULT '',
             UNIQUE(category, title, session_id)
         );
 
@@ -756,7 +979,17 @@ def _ensure_base_schema(db: sqlite3.Connection):
             facts,
             error_type,
             root_cause,
-            tokenize='unicode61 remove_diacritics 2'
+            tokenize='porter unicode61 remove_diacritics 2'
+        );
+
+        CREATE TABLE IF NOT EXISTS project_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL DEFAULT '',
+            repo_root TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
         );
     """)
 
@@ -778,6 +1011,7 @@ def _ensure_base_schema(db: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_ke_stable_id ON knowledge_entries(stable_id)",
         "CREATE INDEX IF NOT EXISTS idx_ke_intensity ON knowledge_entries(intensity DESC)",
         "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_project_id ON knowledge_entries(project_id)",
         "CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id)",
         "CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id)",
         "CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id)",
@@ -790,6 +1024,8 @@ def _ensure_base_schema(db: sqlite3.Connection):
         "CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_sf_stable_id ON search_feedback(stable_id)",
         "CREATE INDEX IF NOT EXISTS idx_sf_origin_replica ON search_feedback(origin_replica_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pr_project_id ON project_registry(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pr_repo_root ON project_registry(repo_root)",
     ]
     for sql in index_statements:
         try:
@@ -1303,6 +1539,43 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_is_mentioned_skill ON improvement_signals(mentioned_skill)",
             ],
         ),
+        # v25: issue #373 — Add porter tokenizer to ke_fts for better stem matching.
+        # ke_fts was previously using 'unicode61 remove_diacritics 2'.
+        # Rebuild happens in the post-migration FTS check below using _rebuild_ke_fts_batched.
+        # This migration serves as the version marker so the rebuild only runs once.
+        (
+            25,
+            "ke_fts_porter_tokenizer",
+            [
+                # The actual rebuild is done by _rebuild_ke_fts_batched below
+                # after all version migrations complete.  This entry pins the
+                # schema version so idempotency is preserved (#357, #358, #373).
+                "SELECT 1",  # no-op placeholder — rebuild done post-migration
+            ],
+        ),
+        # v26: issue #372 — Project-scoped knowledge search.
+        # Adds project_id column to knowledge_entries and a project_registry table
+        # so entries can be filtered by project/repo root without relying on wing/room.
+        (
+            26,
+            "project_scoped_knowledge",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN project_id TEXT DEFAULT ''",
+                "CREATE INDEX IF NOT EXISTS idx_ke_project_id ON knowledge_entries(project_id)",
+                # Project registry: named projects with repo roots for scoped querying (#372)
+                """CREATE TABLE IF NOT EXISTS project_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    repo_root TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_pr_project_id ON project_registry(project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_pr_repo_root ON project_registry(repo_root)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
@@ -1346,42 +1619,31 @@ if __name__ == "__main__":
         db.commit()
     except Exception as e:
         print(f"  [migrate] stable-id backfill: {e}", file=sys.stderr)
+    # ── FTS5 schema check and batched rebuild (#357, #358, #373) ─────────────
+    # Target DDL: porter tokenizer + all required columns.
+    _KE_FTS_TARGET_DDL = (
+        "CREATE VIRTUAL TABLE ke_fts USING fts5("
+        "title, content, tags, category, wing, room, facts, error_type, root_cause, "
+        "tokenize='porter unicode61 remove_diacritics 2')"
+    )
     try:
-        fts_sql = db.execute("SELECT sql FROM sqlite_master WHERE name='ke_fts'").fetchone()
-        needs_rebuild = False
-        if fts_sql:
-            fts_def = fts_sql[0] or ""
-            if (
-                "wing" not in fts_def
-                or "facts" not in fts_def
-                or "error_type" not in fts_def
-                or "root_cause" not in fts_def
-            ):
-                needs_rebuild = True
-        if needs_rebuild:
-            print("  [migrate] Rebuilding FTS5 (adding error_type, root_cause columns)...")
-            # P0-9: use BEGIN EXCLUSIVE so the DROP→RENAME is atomic;
-            # prevents FTS permanent loss if watch-sessions holds a read transaction.
-            db.execute("BEGIN EXCLUSIVE")
-            try:
-                db.execute("DROP TABLE IF EXISTS ke_fts_new")
-                db.execute(
-                    "CREATE VIRTUAL TABLE ke_fts_new USING fts5(title, content, tags, category, wing, room, facts, error_type, root_cause, tokenize='unicode61 remove_diacritics 2')"
-                )
-                db.execute(
-                    "INSERT INTO ke_fts_new(rowid, title, content, tags, category, wing, room, facts, error_type, root_cause) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]'), COALESCE(error_type,''), COALESCE(root_cause,'') FROM knowledge_entries"
-                )
-                db.execute("DROP TABLE IF EXISTS ke_fts")
-                db.execute("ALTER TABLE ke_fts_new RENAME TO ke_fts")
-                db.execute("COMMIT")
-                print("  [migrate] FTS5 rebuilt with error_type, root_cause columns")
-            except Exception as e:
-                db.execute("ROLLBACK")
-                db.execute("DROP TABLE IF EXISTS ke_fts_new")
-                print(f"  [migrate] FTS5 rebuild failed: {e}", file=sys.stderr)
-                raise
+        if _ke_fts_needs_rebuild(db):
+            print("  [migrate] Rebuilding ke_fts with porter tokenizer + all columns (#357/#373)...")
+            _rebuild_ke_fts_batched(db, _KE_FTS_TARGET_DDL)
+            _set_cached_ke_fts_version(db, _KE_FTS_SCHEMA_VERSION)
+            db.commit()
+            print("  [migrate] ke_fts rebuilt successfully")
+        else:
+            # Ensure cache key is set even when no rebuild needed (#358)
+            _set_cached_ke_fts_version(db, _KE_FTS_SCHEMA_VERSION)
+            db.commit()
     except Exception as e:
-        print(f"  [migrate] FTS5: {e}", file=sys.stderr)
+        print(f"  [migrate] ke_fts rebuild: {e}", file=sys.stderr)
+    # ── Post-migration WAL checkpoint (#392) ─────────────────────────────────
+    try:
+        schedule_wal_checkpoint(db, threshold_pages=500)
+    except Exception:
+        pass
     if applied == 0:
         print(f"  [migrate] Schema up to date (v{current})")
     else:

@@ -228,6 +228,119 @@ class InstallSandboxTests(unittest.TestCase):
                 (self.fake_home / ".copilot" / "session-state").resolve(),
             )
 
+    @unittest.skipIf(os.name == "nt", "Shell profile injection is POSIX-only")
+    def test_wbs010_inject_launcher_path_idempotent_no_duplicate(self):
+        """WBS-010: _inject_launcher_path never duplicates the PATH block."""
+        with _load_install(self.fake_home) as install:
+            profile = self.fake_home / ".zshrc"
+            install.HOME = self.fake_home
+            install.SK_LAUNCHER_DIR = self.fake_home / ".copilot" / "bin"
+
+            # First injection
+            install._inject_launcher_path(quiet=True)
+            self.assertTrue(profile.exists())
+            content1 = profile.read_text(encoding="utf-8")
+            self.assertEqual(content1.count(install._SK_PATH_MARKER_START), 1)
+
+            # Second injection (idempotent)
+            install._inject_launcher_path(quiet=True)
+            content2 = profile.read_text(encoding="utf-8")
+            self.assertEqual(content2.count(install._SK_PATH_MARKER_START), 1)
+            self.assertEqual(content2.count(str(install.SK_LAUNCHER_DIR)), 1)
+
+            # Third injection (still idempotent)
+            install._inject_launcher_path(quiet=True)
+            content3 = profile.read_text(encoding="utf-8")
+            self.assertEqual(content3.count(install._SK_PATH_MARKER_START), 1)
+
+    @unittest.skipIf(os.name == "nt", "Shell profile injection is POSIX-only")
+    def test_wbs010_inject_launcher_path_updates_stale_block(self):
+        """WBS-010: _inject_launcher_path updates block when launcher dir changes."""
+        with _load_install(self.fake_home) as install:
+            profile = self.fake_home / ".zshrc"
+            old_bin = self.fake_home / ".copilot" / "bin"
+            new_bin = self.fake_home / ".copilot" / "bin2"
+            install.HOME = self.fake_home
+
+            install.SK_LAUNCHER_DIR = old_bin
+            install._inject_launcher_path(quiet=True)
+            self.assertIn(str(old_bin), profile.read_text(encoding="utf-8"))
+
+            # Simulate reinstall with a new launcher dir
+            install.SK_LAUNCHER_DIR = new_bin
+            install._inject_launcher_path(quiet=True)
+            updated = profile.read_text(encoding="utf-8")
+
+            self.assertIn(str(new_bin), updated)
+            self.assertNotIn(str(old_bin), updated)
+            self.assertEqual(updated.count(install._SK_PATH_MARKER_START), 1)
+
+    def test_wbs006_windows_watch_task_create_args_structure(self):
+        """WBS-006: _windows_watch_task_create_args returns safe, complete schtasks args."""
+        with _load_install(self.fake_home) as install:
+            fake_sk_cmd = str(self.fake_home / ".copilot" / "bin" / "sk.cmd")
+            args = install._windows_watch_task_create_args(fake_sk_cmd)
+
+            self.assertEqual(args[0], "schtasks")
+            self.assertIn("/Create", args)
+            self.assertIn("/F", args)
+            self.assertIn("ONLOGON", args)
+            self.assertIn(install._windows_watch_task_name(), args)
+            self.assertIn("/RL", args)
+            self.assertIn("LIMITED", args)
+            self.assertIn("/DELAY", args)
+            # /TR value must include the sk.cmd path and 'watch'
+            tr_idx = args.index("/TR")
+            tr_value = args[tr_idx + 1]
+            self.assertIn(fake_sk_cmd, tr_value)
+            self.assertIn("watch", tr_value)
+
+    @unittest.skipIf(os.name != "nt", "setup_windows_watch_task dry-run branch is Windows-only")
+    def test_wbs006_setup_windows_watch_task_dry_run_no_subprocess(self):
+        """WBS-006: dry_run=True prints intent and never calls subprocess.run."""
+        with _load_install(self.fake_home) as install:
+            import io
+
+            calls = []
+            orig_run = install.subprocess.run
+
+            def fake_run(*a, **kw):
+                calls.append(a[0])
+                return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+            install.subprocess.run = fake_run
+            try:
+                buf = io.StringIO()
+                import sys as _sys
+
+                old_stdout = _sys.stdout
+                _sys.stdout = buf
+                result = install.setup_windows_watch_task(dry_run=True, quiet=False)
+                _sys.stdout = old_stdout
+            finally:
+                install.subprocess.run = orig_run
+
+            output = buf.getvalue()
+            self.assertFalse(result)
+            self.assertIn("[dry-run]", output)
+            self.assertEqual(len(calls), 0)
+
+    def test_wbs006_windows_watch_task_exists_fail_open(self):
+        """WBS-006: _windows_watch_task_exists returns False when schtasks unavailable."""
+        with _load_install(self.fake_home) as install:
+            orig_run = install.subprocess.run
+
+            def raise_fnf(*a, **kw):
+                raise FileNotFoundError("schtasks")
+
+            install.subprocess.run = raise_fnf
+            try:
+                result = install._windows_watch_task_exists()
+            finally:
+                install.subprocess.run = orig_run
+
+            self.assertFalse(result)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

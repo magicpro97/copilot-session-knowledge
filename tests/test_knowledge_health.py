@@ -7,8 +7,10 @@ Uses synthetic in-memory SQLite DBs; never touches the real knowledge.db.
 import importlib.util
 import json
 import os
+import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 if os.name == "nt":
@@ -772,10 +774,7 @@ uri_t100 = _new_uri()
 db_t100 = _make_db(uri_t100)
 _insert_entries(
     db_t100,
-    [
-        {"category": "mistake", "title": f"m{i}", "confidence": 0.3, "session_id": "s1"}
-        for i in range(10)
-    ],
+    [{"category": "mistake", "title": f"m{i}", "confidence": 0.3, "session_id": "s1"} for i in range(10)],
 )
 kh.get_db = _get_db_factory(uri_t100)
 h_t100 = kh.compute_health()
@@ -788,8 +787,7 @@ test("toward_100 has total_gap", "total_gap" in t100)
 test("toward_100 has dimensions", "dimensions" in t100)
 test("toward_100 has top_gaps", "top_gaps" in t100)
 test("toward_100 total_gap is float", isinstance(t100.get("total_gap"), (int, float)))
-test("toward_100 total_gap equals 100 - score",
-     abs(t100["total_gap"] - round(100.0 - h_t100["score"], 1)) < 0.01)
+test("toward_100 total_gap equals 100 - score", abs(t100["total_gap"] - round(100.0 - h_t100["score"], 1)) < 0.01)
 test("toward_100 dimensions has 6 entries", len(t100.get("dimensions", [])) == 6)
 test("toward_100 top_gaps has 3 entries", len(t100.get("top_gaps", [])) == 3)
 
@@ -801,8 +799,7 @@ test("dimension has 'max' key", "max" in dim0)
 test("dimension has 'gap' key", "gap" in dim0)
 test("dimension has 'gap_pct' key", "gap_pct" in dim0)
 test("dimension has 'pct_of_total_gap' key", "pct_of_total_gap" in dim0)
-test("dimension current + gap == max",
-     abs(dim0.get("current", 0) + dim0.get("gap", 0) - dim0.get("max", 0)) < 0.2)
+test("dimension current + gap == max", abs(dim0.get("current", 0) + dim0.get("gap", 0) - dim0.get("max", 0)) < 0.2)
 
 # Verify dimensions are sorted by gap descending
 dims = t100.get("dimensions", [])
@@ -811,16 +808,21 @@ test("dimensions sorted by gap descending", gaps == sorted(gaps, reverse=True))
 
 # Verify all dimension names present
 dim_names = {d["dimension"] for d in dims}
-expected_dims = {"categorization", "learning_curve", "freshness", "relation_density",
-                 "embedding_coverage", "confidence_quality"}
+expected_dims = {
+    "categorization",
+    "learning_curve",
+    "freshness",
+    "relation_density",
+    "embedding_coverage",
+    "confidence_quality",
+}
 test("all 6 dimension names present", dim_names == expected_dims)
 
 # Verify score is NOT modified by toward_100 computation
 test("score unchanged after toward_100 computed", "score" in h_t100 and 0 <= h_t100["score"] <= 100)
 
 # Verify total_gap + score = 100 (within rounding)
-test("toward_100 total_gap + score ≈ 100",
-     abs(t100["total_gap"] + h_t100["score"] - 100.0) < 0.2)
+test("toward_100 total_gap + score ≈ 100", abs(t100["total_gap"] + h_t100["score"] - 100.0) < 0.2)
 
 # ===========================================================================
 # compute_insights — toward_100 payload and gap alerts
@@ -835,8 +837,7 @@ _insert_entries(
     db_gap,
     [
         # 12 low-confidence mistakes, 1 pattern → low lc_score, very low cq_score
-        *[{"category": "mistake", "title": f"gap_m{i}", "confidence": 0.3, "session_id": "s1"}
-          for i in range(12)],
+        *[{"category": "mistake", "title": f"gap_m{i}", "confidence": 0.3, "session_id": "s1"} for i in range(12)],
         {"category": "pattern", "title": "one pattern", "confidence": 0.7, "session_id": "s1"},
     ],
 )
@@ -855,16 +856,13 @@ test("compute_insights toward_100 top_gaps has 3 entries", len(t100_ins.get("top
 
 # Verify confidence-quality-gap alert fires (very low high-conf with >= 10 total)
 gap_alert_ids = {a["id"] for a in ins_gap.get("quality_alerts", [])}
-test("confidence-quality-gap alert fires for low high-confidence entries",
-     "confidence-quality-gap" in gap_alert_ids)
+test("confidence-quality-gap alert fires for low high-confidence entries", "confidence-quality-gap" in gap_alert_ids)
 
 # Verify learning-curve-gap alert fires (12 mistakes, only 1 pattern → lc_score low)
-test("learning-curve-gap alert fires when patterns lag mistakes",
-     "learning-curve-gap" in gap_alert_ids)
+test("learning-curve-gap alert fires when patterns lag mistakes", "learning-curve-gap" in gap_alert_ids)
 
 # Verify relation-density-gap alert fires (no relations, 13+ entries)
-test("relation-density-gap alert fires for sparse graph with >= 10 entries",
-     "relation-density-gap" in gap_alert_ids)
+test("relation-density-gap alert fires for sparse graph with >= 10 entries", "relation-density-gap" in gap_alert_ids)
 
 # Verify gap alert shape
 for aid in ("confidence-quality-gap", "learning-curve-gap", "relation-density-gap"):
@@ -885,18 +883,35 @@ _insert_entries(
     db_healthy,
     [
         # 10 high-confidence entries and 10 patterns > mistakes → healthy subscores
-        *[{"category": "mistake", "title": f"hm{i}", "confidence": 0.9,
-           "session_id": "s1", "first_seen": today, "last_seen": today}
-          for i in range(3)],
-        *[{"category": "pattern", "title": f"hp{i}", "confidence": 0.9,
-           "session_id": "s1", "first_seen": today, "last_seen": today}
-          for i in range(10)],
+        *[
+            {
+                "category": "mistake",
+                "title": f"hm{i}",
+                "confidence": 0.9,
+                "session_id": "s1",
+                "first_seen": today,
+                "last_seen": today,
+            }
+            for i in range(3)
+        ],
+        *[
+            {
+                "category": "pattern",
+                "title": f"hp{i}",
+                "confidence": 0.9,
+                "session_id": "s1",
+                "first_seen": today,
+                "last_seen": today,
+            }
+            for i in range(10)
+        ],
     ],
 )
 # Add enough relations to push relation_density high
 for i in range(20):
-    db_healthy.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (?, ?, ?)",
-                       (1, i + 2, "related"))
+    db_healthy.execute(
+        "INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (?, ?, ?)", (1, i + 2, "related")
+    )
 db_healthy.commit()
 kh.get_db = _get_db_factory(uri_healthy)
 ins_healthy = kh.compute_insights()
@@ -904,12 +919,9 @@ kh.get_db = orig_get_db
 db_healthy.close()
 
 healthy_alert_ids = {a["id"] for a in ins_healthy.get("quality_alerts", [])}
-test("confidence-quality-gap absent when high-conf entries dominant",
-     "confidence-quality-gap" not in healthy_alert_ids)
-test("learning-curve-gap absent when patterns dominate mistakes",
-     "learning-curve-gap" not in healthy_alert_ids)
-test("relation-density-gap absent when graph is dense",
-     "relation-density-gap" not in healthy_alert_ids)
+test("confidence-quality-gap absent when high-conf entries dominant", "confidence-quality-gap" not in healthy_alert_ids)
+test("learning-curve-gap absent when patterns dominate mistakes", "learning-curve-gap" not in healthy_alert_ids)
+test("relation-density-gap absent when graph is dense", "relation-density-gap" not in healthy_alert_ids)
 
 # ===========================================================================
 # format_insights_report — Toward 100 section
@@ -939,12 +951,30 @@ sample_t100_insights = {
     "toward_100": {
         "total_gap": 45.0,
         "top_gaps": [
-            {"dimension": "confidence_quality", "current": 2.0, "max": 15.0,
-             "gap": 13.0, "gap_pct": 86.7, "pct_of_total_gap": 28.9},
-            {"dimension": "learning_curve", "current": 6.0, "max": 20.0,
-             "gap": 14.0, "gap_pct": 70.0, "pct_of_total_gap": 31.1},
-            {"dimension": "relation_density", "current": 5.0, "max": 15.0,
-             "gap": 10.0, "gap_pct": 66.7, "pct_of_total_gap": 22.2},
+            {
+                "dimension": "confidence_quality",
+                "current": 2.0,
+                "max": 15.0,
+                "gap": 13.0,
+                "gap_pct": 86.7,
+                "pct_of_total_gap": 28.9,
+            },
+            {
+                "dimension": "learning_curve",
+                "current": 6.0,
+                "max": 20.0,
+                "gap": 14.0,
+                "gap_pct": 70.0,
+                "pct_of_total_gap": 31.1,
+            },
+            {
+                "dimension": "relation_density",
+                "current": 5.0,
+                "max": 15.0,
+                "gap": 10.0,
+                "gap_pct": 66.7,
+                "pct_of_total_gap": 22.2,
+            },
         ],
         "dimensions": [],
     },
@@ -978,9 +1008,7 @@ uri_fr = _new_uri()
 db_fr = _make_db(uri_fr)
 _insert_entries(
     db_fr,
-    [
-        {"category": "mistake", "title": f"frm{i}", "confidence": 0.3} for i in range(5)
-    ],
+    [{"category": "mistake", "title": f"frm{i}", "confidence": 0.3} for i in range(5)],
 )
 kh.get_db = _get_db_factory(uri_fr)
 h_fr = kh.compute_health()
@@ -1050,8 +1078,11 @@ _insert_entries(
 )
 _ins_low = kh.compute_insights()
 _low_conf_pct = _ins_low.get("overview", {}).get("high_confidence_pct", 0)
-test("low-confidence DB has lower pct than high-confidence DB", _low_conf_pct < _high_conf_pct,
-     f"low={_low_conf_pct} high={_high_conf_pct}")
+test(
+    "low-confidence DB has lower pct than high-confidence DB",
+    _low_conf_pct < _high_conf_pct,
+    f"low={_low_conf_pct} high={_high_conf_pct}",
+)
 
 kh.get_db = orig_get_db
 
@@ -1078,8 +1109,12 @@ db_dangle.row_factory = sqlite3.Row
 db_dangle.execute(_KE_SCHEMA)
 db_dangle.execute(_KR_FULL_SCHEMA)
 db_dangle.execute(_SCHEMA_VER_SCHEMA)
-db_dangle.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')")
-db_dangle.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'pattern', 'e2', 'c2', 's1')")
+db_dangle.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')"
+)
+db_dangle.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'pattern', 'e2', 'c2', 's1')"
+)
 db_dangle.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (1, 2, 'related')")
 db_dangle.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (1, 999, 'orphaned')")
 db_dangle.commit()
@@ -1089,16 +1124,20 @@ ins_dangle = kh.compute_insights()
 kh.get_db = orig_get_db
 db_dangle.close()
 
-test("integrity_lints key present in compute_insights",
-     "integrity_lints" in ins_dangle)
+test("integrity_lints key present in compute_insights", "integrity_lints" in ins_dangle)
 lint_dangle = ins_dangle.get("integrity_lints", {})
-test("dangling_relations count == 1",
-     lint_dangle.get("dangling_relations", -1) == 1)
-test("dangling-relations alert fires",
-     any(a.get("id") == "dangling-relations" for a in ins_dangle.get("quality_alerts", [])))
-test("dangling-relations alert is warning severity",
-     any(a.get("id") == "dangling-relations" and a.get("severity") == "warning"
-         for a in ins_dangle.get("quality_alerts", [])))
+test("dangling_relations count == 1", lint_dangle.get("dangling_relations", -1) == 1)
+test(
+    "dangling-relations alert fires",
+    any(a.get("id") == "dangling-relations" for a in ins_dangle.get("quality_alerts", [])),
+)
+test(
+    "dangling-relations alert is warning severity",
+    any(
+        a.get("id") == "dangling-relations" and a.get("severity") == "warning"
+        for a in ins_dangle.get("quality_alerts", [])
+    ),
+)
 
 # DB with only valid relations — no alert
 uri_valid_rel = _new_uri()
@@ -1107,8 +1146,12 @@ db_valid_rel.row_factory = sqlite3.Row
 db_valid_rel.execute(_KE_SCHEMA)
 db_valid_rel.execute(_KR_FULL_SCHEMA)
 db_valid_rel.execute(_SCHEMA_VER_SCHEMA)
-db_valid_rel.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')")
-db_valid_rel.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'pattern', 'e2', 'c2', 's1')")
+db_valid_rel.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')"
+)
+db_valid_rel.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'pattern', 'e2', 'c2', 's1')"
+)
 db_valid_rel.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (1, 2, 'related')")
 db_valid_rel.commit()
 
@@ -1117,10 +1160,14 @@ ins_valid_rel = kh.compute_insights()
 kh.get_db = orig_get_db
 db_valid_rel.close()
 
-test("dangling-relations alert absent when all relations valid",
-     not any(a.get("id") == "dangling-relations" for a in ins_valid_rel.get("quality_alerts", [])))
-test("dangling_relations count is 0 for valid DB",
-     ins_valid_rel.get("integrity_lints", {}).get("dangling_relations", -1) == 0)
+test(
+    "dangling-relations alert absent when all relations valid",
+    not any(a.get("id") == "dangling-relations" for a in ins_valid_rel.get("quality_alerts", [])),
+)
+test(
+    "dangling_relations count is 0 for valid DB",
+    ins_valid_rel.get("integrity_lints", {}).get("dangling_relations", -1) == 0,
+)
 
 # ===========================================================================
 # Integrity lints — contradiction detection (#388, WBS-063)
@@ -1152,12 +1199,12 @@ kh.get_db = orig_get_db
 db_contra.close()
 
 lint_contra = ins_contra.get("integrity_lints", {})
-test("contradictions key present in integrity_lints",
-     "contradictions" in lint_contra)
-test("contradiction pair detected (Always/Never same tags)",
-     len(lint_contra.get("contradictions", [])) >= 1)
-test("contradiction-pairs alert fires",
-     any(a.get("id") == "contradiction-pairs" for a in ins_contra.get("quality_alerts", [])))
+test("contradictions key present in integrity_lints", "contradictions" in lint_contra)
+test("contradiction pair detected (Always/Never same tags)", len(lint_contra.get("contradictions", [])) >= 1)
+test(
+    "contradiction-pairs alert fires",
+    any(a.get("id") == "contradiction-pairs" for a in ins_contra.get("quality_alerts", [])),
+)
 if lint_contra.get("contradictions"):
     c = lint_contra["contradictions"][0]
     test("contradiction entry has entry_a_id", "entry_a_id" in c)
@@ -1177,10 +1224,13 @@ ins_no_contra = kh.compute_insights()
 kh.get_db = orig_get_db
 db_no_contra.close()
 
-test("contradiction-pairs alert absent for empty DB",
-     not any(a.get("id") == "contradiction-pairs" for a in ins_no_contra.get("quality_alerts", [])))
-test("contradictions list empty for empty DB",
-     ins_no_contra.get("integrity_lints", {}).get("contradictions", None) == [])
+test(
+    "contradiction-pairs alert absent for empty DB",
+    not any(a.get("id") == "contradiction-pairs" for a in ins_no_contra.get("quality_alerts", [])),
+)
+test(
+    "contradictions list empty for empty DB", ins_no_contra.get("integrity_lints", {}).get("contradictions", None) == []
+)
 
 # Non-contradicting DB (all "Always", no "Never") — no alert
 uri_always_only = _new_uri()
@@ -1201,8 +1251,10 @@ ins_always_only = kh.compute_insights()
 kh.get_db = orig_get_db
 db_always_only.close()
 
-test("contradiction-pairs absent when no Never/Always pair exists",
-     not any(a.get("id") == "contradiction-pairs" for a in ins_always_only.get("quality_alerts", [])))
+test(
+    "contradiction-pairs absent when no Never/Always pair exists",
+    not any(a.get("id") == "contradiction-pairs" for a in ins_always_only.get("quality_alerts", [])),
+)
 
 # SQL precedence regression: Always/Never pair with NULL tags must NOT fire
 # (first OR branch was previously unguarded by tags filter due to AND > OR precedence)
@@ -1234,10 +1286,14 @@ ins_null_tags = kh.compute_insights()
 kh.get_db = orig_get_db
 db_null_tags.close()
 
-test("contradiction-pairs absent when Always/Never pair has NULL tags (SQL precedence regression)",
-     not any(a.get("id") == "contradiction-pairs" for a in ins_null_tags.get("quality_alerts", [])))
-test("contradictions list empty when tags are NULL/empty (SQL precedence regression)",
-     ins_null_tags.get("integrity_lints", {}).get("contradictions", None) == [])
+test(
+    "contradiction-pairs absent when Always/Never pair has NULL tags (SQL precedence regression)",
+    not any(a.get("id") == "contradiction-pairs" for a in ins_null_tags.get("quality_alerts", [])),
+)
+test(
+    "contradictions list empty when tags are NULL/empty (SQL precedence regression)",
+    ins_null_tags.get("integrity_lints", {}).get("contradictions", None) == [],
+)
 
 # ===========================================================================
 # Integrity lints — stable_id collision detection (#390, WBS-065)
@@ -1272,12 +1328,12 @@ kh.get_db = orig_get_db
 db_sid_coll.close()
 
 lint_sid = ins_sid_coll.get("integrity_lints", {})
-test("stable_id_collisions key present in integrity_lints",
-     "stable_id_collisions" in lint_sid)
-test("stable_id_collisions count == 1 for duplicate stable_id",
-     lint_sid.get("stable_id_collisions", -1) == 1)
-test("stable-id-collision alert fires",
-     any(a.get("id") == "stable-id-collision" for a in ins_sid_coll.get("quality_alerts", [])))
+test("stable_id_collisions key present in integrity_lints", "stable_id_collisions" in lint_sid)
+test("stable_id_collisions count == 1 for duplicate stable_id", lint_sid.get("stable_id_collisions", -1) == 1)
+test(
+    "stable-id-collision alert fires",
+    any(a.get("id") == "stable-id-collision" for a in ins_sid_coll.get("quality_alerts", [])),
+)
 
 # DB with all unique stable_ids — no alert
 uri_sid_ok = _new_uri()
@@ -1298,10 +1354,14 @@ ins_sid_ok = kh.compute_insights()
 kh.get_db = orig_get_db
 db_sid_ok.close()
 
-test("stable-id-collision alert absent when all stable_ids unique",
-     not any(a.get("id") == "stable-id-collision" for a in ins_sid_ok.get("quality_alerts", [])))
-test("stable_id_collisions == 0 for unique DB",
-     ins_sid_ok.get("integrity_lints", {}).get("stable_id_collisions", -1) == 0)
+test(
+    "stable-id-collision alert absent when all stable_ids unique",
+    not any(a.get("id") == "stable-id-collision" for a in ins_sid_ok.get("quality_alerts", [])),
+)
+test(
+    "stable_id_collisions == 0 for unique DB",
+    ins_sid_ok.get("integrity_lints", {}).get("stable_id_collisions", -1) == 0,
+)
 
 # DB with no stable_ids set (all NULL) — no collision alert
 uri_sid_null = _new_uri()
@@ -1309,8 +1369,12 @@ db_sid_null = sqlite3.connect(uri_sid_null, uri=True)
 db_sid_null.row_factory = sqlite3.Row
 db_sid_null.execute(_KE_SCHEMA)
 db_sid_null.execute(_SCHEMA_VER_SCHEMA)
-db_sid_null.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')")
-db_sid_null.execute("INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'mistake', 'e2', 'c2', 's1')")
+db_sid_null.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (1, 'mistake', 'e1', 'c1', 's1')"
+)
+db_sid_null.execute(
+    "INSERT INTO knowledge_entries (id, category, title, content, session_id) VALUES (2, 'mistake', 'e2', 'c2', 's1')"
+)
 db_sid_null.commit()
 
 kh.get_db = _get_db_factory(uri_sid_null)
@@ -1318,8 +1382,10 @@ ins_sid_null = kh.compute_insights()
 kh.get_db = orig_get_db
 db_sid_null.close()
 
-test("stable-id-collision absent when all stable_ids are NULL",
-     not any(a.get("id") == "stable-id-collision" for a in ins_sid_null.get("quality_alerts", [])))
+test(
+    "stable-id-collision absent when all stable_ids are NULL",
+    not any(a.get("id") == "stable-id-collision" for a in ins_sid_null.get("quality_alerts", [])),
+)
 
 # ===========================================================================
 # Integrity lints — DB size budget warning (#391, WBS-066)
@@ -1327,10 +1393,7 @@ test("stable-id-collision absent when all stable_ids are NULL",
 
 section("integrity_lints — DB size budget (#391)")
 
-import tempfile as _tempfile
-import shutil as _shutil
-
-_size_tmp = Path(_tempfile.mkdtemp(prefix="kh-size-test-"))
+_size_tmp = Path(tempfile.mkdtemp(prefix="kh-size-test-"))
 try:
     # Create a real file to test size budget
     _db_small_path = _size_tmp / "small.db"
@@ -1351,30 +1414,24 @@ try:
     test("db_size_lint has over_budget key", "over_budget" in lint_small)
     test("db_size_lint has size_mb key", "size_mb" in lint_small)
     test("db_size_lint has budget_mb key", "budget_mb" in lint_small)
-    test("small DB not over budget at 500MB threshold",
-         lint_small.get("over_budget") is False)
+    test("small DB not over budget at 500MB threshold", lint_small.get("over_budget") is False)
 
     # Test: above threshold (set tiny threshold so small file exceeds it)
     os.environ["SK_DB_SIZE_BUDGET_MB"] = "0"  # 0 MB = anything exceeds it
     lint_over = kh._compute_db_size_lint()
-    test("tiny threshold triggers over_budget=True",
-         lint_over.get("over_budget") is True)
+    test("tiny threshold triggers over_budget=True", lint_over.get("over_budget") is True)
 
     # Test: config override (env var)
     os.environ["SK_DB_SIZE_BUDGET_MB"] = "1"  # 1 MB; small DB is under it
     lint_1mb = kh._compute_db_size_lint()
-    test("budget_mb == 1.0 when SK_DB_SIZE_BUDGET_MB=1",
-         lint_1mb.get("budget_mb") == 1.0)
-    test("small DB is under 1MB budget",
-         lint_1mb.get("over_budget") is False)
+    test("budget_mb == 1.0 when SK_DB_SIZE_BUDGET_MB=1", lint_1mb.get("budget_mb") == 1.0)
+    test("small DB is under 1MB budget", lint_1mb.get("over_budget") is False)
 
     # Test: nonexistent path — graceful degradation
     kh.DB_PATH = _size_tmp / "nonexistent.db"
     lint_missing = kh._compute_db_size_lint()
-    test("size_bytes == 0 when file does not exist",
-         lint_missing.get("size_bytes") == 0)
-    test("over_budget False when file missing",
-         lint_missing.get("over_budget") is False)
+    test("size_bytes == 0 when file does not exist", lint_missing.get("size_bytes") == 0)
+    test("over_budget False when file missing", lint_missing.get("over_budget") is False)
 
     # Restore
     if _budget_env_bak is not None:
@@ -1396,8 +1453,7 @@ try:
     kh.DB_PATH = _sz_db_path_bak
     os.environ.pop("SK_DB_SIZE_BUDGET_MB", None)
 
-    test("db_size_budget key present in compute_insights output",
-         "db_size_budget" in ins_sz)
+    test("db_size_budget key present in compute_insights output", "db_size_budget" in ins_sz)
     sz_budget = ins_sz.get("db_size_budget", {})
     test("db_size_budget has over_budget key", "over_budget" in sz_budget)
     test("db_size_budget has size_mb key", "size_mb" in sz_budget)
@@ -1413,13 +1469,17 @@ try:
     os.environ.pop("SK_DB_SIZE_BUDGET_MB", None)
     db_sz.close()
 
-    test("db-size-over-budget alert fires when DB exceeds threshold",
-         any(a.get("id") == "db-size-over-budget" for a in ins_over_budget.get("quality_alerts", [])))
-    test("db-size-over-budget alert absent when DB under threshold",
-         not any(a.get("id") == "db-size-over-budget" for a in ins_sz.get("quality_alerts", [])))
+    test(
+        "db-size-over-budget alert fires when DB exceeds threshold",
+        any(a.get("id") == "db-size-over-budget" for a in ins_over_budget.get("quality_alerts", [])),
+    )
+    test(
+        "db-size-over-budget alert absent when DB under threshold",
+        not any(a.get("id") == "db-size-over-budget" for a in ins_sz.get("quality_alerts", [])),
+    )
 
 finally:
-    _shutil.rmtree(str(_size_tmp), ignore_errors=True)
+    shutil.rmtree(str(_size_tmp), ignore_errors=True)
 
 # ===========================================================================
 # integrity_lints JSON serialisability
@@ -1455,19 +1515,40 @@ _il_sample = {
     "generated_at": "2025-01-01T00:00:00+00:00",
     "summary": "Test",
     "overview": {
-        "health_score": 50, "total_entries": 5, "sessions": 1,
-        "high_confidence_pct": 20.0, "low_confidence_pct": 30.0,
-        "stale_pct": 0.0, "relation_density": 0.0, "embedding_pct": 0.0,
+        "health_score": 50,
+        "total_entries": 5,
+        "sessions": 1,
+        "high_confidence_pct": 20.0,
+        "low_confidence_pct": 30.0,
+        "stale_pct": 0.0,
+        "relation_density": 0.0,
+        "embedding_pct": 0.0,
     },
     "quality_alerts": [
-        {"id": "dangling-relations", "title": "1 dangling relation(s)", "severity": "warning",
-         "detail": "Some relations reference missing entries."},
-        {"id": "stable-id-collision", "title": "1 stable_id collision(s)", "severity": "warning",
-         "detail": "Duplicate stable_ids detected."},
-        {"id": "contradiction-pairs", "title": "1 contradiction pair(s)", "severity": "info",
-         "detail": "Contradicting entries detected."},
-        {"id": "db-size-over-budget", "title": "DB size exceeds budget (10.0 MB / 0.0 MB)", "severity": "warning",
-         "detail": "Consider archiving."},
+        {
+            "id": "dangling-relations",
+            "title": "1 dangling relation(s)",
+            "severity": "warning",
+            "detail": "Some relations reference missing entries.",
+        },
+        {
+            "id": "stable-id-collision",
+            "title": "1 stable_id collision(s)",
+            "severity": "warning",
+            "detail": "Duplicate stable_ids detected.",
+        },
+        {
+            "id": "contradiction-pairs",
+            "title": "1 contradiction pair(s)",
+            "severity": "info",
+            "detail": "Contradicting entries detected.",
+        },
+        {
+            "id": "db-size-over-budget",
+            "title": "DB size exceeds budget (10.0 MB / 0.0 MB)",
+            "severity": "warning",
+            "detail": "Consider archiving.",
+        },
     ],
     "recommended_actions": [],
     "recurring_noise_titles": [],
@@ -1476,14 +1557,30 @@ _il_sample = {
     "integrity_lints": {
         "dangling_relations": 1,
         "stable_id_collisions": 1,
-        "contradictions": [{"entry_a_id": 1, "entry_a_title": "Always use X", "entry_b_id": 2, "entry_b_title": "Never use X", "shared_tags": "tool-x"}],
+        "contradictions": [
+            {
+                "entry_a_id": 1,
+                "entry_a_title": "Always use X",
+                "entry_b_id": 2,
+                "entry_b_title": "Never use X",
+                "shared_tags": "tool-x",
+            }
+        ],
     },
-    "db_size_budget": {"size_bytes": 10485760, "budget_bytes": 0, "over_budget": True, "size_mb": 10.0, "budget_mb": 0.0},
+    "db_size_budget": {
+        "size_bytes": 10485760,
+        "budget_bytes": 0,
+        "over_budget": True,
+        "size_mb": 10.0,
+        "budget_mb": 0.0,
+    },
     "sync_advisory": {"status": "ok", "reasons": [], "checklist": "docs/SYNC-MATRIX.md"},
 }
 _il_report = kh.format_insights_report(_il_sample)
-test("format_insights_report renders integrity lints section",
-     "Integrity" in _il_report or "dangling" in _il_report.lower() or "Dangling" in _il_report)
+test(
+    "format_insights_report renders integrity lints section",
+    "Integrity" in _il_report or "dangling" in _il_report.lower() or "Dangling" in _il_report,
+)
 
 print(f"\n{'=' * 50}")
 print(f"Results: {_PASS} passed, {_FAIL} failed")

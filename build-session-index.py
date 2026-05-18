@@ -279,7 +279,7 @@ def create_db(db_path: Path) -> sqlite3.Connection:
             title TEXT NOT NULL,
             stable_id TEXT,
             file_path TEXT NOT NULL UNIQUE,
-            file_hash TEXT,                -- MD5 for incremental updates
+            file_hash TEXT,                -- SHA-256 for incremental updates (matches Rust sk watch, #336)
             size_bytes INTEGER DEFAULT 0,
             content_preview TEXT DEFAULT '',-- first 500 chars of content
             source TEXT DEFAULT 'copilot',
@@ -515,8 +515,13 @@ def _backfill_document_section_stable_ids(db: sqlite3.Connection):
 
 
 def file_hash(path: Path) -> str:
-    """Compute MD5 hash of file content."""
-    return hashlib.md5(path.read_bytes()).hexdigest()
+    """Compute SHA-256 hash of file content for incremental updates.
+
+    Uses SHA-256 to match the Rust native indexer (sk watch / session.rs).
+    Python used MD5 historically; aligning here ensures cross-runtime cache hits
+    so Python incremental runs benefit from prior Rust-indexed files (#336).
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 # ──────────────────────────────────────────────

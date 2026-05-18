@@ -823,3 +823,149 @@ impl HookRule for EnforceBriefingRule {
         ))
     }
 }
+
+// ---------------------------------------------------------------------------
+// FileSizeAdvisoryRule (issue #341)
+// ---------------------------------------------------------------------------
+
+/// Emit an informational advisory when a Python file being edited or created
+/// exceeds 400 lines.  Never denies — purely advisory (fail-open).
+///
+/// Mirrors `FileSizeAdvisoryRule` in `hooks/rules/file_size_advisory.py`.
+pub struct FileSizeAdvisoryRule;
+
+impl HookRule for FileSizeAdvisoryRule {
+    fn name(&self) -> &'static str {
+        "file-size-advisory"
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        &["preToolUse"]
+    }
+
+    fn tools(&self) -> &'static [&'static str] {
+        &["edit", "create"]
+    }
+
+    fn evaluate(&self, _event: &str, data: &Value) -> Option<Value> {
+        let tool_name = data.get("toolName").and_then(|v| v.as_str())?;
+        let tool_args = data
+            .get("toolArgs")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        // Only Python files are governed by the 400-line rule.
+        let path_str = tool_args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        if !path_str.ends_with(".py") {
+            return None;
+        }
+
+        // Compute the proposed post-edit content, mirroring Python's
+        // `_proposed_content()`.  For `edit`, apply the replacement and count
+        // lines of the result (not existing + new_str).  For `create`, count
+        // lines of `file_text`.  Fail-open on any I/O or missing-field error.
+        let projected_lines: usize = if tool_name == "create" {
+            let file_text = tool_args
+                .get("file_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            file_text.lines().count()
+        } else if tool_name == "edit" {
+            let original = match fs::read_to_string(path_str) {
+                Ok(s) => s,
+                Err(_) => return None, // fail-open: file absent or unreadable
+            };
+            let old_str = tool_args
+                .get("old_str")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let new_str = tool_args
+                .get("new_str")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            // Mirror Python: count != 1 → pass (edit tool will fail itself).
+            if original.matches(old_str).count() != 1 {
+                return None;
+            }
+            original.replacen(old_str, new_str, 1).lines().count()
+        } else {
+            return None;
+        };
+
+        if projected_lines > 400 {
+            return Some(info(
+                &format!(
+                    "\u{26a0}\u{fe0f} FILE SIZE: `{path_str}` will be ~{projected_lines} lines after this change (limit: 400). \
+                     Consider decomposing or justify why keeping it together is safer. \
+                     (Rule 10 — Minimum Footprint)"
+                ),
+            ));
+        }
+
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NewFileAdvisoryRule (issue #341)
+// ---------------------------------------------------------------------------
+
+/// Emit an informational advisory when a new root-level Python file is about
+/// to be created without an explicit justification.  Never denies — purely
+/// advisory (fail-open).
+///
+/// Mirrors `NewFileAdvisoryRule` in `hooks/rules/new_file_advisory.py`.
+pub struct NewFileAdvisoryRule;
+
+impl HookRule for NewFileAdvisoryRule {
+    fn name(&self) -> &'static str {
+        "new-file-advisory"
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        &["preToolUse"]
+    }
+
+    fn tools(&self) -> &'static [&'static str] {
+        &["create"]
+    }
+
+    fn evaluate(&self, _event: &str, data: &Value) -> Option<Value> {
+        let tool_args = data
+            .get("toolArgs")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        let path_str = tool_args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+
+        if !path_str.ends_with(".py") {
+            return None;
+        }
+
+        // Consider a file "root-level" when the path contains no directory
+        // separators, or only a single component that is the tools directory.
+        let is_root = std::path::Path::new(path_str)
+            .parent()
+            .map(|p| p.as_os_str().is_empty() || p == std::path::Path::new("."))
+            .unwrap_or(true);
+
+        if !is_root {
+            return None;
+        }
+
+        // File already exists → this is a truncating create, not a new file.
+        if std::path::Path::new(path_str).exists() {
+            return None;
+        }
+
+        Some(info(&format!(
+            "\u{1f4c4} NEW FILE: `{path_str}` is a new root-level Python file. \
+                 Before creating it, confirm: (1) no existing file can own this behavior, \
+                 (2) its responsibility is stated in the issue/PR/handoff, \
+                 (3) it is wired into lint/test/docs/CI. \
+                 (Rule 11 — New File Justification)"
+        )))
+    }
+}

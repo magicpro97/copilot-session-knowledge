@@ -209,3 +209,118 @@ surfaces must include either command output or an explicit `N/A` reason for:
 - Migration rehearsal evidence when `migrate.py` or DB schema changes
 - Install sandbox evidence when installer/update scripts change
 - Hook security/compat evidence when hook provisioning or hook rules change
+
+## 6. Known failure modes and recovery
+
+This section documents failure modes that have been observed in practice,
+along with the recommended recovery path for each.
+
+### 6.1 Startup regression: `sk` binary exits non-zero after upgrade
+
+**Symptom:** `sk --help` or `sk --version` returns a non-zero exit code after a
+binary upgrade. The startup-benchmark CI job detects this as a failed warmup run
+and prints `benchmark startup: warmup #1 failed`.
+
+**Recovery:**
+
+```bash
+# Roll back to the Python shim while investigating
+mv ~/.copilot/bin/sk ~/.copilot/bin/sk.broken
+python ~/.copilot/tools/sk.py --help
+```
+
+Windows PowerShell:
+
+```powershell
+Rename-Item "$env:USERPROFILE\.copilot\bin\sk.exe" "sk.exe.broken"
+python "$env:USERPROFILE\.copilot\tools\sk.py" --help
+```
+
+Re-run binary regression tests to confirm the Python shim is healthy:
+
+```bash
+python tests/test_py_rust_boundary.py --rust-bin ~/.copilot/bin/sk.broken
+```
+
+### 6.2 Migration fails with "database is locked"
+
+**Symptom:** `migrate.py` exits with `sqlite3.OperationalError: database is locked`
+or similar. Usually caused by an active `sk watch`, sync daemon, or CI job.
+
+**Recovery:**
+
+1. Stop all active writers:
+
+```bash
+python watch-sessions.py --stop 2>/dev/null || true
+python sync-daemon.py --stop 2>/dev/null || true
+```
+
+2. Remove WAL sidecars (Windows PowerShell equivalent: `Remove-Item ... -ErrorAction SilentlyContinue`):
+
+```bash
+rm -f ~/.copilot/session-state/knowledge.db-wal \
+      ~/.copilot/session-state/knowledge.db-shm
+```
+
+3. Retry migration:
+
+```bash
+python migrate.py ~/.copilot/session-state/knowledge.db
+```
+
+### 6.3 Hook provisioning fails: tamper protection blocks re-install
+
+**Symptom:** `install.py --deploy-hooks` prints `hooks are locked; run --unlock-hooks first`
+or a hook hash verification error blocks the pre-commit.
+
+**Recovery:**
+
+```bash
+python install.py --unlock-hooks
+python install.py --deploy-hooks
+python install.py --lock-hooks
+python tests/test_hook_compat.py
+```
+
+### 6.4 Installer creates a broken `sk.cmd` on Windows (missing CRLF)
+
+**Symptom:** `sk.cmd` runs but `cmd.exe` raises a parse error because line endings
+are LF-only instead of CRLF. Detected by `python tests/test_platform_compat.py`
+→ `test_sk_cmd_launcher_content_uses_crlf`.
+
+**Recovery:**
+
+Re-install the launcher from a clean checkout to regenerate the CRLF-correct file:
+
+```powershell
+python install.py --uninstall-launcher
+python install.py --install-sk --quiet
+python tests/test_platform_compat.py
+```
+
+### 6.5 DB backup fails silently (OSError swallowed)
+
+**Symptom:** `migrate.py --backup-only` exits 0 but the backup file is missing or
+zero bytes. Usually caused by insufficient disk space or a locked source file.
+
+**Recovery:**
+
+Verify the backup manually before running the forward migration:
+
+```bash
+python migrate.py ~/.copilot/session-state/knowledge.db --backup-only \
+  --backup-path ~/knowledge.db.backup
+ls -lh ~/knowledge.db.backup          # must be non-zero
+sqlite3 ~/knowledge.db.backup "PRAGMA quick_check"  # must return 'ok'
+python migrate.py ~/.copilot/session-state/knowledge.db
+```
+
+Windows PowerShell:
+
+```powershell
+python migrate.py "$env:USERPROFILE\.copilot\session-state\knowledge.db" `
+  --backup-only --backup-path "$env:USERPROFILE\knowledge.db.backup"
+(Get-Item "$env:USERPROFILE\knowledge.db.backup").Length  # must be >0
+python migrate.py "$env:USERPROFILE\.copilot\session-state\knowledge.db"
+```

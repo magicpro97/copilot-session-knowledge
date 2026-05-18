@@ -943,3 +943,203 @@ fn all_rules_syntax_gate_between_subagent_guard_and_block_dist() {
         "syntax-gate must be registered after subagent-git-guard and before block-edit-dist"
     );
 }
+
+// --- FileSizeAdvisoryRule: replacement-semantics projection ---
+
+/// `create` tool: advisory fires when `file_text` alone exceeds 400 lines.
+#[test]
+fn file_size_advisory_create_fires_when_file_text_exceeds_threshold() {
+    let rule = FileSizeAdvisoryRule;
+    // 401 non-empty lines.
+    let big_content = (0..=400)
+        .map(|i| format!("x = {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let data = json!({
+        "toolName": "create",
+        "toolArgs": {"path": "big.py", "file_text": big_content}
+    });
+    let result = rule.evaluate("preToolUse", &data);
+    assert!(
+        result.is_some(),
+        "create with >400 lines in file_text must produce an advisory"
+    );
+    let v = result.unwrap();
+    assert!(
+        v.get("message").is_some(),
+        "advisory must carry a message field (not a deny)"
+    );
+    assert!(
+        v.get("permissionDecision").is_none(),
+        "advisory must NOT be a deny"
+    );
+}
+
+/// `create` tool: no advisory when `file_text` is within threshold.
+#[test]
+fn file_size_advisory_create_silent_below_threshold() {
+    let rule = FileSizeAdvisoryRule;
+    let small_content = "x = 1\nprint(x)\n";
+    let data = json!({
+        "toolName": "create",
+        "toolArgs": {"path": "small.py", "file_text": small_content}
+    });
+    assert!(
+        rule.evaluate("preToolUse", &data).is_none(),
+        "create with <400 lines must return None"
+    );
+}
+
+/// `edit` tool: advisory counts lines of the POST-replacement content, not
+/// `existing + new_str`.  A replacement that shrinks a large file below the
+/// threshold must return None.
+#[test]
+fn file_size_advisory_edit_uses_replacement_semantics_shrink() {
+    let rule = FileSizeAdvisoryRule;
+
+    // Write a large file with 300 lines that includes the token to replace.
+    let original_lines = (0..299)
+        .map(|i| format!("y = {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let original = format!("REPLACE_ME\n{original_lines}"); // 300 lines total
+    assert_eq!(original.lines().count(), 300);
+
+    let tmp = std::env::temp_dir().join("sk_fsa_shrink_test.py");
+    std::fs::write(&tmp, original.as_bytes()).expect("write temp file");
+    let path_str = tmp.to_string_lossy().to_string();
+
+    // Replace "REPLACE_ME" with a single line → result is still 300 lines.
+    // new_str is 1 line, old_str is 1 line → no net change.
+    let data = json!({
+        "toolName": "edit",
+        "toolArgs": {
+            "path": path_str,
+            "old_str": "REPLACE_ME",
+            "new_str": "z = 999"
+        }
+    });
+    let result = rule.evaluate("preToolUse", &data);
+    let _ = std::fs::remove_file(&tmp);
+
+    // 300 lines ≤ 400 → no advisory.
+    assert!(
+        result.is_none(),
+        "post-replacement count 300 must not trigger advisory (threshold 400)"
+    );
+}
+
+/// `edit` tool: advisory fires when the post-replacement file exceeds 400 lines,
+/// but NOT simply because `existing_lines + new_str_lines > 400`.
+#[test]
+fn file_size_advisory_edit_replacement_semantics_over_threshold() {
+    let rule = FileSizeAdvisoryRule;
+
+    // Original file: 390 lines with a one-line marker.
+    let original_lines = (0..389)
+        .map(|i| format!("a = {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let original = format!("MARKER\n{original_lines}"); // 390 lines
+    assert_eq!(original.lines().count(), 390);
+
+    let tmp = std::env::temp_dir().join("sk_fsa_over_test.py");
+    std::fs::write(&tmp, original.as_bytes()).expect("write temp file");
+    let path_str = tmp.to_string_lossy().to_string();
+
+    // Replace the one-line marker with 20 lines → result = 389 + 20 = 409 lines.
+    let new_str = (0..20)
+        .map(|i| format!("b = {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let data = json!({
+        "toolName": "edit",
+        "toolArgs": {
+            "path": path_str,
+            "old_str": "MARKER",
+            "new_str": new_str
+        }
+    });
+    let result = rule.evaluate("preToolUse", &data);
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(
+        result.is_some(),
+        "post-replacement count 409 must trigger advisory"
+    );
+    let v = result.unwrap();
+    assert!(v.get("message").is_some(), "advisory must carry a message");
+    assert!(v.get("permissionDecision").is_none(), "must not be a deny");
+}
+
+/// `edit` tool: fail-open when the target file is absent.
+#[test]
+fn file_size_advisory_edit_failopen_absent_file() {
+    let rule = FileSizeAdvisoryRule;
+    let data = json!({
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "/this/does/not/exist/ever.py",
+            "old_str": "x",
+            "new_str": "y"
+        }
+    });
+    assert!(
+        rule.evaluate("preToolUse", &data).is_none(),
+        "edit on absent file must be fail-open (None)"
+    );
+}
+
+/// `edit` with count != 1 occurrences of old_str → fail-open (mirrors Python).
+#[test]
+fn file_size_advisory_edit_failopen_when_old_str_count_not_one() {
+    let rule = FileSizeAdvisoryRule;
+
+    let original = "dup\ndup\n";
+    let tmp = std::env::temp_dir().join("sk_fsa_dup_test.py");
+    std::fs::write(&tmp, original.as_bytes()).expect("write temp file");
+    let path_str = tmp.to_string_lossy().to_string();
+
+    let data = json!({
+        "toolName": "edit",
+        "toolArgs": {
+            "path": path_str,
+            "old_str": "dup",
+            "new_str": "unique"
+        }
+    });
+    let result = rule.evaluate("preToolUse", &data);
+    let _ = std::fs::remove_file(&tmp);
+
+    assert!(
+        result.is_none(),
+        "old_str count != 1 must fail-open (None), mirroring Python"
+    );
+}
+
+/// Non-.py paths must be ignored regardless of content size.
+#[test]
+fn file_size_advisory_ignores_non_py_path() {
+    let rule = FileSizeAdvisoryRule;
+    let big_content = (0..=400)
+        .map(|i| format!("x = {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let data = json!({
+        "toolName": "create",
+        "toolArgs": {"path": "big.rs", "file_text": big_content}
+    });
+    assert!(
+        rule.evaluate("preToolUse", &data).is_none(),
+        "non-.py path must always return None"
+    );
+}
+
+#[test]
+fn all_rules_includes_file_size_advisory() {
+    let rules = all_rules();
+    assert!(
+        rules.iter().any(|r| r.name() == "file-size-advisory"),
+        "all_rules must include file-size-advisory"
+    );
+}

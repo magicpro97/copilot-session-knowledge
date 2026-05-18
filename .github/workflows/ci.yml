@@ -74,6 +74,32 @@ jobs:
       - name: Run tests
         run: python3 run_all_tests.py
 
+      # Issue #364: startup regression guard using benchmark.py startup.
+      # Baseline is cached via actions/cache; first run creates it (rc=0),
+      # subsequent runs compare against it and fail on >20% regression.
+      - name: Restore startup baseline (sk.py --version)
+        uses: actions/cache@v4
+        with:
+          path: .benchmarks/sk-python-startup-baseline.json
+          key: ubuntu-latest-sk-python-startup-baseline-v1
+          restore-keys: ubuntu-latest-sk-python-startup-baseline-v1-
+
+      - name: Startup regression guard (sk.py --version)
+        run: >
+          python3 benchmark.py startup
+          --runs 5 --warmups 1 --timeout 30
+          --baseline-file .benchmarks/sk-python-startup-baseline.json
+          --regression-threshold 20
+          -- python3 sk.py --version
+
+      - name: Upload startup baseline artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sk-python-startup-baseline
+          path: .benchmarks/sk-python-startup-baseline.json
+          if-no-files-found: ignore
+
   python-platform-safety:
     name: Python platform safety (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -141,6 +141,8 @@ pub fn all_rules() -> Vec<Box<dyn HookRule>> {
         Box::new(BlockUnsafeHtmlRule),
         Box::new(VerificationGatePreRule),
         Box::new(ReadBeforeEditRule),
+        Box::new(FileSizeAdvisoryRule),
+        Box::new(NewFileAdvisoryRule),
         Box::new(TrackEditsRule),
         Box::new(LearnReminderRule),
         Box::new(TestReminderRule),

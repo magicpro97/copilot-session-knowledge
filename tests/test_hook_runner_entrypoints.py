@@ -941,8 +941,110 @@ finally:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Cleanup
+#  Section 13: Recursion guard (issue #396)
 # ══════════════════════════════════════════════════════════════════════
+
+print("\n── Section 13: Recursion guard (SK_HOOK_ACTIVE) ──")
+
+_rg_home = Path(tempfile.mkdtemp(prefix="test-ep-rg-"))
+_rg_markers = _rg_home / ".copilot" / "markers"
+_rg_markers.mkdir(parents=True, exist_ok=True)
+(_rg_markers / "briefing-done").write_text("test", encoding="utf-8")
+
+# When SK_HOOK_ACTIVE=1 the hook should exit immediately (no output, exit 0).
+_rg_env = {**os.environ, "HOME": str(_rg_home), "USERPROFILE": str(_rg_home), "SK_HOOK_ACTIVE": "1"}
+
+_rg_result = subprocess.run(
+    [sys.executable, str(RUNNER), "preToolUse"],
+    input=json.dumps({"toolName": "edit", "toolArgs": {"path": "foo.py", "new_str": "x"}}),
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    timeout=10,
+    env=_rg_env,
+    cwd=str(REPO / "hooks"),
+)
+
+test(
+    "recursion-guard: SK_HOOK_ACTIVE=1 → exit 0",
+    _rg_result.returncode == 0,
+    f"rc={_rg_result.returncode}",
+)
+test(
+    "recursion-guard: SK_HOOK_ACTIVE=1 → no stdout output",
+    _rg_result.stdout.strip() == "",
+    f"stdout={_rg_result.stdout[:200]!r}",
+)
+
+shutil.rmtree(str(_rg_home), ignore_errors=True)
+
+# ══════════════════════════════════════════════════════════════════════
+#  Section 14: Double-fire deduplication (issue #348)
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n── Section 14: Double-fire deduplication ──")
+
+_dd_home = Path(tempfile.mkdtemp(prefix="test-ep-dd-"))
+_dd_markers = _dd_home / ".copilot" / "markers"
+_dd_markers.mkdir(parents=True, exist_ok=True)
+(_dd_markers / "briefing-done").write_text("test", encoding="utf-8")
+
+_dd_env = {**os.environ, "HOME": str(_dd_home), "USERPROFILE": str(_dd_home), "HOOK_DRY_RUN": "1"}
+
+
+def _run_dedup_event(event: str, payload: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(RUNNER), event],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        env=_dd_env,
+        cwd=str(REPO / "hooks"),
+    )
+
+
+# First call — should process normally (no dedup marker yet).
+_dd_payload = {"toolName": "read", "toolArgs": {"path": "foo.py"}}
+_dd_r1 = _run_dedup_event("preToolUse", _dd_payload)
+test(
+    "dedup: first call exits 0",
+    _dd_r1.returncode == 0,
+    f"rc={_dd_r1.returncode}",
+)
+
+# Dedup marker file should now exist — marker name includes a payload hash suffix.
+_dd_marker_found = any(f.name.startswith("hook-dedup-preToolUse") for f in _dd_markers.iterdir() if f.is_file())
+test(
+    "dedup: marker file written after first call",
+    _dd_marker_found,
+    f"markers={list(_dd_markers.glob('hook-dedup-*'))}",
+)
+
+# Second call within 500 ms — should be deduplicated (no output, exit 0).
+_dd_r2 = _run_dedup_event("preToolUse", _dd_payload)
+test(
+    "dedup: second call within 500 ms exits 0",
+    _dd_r2.returncode == 0,
+    f"rc={_dd_r2.returncode}",
+)
+test(
+    "dedup: second call within 500 ms produces no stdout",
+    _dd_r2.stdout.strip() == "",
+    f"stdout={_dd_r2.stdout[:200]!r}",
+)
+
+# Wait >500 ms and verify that a third call is processed normally.
+time.sleep(0.6)
+_dd_r3 = _run_dedup_event("preToolUse", _dd_payload)
+test(
+    "dedup: call after 600 ms window exits 0 (normal processing)",
+    _dd_r3.returncode == 0,
+    f"rc={_dd_r3.returncode}",
+)
+
+shutil.rmtree(str(_dd_home), ignore_errors=True)
 
 shutil.rmtree(_ISOLATED_HOME, ignore_errors=True)
 

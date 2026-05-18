@@ -912,7 +912,9 @@ _launcher_diag_content = _install._sk_launcher_content()
 if os.name == "nt":
     test(
         "launcher content has CRLF line endings on Windows",
-        b"\r\n" in _launcher_diag_content.encode() if isinstance(_launcher_diag_content, str) else b"\r\n" in _launcher_diag_content,
+        b"\r\n" in _launcher_diag_content.encode()
+        if isinstance(_launcher_diag_content, str)
+        else b"\r\n" in _launcher_diag_content,
         "Expected CRLF line endings in Windows launcher",
     )
     test(
@@ -926,8 +928,8 @@ if os.name == "nt":
         "Expected SK_TOOLS_DIR in Windows launcher content",
     )
 
-import tempfile as _tempfile
 import shutil as _shutil_diag
+import tempfile as _tempfile
 
 _diag_tmpdir = Path(_tempfile.mkdtemp(prefix="sk-diag-"))
 try:
@@ -1069,7 +1071,7 @@ def _fake_input(prompt: str = "") -> str:
     return "n"
 
 
-_orig_builtins_input = __builtins__["input"] if isinstance(__builtins__, dict) else getattr(__builtins__, "input")  # type: ignore[index]
+_orig_builtins_input = __builtins__["input"] if isinstance(__builtins__, dict) else __builtins__.input  # type: ignore[index]
 import builtins as _builtins
 
 _real_input = _builtins.input
@@ -1413,6 +1415,282 @@ test(
     "_DESKTOP_LNK_UI_NAME is 'Browse UI.lnk'",
     _browse._DESKTOP_LNK_UI_NAME == "Browse UI.lnk",
 )
+
+
+# ── WBS-010: _build_sk_path_block and atomic/idempotent _inject_launcher_path ──
+
+print("\n🔧 WBS-010: atomic/idempotent shell profile PATH block (#335)")
+
+import shutil as _shutil_wbs010
+import tempfile as _tempfile_wbs010
+
+_wbs010_tmp = Path(_tempfile_wbs010.mkdtemp(prefix="sk-wbs010-"))
+_orig_sk_dir_wbs010 = _install.SK_LAUNCHER_DIR
+_orig_home_wbs010 = _install.HOME
+_orig_shell_wbs010 = os.environ.get("SHELL")
+
+try:
+    _fake_bin = _wbs010_tmp / ".copilot" / "bin"
+    _fake_bin.mkdir(parents=True)
+    _install.SK_LAUNCHER_DIR = _fake_bin
+    _install.HOME = _wbs010_tmp
+    os.environ["SHELL"] = "/bin/zsh"
+
+    # _build_sk_path_block contains both markers and the expected export
+    _block = _install._build_sk_path_block()
+    test(
+        "WBS-010: _build_sk_path_block contains START marker",
+        _install._SK_PATH_MARKER_START in _block,
+    )
+    test(
+        "WBS-010: _build_sk_path_block contains END marker",
+        _install._SK_PATH_MARKER_END in _block,
+    )
+    test(
+        "WBS-010: _build_sk_path_block contains bin dir path",
+        str(_fake_bin) in _block,
+    )
+
+    if os.name != "nt":
+        # Fresh profile: block is appended
+        _profile = _wbs010_tmp / ".zshrc"
+        if _profile.exists():
+            _profile.unlink()
+        _install._inject_launcher_path(quiet=True)
+        test(
+            "WBS-010: marker added to fresh profile",
+            _profile.exists() and _install._SK_PATH_MARKER_START in _profile.read_text(encoding="utf-8"),
+        )
+
+        # Idempotent: calling again must not duplicate the block
+        _install._inject_launcher_path(quiet=True)
+        _content_after_2nd = _profile.read_text(encoding="utf-8")
+        test(
+            "WBS-010: no duplicate START markers after 2nd call",
+            _content_after_2nd.count(_install._SK_PATH_MARKER_START) == 1,
+        )
+        test(
+            "WBS-010: no duplicate bin path entries after 2nd call",
+            _content_after_2nd.count(str(_fake_bin)) == 1,
+        )
+
+        # Stale block update: change SK_LAUNCHER_DIR to simulate reinstall
+        _new_bin = _wbs010_tmp / ".copilot" / "bin2"
+        _new_bin.mkdir(parents=True)
+        _install.SK_LAUNCHER_DIR = _new_bin
+        _install._inject_launcher_path(quiet=True)
+        _updated_content = _profile.read_text(encoding="utf-8")
+        test(
+            "WBS-010: stale block updated to new launcher dir",
+            str(_new_bin) in _updated_content,
+        )
+        test(
+            "WBS-010: old launcher dir removed from profile after update",
+            str(_fake_bin) not in _updated_content,
+        )
+        test(
+            "WBS-010: still only one START marker after stale-block update",
+            _updated_content.count(_install._SK_PATH_MARKER_START) == 1,
+        )
+        _install.SK_LAUNCHER_DIR = _fake_bin  # restore for other tests
+
+        # Profile with manual path (no markers): must not double-add
+        _manual_profile = _wbs010_tmp / ".bashrc"
+        _manual_profile.write_text(f'export PATH="{str(_fake_bin)}:$PATH"\n', encoding="utf-8")
+        _install._inject_launcher_path(quiet=True)
+        _manual_content = _manual_profile.read_text(encoding="utf-8")
+        test(
+            "WBS-010: no marker injected when bin_str already present without markers",
+            _install._SK_PATH_MARKER_START not in _manual_content,
+        )
+
+        # _remove_launcher_path_block_from_text: idempotent removal
+        _block_text = _install._build_sk_path_block()
+        _with_block = f"header\n{_block_text}footer\n"
+        _cleaned, _n = _install._remove_launcher_path_block_from_text(_with_block)
+        test("WBS-010: remove_launcher_path_block removes 1 block", _n == 1)
+        test("WBS-010: cleaned text has no START marker", _install._SK_PATH_MARKER_START not in _cleaned)
+        # Calling remove again on already-clean text: n == 0
+        _re_cleaned, _n2 = _install._remove_launcher_path_block_from_text(_cleaned)
+        test("WBS-010: remove on already-clean text removes 0 blocks", _n2 == 0)
+        test("WBS-010: idempotent remove produces same text", _re_cleaned == _cleaned)
+
+finally:
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_wbs010
+    _install.HOME = _orig_home_wbs010
+    if _orig_shell_wbs010 is None:
+        os.environ.pop("SHELL", None)
+    else:
+        os.environ["SHELL"] = _orig_shell_wbs010
+    _shutil_wbs010.rmtree(_wbs010_tmp, ignore_errors=True)
+
+
+# ── WBS-006: Windows Task Scheduler helpers (#331) ────────────────────────────
+
+print("\n🗓️  WBS-006: Windows Task Scheduler sk watch helpers (#331)")
+
+# _windows_watch_task_name() constant
+test(
+    "WBS-006: _windows_watch_task_name returns non-empty string",
+    isinstance(_install._windows_watch_task_name(), str) and bool(_install._windows_watch_task_name()),
+)
+test(
+    "WBS-006: task name is stable (CopilotSessionKnowledgeWatch)",
+    _install._windows_watch_task_name() == "CopilotSessionKnowledgeWatch",
+)
+
+# _windows_watch_task_create_args() generates safe schtasks args
+_fake_sk_cmd = r"C:\Users\tester\.copilot\bin\sk.cmd"
+_create_args = _install._windows_watch_task_create_args(_fake_sk_cmd)
+test(
+    "WBS-006: create_args is a list",
+    isinstance(_create_args, list),
+)
+test(
+    "WBS-006: create_args starts with schtasks",
+    _create_args[0] == "schtasks",
+)
+test(
+    "WBS-006: create_args includes /Create",
+    "/Create" in _create_args,
+)
+test(
+    "WBS-006: create_args includes /F for idempotence",
+    "/F" in _create_args,
+)
+test(
+    "WBS-006: create_args includes ONLOGON trigger",
+    "ONLOGON" in _create_args,
+)
+test(
+    "WBS-006: create_args includes task name",
+    _install._windows_watch_task_name() in _create_args,
+)
+test(
+    "WBS-006: create_args includes sk_cmd_path in /TR value",
+    any(_fake_sk_cmd in arg for arg in _create_args),
+)
+test(
+    "WBS-006: create_args includes 'watch' command in /TR value",
+    any("watch" in arg for arg in _create_args),
+)
+test(
+    "WBS-006: create_args includes /RL LIMITED (no elevation)",
+    "LIMITED" in _create_args,
+)
+test(
+    "WBS-006: create_args includes /DELAY for logon delay",
+    "/DELAY" in _create_args,
+)
+
+# _windows_watch_task_delete_args() generates safe schtasks delete args
+_delete_args = _install._windows_watch_task_delete_args()
+test(
+    "WBS-006: delete_args is a list",
+    isinstance(_delete_args, list),
+)
+test(
+    "WBS-006: delete_args starts with schtasks",
+    _delete_args[0] == "schtasks",
+)
+test(
+    "WBS-006: delete_args includes /Delete",
+    "/Delete" in _delete_args,
+)
+test(
+    "WBS-006: delete_args includes task name",
+    _install._windows_watch_task_name() in _delete_args,
+)
+
+# dry_run: setup_windows_watch_task prints [dry-run] without any subprocess calls
+import io as _io_wbs006
+import sys as _sys_wbs006
+
+_wbs006_orig_sk_dir = _install.SK_LAUNCHER_DIR
+_wbs006_fake_dir = SCRATCH / "wbs006-bin"
+_wbs006_fake_dir.mkdir(parents=True, exist_ok=True)
+_wbs006_fake_cmd = _wbs006_fake_dir / "sk.cmd"
+_wbs006_fake_cmd.write_text("@echo off\n", encoding="utf-8")
+_install.SK_LAUNCHER_DIR = _wbs006_fake_dir
+
+try:
+    _wbs006_buf = _io_wbs006.StringIO()
+    _old_stdout_wbs006 = _sys_wbs006.stdout
+    _sys_wbs006.stdout = _wbs006_buf
+
+    subprocess_calls_wbs006: list = []
+    _orig_subprocess_run_wbs006 = _install.subprocess.run
+
+    def _fake_run_wbs006(*args, **kwargs):
+        subprocess_calls_wbs006.append(args[0])
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    _install.subprocess.run = _fake_run_wbs006
+    try:
+        _dry_result = _install.setup_windows_watch_task(dry_run=True, quiet=False)
+    finally:
+        _install.subprocess.run = _orig_subprocess_run_wbs006
+        _sys_wbs006.stdout = _old_stdout_wbs006
+
+    _wbs006_output = _wbs006_buf.getvalue()
+
+    test(
+        "WBS-006: dry-run returns False",
+        _dry_result is False,
+    )
+    if os.name == "nt":
+        test(
+            "WBS-006: dry-run output contains '[dry-run]'",
+            "[dry-run]" in _wbs006_output,
+            f"output: {_wbs006_output[:200]!r}",
+        )
+        test(
+            "WBS-006: dry-run output mentions task name",
+            _install._windows_watch_task_name() in _wbs006_output,
+        )
+    test(
+        "WBS-006: dry-run does NOT call subprocess.run",
+        len(subprocess_calls_wbs006) == 0,
+        f"calls: {subprocess_calls_wbs006}",
+    )
+
+    # setup_windows_watch_task on non-Windows: returns False, skips
+    if os.name != "nt":
+        _non_win_buf = _io_wbs006.StringIO()
+        _sys_wbs006.stdout = _non_win_buf
+        try:
+            _non_win_result = _install.setup_windows_watch_task(dry_run=False, quiet=False)
+        finally:
+            _sys_wbs006.stdout = _old_stdout_wbs006
+        test(
+            "WBS-006: setup_windows_watch_task returns False on non-Windows",
+            _non_win_result is False,
+        )
+
+    # _windows_watch_task_exists: fail-open on schtasks missing
+    _orig_subprocess_run2 = _install.subprocess.run
+    _install.subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("schtasks"))  # type: ignore[assignment]
+    try:
+        _exists_result = _install._windows_watch_task_exists()
+    except Exception:
+        _exists_result = True  # should not raise
+    finally:
+        _install.subprocess.run = _orig_subprocess_run2
+    test(
+        "WBS-006: _windows_watch_task_exists returns False when schtasks absent (fail-open)",
+        _exists_result is False,
+    )
+
+    # remove_windows_watch_task on non-Windows
+    if os.name != "nt":
+        _rm_result = _install.remove_windows_watch_task(quiet=True)
+        test(
+            "WBS-006: remove_windows_watch_task returns False on non-Windows",
+            _rm_result is False,
+        )
+
+finally:
+    _install.SK_LAUNCHER_DIR = _wbs006_orig_sk_dir
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────

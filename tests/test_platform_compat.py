@@ -300,6 +300,26 @@ def test_ci_lint_includes_scoped_test_files() -> None:
     )
 
 
+def test_ci_has_startup_regression_guard() -> None:
+    """Issue #364: ci.yml quality-gates job must include startup regression guard."""
+    workflow = _read(".github/workflows/ci.yml")
+    test(
+        "CI has startup regression guard step (issue-364)",
+        "Startup regression guard" in workflow or "benchmark.py startup" in workflow,
+        "ci.yml quality-gates must run benchmark.py startup --regression-threshold",
+    )
+    test(
+        "CI startup guard uses regression-threshold flag",
+        "--regression-threshold" in workflow,
+        "benchmark.py startup must be called with --regression-threshold",
+    )
+    test(
+        "CI startup guard uses baseline-file flag",
+        "--baseline-file" in workflow,
+        "benchmark.py startup must persist a baseline file for comparison",
+    )
+
+
 def main() -> int:
     if len(sys.argv) == 2 and sys.argv[1] == "--probe":
         _platform_probe()
@@ -318,6 +338,7 @@ def main() -> int:
     test_ci_windows_onboarding_smoke_job_exists()
     test_release_sha256_format_is_normalized()
     test_ci_lint_includes_scoped_test_files()
+    test_ci_has_startup_regression_guard()
 
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

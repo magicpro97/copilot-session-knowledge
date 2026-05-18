@@ -902,6 +902,48 @@ def test_main_invalid_mode(tmp_path):
     test("main: invalid mode returns 1", rc == 1, f"rc={rc}")
 
 
+# ── 11. CI workflow contract (issue-364) ─────────────────────────────────────
+
+
+def test_sk_ci_has_startup_benchmark_job():
+    """Issue-364: sk-ci.yml must have startup-benchmark job with regression gate."""
+    sk_ci_path = REPO / ".github" / "workflows" / "sk-ci.yml"
+    if not sk_ci_path.exists():
+        test("sk-ci.yml startup-benchmark job present", False, "sk-ci.yml not found")
+        return
+    content = sk_ci_path.read_text(encoding="utf-8")
+    test("sk-ci.yml has startup-benchmark job", "startup-benchmark" in content)
+    test(
+        "sk-ci.yml startup job uses --regression-threshold",
+        "--regression-threshold" in content,
+        "startup-benchmark job must enforce regression threshold",
+    )
+    test(
+        "sk-ci.yml startup job uses --baseline-file",
+        "--baseline-file" in content,
+        "startup-benchmark job must persist and restore a baseline file",
+    )
+
+
+def test_ci_startup_guard_in_quality_gates():
+    """Issue-364: ci.yml quality-gates job must contain startup regression guard."""
+    ci_path = REPO / ".github" / "workflows" / "ci.yml"
+    if not ci_path.exists():
+        test("ci.yml startup guard present", False, "ci.yml not found")
+        return
+    content = ci_path.read_text(encoding="utf-8")
+    test(
+        "ci.yml quality-gates has startup regression guard",
+        "benchmark.py startup" in content and "--regression-threshold" in content,
+        "ci.yml must call benchmark.py startup with --regression-threshold in quality-gates",
+    )
+    test(
+        "ci.yml startup guard uses baseline caching",
+        "actions/cache" in content and "startup" in content,
+        "ci.yml startup guard must cache the baseline file across runs",
+    )
+
+
 # ── Runner ───────────────────────────────────────────────────────────────────
 
 
@@ -995,6 +1037,10 @@ def run_all():  # noqa: PLR0915
     print("\n── 10. main() entry point ────────────────────────────────────────────────")
     test_main_no_cmd()
     test_main_invalid_mode(_tmp())
+
+    print("\n── 11. CI workflow contract (issue-364) ─────────────────────────────────")
+    test_sk_ci_has_startup_benchmark_job()
+    test_ci_startup_guard_in_quality_gates()
 
     print(f"\n{'─' * 60}")
     if FAIL == 0:

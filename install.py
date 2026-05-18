@@ -18,6 +18,11 @@ Usage:
     python install.py --uninstall            # Remove installed files
     python install.py --help                 # Show this help
 
+Windows Task Scheduler (WBS-006):
+    python install.py --setup-watch-task            # Register sk watch ONLOGON scheduled task
+    python install.py --setup-watch-task --dry-run  # Preview without registering
+    python install.py --remove-watch-task           # Remove the scheduled task
+
 sk Launcher (managed cross-platform):
     --install-sk creates ~/.copilot/bin/sk  (POSIX) or ~/.copilot/bin/sk.cmd (Windows)
     and idempotently adds ~/.copilot/bin to your shell profile PATH.
@@ -811,10 +816,25 @@ def _preferred_shell_profile() -> Path:
     return HOME / ".profile"
 
 
-def _inject_launcher_path(quiet: bool = False) -> None:
-    """Idempotently add ~/.copilot/bin to existing shell profiles (POSIX only)."""
+def _build_sk_path_block() -> str:
+    """Return the expected sk launcher PATH export block for the current launcher dir.
+
+    WBS-010: single source-of-truth for the managed block content so both
+    _inject_launcher_path and tests can compare against it precisely.
+    """
     bin_str = str(SK_LAUNCHER_DIR)
-    block = f'\n{_SK_PATH_MARKER_START}\nexport PATH="{bin_str}:$PATH"\n{_SK_PATH_MARKER_END}\n'
+    return f'{_SK_PATH_MARKER_START}\nexport PATH="{bin_str}:$PATH"\n{_SK_PATH_MARKER_END}\n'
+
+
+def _inject_launcher_path(quiet: bool = False) -> None:
+    """Idempotently add ~/.copilot/bin to existing shell profiles (POSIX only).
+
+    WBS-010: atomic write + precise idempotency — never duplicates the block,
+    never corrupts the profile on write failure (uses _atomic_write_text).
+    Updates an existing block when the launcher dir has changed.
+    """
+    bin_str = str(SK_LAUNCHER_DIR)
+    expected_block = _build_sk_path_block()
     profiles = [profile for profile in _shell_profiles() if profile.exists()]
     if not profiles:
         profiles = [_preferred_shell_profile()]
@@ -822,11 +842,30 @@ def _inject_launcher_path(quiet: bool = False) -> None:
         if not profile.parent.exists():
             profile.parent.mkdir(parents=True, exist_ok=True)
         content = profile.read_text(encoding="utf-8") if profile.exists() else ""
-        if _SK_PATH_MARKER_START in content or bin_str in content:
-            if not quiet:
-                print(f"  {INFO} sk PATH already in {_tilde(profile)}")
+
+        if _SK_PATH_MARKER_START in content:
+            # Marker found: check whether the block content is already correct.
+            if expected_block in content:
+                if not quiet:
+                    print(f"  {INFO} sk PATH already in {_tilde(profile)}")
+            else:
+                # Block is stale (launcher dir changed): replace it atomically.
+                cleaned, _ = _remove_launcher_path_block_from_text(content)
+                base = cleaned.rstrip("\n")
+                new_content = (base + "\n" + expected_block) if base.strip() else expected_block
+                _atomic_write_text(profile, new_content)
+                if not quiet:
+                    print(f"  {OK} Updated sk launcher PATH in {_tilde(profile)}")
             continue
-        new_content = block.lstrip("\n") if not content else content.rstrip("\n") + "\n" + block
+
+        if bin_str in content:
+            # User has manually added the path without our managed markers — leave it alone.
+            if not quiet:
+                print(f"  {INFO} sk PATH already in {_tilde(profile)} (without managed markers)")
+            continue
+
+        # Path not present at all: append the managed block atomically.
+        new_content = expected_block if not content else content.rstrip("\n") + "\n" + expected_block
         _atomic_write_text(profile, new_content)
         if not quiet:
             print(f"  {OK} Added sk launcher PATH to {_tilde(profile)}")
@@ -923,6 +962,163 @@ def _remove_launcher_path_windows(quiet: bool = False) -> bool:
         if not quiet:
             print(f"  {WARN} Could not remove Windows PATH entry: {exc}")
     return False
+
+
+# ---------------------------------------------------------------------------
+# Windows Task Scheduler — sk watch auto-start (WBS-006)
+# ---------------------------------------------------------------------------
+
+_WINDOWS_WATCH_TASK_NAME = "CopilotSessionKnowledgeWatch"
+
+
+def _windows_watch_task_name() -> str:
+    """Return the Windows Task Scheduler task name for the sk watch background service."""
+    return _WINDOWS_WATCH_TASK_NAME
+
+
+def _windows_watch_task_exists() -> bool:
+    """Return True when the sk watch scheduled task is registered.
+
+    WBS-006: Uses /Query with /FO LIST to check existence without side effects.
+    Fail-open: returns False on any error so callers treat absent as safe.
+    """
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", _WINDOWS_WATCH_TASK_NAME, "/FO", "LIST"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _windows_watch_task_create_args(sk_cmd_path: str | None = None) -> list[str]:
+    """Return the schtasks /Create arguments for the sk watch scheduled task.
+
+    WBS-006: /F makes the operation idempotent (overwrites existing task).
+    /DELAY 0001:30 adds a 1m30s logon delay to avoid login slowdown.
+    /RL LIMITED runs without elevation.
+    """
+    if sk_cmd_path is None:
+        sk_cmd_path = str(SK_LAUNCHER_DIR / "sk.cmd")
+    # schtasks /TR expects the executable + args quoted as one argument
+    task_run = f'"{sk_cmd_path}" watch'
+    return [
+        "schtasks",
+        "/Create",
+        "/F",  # Force: overwrite if task already exists (idempotent)
+        "/SC",
+        "ONLOGON",
+        "/TN",
+        _WINDOWS_WATCH_TASK_NAME,
+        "/TR",
+        task_run,
+        "/RL",
+        "LIMITED",  # No elevation needed
+        "/DELAY",
+        "0001:30",  # 1m30s delay after logon
+    ]
+
+
+def _windows_watch_task_delete_args() -> list[str]:
+    """Return the schtasks /Delete arguments for the sk watch scheduled task."""
+    return [
+        "schtasks",
+        "/Delete",
+        "/F",
+        "/TN",
+        _WINDOWS_WATCH_TASK_NAME,
+    ]
+
+
+def setup_windows_watch_task(dry_run: bool = False, quiet: bool = False) -> bool:
+    """Register sk watch as a Windows Task Scheduler task (ONLOGON trigger).
+
+    WBS-006: Idempotent — /F overwrites if already present.
+    Runs at LIMITED privilege; delayed 1m30s after logon.
+    Returns True when a task was created/updated, False on dry-run/no-op/error.
+    """
+    if os.name != "nt":
+        if not quiet:
+            print(f"  {INFO} Windows Task Scheduler setup skipped (not Windows)")
+        return False
+
+    sk_cmd = str(SK_LAUNCHER_DIR / "sk.cmd")
+    create_args = _windows_watch_task_create_args(sk_cmd)
+
+    if dry_run:
+        print(f"  [dry-run] Would register Windows Task Scheduler task: {_windows_watch_task_name()}")
+        print(f"  [dry-run] Command: {' '.join(create_args)}")
+        return False
+
+    if not (SK_LAUNCHER_DIR / "sk.cmd").is_file():
+        if not quiet:
+            print(f"  {WARN} sk.cmd not found at {_tilde(SK_LAUNCHER_DIR / 'sk.cmd')} — install sk launcher first")
+            print("    Run: python install.py --install-sk")
+        return False
+
+    try:
+        result = subprocess.run(
+            create_args,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            if not quiet:
+                print(f"  {OK} Windows Task Scheduler task registered: {_windows_watch_task_name()}")
+                print(f"  {INFO} Task runs 'sk watch' at logon (1m30s delay, LIMITED privilege)")
+            return True
+        else:
+            stderr = (result.stderr or result.stdout).strip()
+            if not quiet:
+                print(f"  {WARN} schtasks /Create failed (exit {result.returncode}): {stderr[:200]}")
+            return False
+    except FileNotFoundError:
+        if not quiet:
+            print(f"  {WARN} schtasks not found — Windows Task Scheduler unavailable on this system")
+        return False
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not register Task Scheduler task: {exc}")
+        return False
+
+
+def remove_windows_watch_task(quiet: bool = False) -> bool:
+    """Remove the sk watch Windows Task Scheduler task if it exists.
+
+    WBS-006: Fail-open — returns False without raising if task absent or schtasks unavailable.
+    """
+    if os.name != "nt":
+        return False
+
+    if not _windows_watch_task_exists():
+        if not quiet:
+            print(f"  {INFO} Windows Task Scheduler task not present: {_windows_watch_task_name()}")
+        return False
+
+    try:
+        result = subprocess.run(
+            _windows_watch_task_delete_args(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            if not quiet:
+                print(f"  {OK} Windows Task Scheduler task removed: {_windows_watch_task_name()}")
+            return True
+        else:
+            stderr = (result.stderr or result.stdout).strip()
+            if not quiet:
+                print(f"  {WARN} schtasks /Delete failed (exit {result.returncode}): {stderr[:200]}")
+            return False
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not remove Task Scheduler task: {exc}")
+        return False
 
 
 def _windows_path_entry_key(entry: str) -> str:
@@ -1965,6 +2161,11 @@ def _show_usage_hints():
     print(f"    python {inst} --doctor --manifest      # Check manifest drift")
     print(f"    python {inst} --test                  # Run self-test")
     print(f"    python {inst} --uninstall             # Remove tools")
+    if os.name == "nt":
+        print("\n  Windows Task Scheduler (auto-start sk watch at logon):")
+        print(f"    python {inst} --setup-watch-task      # Register sk watch ONLOGON task (WBS-006)")
+        print(f"    python {inst} --setup-watch-task --dry-run  # Preview without registering")
+        print(f"    python {inst} --remove-watch-task     # Remove the scheduled task")
     print("\n  Sync rollout note:")
     print("    sync-config.py --setup expects an HTTP(S) gateway URL (not raw Postgres/libSQL DSN)")
     print("    Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host)")
@@ -2478,6 +2679,20 @@ def main():
         if not quiet:
             print("\nInstalling sk launcher...")
         install_sk_launcher(quiet=quiet, dry_run=dry_run)
+        return
+
+    if "--setup-watch-task" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nSetting up Windows Task Scheduler for sk watch (WBS-006)...")
+        setup_windows_watch_task(dry_run=dry_run, quiet=quiet)
+        return
+
+    if "--remove-watch-task" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nRemoving Windows Task Scheduler task for sk watch...")
+        remove_windows_watch_task(quiet=quiet)
         return
 
     if "--install-binary" in args:

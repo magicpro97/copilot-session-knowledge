@@ -101,10 +101,49 @@ def _record_sync_signal(event: str, data: dict) -> None:
         pass
 
 
+def _check_and_set_dedup(event: str, payload_hash: str = "") -> bool:
+    """Return True if this event+payload should be skipped as a double-fire duplicate.
+
+    Uses a content hash of the payload so that the same event with different
+    payloads is NOT considered a duplicate.  Only identical (event, payload)
+    pairs fired within 500 ms are deduplicated (issue #348).
+
+    Fail-open: any I/O error → returns False (process normally).
+    """
+    try:
+        key = f"{event}-{payload_hash}" if payload_hash else event
+        # Sanitise key to a safe filename: keep only alphanumeric + dash + dot
+        safe_key = "".join(c if c.isalnum() or c in "-." else "_" for c in key)
+        dedup_path = MARKERS_DIR / f"hook-dedup-{safe_key}"
+        now_ms = int(time.time() * 1000)
+        if dedup_path.is_file():
+            try:
+                last_ms = int(dedup_path.read_text(encoding="utf-8").strip())
+                if now_ms - last_ms < 500:
+                    return True  # duplicate within 500 ms window
+            except Exception:
+                pass
+        MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+        dedup_path.write_text(str(now_ms), encoding="utf-8")
+    except Exception:
+        pass
+    return False
+
+
 def main():
     event = sys.argv[1] if len(sys.argv) > 1 else ""
     if not event:
         return
+
+    # Recursion guard (issue #396): prevent hook from re-entering itself when
+    # subprocesses spawned by rules (e.g. briefing.py) trigger further tool
+    # calls that fire this hook again.  Fail-open: if the env var is not set we
+    # proceed normally.
+    if os.environ.get("SK_HOOK_ACTIVE") == "1":
+        return
+
+    # Mark active before dispatching so any subprocess we spawn inherits the guard.
+    os.environ["SK_HOOK_ACTIVE"] = "1"
 
     # Parse stdin once (shared across all rules)
     try:
@@ -113,6 +152,19 @@ def main():
     except Exception:
         # Fail-open: parse error → allow through
         _audit_log(event, "", "", "parse-error")
+        return
+
+    # Double-fire deduplication (issue #348): skip duplicate invocations of the
+    # same event+payload pair within a 500 ms window.  Payload hash is included
+    # so that legitimate different-payload calls for the same event type are
+    # processed normally.
+    try:
+        import hashlib as _hashlib
+
+        _payload_hash = _hashlib.md5(raw.encode("utf-8", errors="replace")).hexdigest()[:8]
+    except Exception:
+        _payload_hash = ""
+    if _check_and_set_dedup(event, _payload_hash):
         return
 
     dry_run = os.environ.get("HOOK_DRY_RUN", "") == "1"

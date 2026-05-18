@@ -179,6 +179,124 @@ MAGENTA = "\033[35m" if _COLOR else ""
 RESET = "\033[0m" if _COLOR else ""
 
 
+import re as _re_module
+
+# ── Status-note suppression (issue #377) ──────────────────────────────────────
+# Mirrors the same regex in briefing.py so both modules apply universal suppression.
+_STATUS_NOTE_RE = _re_module.compile(
+    r"""
+    ^(?:
+        Wave[-\s]?\d+\b            # "Wave14 …" or "Wave-14 …"
+        .*?\b(?:verification\s+is\s+complete|phase[-\s\d]+\s+verification\s+is\s+complete)
+        |                          # OR
+        Wave[-\s]?\d+\b            # "Wave11 planner recommendation (not yet implemented)"
+        .*?\(not\s+yet\s+implemented\)
+        |                          # OR
+        wave\d+[-\w]+\s+completed  # "wave6-pretooluse-deny completed …"
+        |                          # OR
+        \[rust-wave                # "[rust-wave7-hook-parity] …"
+    )
+    """,
+    _re_module.VERBOSE | _re_module.IGNORECASE,
+)
+
+# ── Synonym expansion (issue #371) ────────────────────────────────────────────
+_SYNONYM_MAP: dict[str, list[str]] = {
+    "auth": ["auth", "authentication", "login", "token"],
+    "authentication": ["authentication", "auth", "login", "token"],
+    "error": ["error", "bug", "exception", "failure"],
+    "bug": ["bug", "error", "issue", "defect"],
+    "config": ["config", "configuration", "settings", "env"],
+    "configuration": ["configuration", "config", "settings", "env"],
+    "db": ["db", "database", "sqlite", "sql"],
+    "database": ["database", "db", "sqlite", "sql"],
+    "deploy": ["deploy", "deployment", "release", "publish"],
+    "deployment": ["deployment", "deploy", "release", "publish"],
+    "test": ["test", "tests", "testing", "spec"],
+    "testing": ["testing", "test", "tests", "spec"],
+    "perf": ["perf", "performance", "speed", "latency", "slow"],
+    "performance": ["performance", "perf", "speed", "latency", "slow"],
+    "cache": ["cache", "caching", "redis", "ttl", "invalidation"],
+    "caching": ["caching", "cache", "redis", "ttl"],
+    "migration": ["migration", "migrate", "schema", "upgrade"],
+    "migrate": ["migrate", "migration", "schema", "upgrade"],
+    "security": ["security", "vulnerability", "injection", "credential"],
+    "search": ["search", "query", "retrieval", "fts", "fulltext"],
+    "retrieval": ["retrieval", "search", "query", "recall", "fts"],
+    "index": ["index", "indexing", "fts", "fts5"],
+    "indexing": ["indexing", "index", "fts", "fts5"],
+    "embedding": ["embedding", "vector", "semantic", "similarity"],
+    "vector": ["vector", "embedding", "semantic", "similarity"],
+    "session": ["session", "sessions", "history", "conversation"],
+    "hook": ["hook", "hooks", "preToolUse", "postToolUse", "trigger"],
+    "hooks": ["hooks", "hook", "preToolUse", "postToolUse", "trigger"],
+    "api": ["api", "endpoint", "route", "rest", "http"],
+    "endpoint": ["endpoint", "api", "route", "rest", "http"],
+    "log": ["log", "logging", "logs", "output", "stderr"],
+    "logging": ["logging", "log", "logs", "output"],
+    "sync": ["sync", "synchronize", "push", "pull", "remote"],
+    "synchronize": ["synchronize", "sync", "push", "pull", "remote"],
+    "skill": ["skill", "skills", "plugin", "extension"],
+    "skills": ["skills", "skill", "plugin", "extension"],
+    "briefing": ["briefing", "context", "recall", "knowledge"],
+    "knowledge": ["knowledge", "briefing", "recall", "learning"],
+    "refactor": ["refactor", "refactoring", "rewrite", "cleanup"],
+    "refactoring": ["refactoring", "refactor", "rewrite", "cleanup"],
+}
+
+
+def _expand_synonyms(query: str) -> str:
+    """Expand query terms using domain synonym map (issue #371).
+
+    Conservative expansion: only 1-6 token queries are expanded.
+    Returns a space-joined string of unique expanded terms.
+    Use _expand_synonyms_fts for FTS queries that need OR conjunction.
+    """
+    tokens = query.strip().split()
+    if not tokens or len(tokens) > 6:
+        return query.strip()
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        clean = tok.lower().strip(" \t\"'.,;!?")
+        synonyms = _SYNONYM_MAP.get(clean)
+        if synonyms:
+            for s in synonyms:
+                if s not in seen:
+                    expanded.append(s)
+                    seen.add(s)
+        else:
+            if clean not in seen:
+                expanded.append(clean)
+                seen.add(clean)
+    return " ".join(expanded) if expanded else query.strip()
+
+
+def _expand_synonyms_fts(query: str) -> str:
+    """Build an FTS5 OR query from synonym-expanded terms (issue #371).
+
+    Unlike _expand_synonyms which returns space-joined terms (AND semantics
+    in FTS5), this function builds an explicit OR-conjunction query so that
+    any of the expanded synonyms triggers a match.  Safe to pass directly to
+    a ``WHERE ke_fts MATCH ?`` parameter.
+
+    Bypasses _sanitize_fts_query intentionally since it strips OR operators.
+    """
+    expanded = _expand_synonyms(query)
+    # Strip reserved FTS5 operators that would break the MATCH expression
+    _STRIP_OPS = frozenset({"OR", "AND", "NOT", "NEAR"})
+    terms = [t for t in expanded.split() if t and t.upper() not in _STRIP_OPS]
+    # Remove FTS5 special chars per-term
+    _FTS_SPECIAL = set('"*(){}:^')
+    clean_terms = ["".join(c for c in t if c not in _FTS_SPECIAL) for t in terms]
+    clean_terms = [t for t in clean_terms if t]
+    if not clean_terms:
+        return '""'
+    # Return OR-joined prefix query: any synonym triggers a hit
+    return " OR ".join(f'"{t}"*' for t in clean_terms)
+
+
 def get_db() -> sqlite3.Connection:
     """Connect to the knowledge database."""
     if not DB_PATH.exists():
@@ -1258,7 +1376,15 @@ def search_knowledge(
     db = get_db()
     query_for_retrieval = retrieval_query if retrieval_query is not None else query
 
-    fts_query, strictness, _ = _build_adaptive_fts_query(query_for_retrieval)
+    # If retrieval_query is already a pre-built FTS5 query (contains OR conjunction
+    # or explicit prefix wildcards produced by _expand_synonyms_fts), use it directly
+    # to avoid _sanitize_fts_query stripping the OR operators and wildcards.
+    _is_prebuilt_fts = retrieval_query is not None and (" OR " in retrieval_query or ('"*' in retrieval_query))
+    if _is_prebuilt_fts:
+        fts_query = retrieval_query
+        strictness = "medium"
+    else:
+        fts_query, strictness, _ = _build_adaptive_fts_query(query_for_retrieval)
 
     # Build optional error_type WHERE clause
     et_clause = ""
@@ -1329,9 +1455,15 @@ def search_knowledge(
             rows = []
 
     if export_fmt == "json" and rows:
+        # Issue #377: suppress status-note entries in all output formats
+        rows = [r for r in rows if not _STATUS_NOTE_RE.search(dict(r).get("title", "") or "")]
         _export_json([dict(r) for r in rows])
         db.close()
         return
+
+    # Issue #377: apply status-note suppression for text output too
+    if rows:
+        rows = [r for r in rows if not _STATUS_NOTE_RE.search(dict(r).get("title", "") or "")]
 
     if rows:
         print(f"\n{BOLD}Knowledge entries matching: {query} ({len(rows)} results){RESET}\n")
@@ -1354,6 +1486,27 @@ def search_knowledge(
             print(f"   {DIM}Session:{RESET} {sid}..  {DIM}Tags:{RESET} {r['tags']}")
             print(f"   {excerpt}")
             print()
+
+    if not rows and export_fmt != "json":
+        # Issue #380: no-hit insights — help caller understand why search failed
+        try:
+            total = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+            if total == 0:
+                print(f"No knowledge entries found for: {query!r}")
+                print("  ℹ Hint: No entries exist yet — run 'python extract-knowledge.py' first.")
+            else:
+                print(f"No knowledge entries matched: {query!r}")
+                print(f"  ℹ {total} total entries in database.")
+                terms = query.strip().split()
+                if len(terms) > 2:
+                    shorter = " ".join(terms[:2])
+                    print(f"  ℹ Try shorter query, e.g.: {shorter!r}")
+                cats = db.execute("SELECT DISTINCT category FROM knowledge_entries ORDER BY category").fetchall()
+                if cats:
+                    cat_list = ", ".join(r[0] for r in cats)
+                    print(f"  ℹ Available categories: {cat_list}")
+        except sqlite3.OperationalError:
+            print(f"No knowledge entries matched: {query!r}")
 
     selected_entry_ids = _safe_int_list(r["id"] for r in rows) if rows else []
     hit_count = len(rows)
@@ -1564,7 +1717,10 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieva
     db = get_db()
     ensure_embedding_tables(db)
 
-    results = hybrid_search(db, query, config, limit=limit)
+    # Issue #369: use rewritten/retrieval query for the actual search so semantic
+    # and FTS paths both benefit from query condensation.
+    effective_query = retrieval_query if retrieval_query else query
+    results = hybrid_search(db, effective_query, config, limit=limit)
 
     if not results:
         print(f"No results for: {query}")
@@ -2526,6 +2682,8 @@ def _run(args: list, compact: bool = False):
 
     # Check for semantic mode
     use_semantic = "--semantic" in args or "-s" in args
+    # Issue #371: synonym expansion flag
+    use_expand_synonyms = "--expand-synonyms" in args
 
     # Default: search mode
     query_parts = []
@@ -2544,6 +2702,8 @@ def _run(args: list, compact: bool = False):
             i += 1
         elif args[i] in ("--semantic", "-s"):
             i += 1
+        elif args[i] in ("--expand-synonyms",):
+            i += 1  # already captured above
         elif args[i] in ("--compact", "--snippet", "--no-snippet"):
             i += 1  # already consumed or toggle flags
         elif args[i].startswith("--"):
@@ -2558,15 +2718,24 @@ def _run(args: list, compact: bool = False):
         print_usage()
         return
     rewritten_query = _rewrite_query_local(query)
+    # Issue #371: optionally expand synonyms. For FTS paths we use the OR-query
+    # form (_expand_synonyms_fts) so that any synonym triggers a hit; for
+    # semantic paths we use the plain expanded string (_expand_synonyms) so the
+    # embedding model sees all synonym terms in the query text without
+    # FTS-specific syntax (quotes, asterisks, OR operators).
+    semantic_query = rewritten_query  # plain text; used by embedding/semantic path
+    if use_expand_synonyms:
+        semantic_query = _expand_synonyms(rewritten_query)
+        rewritten_query = _expand_synonyms_fts(rewritten_query)
 
     if use_semantic:
-        output, meta = _run_with_capture(semantic_search, query, limit, verbose, rewritten_query)
+        output, meta = _run_with_capture(semantic_search, query, limit, verbose, semantic_query)
         meta = meta or {"hit_count": 0, "selected_entry_ids": []}
         _record_recall_event(
             event_kind="recall",
             surface="semantic",
             raw_query=query,
-            rewritten_query=rewritten_query,
+            rewritten_query=semantic_query,
             task_id="",
             selected_entry_ids=meta.get("selected_entry_ids", []),
             hit_count=meta.get("hit_count", 0),

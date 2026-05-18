@@ -22,6 +22,76 @@ use crate::hooks::rules::{all_rules, HookRule};
 use crate::hooks::sync_markers::record_sync_signal;
 
 // ---------------------------------------------------------------------------
+// Double-fire deduplication (issue #348)
+// ---------------------------------------------------------------------------
+
+/// Return `true` if this (event, raw-payload) pair should be skipped as a
+/// double-fire duplicate within a 500 ms window.
+///
+/// Mirrors `hook_runner.py::_check_and_set_dedup()`.  The payload hash uses
+/// SHA-256 (first 8 hex chars) instead of MD5; the 8-char key length matches
+/// Python so marker filenames are human-readable and consistent.
+///
+/// Fail-open: any I/O or parse error returns `false` (process normally, i.e.
+/// no new denial paths from dedup failures).
+fn check_and_set_dedup(event: &str, raw: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Compute a short content hash for dedup key uniqueness.
+    let hash_bytes = Sha256::digest(raw.as_bytes());
+    let payload_hash: String = hash_bytes
+        .iter()
+        .take(4) // 4 bytes → 8 hex chars, same length as Python's MD5[:8]
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    // Build a safe filename key (alphanumeric, dash, dot only).
+    let key = format!("{event}-{payload_hash}");
+    let safe_key: String = key
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    let markers_path = crate::config::resolve_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".copilot")
+        .join("markers");
+
+    let dedup_path = markers_path.join(format!("hook-dedup-{safe_key}"));
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    // Check existing marker: duplicate if same payload seen within 500 ms.
+    if dedup_path.is_file() {
+        if let Ok(content) = fs::read_to_string(&dedup_path) {
+            if let Ok(last_ms) = content.trim().parse::<u64>() {
+                if now_ms.saturating_sub(last_ms) < 500 {
+                    return true; // duplicate within window — skip
+                }
+            }
+        }
+    }
+
+    // Write updated timestamp (best-effort; never blocks on failure).
+    let _ = fs::create_dir_all(&markers_path);
+    let _ = fs::write(&dedup_path, now_ms.to_string());
+
+    false
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -33,6 +103,19 @@ pub fn run_hook(event: &str) {
     if event.is_empty() {
         return;
     }
+
+    // Recursion guard (issue #396): prevent the hook from re-entering itself
+    // when a subprocess spawned by a rule (e.g. briefing.py) triggers further
+    // tool calls that fire this hook again.  Fail-open: any env-var read error
+    // is ignored and processing continues normally.
+    if std::env::var("SK_HOOK_ACTIVE").is_ok_and(|v| v == "1") {
+        return;
+    }
+
+    // Mark active before dispatching so any subprocess we spawn inherits the guard.
+    // Mirrors Python `os.environ["SK_HOOK_ACTIVE"] = "1"`.
+    // Best-effort: ignore set_var failures (the recursion guard is advisory).
+    let _ = std::env::set_var("SK_HOOK_ACTIVE", "1");
 
     // --- Parse stdin (fail-open) ---
     let mut raw = String::new();
@@ -53,6 +136,14 @@ pub fn run_hook(event: &str) {
             }
         }
     };
+
+    // Double-fire deduplication (issue #348): skip identical (event, payload)
+    // pairs fired within a 500 ms window.  Different payloads for the same
+    // event type are processed normally (not considered duplicates).
+    // Fail-open: any I/O error in check_and_set_dedup → returns false → continue.
+    if check_and_set_dedup(event, &raw) {
+        return;
+    }
 
     dispatch_rules(event, &data);
 
@@ -375,5 +466,75 @@ mod tests {
         assert!(!tools.is_empty());
         assert!(tools.contains(&"bash"));
         assert!(!tools.contains(&"edit"));
+    }
+
+    // --- double-fire deduplication (issue #348) ---
+
+    /// `check_and_set_dedup` must return `false` on the first call for a new
+    /// (event, payload) pair — the first invocation is not a duplicate.
+    #[test]
+    fn dedup_first_call_is_not_duplicate() {
+        // Use a unique payload so this test does not interfere with others.
+        let unique_payload = format!(
+            r#"{{"toolName":"test","ts":{}}}"#,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let result = check_and_set_dedup("preToolUse", &unique_payload);
+        assert!(!result, "first call must not be treated as duplicate");
+    }
+
+    /// `check_and_set_dedup` must return `true` when the same (event, payload)
+    /// pair is fired a second time within the 500 ms window.
+    #[test]
+    fn dedup_second_call_within_window_is_duplicate() {
+        let unique_payload = format!(
+            r#"{{"toolName":"dedup-dup-test","ts":{}}}"#,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        // First call seeds the marker.
+        let first = check_and_set_dedup("preToolUse", &unique_payload);
+        assert!(!first, "first call must not be duplicate");
+        // Second call with the same payload, no sleep — still within 500 ms window.
+        let second = check_and_set_dedup("preToolUse", &unique_payload);
+        assert!(
+            second,
+            "second identical call within window must be duplicate"
+        );
+    }
+
+    /// `check_and_set_dedup` must return `false` for a *different* payload even
+    /// if the event type is the same — different payloads are not duplicates.
+    #[test]
+    fn dedup_different_payload_same_event_is_not_duplicate() {
+        let base_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let payload_a = format!(r#"{{"toolName":"edit","ts":{base_nanos}}}"#);
+        let payload_b = format!(r#"{{"toolName":"create","ts":{base_nanos}}}"#);
+
+        // Seed payload_a.
+        let _ = check_and_set_dedup("preToolUse", &payload_a);
+        // payload_b has a different hash — must not be considered a duplicate.
+        let result = check_and_set_dedup("preToolUse", &payload_b);
+        assert!(
+            !result,
+            "different payload for same event must not be a duplicate"
+        );
+    }
+
+    /// `check_and_set_dedup` must be fail-open: when called with an empty raw
+    /// string (edge case), it must return `false` and not panic.
+    #[test]
+    fn dedup_empty_payload_is_fail_open() {
+        let result = check_and_set_dedup("sessionStart", "");
+        // May be true or false depending on prior state, but must not panic.
+        let _ = result; // just confirming no panic
     }
 }

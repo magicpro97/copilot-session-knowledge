@@ -223,8 +223,17 @@ class SessionEndRule(Rule):
             for f in MARKERS_DIR.iterdir():
                 try:
                     name = f.name
-                    # Preserve system files
-                    if name in ("audit.jsonl", "session.log", "hooks-tampered"):
+                    # Preserve system files and sync marker files (issue #347).
+                    # sync-nudge.json / sync-flush.json are written by postToolUse /
+                    # sessionEnd hooks and must outlive session cleanup so that
+                    # watch-sessions / sync-daemon can consume them.
+                    if name in (
+                        "audit.jsonl",
+                        "session.log",
+                        "hooks-tampered",
+                        "sync-nudge.json",
+                        "sync-flush.json",
+                    ):
                         continue
                     # Delete session-specific markers for THIS session only.
                     # Also remove the companion .lock file (session-state-<id>.lock)

@@ -1496,6 +1496,11 @@ fn hooks_session_start_direct_exits_zero() {
     let mut cmd = assert_cmd::Command::cargo_bin("sk").unwrap();
     cmd.args(["hooks", "sessionStart"])
         .env("SK_TOOLS_DIR", &tmp)
+        // Isolate HOME so the dedup marker for `{}` does not collide with the
+        // parallel hooks_run_session_start_native_route_exits_zero test that
+        // sends the same payload within the 500 ms dedup window.
+        .env("HOME", &tmp)
+        .env("USERPROFILE", &tmp)
         .write_stdin(r#"{}"#);
 
     let output = cmd.assert().success();
@@ -1604,6 +1609,11 @@ fn hooks_run_session_end_recurrence_detector_fail_open() {
             "SK_DB",
             tmp.join("nonexistent.db").to_string_lossy().as_ref(),
         )
+        // Isolate HOME so the dedup marker for `{"reason":"normal"}` does not
+        // collide with the parallel hooks_run_session_end_native_route_exits_zero
+        // test that sends the same payload within the 500 ms dedup window.
+        .env("HOME", &tmp)
+        .env("USERPROFILE", &tmp)
         .write_stdin(r#"{"reason": "normal"}"#);
 
     let output = cmd.assert().success();
