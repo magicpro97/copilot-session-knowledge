@@ -933,7 +933,58 @@ test_sync_daemon_py_exists_as_shim_fallback()
 
 print("\n── Hook/watch native capability regression ─────────────────────────────")
 
-SK_RUST_HOOKS = REPO / "sk-rust" / "src" / "hooks"
+class _RustRulesSource:
+    """Compatibility reader for the split native hook rules module."""
+
+    def __init__(self, legacy_file: Path, module_dir: Path):
+        self.legacy_file = legacy_file
+        self.module_dir = module_dir
+
+    def exists(self) -> bool:
+        return self.legacy_file.exists() or self.module_dir.is_dir()
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        if self.legacy_file.exists():
+            return self.legacy_file.read_text(encoding=encoding)
+        if not self.module_dir.is_dir():
+            raise FileNotFoundError(str(self.legacy_file))
+        preferred = [
+            "mod.rs",
+            "session.rs",
+            "edit_track.rs",
+            "verification.rs",
+            "guard.rs",
+            "learn.rs",
+            "tentacle.rs",
+        ]
+        chunks = []
+        for name in preferred:
+            path = self.module_dir / name
+            if path.exists():
+                chunks.append(f"// {path.relative_to(REPO)}\n{path.read_text(encoding=encoding)}")
+        return "\n\n".join(chunks)
+
+    def __str__(self) -> str:
+        return str(self.legacy_file if self.legacy_file.exists() else self.module_dir)
+
+
+class _RustHooksPath:
+    """Path wrapper that keeps old rules.rs source checks working after #277."""
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    @property
+    def parent(self) -> Path:
+        return self._path.parent
+
+    def __truediv__(self, child: str):
+        if child == "rules.rs":
+            return _RustRulesSource(self._path / child, self._path / "rules")
+        return self._path / child
+
+
+SK_RUST_HOOKS = _RustHooksPath(REPO / "sk-rust" / "src" / "hooks")
 SK_RUST_INDEX = REPO / "sk-rust" / "src" / "index"
 
 
@@ -2203,7 +2254,7 @@ print("\n── sessionEnd goal-pause: managed/native boundary (#184) ───�
 
 SESSION_LIFECYCLE = REPO / "hooks" / "rules" / "session_lifecycle.py"
 SESSION_END_PY = REPO / "hooks" / "session-end.py"
-RULES_RS = REPO / "sk-rust" / "src" / "hooks" / "rules.rs"
+RULES_RS = SK_RUST_HOOKS / "rules.rs"
 
 
 def test_session_lifecycle_has_goal_pause():
@@ -2324,7 +2375,7 @@ print("\n── wave16: sessionStart paused-goal resume banner — Python/native
 
 BRIEFING_PY = REPO / "hooks" / "rules" / "briefing.py"
 AUTO_BRIEFING_PY = REPO / "hooks" / "auto-briefing.py"
-RULES_RS_185 = REPO / "sk-rust" / "src" / "hooks" / "rules.rs"
+RULES_RS_185 = SK_RUST_HOOKS / "rules.rs"
 
 
 def test_briefing_py_has_resume_hint():

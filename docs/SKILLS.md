@@ -49,7 +49,7 @@ At `sessionStart`, the `auto-briefing` hook passes `--session-start` to `briefin
 - `briefing.py`: `_parse_skill_frontmatter()`, `_generate_skill_index()`, `--session-start` flag
 - `hooks/rules/briefing.py`: `AutoBriefingRule` adds `"--session-start"` to subprocess args
 - `hooks/auto-briefing.py`: legacy path adds `"--session-start"` to subprocess args
-- `sk-rust/src/hooks/rules.rs`: Rust `AutoBriefingRule` adds `"--session-start"` to command
+- `sk-rust/src/hooks/rules/session.rs`: Rust `AutoBriefingRule` adds `"--session-start"` to command
 
 ## Available Skills
 

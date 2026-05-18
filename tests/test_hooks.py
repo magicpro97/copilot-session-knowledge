@@ -5434,11 +5434,13 @@ test(
 )
 
 # 27e. Rust AutoBriefingRule source passes --session-start
-_rust_rules_src = (REPO / "sk-rust" / "src" / "hooks" / "rules.rs").read_text(encoding="utf-8")
+_rust_rules_src = (
+    REPO / "sk-rust" / "src" / "hooks" / "rules" / "session.rs"
+).read_text(encoding="utf-8")
 test(
     "27e: sk-rust AutoBriefingRule source passes --session-start to briefing.py",
     "--session-start" in _rust_rules_src,
-    "AutoBriefingRule in rules.rs must include --session-start in subprocess args",
+    "AutoBriefingRule in rules/session.rs must include --session-start in subprocess args",
 )
 
 # 27f. briefing.py flushes stdout immediately after printing skill index (source check)
@@ -5574,7 +5576,9 @@ finally:
     shutil.rmtree(str(_td27g), ignore_errors=True)
 
 # 27h. Rust AutoBriefingRule source: on timeout, joins reader thread and appends partial bytes
-_rust_rules_src_27h = (REPO / "sk-rust" / "src" / "hooks" / "rules.rs").read_text(encoding="utf-8")
+_rust_rules_src_27h = (
+    REPO / "sk-rust" / "src" / "hooks" / "rules" / "session.rs"
+).read_text(encoding="utf-8")
 test(
     "27h: Rust AutoBriefingRule joins reader thread on timeout and appends partial output",
     "timed_out" in _rust_rules_src_27h

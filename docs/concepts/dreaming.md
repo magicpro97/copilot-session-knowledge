@@ -275,7 +275,7 @@ Fields written by the scheduler:
 ## sessionStart Auto-Injection
 
 `MEMORY.md` is automatically **prepended** into every `sessionStart` auto-briefing by
-`AutoBriefingRule` — natively in `sk-rust/src/hooks/rules.rs` for Rust-binary installs,
+`AutoBriefingRule` — natively in `sk-rust/src/hooks/rules/session.rs` for Rust-binary installs,
 and via `hooks/rules/briefing.py` for the Python fallback — and by the standalone
 `hooks/auto-briefing.py` script.  This surfaces the most valuable promoted entries
 before other briefing output at the beginning of every AI session without requiring
