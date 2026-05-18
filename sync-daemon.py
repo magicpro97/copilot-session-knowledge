@@ -54,6 +54,21 @@ DEFAULT_DREAM_MEMORY_PATH = "MEMORY.md"
 MAX_SYNC_LIMIT = 1000
 MAX_PULL_PAGES_PER_CYCLE = 10
 PUSH_TIMEOUT_SECONDS = 120
+SYNC_COMPACTION_PENDING_TXN_THRESHOLD = 5000
+SYNC_COMPACTION_PENDING_OP_THRESHOLD = 50000
+SYNC_COMPACTION_BATCH_SIZE = 50
+SYNC_COMMITTED_RETENTION_DAYS = 7
+SYNC_FAILURE_RETENTION_ROWS = 100
+
+SYNC_TABLE_PRIORITY = {
+    "sessions": 10,
+    "documents": 20,
+    "sections": 30,
+    "knowledge_entries": 40,
+    "knowledge_relations": 50,
+    "entity_relations": 60,
+    "search_feedback": 70,
+}
 
 
 SYNC_SCHEMA_SQL = """
@@ -146,6 +161,11 @@ REQUIRED_SYNC_TABLES = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _stable_sha256(*parts) -> str:
+    payload = "\0".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def load_sync_config() -> dict:
@@ -645,6 +665,233 @@ def repair_nonlocal_committed_txns(db: sqlite3.Connection, local_replica_id: str
         (local_replica_id,),
     )
     return int(cur.rowcount or 0)
+
+
+def _pending_sync_queue_counts(db: sqlite3.Connection, replica_id: str) -> tuple[int, int]:
+    row = db.execute(
+        """
+        SELECT COUNT(DISTINCT t.txn_id), COUNT(o.id)
+        FROM sync_txns t
+        LEFT JOIN sync_ops o ON o.txn_id = t.txn_id
+        WHERE t.status = 'pending'
+          AND (? = '' OR t.replica_id = ?)
+        """,
+        (replica_id or "", replica_id or ""),
+    ).fetchone()
+    if not row:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+def _table_rank_sql() -> str:
+    cases = " ".join(f"WHEN '{table}' THEN {rank}" for table, rank in SYNC_TABLE_PRIORITY.items())
+    return f"CASE table_name {cases} ELSE 999 END"
+
+
+def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force: bool = False) -> dict:
+    """Coalesce large local pending sync queues to latest per canonical row.
+
+    This keeps current state pushable while preventing repeated local indexing
+    from growing sync_txns/sync_ops without bound when the gateway is down.
+    """
+    old_txns, old_ops = _pending_sync_queue_counts(db, replica_id)
+    if (
+        not force
+        and old_txns < SYNC_COMPACTION_PENDING_TXN_THRESHOLD
+        and old_ops < SYNC_COMPACTION_PENDING_OP_THRESHOLD
+    ):
+        return {
+            "compacted": False,
+            "old_pending_txns": old_txns,
+            "old_pending_ops": old_ops,
+            "new_pending_txns": old_txns,
+            "new_pending_ops": old_ops,
+        }
+    if old_txns == 0 and old_ops == 0:
+        return {
+            "compacted": False,
+            "old_pending_txns": 0,
+            "old_pending_ops": 0,
+            "new_pending_txns": 0,
+            "new_pending_ops": 0,
+        }
+
+    new_txns = 0
+    new_ops = 0
+    savepoint_open = False
+    try:
+        db.execute("DROP TABLE IF EXISTS temp.sync_compact_pending_txns")
+        db.execute("DROP TABLE IF EXISTS temp.sync_compact_keep_ops")
+        db.execute(
+            """
+            CREATE TEMP TABLE sync_compact_pending_txns AS
+            SELECT txn_id
+            FROM sync_txns
+            WHERE status = 'pending'
+              AND (? = '' OR replica_id = ?)
+            """,
+            (replica_id or "", replica_id or ""),
+        )
+        db.execute(
+            f"""
+            CREATE TEMP TABLE sync_compact_keep_ops AS
+            SELECT table_name, op_type, row_stable_id, row_payload, created_at,
+                   {_table_rank_sql()} AS table_rank
+            FROM (
+                SELECT o.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY o.table_name, o.row_stable_id
+                           ORDER BY o.created_at DESC, o.id DESC
+                       ) AS rn
+                FROM sync_ops o
+                JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
+            )
+            WHERE rn = 1
+            """
+        )
+
+        kept_ops = db.execute(
+            """
+            SELECT table_name, op_type, row_stable_id, row_payload, created_at
+            FROM sync_compact_keep_ops
+            ORDER BY table_rank, table_name, row_stable_id
+            """
+        ).fetchall()
+
+        now = utc_now()
+        db.execute("SAVEPOINT sync_queue_compact")
+        savepoint_open = True
+        db.execute("DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)")
+        db.execute("DELETE FROM sync_txns WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)")
+
+        for batch_index in range(0, len(kept_ops), SYNC_COMPACTION_BATCH_SIZE):
+            batch = kept_ops[batch_index : batch_index + SYNC_COMPACTION_BATCH_SIZE]
+            txn_id = _stable_sha256("sync-compact", replica_id, now, batch_index // SYNC_COMPACTION_BATCH_SIZE)
+            db.execute(
+                """
+                INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
+                VALUES (?, ?, 'pending', ?, '')
+                """,
+                (txn_id, replica_id or "local", now),
+            )
+            db.executemany(
+                """
+                INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        txn_id,
+                        row["table_name"] if isinstance(row, sqlite3.Row) else row[0],
+                        row["op_type"] if isinstance(row, sqlite3.Row) else row[1],
+                        row["row_stable_id"] if isinstance(row, sqlite3.Row) else row[2],
+                        row["row_payload"] if isinstance(row, sqlite3.Row) else row[3],
+                        op_index,
+                        row["created_at"] if isinstance(row, sqlite3.Row) else row[4],
+                    )
+                    for op_index, row in enumerate(batch)
+                ],
+            )
+            new_txns += 1
+            new_ops += len(batch)
+
+        set_sync_state(db, "sync_queue_compacted_at", now)
+        set_sync_state(
+            db,
+            "sync_queue_compaction_note",
+            (
+                f"old_pending_txns={old_txns}; old_pending_ops={old_ops}; "
+                f"new_pending_txns={new_txns}; new_pending_ops={new_ops}"
+            ),
+        )
+        db.execute("RELEASE SAVEPOINT sync_queue_compact")
+        savepoint_open = False
+    except sqlite3.DatabaseError:
+        if savepoint_open:
+            db.execute("ROLLBACK TO SAVEPOINT sync_queue_compact")
+            db.execute("RELEASE SAVEPOINT sync_queue_compact")
+        raise
+    finally:
+        db.execute("DROP TABLE IF EXISTS temp.sync_compact_pending_txns")
+        db.execute("DROP TABLE IF EXISTS temp.sync_compact_keep_ops")
+    return {
+        "compacted": True,
+        "old_pending_txns": old_txns,
+        "old_pending_ops": old_ops,
+        "new_pending_txns": new_txns,
+        "new_pending_ops": new_ops,
+    }
+
+
+def prune_committed_sync_logs(
+    db: sqlite3.Connection,
+    *,
+    retention_days: int = SYNC_COMMITTED_RETENTION_DAYS,
+    failure_rows: int = SYNC_FAILURE_RETENTION_ROWS,
+) -> dict:
+    cutoff = datetime.now(timezone.utc).replace(microsecond=0).timestamp() - max(1, retention_days) * 86400
+    cutoff_text = datetime.fromtimestamp(cutoff, timezone.utc).isoformat().replace("+00:00", "Z")
+    deleted_ops = 0
+    deleted_txns = 0
+    deleted_failures = 0
+    savepoint_open = False
+    try:
+        db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
+        db.execute(
+            """
+            CREATE TEMP TABLE sync_prune_committed_txns AS
+            SELECT txn_id
+            FROM sync_txns
+            WHERE status = 'committed'
+              AND COALESCE(NULLIF(committed_at, ''), created_at) < ?
+            """,
+            (cutoff_text,),
+        )
+        db.execute("SAVEPOINT sync_queue_prune")
+        savepoint_open = True
+        deleted_ops = int(
+            db.execute("DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_prune_committed_txns)").rowcount
+            or 0
+        )
+        deleted_txns = int(
+            db.execute("DELETE FROM sync_txns WHERE txn_id IN (SELECT txn_id FROM sync_prune_committed_txns)").rowcount
+            or 0
+        )
+        deleted_failures = int(
+            db.execute(
+                """
+                DELETE FROM sync_failures
+                WHERE id NOT IN (
+                    SELECT id
+                    FROM sync_failures
+                    ORDER BY failed_at DESC, id DESC
+                    LIMIT ?
+                )
+                """,
+                (max(0, failure_rows),),
+            ).rowcount
+            or 0
+        )
+        db.execute("RELEASE SAVEPOINT sync_queue_prune")
+        savepoint_open = False
+    except sqlite3.DatabaseError:
+        if savepoint_open:
+            db.execute("ROLLBACK TO SAVEPOINT sync_queue_prune")
+            db.execute("RELEASE SAVEPOINT sync_queue_prune")
+        raise
+    finally:
+        db.execute("DROP TABLE IF EXISTS temp.sync_prune_committed_txns")
+    return {
+        "deleted_committed_txns": deleted_txns,
+        "deleted_committed_ops": deleted_ops,
+        "deleted_failures": deleted_failures,
+    }
+
+
+def maintain_sync_queue(db: sqlite3.Connection, replica_id: str) -> dict:
+    compaction = compact_pending_sync_queue(db, replica_id)
+    pruning = prune_committed_sync_logs(db)
+    return {"compaction": compaction, "pruning": pruning}
 
 
 def _gateway_txn_ids(response: dict, field: str) -> list[str]:
@@ -1155,6 +1402,7 @@ def run_sync_cycle(
         "ok": True,
         "push": {"attempted": 0, "accepted": 0, "duplicates": 0},
         "pull": {"applied": 0, "next_after": "", "has_more": False},
+        "cleanup": {},
         "error": "",
     }
     db = None
@@ -1162,6 +1410,10 @@ def run_sync_cycle(
         db = get_db(db_path)
         replica_id = get_local_replica_id(db)
         repair_nonlocal_committed_txns(db, replica_id)
+        try:
+            result["cleanup"] = maintain_sync_queue(db, replica_id)
+        except sqlite3.DatabaseError as exc:
+            record_failure(db, "sync_queue_cleanup", str(exc))
         if not base_url:
             set_sync_state(db, "last_error", "sync disabled: no connection_string configured")
             db.commit()

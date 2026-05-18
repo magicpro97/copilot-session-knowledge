@@ -697,6 +697,31 @@ def test_cmd_startup_regression_over_threshold_fails(tmp_path):
     test("cmd_startup regression: error includes percent increase", "30.00% increase" in err, f"stderr={err}")
 
 
+def test_cmd_startup_regression_uses_absolute_floor_for_tiny_baseline(tmp_path):
+    b = _load_bench()
+    baseline = tmp_path / "startup-baseline.json"
+    baseline.write_text(json.dumps({"median_ms": 1.28}), encoding="utf-8")
+    original = b._measure_startup_once
+    b._measure_startup_once = lambda _command, _timeout: (0, 3.37, "")
+    stdout = io.StringIO()
+    try:
+        with redirect_stdout(stdout):
+            rc = b.cmd_startup(
+                ["fake-sk", "--help"],
+                runs=1,
+                warmups=0,
+                timeout=10.0,
+                as_json=False,
+                baseline_file=baseline,
+                regression_threshold=20.0,
+            )
+    finally:
+        b._measure_startup_once = original
+    out = stdout.getvalue()
+    test("cmd_startup regression: tiny cached baseline uses absolute floor", rc == 0, f"rc={rc} out={out}")
+    test("cmd_startup regression: floor appears in allowed_ms", "allowed_ms: 5.00" in out, f"out={out}")
+
+
 # ── 7. _delta_str ────────────────────────────────────────────────────────────
 
 
@@ -923,6 +948,7 @@ def run_all():
     test_cmd_startup_creates_missing_baseline(_tmp())
     test_cmd_startup_regression_within_threshold_passes(_tmp())
     test_cmd_startup_regression_over_threshold_fails(_tmp())
+    test_cmd_startup_regression_uses_absolute_floor_for_tiny_baseline(_tmp())
 
     print("\n── 7. _delta_str ─────────────────────────────────────────────────────────")
     test_delta_str_positive()

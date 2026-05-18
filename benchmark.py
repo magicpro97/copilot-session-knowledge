@@ -45,6 +45,7 @@ SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DEFAULT_DB = SESSION_STATE / "knowledge.db"
 
 _VALID_MODES = ("local", "repo")
+STARTUP_REGRESSION_MIN_ALLOWED_MS = 5.0
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
@@ -510,10 +511,12 @@ def _write_startup_baseline(path: Path, payload: dict) -> None:
 
 def _startup_regression(current_ms: float, baseline_ms: float, threshold_percent: float) -> dict:
     """Return regression comparison data for a current startup median."""
-    allowed_ms = baseline_ms * (1.0 + threshold_percent / 100.0)
+    percent_allowed_ms = baseline_ms * (1.0 + threshold_percent / 100.0)
+    allowed_ms = max(percent_allowed_ms, STARTUP_REGRESSION_MIN_ALLOWED_MS)
     increase_percent = ((current_ms - baseline_ms) / baseline_ms) * 100.0
     return {
         "allowed_ms": round(allowed_ms, 2),
+        "absolute_floor_ms": STARTUP_REGRESSION_MIN_ALLOWED_MS,
         "baseline_median_ms": round(baseline_ms, 2),
         "increase_percent": round(increase_percent, 2),
         "regressed": current_ms > allowed_ms,

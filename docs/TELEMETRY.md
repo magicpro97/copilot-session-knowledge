@@ -168,6 +168,7 @@ python3 ~/.copilot/tools/sync-daemon.py --push-only         # Push only
 python3 ~/.copilot/tools/sync-daemon.py --pull-only         # Pull only
 ```
 
+- Backlog-aware sync queue compaction (`sync_txns` / `sync_ops` coalesced to latest canonical row operation before push)
 - Backlog-aware adaptive per-cycle sync limits (`sync_txns` volume + relation-heavy queue boost)
 - Pull consumes multiple pages per cycle (`MAX_PULL_PAGES_PER_CYCLE`)
 - After pull: refreshes local retrieval surfaces (`knowledge_fts`, `ke_fts`) for touched rows
