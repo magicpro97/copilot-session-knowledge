@@ -71,6 +71,7 @@ INSTALL_ITEMS = {
         {"src": "agent-creator", "label": "Agent Creator (generates .agent.md files)"},
         {"src": "hook-creator", "label": "Hook Creator (quality enforcement hooks)"},
         {"src": "workflow-creator", "label": "Workflow Creator (phased development lifecycle)"},
+        {"src": "skill-creator", "label": "Skill Creator (create, improve, and evaluate skills)"},
         {"src": "find-skills", "label": "Find Skills (discover & install from skills.sh)"},
         {"src": "agent-instructions-auditor", "label": "Instructions Auditor (token budget, cache safety, quality)"},
         {"src": "forge-ecosystem", "label": "Forge Ecosystem (10 CLI tools for game & app dev)"},
@@ -259,6 +260,11 @@ def copy_if_changed(src: Path, dst: Path, dry_run: bool, label: str) -> bool:
     return True
 
 
+def should_copy_skill_asset(rel_path: Path) -> bool:
+    """Return False for generated Python artifacts that should not deploy."""
+    return "__pycache__" not in rel_path.parts and rel_path.suffix != ".pyc"
+
+
 def install_skills(project_root: Path, dry_run: bool) -> int:
     """Install creator skills from tools/skills/ → .github/skills/.
 
@@ -304,17 +310,18 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
             if not subdir.is_dir():
                 continue
             for asset_file in subdir.rglob("*"):
-                if asset_file.is_file():
-                    rel = asset_file.relative_to(skill_src_dir)
-                    asset_dst = project_root / ".github" / "skills" / skill_name / rel
-                    if copy_if_changed(asset_file, asset_dst, dry_run, f"{item['label']} → {rel}"):
+                if not asset_file.is_file():
+                    continue
+                rel = asset_file.relative_to(skill_src_dir)
+                if not should_copy_skill_asset(rel):
+                    continue
+                asset_dst = project_root / ".github" / "skills" / skill_name / rel
+                if copy_if_changed(asset_file, asset_dst, dry_run, f"{item['label']} → {rel}"):
+                    changes += 1
+                if skill_name in VENDORED_SKILLS and _claude_skills_base:
+                    asset_claude_dst = project_root / _claude_skills_base / skill_name / rel
+                    if copy_if_changed(asset_file, asset_claude_dst, dry_run, f"{item['label']} (Claude Code) → {rel}"):
                         changes += 1
-                    if skill_name in VENDORED_SKILLS and _claude_skills_base:
-                        asset_claude_dst = project_root / _claude_skills_base / skill_name / rel
-                        if copy_if_changed(
-                            asset_file, asset_claude_dst, dry_run, f"{item['label']} (Claude Code) → {rel}"
-                        ):
-                            changes += 1
 
     return changes
 
@@ -533,6 +540,7 @@ What gets installed:
   .github/skills/session-knowledge-creator/SKILL.md  — Meta-skill: customize for project
   .github/skills/tentacle-creator/SKILL.md           — Meta-skill: customize tentacle
   .github/skills/tentacle-orchestration/SKILL.md     — Tentacle workflow skill
+  .github/skills/skill-creator/SKILL.md              — Meta-skill: create and improve skills
   .github/skills/conductor-creator/SKILL.md          — Meta-skill: generate task router
   .github/skills/project-onboarding/SKILL.md         — Meta-skill: full AI ecosystem setup
   .github/instructions/session-knowledge.instructions.md — Enforcement (auto-inject)
@@ -690,6 +698,7 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         )
         print("  4. Customize for your project:")
         print("     /session-knowledge-creator   — Generate project-specific knowledge skill")
+        print("     /skill-creator               — Create or improve project-specific skills")
         if not args.no_tentacle:
             print("     /tentacle-creator            — Generate project-specific tentacle skill")
         if args.profile:

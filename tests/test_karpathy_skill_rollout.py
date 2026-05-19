@@ -1086,6 +1086,127 @@ test("deploy_skills() iterates BUILTIN_PROJECT_SKILLS (source guard)",
      "BUILTIN_PROJECT_SKILLS" in aut_source and "for skill_name in BUILTIN_PROJECT_SKILLS" in aut_source)
 
 # ---------------------------------------------------------------------------
+# 17. skill-creator bundled source and rollout
+# ---------------------------------------------------------------------------
+print("\n🛠️  17. skill-creator bundled source and rollout")
+
+skill_creator_dir = REPO / "skills" / "skill-creator"
+skill_creator_md = skill_creator_dir / "SKILL.md"
+test("skills/skill-creator/SKILL.md exists", skill_creator_md.exists())
+
+if skill_creator_md.exists():
+    _sc_content = skill_creator_md.read_text(encoding="utf-8")
+    test("skill-creator frontmatter has stable name", "name: skill-creator" in _sc_content[:200])
+    test("skill-creator keeps local update hardening lesson",
+         "Compare the whole skill tree before and after" in _sc_content)
+
+    for _rel17 in (
+        "scripts/package_skill.py",
+        "scripts/quick_validate.py",
+        "eval-viewer/generate_review.py",
+        "references/schemas.md",
+        "LICENSE.txt",
+    ):
+        test(f"skill-creator bundled resource exists: {_rel17}",
+             (skill_creator_dir / _rel17).exists())
+
+    _qv17_spec = importlib.util.spec_from_file_location(
+        "skill_creator_quick_validate_17", skill_creator_dir / "scripts" / "quick_validate.py")
+    _qv17_mod = importlib.util.module_from_spec(_qv17_spec)
+    _qv17_spec.loader.exec_module(_qv17_mod)
+    _orig_yaml17 = _qv17_mod.yaml
+    try:
+        _qv17_mod.yaml = None
+        _valid17, _message17 = _qv17_mod.validate_skill(skill_creator_dir)
+    finally:
+        _qv17_mod.yaml = _orig_yaml17
+    test("skill-creator quick_validate works without PyYAML",
+         _valid17, _message17)
+
+    import subprocess as _subprocess17
+    with tempfile.TemporaryDirectory() as _d17pkg:
+        _pkg17 = _subprocess17.run(
+            [
+                sys.executable,
+                str(skill_creator_dir / "scripts" / "package_skill.py"),
+                str(skill_creator_dir),
+                _d17pkg,
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        test("skill-creator package_skill.py runs from repo root",
+             _pkg17.returncode == 0, ((_pkg17.stdout or "") + (_pkg17.stderr or ""))[-500:])
+
+    # setup-project.py must deploy the resource tree, not only SKILL.md.
+    import importlib.util as _ilu_17
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    _sp17_spec = _ilu_17.spec_from_file_location("_setup_project_17", REPO / "setup-project.py")
+    _sp17_mod = _ilu_17.module_from_spec(_sp17_spec)
+    _sp17_spec.loader.exec_module(_sp17_mod)
+
+    with tempfile.TemporaryDirectory() as _d17a:
+        _proj17a = Path(_d17a)
+        _sp17_mod.install_skills(_proj17a, dry_run=False)
+        _deployed17a = _proj17a / ".github" / "skills" / "skill-creator"
+        test("install_skills() deploys skill-creator SKILL.md",
+             (_deployed17a / "SKILL.md").exists())
+        test("install_skills() deploys skill-creator scripts",
+             (_deployed17a / "scripts" / "package_skill.py").exists())
+        test("install_skills() deploys skill-creator eval viewer",
+             (_deployed17a / "eval-viewer" / "generate_review.py").exists())
+        test("install_skills() does not deploy skill-creator pycache",
+             not any("__pycache__" in p.parts or p.suffix == ".pyc" for p in _deployed17a.rglob("*")))
+
+    # Global auto-update should refresh an existing skill-creator install and
+    # backfill missing bundled resources under that existing directory.
+    import importlib.util as _ilu_17b
+    from unittest.mock import patch, MagicMock
+
+    _aut17_spec = _ilu_17b.spec_from_file_location(
+        "auto_update_tools_s17", REPO / "auto-update-tools.py")
+    _aut17_mod = _ilu_17b.module_from_spec(_aut17_spec)
+    _aut17_spec.loader.exec_module(_aut17_mod)
+
+    with tempfile.TemporaryDirectory() as _d17b:
+        _fake_global17b = Path(_d17b) / "dot-copilot" / "skills"
+        _existing17b = _fake_global17b / "skill-creator"
+        _existing17b.mkdir(parents=True)
+        (_existing17b / "SKILL.md").write_text("STALE", encoding="utf-8")
+
+        _orig_td17b = _aut17_mod.TOOLS_DIR
+        _orig_gsds17b = _aut17_mod._global_copilot_skill_dirs
+        _orig_rp17b = _aut17_mod.REGISTRY_PATH
+        _aut17_mod.TOOLS_DIR = REPO
+        _aut17_mod._global_copilot_skill_dirs = lambda: (_fake_global17b,)
+        _aut17_mod.REGISTRY_PATH = Path(_d17b) / "empty-registry.json"
+
+        _mock17b = MagicMock()
+        _mock17b.returncode = 1
+        try:
+            with patch.object(_aut17_mod, "subprocess") as _mp17b:
+                _mp17b.run.return_value = _mock17b
+                _aut17_mod.deploy_skills()
+        finally:
+            _aut17_mod.TOOLS_DIR = _orig_td17b
+            _aut17_mod._global_copilot_skill_dirs = _orig_gsds17b
+            _aut17_mod.REGISTRY_PATH = _orig_rp17b
+
+        test("deploy_skills() updates existing global skill-creator SKILL.md",
+             (_existing17b / "SKILL.md").read_text(encoding="utf-8") == _sc_content)
+        test("deploy_skills() backfills global skill-creator scripts",
+             (_existing17b / "scripts" / "package_skill.py").exists())
+        test("deploy_skills() backfills global skill-creator eval viewer",
+             (_existing17b / "eval-viewer" / "generate_review.py").exists())
+        test("deploy_skills() does not backfill global skill-creator pycache",
+             not any("__pycache__" in p.parts or p.suffix == ".pyc" for p in _existing17b.rglob("*")))
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total = PASS + FAIL

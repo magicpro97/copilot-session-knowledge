@@ -94,6 +94,7 @@ BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
     "agent-creator",
     "hook-creator",
     "workflow-creator",
+    "skill-creator",
     "find-skills",
     "agent-instructions-auditor",
     "forge-ecosystem",
@@ -107,6 +108,12 @@ BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
 # Global Copilot CLI skills directory.  deploy_skills() creates missing VENDORED
 # skill dirs here and updates both VENDORED and already-installed BUILTIN dirs.
 GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
+
+
+def _is_deployable_skill_asset(rel_path: Path) -> bool:
+    """Skip generated Python artifacts when deploying skill asset trees."""
+    return "__pycache__" not in rel_path.parts and rel_path.suffix != ".pyc"
+
 
 # ---------------------------------------------------------------------------
 # Coverage manifest — single source of truth for ALL tracked paths/patterns.
@@ -1598,6 +1605,8 @@ def deploy_skills():
                         if not asset_file.is_file():
                             continue
                         rel = asset_file.relative_to(skill_src_dir)
+                        if not _is_deployable_skill_asset(rel):
+                            continue
                         asset_target = project_root / skills_base / skill_name / rel
                         if asset_target.exists():
                             try:
@@ -1633,6 +1642,8 @@ def deploy_skills():
                     if not asset_file.is_file():
                         continue
                     rel = asset_file.relative_to(skill_src_dir)
+                    if not _is_deployable_skill_asset(rel):
+                        continue
                     asset_target = project_root / ".github" / "skills" / skill_name / rel
                     if asset_target.exists():
                         try:
@@ -1669,6 +1680,8 @@ def deploy_skills():
                     if not asset_file.is_file():
                         continue
                     rel = asset_file.relative_to(skill_src_dir)
+                    if not _is_deployable_skill_asset(rel):
+                        continue
                     asset_target = global_skill_dir / rel
                     try:
                         if not asset_target.exists():
@@ -1704,6 +1717,8 @@ def deploy_skills():
                     if not asset_file.is_file():
                         continue
                     rel = asset_file.relative_to(skill_src_dir)
+                    if not _is_deployable_skill_asset(rel):
+                        continue
                     asset_target = global_skill_dir / rel
                     try:
                         content = asset_file.read_bytes()
