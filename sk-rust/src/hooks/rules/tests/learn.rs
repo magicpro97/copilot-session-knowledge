@@ -13,17 +13,45 @@ fn learn_reminder_returns_none_for_bash_without_learn_py() {
 }
 
 #[test]
-fn learn_reminder_returns_none_for_bash_with_learn_py() {
-    // bash + learn.py detected: marker written (side-effect), but evaluate → None
+fn learn_reminder_emits_skill_followup_for_bash_with_learn_py() {
+    // bash + learn.py detected: marker written and skill follow-up emitted.
     let rule = LearnReminderRule;
     let data = json!({
         "toolName": "bash",
-        "toolArgs": {"command": "python3 ~/.copilot/tools/learn.py --mistake 'title' 'desc'"}
+        "toolArgs": {"command": "python3 ~/.copilot/tools/learn.py --mistake 'title' 'desc'"},
+        "toolResult": {"resultType": "success"}
     });
-    // Returns None (no output for bash — mirrors Python)
+    let result = rule.evaluate("postToolUse", &data);
+    let text = result
+        .expect("bash + learn.py must emit skill follow-up")
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     assert!(
-        rule.evaluate("postToolUse", &data).is_none(),
-        "bash + learn.py must return None (no output; side-effect only)"
+        text.contains("SKILL UPDATE CHECK") && text.contains("skill-creator"),
+        "learn follow-up must mention skill update and skill-creator"
+    );
+}
+
+#[test]
+fn learn_reminder_emits_skill_followup_for_bash_with_sk_learn() {
+    let rule = LearnReminderRule;
+    let data = json!({
+        "toolName": "bash",
+        "toolArgs": {"command": "sk learn --pattern 'title' 'desc'"},
+        "toolResult": {"resultType": "success"}
+    });
+    let result = rule.evaluate("postToolUse", &data);
+    let text = result
+        .expect("bash + sk learn must emit skill follow-up")
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        text.contains("SKILL UPDATE CHECK") && text.contains("skill-creator"),
+        "sk learn follow-up must mention skill update and skill-creator"
     );
 }
 
@@ -41,6 +69,10 @@ fn learn_reminder_emits_info_for_task_complete_success() {
     assert!(
         text.contains("LEARN REMINDER"),
         "message must mention LEARN REMINDER"
+    );
+    assert!(
+        text.contains("SKILL UPDATE CHECK") && text.contains("skill-creator"),
+        "message must mention skill update and skill-creator"
     );
     // Ensure it is informational only (no deny key).
     assert!(
@@ -114,6 +146,7 @@ fn command_invokes_learn_py_detects_python_variant() {
 #[test]
 fn command_invokes_learn_py_detects_sk_learn() {
     assert!(command_invokes_learn_py("sk learn --mistake 'T' 'D'"));
+    assert!(command_invokes_learn_py("sk.exe learn --mistake 'T' 'D'"));
 }
 
 #[test]

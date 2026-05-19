@@ -4038,6 +4038,16 @@ try:
         "18c: learn_reminder.py still contains task_complete check",
         "task_complete" in _lr_src,
     )
+    test(
+        "18c2: learn_reminder.py detects sk learn",
+        "sk(?:\\.exe)?\\s+learn" in _lr_src,
+        "sk learn detection missing from hooks/rules/learn_reminder.py",
+    )
+    test(
+        "18c3: learn_reminder.py contains skill-creator follow-up",
+        "skill-creator" in _lr_src and "SKILL UPDATE CHECK" in _lr_src,
+        "skill-creator skill update guidance missing from hooks/rules/learn_reminder.py",
+    )
 
     # Test tentacle rule source contains SYNC-MATRIX reference
     _tr_src = (REPO / "hooks" / "rules" / "tentacle.py").read_text(encoding="utf-8")
@@ -4090,6 +4100,40 @@ try:
             "18h: learn-reminder output still contains learn.py reference",
             "learn.py" in _out18,
             f"output snippet: {_out18[:300]}",
+        )
+        test(
+            "18i: learn-reminder output contains skill-creator follow-up",
+            "skill-creator" in _out18 and "SKILL UPDATE CHECK" in _out18,
+            f"output snippet: {_out18[:500]}",
+        )
+
+        _payload_learn = json.dumps(
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "sk learn --pattern \"Hook skill follow-up\" \"desc\""},
+                "toolResult": {"resultType": "success"},
+            }
+        )
+        _r18_learn = subprocess.run(
+            [sys.executable, str(REPO / "hooks" / "hook_runner.py"), "postToolUse"],
+            input=_payload_learn,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_env18,
+            timeout=15,
+        )
+        _out18_learn = (_r18_learn.stdout or "") + (_r18_learn.stderr or "")
+        test(
+            "18j: hook runner accepts sk learn postToolUse (exit 0)",
+            _r18_learn.returncode == 0,
+            f"returncode={_r18_learn.returncode}",
+        )
+        test(
+            "18k: sk learn postToolUse emits skill-creator follow-up",
+            "skill-creator" in _out18_learn and "SKILL UPDATE CHECK" in _out18_learn,
+            f"output snippet: {_out18_learn[:500]}",
         )
     finally:
         _sh18.rmtree(str(_isolated_home_18), ignore_errors=True)

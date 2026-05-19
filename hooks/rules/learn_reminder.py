@@ -1,4 +1,4 @@
-"""Learn reminder rule — reminds to record learnings after task_complete."""
+"""Learn reminder rule — reminds to record learnings and skill follow-ups."""
 
 import re
 import sys
@@ -18,10 +18,34 @@ except ImportError:
 
 
 LEARN_DONE = MARKERS_DIR / "learn-done"
+LEARN_COMMAND_PATTERNS = (
+    re.compile(r"\bsk(?:\.exe)?\s+learn\b"),
+    re.compile(r"\bpython3?(?:\.exe)?\s+.*\blearn\.py\b"),
+    re.compile(r"\bpy(?:\.exe)?\s+.*\blearn\.py\b"),
+)
+
+
+def command_invokes_learn(command: str) -> bool:
+    """Return True when a bash command invokes the learning CLI."""
+    return any(pattern.search(command) for pattern in LEARN_COMMAND_PATTERNS)
+
+
+def skill_update_followup() -> str:
+    """Message shown after a successful learn command."""
+    return (
+        "\n  \U0001f9e0 LEARN RECORDED: lesson marker updated.\n"
+        "  \U0001f6e0\ufe0f SKILL UPDATE CHECK: If this learning changes a repeatable\n"
+        "  workflow, guardrail, trigger rule, or output standard, update the relevant\n"
+        "  skill now using skill-creator standards.\n\n"
+        "    skill-creator                 # invoke for non-trivial skill edits\n"
+        "    sk skill-suggest --limit 5    # mine candidates from session knowledge\n\n"
+        "  Compare the whole skill tree (SKILL.md, scripts, references, assets,\n"
+        "  metadata), refresh evals when behavior changes, then validate/package.\n"
+    )
 
 
 class LearnReminderRule(Rule):
-    """Remind to record learnings; create marker when learn.py runs."""
+    """Remind to record learnings and update skills when lessons are reusable."""
 
     name = "learn-reminder"
     events = ["postToolUse"]
@@ -33,11 +57,14 @@ class LearnReminderRule(Rule):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        # Track when learn.py is run
+        # Track when the learning CLI is run
         if tool_name == "bash":
             command = tool_args.get("command", "")
-            if re.search(r"python3?\s+.*learn\.py\b", command):
+            if command_invokes_learn(command):
                 sign_marker(LEARN_DONE, "learn-done")
+                result_type = (data.get("toolResult") or {}).get("resultType", "")
+                if result_type in ("", "success"):
+                    return info(skill_update_followup())
             return None
 
         # Remind after task_complete
@@ -52,6 +79,9 @@ class LearnReminderRule(Rule):
                 "    (fallback: python3 ~/.copilot/tools/learn.py)\n\n"
                 "  \U0001f4cb SYNC CHECK: Did behavior change? Check the sync matrix:\n"
                 "    docs/SYNC-MATRIX.md — docs · memory · operator follow-ups\n"
+                "  \U0001f6e0\ufe0f SKILL UPDATE CHECK: After learning, decide whether the lesson\n"
+                "    belongs in a skill. Use skill-creator for non-trivial updates and follow\n"
+                "    its full-tree compare, eval refresh, validation, and packaging flow.\n"
             )
 
         return None

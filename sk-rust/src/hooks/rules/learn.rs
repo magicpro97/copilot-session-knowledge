@@ -8,9 +8,12 @@ use super::*;
 ///
 /// Conservative port of `hooks/rules/learn_reminder.py::LearnReminderRule`
 /// for the native direct path:
-///   - When a `bash` command invokes `learn.py`, writes the `learn-done` marker
-///     via [`marker_auth::sign_marker`] so the enforce-learn hook can verify it.
-///     The write is idempotent and safe even when Python also writes the same marker.
+///   - When a `bash` command invokes `learn.py` or `sk learn`, writes the
+///     `learn-done` marker via [`marker_auth::sign_marker`] so the enforce-learn
+///     hook can verify it. The write is idempotent and safe even when Python also
+///     writes the same marker.
+///   - After learning, emits a skill-update follow-up so reusable lessons get
+///     folded back into skills with skill-creator standards.
 ///   - When `task_complete` is called with `resultType == "success"`, emits a
 ///     reminder to record learnings.
 ///
@@ -25,10 +28,13 @@ pub struct LearnReminderRule;
 /// Mirrors `re.search(r"python3?\s+.*learn\.py\b", command)` and also catches
 /// `sk learn` invocations via the sk shim.
 pub(crate) fn command_invokes_learn_py(command: &str) -> bool {
-    if !command.contains("learn.py") && !command.contains("sk learn") {
+    if !command.contains("learn.py")
+        && !command.contains("sk learn")
+        && !command.contains("sk.exe learn")
+    {
         return false;
     }
-    if command.contains("sk learn") {
+    if command.contains("sk learn") || command.contains("sk.exe learn") {
         return true;
     }
     // Must have a python prefix somewhere before learn.py.
@@ -36,6 +42,17 @@ pub(crate) fn command_invokes_learn_py(command: &str) -> bool {
         || command.contains("python3\t")
         || command.contains("python ")
         || command.contains("python\t")
+}
+
+fn learn_skill_followup_message() -> &'static str {
+    "\n  \u{1f9e0} LEARN RECORDED: lesson marker updated.\n\
+      \u{1f6e0}\u{fe0f} SKILL UPDATE CHECK: If this learning changes a repeatable\n\
+      workflow, guardrail, trigger rule, or output standard, update the relevant\n\
+      skill now using skill-creator standards.\n\n\
+      skill-creator                 # invoke for non-trivial skill edits\n\
+      sk skill-suggest --limit 5    # mine candidates from session knowledge\n\n\
+      Compare the whole skill tree (SKILL.md, scripts, references, assets,\n\
+      metadata), refresh evals when behavior changes, then validate/package.\n"
 }
 
 impl HookRule for LearnReminderRule {
@@ -66,8 +83,17 @@ impl HookRule for LearnReminderRule {
                 // Conservative: sign_marker is idempotent; dual writes with Python are safe.
                 let marker_path = markers_dir().join("learn-done");
                 let _ = marker_auth::sign_marker(&marker_path, "learn-done");
+                let result_type = data
+                    .get("toolResult")
+                    .and_then(|r| r.as_object())
+                    .and_then(|o| o.get("resultType"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if result_type.is_empty() || result_type == "success" {
+                    return Some(info(learn_skill_followup_message()));
+                }
             }
-            return None; // bash: never emit output (mirrors Python)
+            return None;
         }
 
         if tool_name == "task_complete" {
@@ -86,7 +112,10 @@ impl HookRule for LearnReminderRule {
                   sk learn --mistake \"Title\" \"Description\" --wing <wing> --room <room>\n\
                   (fallback: python3 ~/.copilot/tools/learn.py)\n\n\
                   \u{1f4cb} SYNC CHECK: Did behavior change? Check the sync matrix:\n\
-                  docs/SYNC-MATRIX.md \u{2014} docs \u{00b7} memory \u{00b7} operator follow-ups\n",
+                  docs/SYNC-MATRIX.md \u{2014} docs \u{00b7} memory \u{00b7} operator follow-ups\n\
+                  \u{1f6e0}\u{fe0f} SKILL UPDATE CHECK: After learning, decide whether the lesson\n\
+                  belongs in a skill. Use skill-creator for non-trivial updates and follow\n\
+                  its full-tree compare, eval refresh, validation, and packaging flow.\n",
             ));
         }
 

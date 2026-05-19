@@ -283,6 +283,7 @@ These rules are partially enforced at the tool level. All hooks **fail-open**: i
 |------|------|-------------|
 | Briefing before edits | `enforce-briefing` (preToolUse) | Blocks `edit`/`create`/`bash` until briefing marker is present |
 | Learn after code edits | `enforce-learn` (preToolUse) | Blocks `git commit` / `task_complete` after ≥3 code edits without `learn.py` |
+| Skill follow-up after learn | `learn-reminder` (postToolUse) | After `learn.py` / `sk learn`, reminds agents to update relevant skills using skill-creator standards when the lesson changes a reusable workflow, guardrail, trigger rule, or output contract |
 | Tentacle for broad changes | `tentacle-enforce` (preToolUse) | Blocks edits when ≥3 files across ≥2 modules without tentacle setup |
 | No git ops in sub-agents | `subagent-git-guard` (preToolUse + git hooks) | Blocks `git commit`/`git push` while dispatched-subagent marker is active |
 | Syntax errors | `syntax-gate` (preToolUse) | Blocks `.py` edit/create payloads that fail `py_compile` |
