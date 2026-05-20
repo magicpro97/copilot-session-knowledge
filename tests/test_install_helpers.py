@@ -1475,7 +1475,7 @@ try:
         )
 
         # Stale block update: change SK_LAUNCHER_DIR to simulate reinstall
-        _new_bin = _wbs010_tmp / ".copilot" / "bin2"
+        _new_bin = _wbs010_tmp / ".copilot" / "altbin"
         _new_bin.mkdir(parents=True)
         _install.SK_LAUNCHER_DIR = _new_bin
         _install._inject_launcher_path(quiet=True)
