@@ -894,6 +894,10 @@ class TestSkProjectDbRoutingSmoke(unittest.TestCase):
             self.assertTrue(project_db.exists(), f"project db missing: {project_db}")
             self.assertFalse(global_db.exists(), f"global db should stay absent: {global_db}")
 
+    def test_tools_checkout_does_not_route_to_tools_local_project_db(self):
+        with patch.object(sk, "_resolve_project_root_for_cwd", return_value=TOOLS_DIR.resolve()):
+            self.assertIsNone(sk._project_env_for_script("briefing.py"))
+
 
 class TestSkHybridRoutingPreconditions(unittest.TestCase):
     """Regression guards for the current Python/Rust split in sk surfaces.

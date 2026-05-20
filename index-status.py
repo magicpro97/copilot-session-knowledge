@@ -29,7 +29,23 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
-STATUS_JSON_PATH = SESSION_STATE / "index-status.json"
+STATUS_JSON_PATH = DB_PATH.parent / "index-status.json"
+PROGRESS_JSON_PATH = DB_PATH.parent / "index-progress.json"
+
+
+def load_progress() -> dict | None:
+    """Return the latest build progress snapshot, if present."""
+    try:
+        if not PROGRESS_JSON_PATH.exists():
+            return None
+        data = json.loads(PROGRESS_JSON_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "stage": "unavailable",
+            "path": str(PROGRESS_JSON_PATH),
+            "error": str(exc),
+        }
 
 
 def _safe_count(db: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
@@ -89,6 +105,7 @@ def collect_status(db: sqlite3.Connection) -> dict:
         "last_indexed_at": last_indexed_at,
         "db_size_bytes": db_size_bytes,
         "db_path": str(DB_PATH),
+        "progress": load_progress(),
         "generated_at": datetime.now().isoformat(),
     }
 
@@ -110,6 +127,18 @@ def print_human(status: dict) -> None:
         print("  Last indexed    : (never)")
     db_kb = status["db_size_bytes"] / 1024
     print(f"  DB size         : {db_kb:.1f} KB")
+    progress = status.get("progress")
+    if progress:
+        current = progress.get("current")
+        total = progress.get("total")
+        marker = f"{current}/{total}" if current is not None and total is not None else "(n/a)"
+        print(f"  Build progress  : {progress.get('stage', 'unknown')} {marker}")
+        if progress.get("current_session"):
+            print(f"  Current session : {str(progress['current_session'])[:36]}")
+        if progress.get("updated_at"):
+            print(f"  Progress updated: {progress['updated_at']}")
+        if progress.get("error"):
+            print(f"  Progress error  : {progress['error']}")
     print("=" * 52)
     print()
 
@@ -120,11 +149,23 @@ def main() -> None:
 
     if not DB_PATH.exists():
         msg = f"Database not found at {DB_PATH}\nRun build-session-index.py first."
+        progress = load_progress()
         if want_json:
-            out = json.dumps({"error": msg}, indent=2)
+            out = json.dumps({"error": msg, "progress": progress}, indent=2, ensure_ascii=False)
             print(out)
         else:
             print(f"Error: {msg}", file=sys.stderr)
+            if progress:
+                current = progress.get("current")
+                total = progress.get("total")
+                marker = f"{current}/{total}" if current is not None and total is not None else "(n/a)"
+                print(
+                    f"Last build progress: {progress.get('stage', 'unknown')} {marker} "
+                    f"updated {progress.get('updated_at', 'unknown')}",
+                    file=sys.stderr,
+                )
+                if progress.get("current_session"):
+                    print(f"Current session: {progress['current_session']}", file=sys.stderr)
         sys.exit(1)
 
     db = sqlite3.connect(str(DB_PATH))

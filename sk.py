@@ -304,11 +304,27 @@ def _project_db_path(project_root: Path) -> Path:
     return project_root / ".copilot" / "session-state" / "knowledge.db"
 
 
+def _is_tools_checkout_root(project_root: Path) -> bool:
+    """Return True when project routing would point back at this tools checkout.
+
+    The tools checkout is the global knowledge toolchain itself, not a managed
+    project. Routing `sk briefing` from inside ~/.copilot/tools to a local
+    tools/.copilot/session-state/knowledge.db makes the real global DB appear
+    missing and breaks session-start briefing.
+    """
+    try:
+        return project_root.resolve() == DEFAULT_TOOLS_DIR
+    except OSError:
+        return False
+
+
 def _project_env_for_script(script: str) -> dict[str, str] | None:
     if Path(script).name not in _PROJECT_DB_SCRIPTS:
         return None
     project_root = _resolve_project_root_for_cwd()
     if project_root is None:
+        return None
+    if _is_tools_checkout_root(project_root):
         return None
     db_path = _project_db_path(project_root)
     db_path.parent.mkdir(parents=True, exist_ok=True)

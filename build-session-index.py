@@ -34,8 +34,32 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
+PROGRESS_PATH = DB_PATH.parent / "index-progress.json"
+_progress_warning_emitted = False
 
 CHECKPOINT_SECTIONS = ["overview", "history", "work_done", "technical_details", "important_files", "next_steps"]
+
+
+def _write_progress(stage: str, **fields) -> None:
+    """Write a small status file so long index builds are observable."""
+    global _progress_warning_emitted
+    try:
+        PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "stage": stage,
+            "pid": os.getpid(),
+            "db_path": str(DB_PATH),
+            "source": str(SESSION_STATE),
+            "updated_at": datetime.now().isoformat(),
+            **fields,
+        }
+        tmp = PROGRESS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(PROGRESS_PATH))
+    except OSError as exc:
+        if not _progress_warning_emitted:
+            print(f"Warning: could not write index progress: {exc}", file=sys.stderr, flush=True)
+            _progress_warning_emitted = True
 
 
 def _normalize_title(title: str) -> str:
@@ -1338,26 +1362,46 @@ def main():
         print()
 
         total_stats = {"checkpoints": 0, "research": 0, "files": 0, "plan": 0}
+        session_dirs = [
+            session_dir
+            for session_dir in sorted(SESSION_STATE.iterdir())
+            if session_dir.is_dir() and re.match(r"^[0-9a-f]{8}-", session_dir.name)
+        ]
+        _write_progress(
+            "copilot-discovered",
+            current=0,
+            total=len(session_dirs),
+            message=f"Discovered {len(session_dirs)} Copilot session directories",
+        )
+        print(f"Discovered {len(session_dirs)} Copilot session directories.", flush=True)
 
-        for session_dir in sorted(SESSION_STATE.iterdir()):
-            if not session_dir.is_dir():
-                continue
-            if not re.match(r"^[0-9a-f]{8}-", session_dir.name):
-                continue
-
+        for idx, session_dir in enumerate(session_dirs, start=1):
+            session_started = time.monotonic()
+            _write_progress(
+                "copilot-index-session",
+                current=idx,
+                total=len(session_dirs),
+                current_session=session_dir.name,
+                current_path=str(session_dir),
+                message=f"Indexing Copilot session {idx}/{len(session_dirs)}",
+            )
+            print(f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... indexing", flush=True)
             stats = index_session(db, session_dir, incremental)
             indexed = sum(stats.values())
+            elapsed = time.monotonic() - session_started
             if indexed > 0:
                 print(
-                    f"  {session_dir.name[:8]}... indexed {indexed} docs "
+                    f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... indexed {indexed} docs "
                     f"(cp:{stats['checkpoints']} res:{stats['research']} "
-                    f"files:{stats['files']} plan:{stats['plan']})"
+                    f"files:{stats['files']} plan:{stats['plan']}) in {elapsed:.1f}s",
+                    flush=True,
                 )
             else:
                 print(
-                    f"  {session_dir.name[:8]}... (no changes)"
+                    f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... (no changes) in {elapsed:.1f}s"
                     if incremental
-                    else f"  {session_dir.name[:8]}... (no indexable content)"
+                    else f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... (no indexable content) in {elapsed:.1f}s",
+                    flush=True,
                 )
 
             for k in total_stats:
@@ -1371,13 +1415,21 @@ def main():
             f"(cp:{total_stats['checkpoints']} res:{total_stats['research']} "
             f"files:{total_stats['files']} plan:{total_stats['plan']})"
         )
+        _write_progress(
+            "copilot-complete",
+            current=len(session_dirs),
+            total=len(session_dirs),
+            message=f"Copilot indexing complete: {total} documents",
+        )
         print("\n── Refreshing Copilot session metadata + FTS ──")
+        _write_progress("copilot-two-phase", message="Refreshing Copilot session metadata and FTS")
         _run_two_phase_copilot(db, incremental)
 
     # Index Claude Code sessions (--claude or --all)
     if with_claude or all_sources:
         print(f"\n── Indexing Claude Code sessions ({mode}) ──")
         # Primary path: two-phase indexing via ClaudeProvider (Batch B).
+        _write_progress("claude-two-phase", message="Indexing Claude Code sessions")
         _run_two_phase_claude(db, incremental)
 
     show_stats(db)
@@ -1394,6 +1446,7 @@ def main():
             provider_config = resolve_provider(config)
             if provider_config:
                 print("\n── Generating embeddings (auto) ──")
+                _write_progress("embeddings", message="Generating embeddings")
                 build_embeddings()
             else:
                 print("\n── Skipping embeddings (no API key configured) ──")
@@ -1402,6 +1455,7 @@ def main():
             pass  # embed.py not available, silently skip
         except Exception as e:
             print(f"  Embedding error: {e}")
+    _write_progress("complete", message="Index build complete")
 
 
 if __name__ == "__main__":
