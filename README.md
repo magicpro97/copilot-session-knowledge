@@ -32,6 +32,7 @@
 [Install Guide](docs/INSTALL.md) ·
 [Usage](docs/USAGE.md) ·
 [Hooks](docs/HOOKS.md) ·
+[Confidence Gate](docs/CONFIDENCE-GATE.md) ·
 [Skills](docs/SKILLS.md) ·
 [Telemetry & Contracts](docs/TELEMETRY.md) ·
 [Operator Playbook](docs/OPERATOR-PLAYBOOK.md) ·

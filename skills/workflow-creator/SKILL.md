@@ -46,6 +46,7 @@ Phase 0 → Phase 1 → Phase 2 → ... → Phase N
 | Phase | Name | Purpose | Artifact |
 |-------|------|---------|----------|
 | 0 | CLARIFY | Make requirements implementation-ready | Spec Health Report |
+| 0.5 | RESEARCH | Resolve any CLARIFY/DESIGN/ROUTING confidence below `1.0` | Independent research evidence + confidence `1.0` |
 | 1 | DESIGN | Generate visual/technical design | Design files or specs |
 | 2 | VERIFY | Review design before coding | Review verdicts (PASS/FAIL) |
 | 3 | BUILD | Implement code | Compiling code + passing tests |
@@ -53,6 +54,10 @@ Phase 0 → Phase 1 → Phase 2 → ... → Phase N
 | 5 | REVIEW | Code quality check | Review approval |
 | 6 | QA | Visual/manual verification | Screenshots/evidence |
 | 7 | COMMIT | Ship it | Clean git commit |
+
+The RESEARCH phase is blocking whenever confidence is `< 1.0`. Split ambiguous/noisy
+questions into independent research tasks and use the strongest available model
+(`claude-opus-4.7` when available) for validation before proceeding to DESIGN or BUILD.
 
 ### Customization by Project Type
 
@@ -129,6 +134,7 @@ Use `--workflow` with `install-project-hooks.py` to also generate a starter `WOR
 | Soft gates ("should") | AI rationalizes skipping |
 | No evidence requirements | "Done" without proof |
 | Phase overlap allowed | Defeats gate purpose |
+| Proceeding past CLARIFY with confidence `< 1.0` | Implementation starts from guesses; run RESEARCH first |
 
 <example>
 **Project:** React dashboard (TypeScript + Jest + Playwright)

@@ -53,6 +53,16 @@ Start by understanding the user's intent. The current conversation might already
 3. What's the expected output format?
 4. Should we set up test cases to verify the skill works? Skills with objectively verifiable outputs (file transforms, data extraction, code generation, fixed workflow steps) benefit from test cases. Skills with subjective outputs (writing style, art) often don't need them. Suggest the appropriate default based on the skill type, but let the user decide.
 
+### Decision Confidence Gate
+
+When creating or changing a skill, do not author uncertain instructions from memory. If any
+claim about tool behavior, command syntax, model choice, file layout, or workflow policy is
+below confidence `1.0`, pause the draft and dispatch independent research/validation first.
+Use the strongest available model (`claude-opus-4.7` when available; otherwise newest
+opus-class) for the validation pass, split noisy questions into atomic checks, and write only
+the evidence-backed result into `SKILL.md`. If confidence still cannot reach `1.0`, surface the
+gap explicitly instead of presenting the skill as complete.
+
 ### Interview and Research
 
 Proactively ask questions about edge cases, input/output formats, example files, success criteria, and dependencies. Wait to write test prompts until you've got this part ironed out.

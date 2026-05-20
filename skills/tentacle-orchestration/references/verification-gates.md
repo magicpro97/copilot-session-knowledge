@@ -11,6 +11,7 @@ Every tentacle's output goes through these gates before shipping.
 
 | Gate | What it catches | Skip when |
 |------|----------------|-----------|
+| **Decision confidence** | Wrong routing, ambiguous scope, premature implementation | Never skip |
 | **Build** | Syntax errors, type mismatches, import failures | Never skip |
 | **Lint** | Style violations, unused imports, formatting | Never skip |
 | **Test** | Logic bugs, regressions, broken contracts | Never skip |
@@ -18,9 +19,21 @@ Every tentacle's output goes through these gates before shipping.
 | **Docs** | Stale README, outdated JSDoc, missing CHANGELOG | Internal refactors only |
 | **QA audit** | Hallucinated tests, spec mismatches, blind spots | Low-risk changes only |
 
-The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct — you're just hoping it is.
+The Decision confidence gate plus Build/Lint/Test/Review are mandatory. Skipping any of them means you don't know if the agent output is correct — you're just hoping it is.
 
 ## Gate Details
+
+### Decision Confidence Gate
+
+Before dispatching or accepting tentacle output, confirm the plan has confidence `1.0`.
+If the conductor or orchestrator reports confidence `< 1.0`, do not implement, delete,
+merge, or close the work. Split the uncertain point into research tasks and dispatch
+independent validation on the strongest available model (`claude-opus-4.7` when available,
+otherwise the newest opus-class model).
+
+**Evidence to record:** the confidence source, the split research questions, agents/models
+used, rejected alternatives, and the synthesized decision showing confidence `1.0` or an
+explicit user override.
 
 ### Build Gate
 
@@ -116,6 +129,7 @@ Before proceeding to Commit + Close, the orchestrator must hold concrete, record
 
 | Gate | What to record |
 |------|---------------|
+| Decision confidence | Confidence source + research evidence or explicit override |
 | Build | Command run + exit code (or "0 errors" compiler output) |
 | Lint | Command run + exit code + any violation count |
 | Test | Command run + pass/fail counts + any failure names |

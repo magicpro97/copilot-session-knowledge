@@ -71,6 +71,12 @@ When you find relevant skills, present them to the user with:
 2. The install command they can run
 3. A link to learn more at skills.sh
 
+If multiple candidate skills are plausible and selection confidence is below `1.0`, do not
+pick one from memory. Either present the competing options with the uncertainty called out, or
+dispatch a brief research/validation sub-agent on the strongest available model to compare
+scope, maintenance status, and fit. A low-confidence skill choice can route the whole task into
+the wrong workflow.
+
 <example>
 I found a skill that might help! The "vercel-react-best-practices" skill provides
 React and Next.js performance optimization guidelines from Vercel Engineering.

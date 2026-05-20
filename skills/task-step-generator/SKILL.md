@@ -49,7 +49,10 @@ done condition, so the agent knows when to proceed and a human can audit progres
 
 Before writing any steps, investigate:
 
-1. Read the task description and clarify any ambiguities (apply spec-clarification if unclear)
+1. Read the task description and clarify any ambiguities. If any scope, dependency, or
+   acceptance criterion is below confidence `1.0`, prepend a RESEARCH step that splits the
+   uncertainty and dispatches independent validation on the strongest available model
+   (`claude-opus-4.7` when available).
 2. Identify the implementation target: which files change? What is the entry point?
 3. Check if a `WORKFLOW.md` exists (`cat .github/WORKFLOW.md 2>/dev/null`) — use its phases
    as the skeleton; if not, use the standard phases below
@@ -64,6 +67,7 @@ Assign each piece of work to a phase. Use only the phases the task actually need
 | Phase | Purpose | Gate artifact |
 |-------|---------|--------------|
 | CLARIFY | Confirm requirements are implementation-ready | Spec health report or confirmed spec |
+| RESEARCH | Resolve confidence `< 1.0` ambiguities before decisions | Research evidence, rejected alternatives, confidence `1.0` |
 | DESIGN | Produce a technical design or interface sketch | Design doc or interface definition |
 | VERIFY | Review the design before touching code | Explicit approval (PASS/FAIL) |
 | BUILD | Implement the code change | Compiling code with no regressions |
@@ -96,6 +100,7 @@ Step format:
 2. <Concrete command or action>
 
 **Done when:** <Observable, verifiable condition — not "seems right">
+**Confidence:** `1.0` required; if lower, this step is blocked by a RESEARCH step.
 ```
 
 Use real commands from the project's toolchain. Avoid vague verbs like "check" or
@@ -111,6 +116,7 @@ After all steps, add a phase-gate table for quick progress tracking:
 | Phase | Artifact | Status |
 |-------|---------|--------|
 | CLARIFY | Confirmed spec | ☐ |
+| RESEARCH | Confidence `< 1.0` concerns resolved or explicitly not needed | ☐ |
 | BUILD | `npx tsc --noEmit` passes | ☐ |
 | TEST | `yarn test` passes | ☐ |
 | LOOP-EVAL | Goal criteria met (or single-pass task: skip) | ☐ |
@@ -133,6 +139,7 @@ See `references/step-file-template.md` for the full annotated template.
 | Vague actions ("verify it works") | Not actionable; agent guesses |
 | No ordering constraints | Agent skips steps that depend on earlier output |
 | Treating a 3+ module scaffold as final | Step file becomes too large; review it, then split into tentacles |
+| Low-confidence done condition accepted | Agent guesses success; add RESEARCH and block downstream steps |
 
 <example>
 **Task:** Add a `created_at` timestamp column to the `orders` table and expose it in the API response.

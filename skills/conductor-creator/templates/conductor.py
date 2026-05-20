@@ -24,6 +24,7 @@ from typing import Optional
 
 SKILL_DIR = Path(__file__).parent
 RULES_PATH = SKILL_DIR / "conductor-rules.json"
+PLAN_OUTPUT_PATH = SKILL_DIR.parent.parent.parent / "conductor" / "last-plan.json"
 
 
 @dataclass
@@ -58,6 +59,19 @@ class ConductorPlan:
     model_assignments: dict[str, str]  # agent → model
     mandatory_steps: list[str]
     warnings: list[str]
+    research_gate: Optional[dict] = None
+
+
+CONFIDENCE_SCORE = {
+    "high": 1.0,
+    "medium": 0.6,
+    "low": 0.3,
+}
+
+
+def confidence_score(confidence: str) -> float:
+    """Convert conductor confidence labels to numeric routing confidence."""
+    return CONFIDENCE_SCORE.get(confidence, 0.0)
 
 
 def load_rules() -> dict:
@@ -367,6 +381,96 @@ def get_mandatory_steps(task_type: str, workflow: str, rules: dict) -> list[str]
     return steps
 
 
+def detect_noise_factors(task: str, decision: Decision) -> list[str]:
+    """Identify ambiguity factors that must be split before deciding."""
+    factors = []
+    task_lower = normalize(task)
+    if decision.confidence != "high":
+        factors.append("confidence_below_1.0")
+    if decision.alternatives:
+        factors.append("competing_task_types:" + ",".join(decision.alternatives))
+    if any(token in task_lower for token in (" and ", " or ", "/", "cleanup", "audit", "review", "fix")):
+        factors.append("mixed_or_noisy_intent")
+    return factors
+
+
+def generate_research_tasks(task: str, decision: Decision, rules: dict) -> list[dict]:
+    """Generate machine-readable research tasks for a low-confidence decision."""
+    config = rules.get("research_gate_config", {})
+    default_model = config.get("default_model", "claude-opus-4.7")
+    validation_model = config.get("validation_model", "claude-opus-4.7")
+    highest_model = config.get("highest_available_model", validation_model)
+
+    return [
+        {
+            "id": "clarify-task-type",
+            "agent_type": "research",
+            "model": highest_model,
+            "prompt": (
+                f"Research the best task type for this ambiguous request: {task!r}. "
+                f"Compare candidates: {decision.chosen}, {', '.join(decision.alternatives) or 'none'}. "
+                "Return evidence, rejected alternatives, remaining gaps, and confidence."
+            ),
+            "expected_output": "best_task_type, evidence, rejected_alternatives, confidence=1.0_or_remaining_gaps",
+        },
+        {
+            "id": "split-noisy-ideas",
+            "agent_type": "research",
+            "model": default_model,
+            "prompt": (
+                f"Split noisy or mixed ideas in this request into independent sub-concerns: {task!r}. "
+                "Return atomic sub-tasks, dependencies, blockers, and which parts must not be decided yet."
+            ),
+            "expected_output": "atomic_subtasks, dependencies, blockers, undecided_parts",
+        },
+        {
+            "id": "validate-scope-and-confidence",
+            "agent_type": "qa-auditor",
+            "model": validation_model,
+            "prompt": (
+                f"Validate the research outputs for this request before implementation/deletion/merge/routing: {task!r}. "
+                "Approve only when every ambiguity has evidence and final confidence is 1.0."
+            ),
+            "expected_output": "APPROVED_confidence_1.0 or NOT_APPROVED_with_remaining_ambiguities",
+        },
+    ]
+
+
+def build_research_gate(task: str, decision: Decision, rules: dict) -> Optional[dict]:
+    """Build a machine-readable research gate when confidence is below the required threshold."""
+    config = rules.get("research_gate_config", {})
+    if config.get("enabled", True) is False:
+        return None
+
+    score = confidence_score(decision.confidence)
+    required_score = float(config.get("required_confidence", 1.0))
+    if score >= required_score:
+        return None
+
+    return {
+        "required": True,
+        "trigger": "confidence_below_required_threshold",
+        "decision_category": decision.category,
+        "chosen": decision.chosen,
+        "confidence_label": decision.confidence,
+        "confidence_score": score,
+        "required_confidence": required_score,
+        "noise_factors": detect_noise_factors(task, decision),
+        "sub_research_tasks": generate_research_tasks(task, decision, rules),
+        "policy": (
+            "Do not make implementation, deletion, merge, or routing decisions yet. "
+            "Dispatch sub-research tasks on opus-class models where possible, synthesize evidence, "
+            "then rerun conductor or record an explicit override only when final confidence is 1.0."
+        ),
+        "convergence_criteria": [
+            "Noisy or ambiguous ideas are split into atomic sub-concerns.",
+            "Each sub-concern has independent evidence or an explicit blocker.",
+            "Rejected alternatives are documented.",
+            "Final synthesized decision has confidence_score = 1.0.",
+        ],
+    }
+
+
 def build_plan(task: str, rules: dict,
                override_type: Optional[str] = None,
                override_workflow: Optional[str] = None) -> ConductorPlan:
@@ -394,9 +498,18 @@ def build_plan(task: str, rules: dict,
     # 5. Mandatory steps
     mandatory = get_mandatory_steps(type_decision.chosen, wf_decision.chosen, rules)
 
-    # 6. Warnings
+    # 6. Research gate
+    research_gate = build_research_gate(task, type_decision, rules)
+
+    # 7. Warnings
     warnings = []
-    if type_decision.confidence == "low":
+    if research_gate:
+        warnings.append(
+            f"🔍 Research gate active: confidence {research_gate['confidence_score']:.1f} "
+            f"< {research_gate['required_confidence']:.1f}. Split noisy ideas and dispatch "
+            "independent opus-class research agents before deciding."
+        )
+    elif type_decision.confidence == "low":
         warnings.append(
             f"⚠️ Low confidence on task type '{type_decision.chosen}'. "
             f"Alternatives: {type_decision.alternatives}. "
@@ -431,7 +544,8 @@ def build_plan(task: str, rules: dict,
         agents=agents,
         model_assignments=models,
         mandatory_steps=mandatory,
-        warnings=warnings
+        warnings=warnings,
+        research_gate=research_gate
     )
 
 
@@ -489,6 +603,22 @@ def format_plan(plan: ConductorPlan, verbose: bool = False) -> str:
     for step in plan.mandatory_steps:
         lines.append(f"│  ⚠️  {step}")
     lines.append("│")
+
+    # Research gate
+    if plan.research_gate:
+        rg = plan.research_gate
+        lines.append("├─ 🔍 RESEARCH GATE")
+        lines.append(
+            f"│  Required: confidence {rg['confidence_score']:.1f} "
+            f"< {rg['required_confidence']:.1f}"
+        )
+        lines.append(f"│  Policy: {rg['policy']}")
+        lines.append("│  Sub-research tasks:")
+        for task in rg["sub_research_tasks"]:
+            lines.append(f"│    - {task['id']}: {task['agent_type']} ({task['model']})")
+            if verbose:
+                lines.append(f"│      {task['prompt']}")
+        lines.append("│")
 
     # Warnings
     if plan.warnings:
@@ -580,8 +710,19 @@ def format_json(plan: ConductorPlan) -> str:
         "agents": plan.agents,
         "model_assignments": plan.model_assignments,
         "mandatory_steps": plan.mandatory_steps,
-        "warnings": plan.warnings
+        "warnings": plan.warnings,
+        "research_gate": plan.research_gate
     }, indent=2, ensure_ascii=False)
+
+
+def persist_plan(plan: ConductorPlan) -> None:
+    """Persist the latest plan so hooks/reviewers can see an open research gate."""
+    try:
+        PLAN_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PLAN_OUTPUT_PATH.write_text(format_json(plan) + "\n", encoding="utf-8")
+    except OSError:
+        # Routing output remains authoritative even if persistence is unavailable.
+        pass
 
 
 # ── Sync ────────────────────────────────────────────────────────────
@@ -821,6 +962,7 @@ Examples:
     parser.add_argument("--fix", action="store_true", help="With --sync, auto-add new skills")
     parser.add_argument("--override-type", help="Override task type classification")
     parser.add_argument("--override-workflow", help="Override workflow selection")
+    parser.add_argument("--no-write-plan", action="store_true", help="Do not persist .github/conductor/last-plan.json")
 
     args = parser.parse_args()
 
@@ -856,6 +998,8 @@ Examples:
         override_type=args.override_type,
         override_workflow=args.override_workflow
     )
+    if not args.no_write_plan:
+        persist_plan(plan)
 
     if args.json:
         print(format_json(plan))

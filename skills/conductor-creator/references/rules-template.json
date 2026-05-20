@@ -5,6 +5,14 @@
     "last_updated": "",
     "intentionally_unrouted": []
   },
+  "research_gate_config": {
+    "enabled": true,
+    "required_confidence": 1.0,
+    "description": "When routing confidence is below 1.0, do not decide. Split noisy ideas and dispatch independent research/validation agents until synthesized confidence reaches 1.0.",
+    "default_model": "claude-opus-4.7",
+    "validation_model": "claude-opus-4.7",
+    "highest_available_model": "claude-opus-4.7"
+  },
   "task_types": {
     "feature": {
       "description": "New functionality or enhancement",
@@ -112,7 +120,8 @@
     "code_generation": "claude-sonnet-4.6",
     "code_review": "claude-sonnet-4.6",
     "qa_audit": "claude-opus-4.6",
-    "exploration": "claude-haiku-4.5"
+    "exploration": "claude-haiku-4.5",
+    "confidence_validation": "claude-opus-4.7"
   },
   "mandatory_steps": {
     "pre_task": [],
