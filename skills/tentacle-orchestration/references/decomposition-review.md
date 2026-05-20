@@ -23,6 +23,7 @@ For each generated step, fill this table before dispatch:
 | RED before GREEN | For implementation/fix work, what fails before the change? | A failing test, reproduction, screenshot, log, or deterministic assertion captured before implementation |
 | Dependency order | What must finish before this starts? | Sequential dependencies named; only independent work may run in parallel |
 | Scope boundary | Which files or systems may this step modify? | A narrow, non-overlapping scope suitable for one tentacle |
+| Decision confidence | Is the scope/dependency/evidence plan known with confidence `1.0`? | If not, split the ambiguity and dispatch opus-class research before implementation |
 | Agent fit | Which agent type/model should own it? | Specialist agent when available; adequate model tier for code generation/review |
 | Evidence owner | Who captures proof and where is it stored? | Evidence path or handoff field named before dispatch |
 | Risk | What can silently regress? | Targeted review/test point added |
@@ -76,5 +77,6 @@ Parallelize only when all are true:
 3. Dependencies are explicit.
 4. Each agent can complete without asking another agent for hidden context.
 5. The orchestrator can verify each result independently.
+6. Every routing/scope decision has confidence `1.0`; otherwise research tentacles run first.
 
 If any condition is false, run sequentially or create a foundation tentacle first.

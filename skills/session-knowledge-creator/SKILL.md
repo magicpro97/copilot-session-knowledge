@@ -83,12 +83,18 @@ Derive yours from the actual folder structure.
 This is the most important file — it's auto-injected into every AI context. Keep it short and imperative. Use the template in `references/instructions-template.md`, replacing domain-specific tags with actual project terms.
 
 The file must have `applyTo: "**/*"` in its YAML frontmatter so it loads for all file types.
+It must also include a decision-confidence rule: when a recalled entry or current decision is
+below confidence `1.0`, dispatch research/validation on the strongest available model before
+acting, then record the result with `sk learn`.
 
 #### File 2: `.github/skills/session-knowledge/SKILL.md`
 
 A detailed reference with project-specific examples, wing/room mappings, and workflow integration. Use the template in `references/skill-template.md`, replacing all `<PLACEHOLDER>` values.
 
 The examples matter — use actual domain terms from the project (not generic "DynamoDB" or "patient" examples). This helps AI understand what kind of knowledge to record.
+The generated SKILL.md must explain that low-confidence memory is not a decision source:
+confidence `< 1.0` requires independent research or validation before implementation,
+deletion, merge, or routing decisions.
 
 #### File 3: CLAUDE.md or copilot-instructions.md patch
 

@@ -259,7 +259,7 @@ class InstallSandboxTests(unittest.TestCase):
         with _load_install(self.fake_home) as install:
             profile = self.fake_home / ".zshrc"
             old_bin = self.fake_home / ".copilot" / "bin"
-            new_bin = self.fake_home / ".copilot" / "bin2"
+            new_bin = self.fake_home / ".copilot" / "altbin"
             install.HOME = self.fake_home
 
             install.SK_LAUNCHER_DIR = old_bin

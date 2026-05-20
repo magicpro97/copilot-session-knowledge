@@ -148,6 +148,11 @@ marked `CONFIGURATION` section at the top. Key customizations:
 5. **Pipeline phases** — define quality gates and evidence requirements
 6. **Secret patterns** — add project-specific credential patterns
 
+If any regex, command pattern, protected path, or phase gate has project-fit confidence below
+`1.0`, do not write it into a blocking hook yet. Dispatch research/validation on the strongest
+available model (`claude-opus-4.7` when available), capture evidence, and only then encode the
+rule. Guessed hooks create false positives that train agents to bypass guardrails.
+
 #### Customizing `enforce-coding-standards.py`
 
 This template uses a two-tier detection strategy:

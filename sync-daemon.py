@@ -1274,8 +1274,13 @@ class DreamingScheduler:
             if p.is_absolute():
                 resolved = p.resolve()
             else:
-                # Relative paths are rooted in TOOLS_DIR
+                # Relative paths are rooted in TOOLS_DIR and must not escape it.
                 resolved = (TOOLS_DIR / p).resolve()
+                try:
+                    resolved.relative_to(TOOLS_DIR.resolve())
+                    return resolved
+                except ValueError:
+                    return None
             home = Path.home().resolve()
             tools = TOOLS_DIR.resolve()
             # Accept if under TOOLS_DIR or under home

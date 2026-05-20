@@ -10,13 +10,15 @@ Covers:
   - _is_system_boilerplate() noise filter
   - should_skip_session() two-phase skip logic
   - phase1_upsert_session() metadata upsert
-  - file_hash() MD5 computation
+  - file_hash() SHA-256 computation
 
 Run: python3 tests/test_build_session_index.py
 """
 
+import hashlib
 import importlib.util
 import os
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -108,8 +110,7 @@ sec_id3 = _bsi._section_stable_id(doc_id, "history")
 test("section stable ID is 64-char hex", len(sec_id) == 64)
 test("section stable ID is deterministic", sec_id == sec_id2)
 test("different section → different stable ID", sec_id != sec_id3)
-test("different doc ID → different section stable ID",
-     _bsi._section_stable_id(doc_id3, "overview") != sec_id)
+test("different doc ID → different section stable ID", _bsi._section_stable_id(doc_id3, "overview") != sec_id)
 
 
 # ── 4. create_db — schema idempotence ────────────────────────────────────────
@@ -144,10 +145,12 @@ db2.close()
 
 print("\n🔕 _is_system_boilerplate")
 
+
 class FakeEvent:
     def __init__(self, kind, content=""):
         self.kind = kind
         self.content = content
+
 
 # 'note' kind is always boilerplate
 test("note kind always filtered", _bsi._is_system_boilerplate(FakeEvent("note", "anything")))
@@ -155,7 +158,10 @@ test("note kind always filtered", _bsi._is_system_boilerplate(FakeEvent("note", 
 # system kind with boilerplate patterns
 test("<context> block filtered", _bsi._is_system_boilerplate(FakeEvent("system", "<context>some stuff")))
 test("you are claude filtered", _bsi._is_system_boilerplate(FakeEvent("system", "You are Claude, a helpful assistant")))
-test("here are some instructions filtered", _bsi._is_system_boilerplate(FakeEvent("system", "Here are some instructions for you")))
+test(
+    "here are some instructions filtered",
+    _bsi._is_system_boilerplate(FakeEvent("system", "Here are some instructions for you")),
+)
 
 # system kind with real content — not boilerplate
 test("real system event not filtered", not _bsi._is_system_boilerplate(FakeEvent("system", "Build the feature")))
@@ -180,26 +186,35 @@ mtime = 1000.0
 test("unknown session not skipped", not _bsi.should_skip_session(skip_db, "sess-new", mtime))
 
 # Insert a session with matching mtime and fts_indexed_at >= mtime
-skip_db.execute("""
+skip_db.execute(
+    """
     INSERT INTO sessions (id, path, file_mtime, fts_indexed_at)
     VALUES ('sess-uptodate', 'test/path', ?, ?)
-""", (mtime, mtime + 1))
+""",
+    (mtime, mtime + 1),
+)
 skip_db.commit()
 test("up-to-date session is skipped", _bsi.should_skip_session(skip_db, "sess-uptodate", mtime))
 
 # Same mtime but fts_indexed_at is NULL → do not skip
-skip_db.execute("""
+skip_db.execute(
+    """
     INSERT INTO sessions (id, path, file_mtime, fts_indexed_at)
     VALUES ('sess-nofts', 'test/path', ?, NULL)
-""", (mtime,))
+""",
+    (mtime,),
+)
 skip_db.commit()
 test("session without fts_indexed_at not skipped", not _bsi.should_skip_session(skip_db, "sess-nofts", mtime))
 
 # Different mtime → do not skip (file changed since last index)
-skip_db.execute("""
+skip_db.execute(
+    """
     INSERT INTO sessions (id, path, file_mtime, fts_indexed_at)
     VALUES ('sess-stale', 'test/path', ?, ?)
-""", (mtime - 10, mtime))
+""",
+    (mtime - 10, mtime),
+)
 skip_db.commit()
 test("stale mtime not skipped", not _bsi.should_skip_session(skip_db, "sess-stale", mtime))
 
@@ -215,9 +230,7 @@ if p1_db_path.exists():
     p1_db_path.unlink()
 p1_db = _bsi.create_db(p1_db_path)
 
-_bsi.phase1_upsert_session(
-    p1_db, "sess-ph1", "/fake/path", "copilot", 1234.5, 4096, 10
-)
+_bsi.phase1_upsert_session(p1_db, "sess-ph1", "/fake/path", "copilot", 1234.5, 4096, 10)
 p1_db.commit()
 
 row = p1_db.execute(
@@ -231,13 +244,9 @@ test("file_size_bytes stored correctly", row[4] == 4096)
 test("event_count_estimate stored correctly", row[5] == 10)
 
 # Upsert — update mtime
-_bsi.phase1_upsert_session(
-    p1_db, "sess-ph1", "/fake/path", "copilot", 9999.0, 8192, 20
-)
+_bsi.phase1_upsert_session(p1_db, "sess-ph1", "/fake/path", "copilot", 9999.0, 8192, 20)
 p1_db.commit()
-row2 = p1_db.execute(
-    "SELECT file_mtime, file_size_bytes FROM sessions WHERE id='sess-ph1'"
-).fetchone()
+row2 = p1_db.execute("SELECT file_mtime, file_size_bytes FROM sessions WHERE id='sess-ph1'").fetchone()
 test("upsert updates file_mtime", row2[0] == 9999.0)
 test("upsert updates file_size_bytes", row2[1] == 8192)
 
@@ -251,10 +260,9 @@ print("\n#️⃣  file_hash")
 fh_path = SCRATCH / "file_hash_test.bin"
 fh_path.write_bytes(b"\x00\x01\x02\x03")
 h = _bsi.file_hash(fh_path)
-import hashlib as _hl
-expected = _hl.md5(b"\x00\x01\x02\x03").hexdigest()
-test("file_hash returns 32-char hex string", len(h) == 32)
-test("file_hash matches manual MD5", h == expected)
+expected = hashlib.sha256(b"\x00\x01\x02\x03").hexdigest()
+test("file_hash returns 64-char hex string", len(h) == 64)
+test("file_hash matches manual SHA-256", h == expected)
 
 # Deterministic
 test("file_hash is deterministic", _bsi.file_hash(fh_path) == h)
@@ -262,10 +270,9 @@ test("file_hash is deterministic", _bsi.file_hash(fh_path) == h)
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed")
 
-import shutil
 try:
     shutil.rmtree(SCRATCH, ignore_errors=True)
 except Exception:

@@ -24,6 +24,29 @@ Use this sequence before creating any tentacle:
 
 Why: decomposition and checklists reduce avoidable cognitive load, but generated plans can anchor on the first plausible split. Treat the step file as a draft planning artifact, not as authority.
 
+## Decision Confidence Gate
+
+Before creating, dispatching, merging, deleting, or closing tentacles, verify the routing/plan
+confidence. Any confidence below `1.0` is not "good enough"; it means the orchestrator is still
+guessing. Split the noisy point into focused research concerns and dispatch independent research
+or validation agents first.
+
+Required behavior when confidence `< 1.0`:
+
+1. Stop implementation/deletion/merge decisions for the uncertain scope.
+2. Split the ambiguity into atomic questions: task type, scope boundaries, dependencies,
+   acceptance evidence, and affected systems.
+3. Dispatch research/validation tentacles or sub-agents on the strongest available model
+   (`claude-opus-4.7` when available; otherwise the newest opus-class model).
+4. Record the evidence and rejected alternatives in the tentacle `handoff.md` or the
+   conductor `research_gate` artifact.
+5. Continue only after the synthesized decision reaches confidence `1.0`, or after an
+   explicit user override is recorded with its rationale.
+
+Why this gate exists: low-confidence orchestration creates the worst kind of parallelism —
+many agents confidently doing the wrong work. Research-first decomposition is cheaper than
+unwinding a bad swarm.
+
 ## When to use
 
 | Scope | Approach |
@@ -118,6 +141,8 @@ sk install --install-git-hooks
 - ❌ Sub-agent commits or pushes → blocked by git hooks when installed (and risky regardless: corrupts orchestrator's merge/verify flow)
 - ❌ Sub-agent edits files outside declared scope → silent conflicts with other parallel agents
 - ❌ Sub-agent silently expands scope instead of escalating → orchestrator loses visibility
+- ❌ Treating confidence `< 1.0` as acceptable → split ambiguity and run opus-class research
+  before implementation, deletion, merge, or routing decisions
 - ❌ Skipping `install.py --install-git-hooks` → git-level commit/push guard is inactive; enforcement falls back to preToolUse only (not guaranteed in subagent contexts)
 - ❌ Accepting sub-agent claims of "tests pass" / "lint clean" / "CI green" without running the commands → unverified claims are not evidence; always run the gates yourself and record output
 - ❌ Closing a tentacle `DONE` with no verification evidence → treated as `AMBIGUOUS`; requires triage before proceeding
@@ -209,6 +234,7 @@ Read the task description and identify independent code regions. Each region bec
 Each code tentacle must declare:
 
 - source step file and accepted/edited/rejected step numbers,
+- decision confidence (`1.0` required; otherwise create a research/validation tentacle first),
 - dependency order,
 - test/evidence owner,
 - implementation owner,

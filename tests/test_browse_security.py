@@ -44,7 +44,7 @@ def test(name: str, expr: bool, detail: str = "") -> None:
 
 def run_csp_tests() -> None:
     print("\n=== WBS-084: Browse CSP without unsafe-inline ===")
-    from browse.core.csp import build_v2_csp_header, build_csp_header, generate_nonce
+    from browse.core.csp import build_csp_header, build_v2_csp_header, generate_nonce
 
     print("\n-- CSP-T1: build_v2_csp_header with nonce → no unsafe-inline in script-src")
     nonce = generate_nonce()
@@ -108,26 +108,27 @@ def run_csp_tests() -> None:
 def run_500_tests() -> None:
     print("\n=== WBS-085: Generic 500 responses with request IDs ===")
     import http.client
-    import json
     import importlib.util
+    import json
 
     # Create a minimal test DB
     import sqlite3
     import tempfile
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from browse.core.server import _make_handler_class
     from http.server import ThreadingHTTPServer
+
+    from browse.core.server import _make_handler_class
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "browse_test.db"
-        db = sqlite3.connect(str(db_path))
+        db = sqlite3.connect(str(db_path), check_same_thread=False)
         db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, data TEXT)")
         db.commit()
 
         # Monkey-patch a route that raises
-        from browse.core import registry as _reg
         import browse.core.registry as _reg_mod
+        from browse.core import registry as _reg
 
         # Remember original routes
         _orig_routes = list(_reg_mod.ROUTES)
@@ -189,11 +190,12 @@ def run_cors_preflight_tests() -> None:
     import sqlite3
     import tempfile
     from http.server import ThreadingHTTPServer
+
     from browse.core.server import _make_handler_class
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "browse_cors_test.db"
-        db = sqlite3.connect(str(db_path))
+        db = sqlite3.connect(str(db_path), check_same_thread=False)
         db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, data TEXT)")
         db.commit()
 
@@ -337,10 +339,12 @@ def run_https_proxy_tests() -> None:
     print("\n-- PROXY-T2: HTTPS proxied trusted origin → allowed when BROWSE_TRUSTED_PROXY=1")
     os.environ["BROWSE_TRUSTED_PROXY"] = "1"
     try:
-        h2 = FakeHeaders({
-            "Origin": "https://localhost:8080",
-            "X-Forwarded-Proto": "https",
-        })
+        h2 = FakeHeaders(
+            {
+                "Origin": "https://localhost:8080",
+                "X-Forwarded-Proto": "https",
+            }
+        )
         allowed2, is_https2 = check_origin(h2, "localhost:8080")
         test("PROXY-T2: https proxy trusted → allowed", allowed2 is True, f"allowed={allowed2}")
         test("PROXY-T2: is_https=True", is_https2 is True, f"is_https={is_https2}")
@@ -356,10 +360,12 @@ def run_https_proxy_tests() -> None:
     print("\n-- PROXY-T4: Untrusted/spoofed origin → rejected")
     os.environ["BROWSE_TRUSTED_PROXY"] = "1"
     try:
-        h4 = FakeHeaders({
-            "Origin": "https://evil.example.com",
-            "X-Forwarded-Proto": "https",
-        })
+        h4 = FakeHeaders(
+            {
+                "Origin": "https://evil.example.com",
+                "X-Forwarded-Proto": "https",
+            }
+        )
         allowed4, _ = check_origin(h4, "localhost:8080")
         test("PROXY-T4: spoofed origin → rejected", allowed4 is False, f"allowed={allowed4}")
     finally:

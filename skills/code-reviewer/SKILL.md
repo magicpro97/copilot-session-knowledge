@@ -77,6 +77,18 @@ Work through the changed code systematically across four dimensions:
 - Are there goroutines, threads, or async tasks that can leak if the caller abandons the call?
 - Is shared mutable state accessed without synchronization (race conditions)?
 
+### Confidence Discipline
+
+Do not mark an area "reviewed with no issues" unless the relevant call paths, callers, tests,
+and contracts were actually checked. If any finding or clean-area claim is below confidence
+`1.0`, split that uncertainty into a focused validation task and escalate it before reporting:
+
+- re-run the review on the strongest available model (`claude-opus-4.7` when available), or
+- dispatch an independent research/doublecheck agent for the exact unverified scope.
+
+Report unresolved uncertainty as `🟡 Unverified — needs research`, not as CLEAN. CLEAN means
+confidence `1.0` for the reviewed scope or an explicit limitation documented outside scope.
+
 ### Phase 3: Report
 
 Structure findings by severity. Be specific: file, line, concrete input that triggers the
@@ -125,6 +137,7 @@ That comment doesn't belong in a correctness review.
 | No line reference | Finding can't be located without rereading everything |
 | Reviewing without reading callers | Misses contract violations |
 | Claiming "looks good" without tracing paths | False confidence |
+| Marking CLEAN while confidence `< 1.0` | Hides unverified risk; escalate or report `Unverified` |
 
 <example>
 **Reviewing a Go HTTP handler that serves static files:**

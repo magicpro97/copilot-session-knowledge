@@ -55,6 +55,7 @@ def _env_for_home(home: Path, extra: dict[str, str] | None = None) -> dict[str, 
         "USERPROFILE": str(home),
         "PYTHONIOENCODING": "utf-8",
     }
+    env.pop("SK_HOOK_ACTIVE", None)
     if extra:
         env.update(extra)
     return env
@@ -196,6 +197,7 @@ def test_rule_crash_isolation_records_error() -> None:
     old_stdin = sys.stdin
     old_stdout = sys.stdout
     old_markers = hook_runner.MARKERS_DIR
+    old_sk_hook_active = os.environ.get("SK_HOOK_ACTIVE")
     condition = False
     detail = ""
     try:
@@ -205,6 +207,7 @@ def test_rule_crash_isolation_records_error() -> None:
         captured = io.StringIO()
         sys.stdout = captured
         hook_runner.MARKERS_DIR = markers
+        os.environ.pop("SK_HOOK_ACTIVE", None)
         hook_runner.main()
         decisions = [entry.get("decision") for entry in _read_audit(home)]
         condition = "error" in decisions
@@ -220,6 +223,10 @@ def test_rule_crash_isolation_records_error() -> None:
         sys.stdin = old_stdin
         sys.stdout = old_stdout
         hook_runner.MARKERS_DIR = old_markers
+        if old_sk_hook_active is None:
+            os.environ.pop("SK_HOOK_ACTIVE", None)
+        else:
+            os.environ["SK_HOOK_ACTIVE"] = old_sk_hook_active
         shutil.rmtree(home, ignore_errors=True)
     test("rule exception is isolated by hook_runner", condition, detail)
 

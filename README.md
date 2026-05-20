@@ -26,18 +26,7 @@
 - [Contributing](#contributing)
 - [License](#license)
 
-**Canonical docs:**
-[Architecture & Conventions](docs/ARCHITECTURE.md) ·
-[Agent Rules](docs/AGENT-RULES.md) ·
-[Install Guide](docs/INSTALL.md) ·
-[Usage](docs/USAGE.md) ·
-[Hooks](docs/HOOKS.md) ·
-[Skills](docs/SKILLS.md) ·
-[Telemetry & Contracts](docs/TELEMETRY.md) ·
-[Operator Playbook](docs/OPERATOR-PLAYBOOK.md) ·
-[Resilience Runbook](docs/RESILIENCE-RUNBOOK.md) ·
-[Board Import](docs/BOARD-IMPORT.md) ·
-[Connectivity Troubleshooting](docs/CONNECTIVITY-TROUBLESHOOTING.md)
+**Canonical docs:** [Architecture & Conventions](docs/ARCHITECTURE.md) · [Agent Rules](docs/AGENT-RULES.md) · [Install Guide](docs/INSTALL.md) · [Usage](docs/USAGE.md) · [Hooks](docs/HOOKS.md) · [Confidence Gate](docs/CONFIDENCE-GATE.md) · [Skills](docs/SKILLS.md) · [Telemetry & Contracts](docs/TELEMETRY.md) · [Operator Playbook](docs/OPERATOR-PLAYBOOK.md) · [Resilience Runbook](docs/RESILIENCE-RUNBOOK.md) · [Board Import](docs/BOARD-IMPORT.md) · [Connectivity Troubleshooting](docs/CONNECTIVITY-TROUBLESHOOTING.md)
 
 ## Why?
 
@@ -115,14 +104,8 @@ Each `sk` command delegates to the underlying script; all scripts remain directl
 brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
 brief --auto                         # Auto-detect from git state
-brief "task" --for-subagent          # Manual compatibility path for ad hoc sub-agent prompts
-brief --task "memory-surface"        # Task-scoped recall by task ID
-brief --task "memory-surface" --json # Includes source_document + code-location/snippet fields
-brief "fix Docker" --json            # JSON output for programmatic use
-brief "review auth PR" --mode review # Mode-aware briefing profile
-brief "debug flaky test_parser.py" --pack  # Machine-readable pack JSON (same provenance/location fields)
-brief "task" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
-brief "task" --compact               # XML compact block for AI context injection
+brief "review auth PR" --mode review # Mode-aware profile
+brief "task" --json --compact        # Programmatic/compact output
 ```
 
 ### Search
@@ -133,15 +116,10 @@ qs "docker" --type research          # Filter by doc type
 qs --mistakes                        # View past errors
 qs --detail 2045                     # Full entry by ID (includes Snippet freshness: fresh|drifted|missing|unknown)
 qs "deployment error" --semantic     # Semantic search (compact output; no feedback fragment)
-qs "deployment error" --semantic --verbose  # Adds feedback bias fragment only when non-zero
 qs --file src/auth.py                # Entries touching a specific file
 qs --module auth                     # Entries for a module or directory
-qs --task memory-surface             # Entries tagged with a task ID
-qs --task memory-surface --export json   # JSON object with entries[] (includes snippet_freshness + related_entry_ids)
 qs --diff                            # Entries for current git diff files
-qs "search" --export json            # Export results as JSON
-qs "search" --budget 2000            # Cap output to 2000 chars
-qs "search" --compact                # Titles-only with ~token hint
+qs "search" --export json --budget 2000
 ```
 
 ### Advanced Query Flags
@@ -349,9 +327,7 @@ Sync is **local-first and optional**: local `knowledge.db` remains the primary r
   - Pull consumes multiple pages per cycle (`MAX_PULL_PAGES_PER_CYCLE`) and refreshes local retrieval surfaces (`knowledge_fts`, `ke_fts`) for touched rows after canonical apply.
   - If no `connection_string` is configured, daemon stays local-only (no hard failure).
 - **Diagnostics**:
-  - `python3 ~/.copilot/tools/sync-status.py --watch-status [--json]`
-  - `python3 ~/.copilot/tools/sync-status.py --health-check [--json]` (exit 0/2)
-  - `python3 ~/.copilot/tools/sync-status.py --audit [--json]` (exit 0/2)
+  - `python3 ~/.copilot/tools/sync-status.py --watch-status|--health-check|--audit [--json]`
   - Browse `/healthz` advertises `sync_status_endpoint: "/api/sync/status"`.
   - Browse `/api/sync/status` is read-only local queue/failure/config/cursor status.
 - **Gateway in this repo**: `sync-gateway.py` is **reference/mock only** (not production authority), exposing `/sync/push`, `/sync/pull`, `/healthz`.
@@ -596,17 +572,10 @@ Motivated by a C1-class bug where a misindented top-level block caused a `Syntax
 Batch-create GitHub issues from a WBS JSONL file and add them to a Project v2 board with priority fields set — using only `gh` CLI, stdlib Python, and PowerShell GraphQL (no extra dependencies).
 
 ```bash
-# 1. Validate JSONL offline (no network)
+# Validate JSONL offline and generate example payloads
 python wbs-issue-gen.py --validate wbs-issues.jsonl
-
-# 2. Generate example payloads for testing
 python wbs-issue-gen.py --generate 5 --output wbs-issues.jsonl
-
-# 3. Create issues via GitHub REST (requires GITHUB_TOKEN and REPO env vars)
-#    See docs/BOARD-IMPORT.md for the full operator script
-
-# 4. Add to Project v2 board and set Priority field (PowerShell)
-#    See docs/BOARD-IMPORT.md Step 4
+# Create issues via REST and add them to Project v2; see docs/BOARD-IMPORT.md
 ```
 
 The `wbs-issue-gen.py` validator/generator (at repo root) handles schema validation, dry-run introspection, and example generation — all offline. Labels, milestone, assignees, priority, and a `context` metadata block (never sent to GitHub) are supported.

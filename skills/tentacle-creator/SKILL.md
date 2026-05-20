@@ -88,19 +88,20 @@ example blocks, description trigger words). Use this checklist:
 | # | Required Section | Source | Action |
 |---|-----------------|--------|--------|
 | 1 | `## Planning Discipline` | Reference | Keep task-step-generator first, reviewed step plan, and accepted/edited/rejected record |
-| 2 | `## When to use` | Reference | Keep table, add project-specific rows |
-| 3 | `## Anti-patterns` | Reference | Keep all items, add project-specific items |
-| 4 | `## Core concept` | Reference | **Copy verbatim** — file tree diagram, octopus metaphor |
-| 5 | `## Workflow` (or `## Internal Workflow`) | Reference | Keep 5-phase labels: Clarify → Plan → Execute → Verify → Close |
-| 6 | `### Phase 0: Clarify Spec` | Reference | Keep motivation text ("bug found in spec costs 1x..."), Steps 0.0–0.5 |
-| 7 | `### Phase 1: Plan` | Reference | Keep task-step-generator, decomposition review, and "Impact Analysis / Risk Assessment" mention; customize folder patterns |
-| 8 | `### Phase 2: Execute` | Reference | Keep `--model` param in swarm, customize agent mapping table |
-| 9 | `### Phase 3: Verify` | Reference | Keep 6-gate table, replace commands with project's build/lint/test |
-| 10 | `### Phase 4: Close` | Reference | Keep `complete` before `delete` warning |
-| 11 | `## Verification summary` | Reference | Keep 6-gate table (mirrors Phase 3 gates) |
-| 12 | `## CLI reference` | Reference | Keep all commands, include `--model` in swarm |
-| 13 | `## Tips` | Reference | Keep all tips, add project-specific tips |
-| 14 | `## Reference docs` | New | Link to `~/.copilot/tools/skills/tentacle-orchestration/references/` |
+| 2 | `## Decision Confidence Gate` | Reference | Keep confidence `< 1.0` research-first blocking rule and opus-class validation requirement |
+| 3 | `## When to use` | Reference | Keep table, add project-specific rows |
+| 4 | `## Anti-patterns` | Reference | Keep all items, add project-specific items |
+| 5 | `## Core concept` | Reference | **Copy verbatim** — file tree diagram, octopus metaphor |
+| 6 | `## Workflow` (or `## Internal Workflow`) | Reference | Keep 5-phase labels: Clarify → Plan → Execute → Verify → Close |
+| 7 | `### Phase 0: Clarify Spec` | Reference | Keep motivation text ("bug found in spec costs 1x..."), Steps 0.0–0.5 |
+| 8 | `### Phase 1: Plan` | Reference | Keep task-step-generator, decomposition review, and "Impact Analysis / Risk Assessment" mention; customize folder patterns |
+| 9 | `### Phase 2: Execute` | Reference | Keep `--model` param in swarm, customize agent mapping table |
+| 10 | `### Phase 3: Verify` | Reference | Keep 6-gate table, replace commands with project's build/lint/test |
+| 11 | `### Phase 4: Close` | Reference | Keep `complete` before `delete` warning |
+| 12 | `## Verification summary` | Reference | Keep 6-gate table (mirrors Phase 3 gates) |
+| 13 | `## CLI reference` | Reference | Keep all commands, include `--model` in swarm |
+| 14 | `## Tips` | Reference | Keep all tips, add project-specific tips |
+| 15 | `## Reference docs` | New | Link to `~/.copilot/tools/skills/tentacle-orchestration/references/` |
 
 **If a reference section exists but is not in the checklist above, include it anyway.**
 The checklist is a minimum — not an exclusive list.
@@ -153,6 +154,10 @@ grep -q '\.octogent/tentacles/' .github/skills/tentacle-orchestration/SKILL.md |
 
 # Verify Phase 0 motivation text
 grep -q 'costs 1x' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: missing motivation text"
+
+# Verify low-confidence work is research-gated
+grep -q 'Decision Confidence Gate' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: missing confidence gate"
+grep -q 'confidence.*1.0' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: missing confidence threshold"
 ```
 
 Any output (diff lines or FAIL messages) means the section is missing — add it before proceeding.

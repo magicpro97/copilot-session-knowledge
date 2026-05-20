@@ -99,6 +99,10 @@ Read the selected template from `references/`, then adapt:
 6. **Profile contract** — preserve or add `profile_id`, `role`, `domain`,
    `triggers`, `quality_gates`, `escalation_rules`, `anti_patterns`, and
    `evidence_required` so tentacle dispatch can treat the agent as a real expert
+7. **Decision confidence** — if any role, trigger, tool command, project convention, or
+   evidence rule cannot be filled with confidence `1.0` from project evidence, do not
+   guess. Mark the field as blocked and dispatch `research-planner` or `research-spike`
+   on the strongest available model (`claude-opus-4.7` when available) before finalizing.
 
 Keep customizations focused. Workflow templates should stay general, but specialist
 profiles must include enough project-specific gates and evidence to change behavior.
@@ -166,6 +170,7 @@ model: 'Claude Sonnet 4'  # optional but recommended
 profile_id: 'backend-specialist'  # optional but recommended for tentacle profiles
 role: 'Backend Specialist'
 domain: 'backend'
+decision_confidence: '1.0'
 quality_gates:
   - 'Relevant tests pass with output attached'
 evidence_required:

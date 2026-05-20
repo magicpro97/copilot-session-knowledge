@@ -144,6 +144,10 @@ Common patterns: "review and fix" -> bug, "write test" -> test, "optimize X" -> 
 
 **mandatory_steps** — From project conventions:
 - `pre_task`: briefing (if session-knowledge exists)
+- `pre_decision`: confidence gate — when any routing or plan confidence is below `1.0`,
+  emit a research gate before implementation/deletion/merge/routing. The gate splits noisy
+  ideas into sub-research tasks and assigns validation to the strongest available model
+  (`claude-opus-4.7` when available).
 - `post_code`: review (if code-reviewer agent exists)
 - `post_feature`: PR creation (if pr-workflow skill exists)
 - `post_verify`: goal evaluation — when the task has an explicit overarching goal (e.g., "benchmarks must pass ≥ 90"), add a `goal_eval` step that evaluates the goal after all verification gates pass and before dispatching the next wave or closing. Use `sk tentacle verify <name> "<check>" --label "goal-eval"` for evidence capture. If the goal is unmet, the conductor should route back to the planning step rather than proceeding to commit.
@@ -159,9 +163,12 @@ The engine is generic — only `conductor-rules.json` is project-specific.
 Core features the engine must support:
 - Word-boundary keyword matching with suffix handling (s/es/ed/ing/er)
 - Phrase priority rules (checked before keyword scoring)
-- Confidence scoring (high/medium/low based on score gap)
+- Confidence scoring (high=1.0, medium/low <1.0 based on score gap)
+- Research gate output when confidence `< 1.0`, including sub-research tasks, opus-class
+  validation, convergence criteria, and a persisted `.github/conductor/last-plan.json`
+  artifact that hooks/reviewers can inspect
 - Multi-module zone detection
-- CLI with `--verbose`, `--json`, `--audit`, `--sync`, `--override-type`
+- CLI with `--verbose`, `--json`, `--audit`, `--sync`, `--override-type`, `--no-write-plan`
 
 Place at: `.github/skills/conductor/scripts/conductor.py`
 
@@ -226,6 +233,8 @@ non-existent agents or deleted workflows produce confident but wrong plans.
 Write tests that verify:
 - Each task type classifies correctly with sample descriptions
 - Phrase priority rules resolve known conflicts
+- Confidence `< 1.0` creates a `research_gate`; confidence `1.0` and explicit overrides do not
+- Research gate validation uses the highest available opus-class model configured in rules
 - Skill routing returns expected skills for each type
 - Agent routing assigns correct agents and models
 - Word boundary matching prevents false positives
