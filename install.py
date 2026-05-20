@@ -852,7 +852,7 @@ def _inject_launcher_path(quiet: bool = False) -> None:
                 # Block is stale (launcher dir changed): replace it atomically.
                 cleaned, _ = _remove_launcher_path_block_from_text(content)
                 base = cleaned.rstrip("\n")
-                new_content = (base + "\n" + expected_block) if base.strip() else expected_block
+                new_content = (base + "\n\n" + expected_block) if base.strip() else expected_block
                 _atomic_write_text(profile, new_content)
                 if not quiet:
                     print(f"  {OK} Updated sk launcher PATH in {_tilde(profile)}")
@@ -865,7 +865,7 @@ def _inject_launcher_path(quiet: bool = False) -> None:
             continue
 
         # Path not present at all: append the managed block atomically.
-        new_content = expected_block if not content else content.rstrip("\n") + "\n" + expected_block
+        new_content = expected_block if not content else content.rstrip("\n") + "\n\n" + expected_block
         _atomic_write_text(profile, new_content)
         if not quiet:
             print(f"  {OK} Added sk launcher PATH to {_tilde(profile)}")
