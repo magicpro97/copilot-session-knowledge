@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from browse.core.csp import build_v2_csp_header
 from browse.core.fts import _SESSION_ID_RE
 from browse.routes.serve_v2 import (
+    _HTML_COMMENT_RE,
     _inject_csp_nonce,
     _rewrite_session_placeholder,
     _session_placeholder_fallback_paths,
@@ -401,15 +402,21 @@ class TestHtmlCommentBehaviour(unittest.TestCase):
                 )
             self.skipTest("browse-ui/dist not present; skipping dist-level assertion")
 
-        comment_script_re = re.compile(rb"<!--.*?<script.*?-->", re.DOTALL)
         nonce = "distTestNonce_CI"
         nonce_bytes = nonce.encode()
         for html_file in dist_path.rglob("*.html"):
             content = html_file.read_bytes()
             injected = _inject_csp_nonce(content, nonce)
-            # Any comment block that contains a <script> token must survive verbatim.
-            for orig_comment in comment_script_re.finditer(content):
-                comment_bytes = orig_comment.group(0)
+            # Use the production HTML comment regex (_HTML_COMMENT_RE) so we
+            # identify *actual* comment blocks (<!--...-->) rather than the
+            # over-broad cross-comment pattern.  Then filter to only those
+            # comments that literally contain a <script token.
+            comment_blocks_with_script = [
+                m.group(0)
+                for m in _HTML_COMMENT_RE.finditer(content)
+                if b"<script" in m.group(0).lower()
+            ]
+            for comment_bytes in comment_blocks_with_script:
                 # Sanity: the original comment must not already contain our test nonce.
                 self.assertNotIn(
                     nonce_bytes,
