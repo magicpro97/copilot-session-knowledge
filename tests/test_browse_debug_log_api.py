@@ -36,6 +36,10 @@ Tests:
   DB30: Unknown session/run/mismatched run use uniform 404 code/message
   DB31: Non-loopback with no server token → 403 on new debug path
   DB32: Mutating method with ?token= on debug path → 401 before normal auth
+  DB33: Nested inner.data content extraction for assistant.message (comment #1 fix)
+  DB34: Outer event["data"] deltaContent extraction for assistant.message_delta (#1 fix)
+  DB35: Nested inner.data toolName extraction for tool_call (comment #2 fix)
+  DB36: Outer event["data"] name extraction for tool_call (comment #2 fix)
 """
 
 import hashlib
@@ -57,10 +61,10 @@ if os.name == "nt":
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import browse.core.registry as registry_mod  # noqa: E402
-
-# Set up isolated operator state dir before importing operator_console
-_TEST_STATE_DIR = Path(tempfile.mkdtemp())
+# Set up isolated operator state dir before importing operator_console.
+# Use TemporaryDirectory so the dir is cleaned up when the module is unloaded (no leak).
+_TEST_STATE_DIR_HANDLE = tempfile.TemporaryDirectory()
+_TEST_STATE_DIR = Path(_TEST_STATE_DIR_HANDLE.name)
 os.environ["COPILOT_OPERATOR_STATE"] = str(_TEST_STATE_DIR)
 
 import sqlite3  # noqa: E402
@@ -70,7 +74,6 @@ import browse.routes.health  # noqa: E402 — healthz route
 from browse.core.operator_console import (  # noqa: E402
     _ACTIVE_RUNS,
     _RUNS_LOCK,
-    _is_valid_id,
     create_session,
     get_run_status,
     get_session,
@@ -771,6 +774,146 @@ def test_mutating_query_token_rejected_401():
         server.shutdown()
 
 
+def test_nested_inner_data_content_extraction():
+    """DB33: assistant.message with content in inner.event.data (not top-level inner).
+
+    Verifies comment #1 fix: _map_operator_event checks inner.data.content before
+    falling back, so content is not lost when Copilot CLI emits data.content rather
+    than a top-level content key.
+    """
+    server, port = _make_test_server()
+    try:
+        sid = _make_session()
+        # Content nested under event.event.data — NOT at event.event top-level.
+        run_id = _make_run(
+            sid,
+            events=[
+                {
+                    "type": "assistant.message",
+                    "idx": 0,
+                    "event": {
+                        "type": "assistant.message",
+                        "data": {"content": "nested-data-content"},
+                    },
+                }
+            ],
+        )
+        resp = _bearer(port, _debug_path(sid, run_id))
+        data = json.loads(resp.read())
+        test("DB33 status 200", resp.status == 200)
+        events = data.get("events", [])
+        test("DB33 one event", len(events) == 1)
+        test(
+            "DB33 message = nested-data-content",
+            events[0].get("message") == "nested-data-content",
+        )
+    finally:
+        server.shutdown()
+
+
+def test_outer_data_delta_content_extraction():
+    """DB34: assistant.message_delta with deltaContent in outer event["data"].
+
+    Verifies comment #1 fix: _map_operator_event checks outer event.data.deltaContent
+    (promoted to the top-level "data" key by _parse_output_event) so stream delta
+    previews are not silently lost.
+    """
+    server, port = _make_test_server()
+    try:
+        sid = _make_session()
+        # deltaContent stored at outer event["data"] level (no top-level inner key).
+        run_id = _make_run(
+            sid,
+            events=[
+                {
+                    "type": "assistant.message_delta",
+                    "idx": 0,
+                    "event": {"type": "assistant.message_delta"},
+                    "data": {"deltaContent": "outer-delta-content"},
+                }
+            ],
+        )
+        resp = _bearer(port, _debug_path(sid, run_id))
+        data = json.loads(resp.read())
+        test("DB34 status 200", resp.status == 200)
+        events = data.get("events", [])
+        test("DB34 one event", len(events) == 1)
+        test(
+            "DB34 message = outer-delta-content",
+            events[0].get("message") == "outer-delta-content",
+        )
+    finally:
+        server.shutdown()
+
+
+def test_nested_inner_data_tool_name_extraction():
+    """DB35: tool_call with toolName in inner.event.data (nested data sub-object).
+
+    Verifies comment #2 fix: _map_operator_event checks inner.data.toolName so
+    tool-call previews degrade to event_type only when no tool name exists anywhere.
+    """
+    server, port = _make_test_server()
+    try:
+        sid = _make_session()
+        run_id = _make_run(
+            sid,
+            events=[
+                {
+                    "type": "tool_call",
+                    "idx": 0,
+                    "event": {
+                        "type": "tool_call",
+                        "data": {"toolName": "nested-tool-name"},
+                    },
+                }
+            ],
+        )
+        resp = _bearer(port, _debug_path(sid, run_id))
+        data = json.loads(resp.read())
+        test("DB35 status 200", resp.status == 200)
+        events = data.get("events", [])
+        test("DB35 one event", len(events) == 1)
+        test(
+            "DB35 message = nested-tool-name",
+            events[0].get("message") == "nested-tool-name",
+        )
+    finally:
+        server.shutdown()
+
+
+def test_outer_data_tool_name_extraction():
+    """DB36: tool_call with name in outer event["data"] (top-level stored data key).
+
+    Verifies comment #2 fix: _map_operator_event checks outer event.data.name so
+    tool-call previews work when tool metadata lives at the outer envelope level.
+    """
+    server, port = _make_test_server()
+    try:
+        sid = _make_session()
+        run_id = _make_run(
+            sid,
+            events=[
+                {
+                    "type": "tool_call",
+                    "idx": 0,
+                    "event": {"type": "tool_call"},
+                    "data": {"name": "outer-tool-name"},
+                }
+            ],
+        )
+        resp = _bearer(port, _debug_path(sid, run_id))
+        data = json.loads(resp.read())
+        test("DB36 status 200", resp.status == 200)
+        events = data.get("events", [])
+        test("DB36 one event", len(events) == 1)
+        test(
+            "DB36 message = outer-tool-name",
+            events[0].get("message") == "outer-tool-name",
+        )
+    finally:
+        server.shutdown()
+
+
 # ── Runner ─────────────────────────────────────────────────────────────────────
 
 
@@ -808,6 +951,10 @@ if __name__ == "__main__":
     test_uniform_404_error_code()
     test_non_loopback_no_token_403()
     test_mutating_query_token_rejected_401()
+    test_nested_inner_data_content_extraction()
+    test_outer_data_delta_content_extraction()
+    test_nested_inner_data_tool_name_extraction()
+    test_outer_data_tool_name_extraction()
 
     print(f"\n{'=' * 50}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")

@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     registered with `debug=True` — regardless of URL prefix — automatically receives
     Bearer/cookie-only auth, `?token=` rejection (401), static-slot blocking (403), and the
     non-loopback insecure-config 403 rule.  `/api/debug-log/healthz` behaviour is unchanged.
-  - `tests/test_browse_debug_log_api.py`: 32 tests (93 assertions) covering unknown/non-UUID session/run 404
+  - `tests/test_browse_debug_log_api.py`: 36 tests (105 assertions) covering unknown/non-UUID session/run 404
     no leakage; ownership mismatch 404; missing/invalid auth 401; `?token=` rejection 401;
     valid Bearer and cookie 200; static slot 403; pagination (default/explicit/overflow/max
     limit/negative from); kind/level/since filters and bad params; redaction; truncation

@@ -706,11 +706,40 @@ def _map_operator_event(event: dict) -> dict:
     else:
         # Extract human-readable message based on event taxonomy.
         if event_type in ("assistant.message", "assistant.message_delta"):
-            content = inner.get("content") or inner.get("deltaContent") or ""
+            # Check inner-event top-level first, then inner.data, then outer event.data.
+            # Operator-console events may carry content/deltaContent under a nested "data"
+            # sub-object (from _parse_output_event) rather than at the inner event top level.
+            _inner_data = inner.get("data") if isinstance(inner.get("data"), dict) else {}
+            _outer_data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            content = (
+                inner.get("content")
+                or inner.get("deltaContent")
+                or _inner_data.get("content")
+                or _inner_data.get("deltaContent")
+                or _outer_data.get("content")
+                or _outer_data.get("deltaContent")
+                or ""
+            )
             message = str(content)[:_DEBUG_MSG_MAX]
         elif event_type in ("tool_call", "tool_result"):
+            # Check inner-event top-level first, then inner.data, then outer event.data.
+            # Stream events may store tool metadata under a nested "data" object.
+            _inner_data = inner.get("data") if isinstance(inner.get("data"), dict) else {}
+            _outer_data = event.get("data") if isinstance(event.get("data"), dict) else {}
             tool = (
-                inner.get("toolName") or inner.get("tool_name") or inner.get("name") or inner.get("tool") or event_type
+                inner.get("toolName")
+                or inner.get("tool_name")
+                or inner.get("name")
+                or inner.get("tool")
+                or _inner_data.get("toolName")
+                or _inner_data.get("tool_name")
+                or _inner_data.get("name")
+                or _inner_data.get("tool")
+                or _outer_data.get("toolName")
+                or _outer_data.get("tool_name")
+                or _outer_data.get("name")
+                or _outer_data.get("tool")
+                or event_type
             )
             message = str(tool)[:_DEBUG_MSG_MAX]
         else:
