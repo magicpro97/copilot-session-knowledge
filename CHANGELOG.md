@@ -44,6 +44,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     mapping, truncation semantics, `since` filter semantics, and registry-driven debug auth
     gate generalisation.
 
+- **Debug-log importers — VS Code Agent and OTel JSONL (WBS-106, #431):**
+  - `browse/importers/__init__.py`: new `browse.importers` package.
+  - `browse/importers/_common.py`: shared helpers — `check_path_safe()` (rejects
+    `..`, enforces `safe_base` + symlink escape detection), `file_hash_sha256()`,
+    `synthetic_span_id()`, `content_hash_16()`, `DedupSet`, `is_valid_span_id()`,
+    `max_line_bytes()` (default 1 MiB, env `BROWSE_DEBUG_LOG_MAX_LINE_BYTES`),
+    and bounded JSONL line iteration that rejects over-cap lines without buffering
+    the whole line.
+    Error types: `PathTraversalError`, `SymlinkEscapeError`, `UnsupportedFormatError`.
+  - `browse/importers/vscode_agent_debug_log.py`: read-only importer for VS Code
+    `IDebugLogEntry` JSONL.  Normalises to `BrowseDebugEntry`; source = `vscode`.
+    Features: directory-mode reads `main.jsonl`, companion-file skip (models.json,
+    system_prompt_*.json, tools_*.json, title-*.jsonl, etc.), format detection,
+    epoch-ms→ISO-UTC-Z, dur=0→null, attrs pre-filter (inputTokens→tokens_in,
+    outputTokens→tokens_out; drop args/result/content/…), `redact_entry` pass,
+    dedup by `{sid}:{type}:{spanId}:{ts}:{content_hash_16}`, dry-run mode.
+    CLI: `python -m browse.importers.vscode_agent_debug_log --path … --dry-run --json-summary`.
+  - `browse/importers/otel_file.py`: read-only importer for OTel `ReadableSpan`
+    JSONL (ConsoleSpanExporter output and compatible variants).  Supports: `id`,
+    `spanId`, or `spanContext.spanId` for span ID; `traceId`; `parentSpanId` /
+    `parentSpanContext.spanId`; `timestamp` (µs), `startTime` (HrTime tuple or
+    ISO string), `timeUnixNano`/`startTimeUnixNano` (ns); `duration` (µs→ms);
+    `status.code` 0/1/2→null/ok/error; attrs pre-filter to allowlist with OTel
+    semantic convention renames.  Detects and rejects VS Code files.
+    CLI: `python -m browse.importers.otel_file --path … --dry-run --json-summary`.
+  - `tests/test_browse_debug_log_importers.py`: 178 assertions covering: happy path,
+    BrowseDebugEntry shape, kind mapping, timestamp, duration, attr renames,
+    dangerous attr drop, tool_name, synthetic span ID, privacy (no username in
+    summary), directory mode, companion skip, malformed lines, dedup, unsupported
+    format, path traversal, symlink escape, dry-run, OTel status/level, HrTime,
+    ISO/no-TZ startTime, timeUnixNano, bounded line-size cap, missing-span dedup,
+    and redaction scrubbing.
+  - `tests/fixtures/debug-log/vscode-agent/debug-logs/0000fixture-session-aaaa/`:
+    12-entry happy-path fixture with companion files (models.json,
+    system_prompt_abc.json, tools_fixture.json) for skip tests.
+  - `tests/fixtures/debug-log/vscode-agent/debug-logs/0000fixture-session-bbbb/`:
+    malformed-lines fixture (missing ts, missing sid, not-JSON, v=2).
+  - `tests/fixtures/debug-log/vscode-agent/debug-logs/0000fixture-session-cccc/`:
+    dedup fixture (5 lines, 2 duplicates → 3 unique).
+  - `tests/fixtures/debug-log/otel/console-spans.jsonl`: ConsoleSpanExporter
+    happy-path with status codes 0/1/2, forbidden attrs, path/bearer secret for
+    redaction test.
+  - `tests/fixtures/debug-log/otel/hrtime-spans.jsonl`: HrTime tuple, ISO string,
+    no-TZ ISO, and timeUnixNano timestamp variants.
+  - `tests/fixtures/debug-log/otel/malformed-spans.jsonl`: malformed OTel fixture.
+  - `docs/DEBUG-LOG-CONTRACT.md`: WBS-106 importer contract section added.
+  - Oversized-line test cases are generated dynamically in temp; no >1 MiB fixture
+    files are committed.
+
 - **Bounded redacted operator debug-event sidecar (WBS-105, #430):**
   - `browse/core/operator_console.py`:
     - Constants `_MAX_DEBUG_EVENTS = 5000` and `_DEBUG_SOURCE = "operator_console"`.
@@ -276,17 +325,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Session detail: button row (Timeline / Mindmap / Export MD / Compare / Find similar) and tool-usage summary (243b85b)
 - Command palette expanded to 11 commands with section grouping (Navigation / Explore / Admin / View / Help) (243b85b)
 - Timeline: model-based color coding and legend, incorporating data previously served by the removed agents route (243b85b)
-
-- **Debug log importers — VS Code Agent Mode + OTel ReadableSpan parsers (WBS-106):**
-  - VS Code Agent Mode debug log importer: parses `agent-mode.jsonl` JSONL lines into
-    `BrowseDebugEntry` events with format detection, bounded reading (configurable max lines),
-    and WBS-102 redaction applied before any entry leaves the import layer.
-  - OTel `ReadableSpan` importer: parses OpenTelemetry `ReadableSpan` JSON objects into
-    `BrowseDebugEntry` events; extracts `span_id`, `parent_span_id`, `start_time_unix_nano`,
-    `duration_ns`, and `attributes`; maps OTel status codes to `ok` / `error` / `cancelled`.
-  - Both importers share a unified `DebugLogImporter` registry; format is detected at read time
-    (magic-byte / schema sniff before parsing); unrecognized formats produce a `raw` entry per
-    event with an `attrs.parse_error` field.
 
 - **Debug Log tab — session detail debug event viewer (WBS-107):**
   - New fifth tab on `/sessions/[id]`: **Debug Log** — shows all debug events recorded for the
