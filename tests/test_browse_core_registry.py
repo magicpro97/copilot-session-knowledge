@@ -98,18 +98,20 @@ def test_match_route_exact():
             pass
 
         registry_mod.ROUTES.append(("/exact/path", ["GET"], _handler))
-        fn, kwargs = registry_mod.match_route("/exact/path", "GET")
+        fn, kwargs, dbg = registry_mod.match_route("/exact/path", "GET")
         test("match_exact: handler found", fn is _handler)
         test("match_exact: no kwargs", kwargs == {})
+        test("match_exact: debug False", dbg is False)
 
     _with_clean_routes(_inner)
 
 
 def test_match_route_no_match():
     def _inner():
-        fn, kwargs = registry_mod.match_route("/nonexistent", "GET")
+        fn, kwargs, dbg = registry_mod.match_route("/nonexistent", "GET")
         test("match_none: fn is None", fn is None)
         test("match_none: empty kwargs", kwargs == {})
+        test("match_none: debug False", dbg is False)
 
     _with_clean_routes(_inner)
 
@@ -120,7 +122,7 @@ def test_match_route_method_mismatch():
             pass
 
         registry_mod.ROUTES.append(("/path", ["GET"], _handler))
-        fn, kwargs = registry_mod.match_route("/path", "POST")
+        fn, kwargs, dbg = registry_mod.match_route("/path", "POST")
         test("match_method_mismatch: no match", fn is None)
 
     _with_clean_routes(_inner)
@@ -133,7 +135,7 @@ def test_match_route_method_case_insensitive():
             pass
 
         registry_mod.ROUTES.append(("/path", ["GET"], _handler))
-        fn, kwargs = registry_mod.match_route("/path", "get")
+        fn, kwargs, dbg = registry_mod.match_route("/path", "get")
         test("match_case: lowercase method matches", fn is _handler)
 
     _with_clean_routes(_inner)
@@ -145,7 +147,7 @@ def test_match_route_id_template():
             pass
 
         registry_mod.ROUTES.append(("/session/{id}", ["GET"], _handler))
-        fn, kwargs = registry_mod.match_route("/session/abc123", "GET")
+        fn, kwargs, dbg = registry_mod.match_route("/session/abc123", "GET")
         test("match_id: handler found", fn is _handler)
         test("match_id: session_id extracted", kwargs.get("session_id") == "abc123")
 
@@ -159,7 +161,7 @@ def test_match_route_id_template_complex():
             pass
 
         registry_mod.ROUTES.append(("/api/session/{id}/details", ["GET"], _handler))
-        fn, kwargs = registry_mod.match_route("/api/session/sess-xyz/details", "GET")
+        fn, kwargs, dbg = registry_mod.match_route("/api/session/sess-xyz/details", "GET")
         test("match_id_complex: handler found", fn is _handler)
         test("match_id_complex: session_id", kwargs.get("session_id") == "sess-xyz")
 
@@ -177,7 +179,7 @@ def test_match_route_more_specific_wins():
 
         registry_mod.ROUTES.append(("/session/{id}", ["GET"], _short))
         registry_mod.ROUTES.append(("/session/{id}.md", ["GET"], _long))
-        fn, kwargs = registry_mod.match_route("/session/abc.md", "GET")
+        fn, kwargs, dbg = registry_mod.match_route("/session/abc.md", "GET")
         test("match_specific: longer route wins", fn is _long)
 
     _with_clean_routes(_inner)
@@ -193,8 +195,8 @@ def test_match_route_multiple_routes():
 
         registry_mod.ROUTES.append(("/route/one", ["GET"], _h1))
         registry_mod.ROUTES.append(("/route/two", ["GET"], _h2))
-        fn1, _ = registry_mod.match_route("/route/one", "GET")
-        fn2, _ = registry_mod.match_route("/route/two", "GET")
+        fn1, _, _dbg1 = registry_mod.match_route("/route/one", "GET")
+        fn2, _, _dbg2 = registry_mod.match_route("/route/two", "GET")
         test("match_multi: first route", fn1 is _h1)
         test("match_multi: second route", fn2 is _h2)
 

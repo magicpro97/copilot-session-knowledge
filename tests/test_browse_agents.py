@@ -67,23 +67,23 @@ def run_all_tests() -> int:
     # The old /session/{id}/agents routes are gone. /session/{id} is a wildcard
     # that may absorb "abc/agents" as a session_id — that's fine. What matters is
     # that no dedicated agents handler is registered.
-    handler_html, kw_html = match_route("/session/abc/agents", "GET")
+    handler_html, kw_html, _dbg_html = match_route("/session/abc/agents", "GET")
     # Either not found, or falls through to session_detail (not an agents handler)
     test("T3: /session/{id}/agents → no dedicated agents handler",
          handler_html is None or handler_html is handle_session_detail)
 
-    handler_api, _ = match_route("/api/session/abc/agents", "GET")
+    handler_api, _, _dbg_api = match_route("/api/session/abc/agents", "GET")
     test("T3: /api/session/{id}/agents → not registered (None)", handler_api is None)
 
     # Verify /session/{id}/timeline still works (no regression)
     from browse.routes.timeline import handle_session_timeline
-    handler_tl, kwargs_tl = match_route("/session/abc-123/timeline", "GET")
+    handler_tl, kwargs_tl, _dbg_tl = match_route("/session/abc-123/timeline", "GET")
     test("T3: /session/{id}/timeline still resolves", handler_tl is handle_session_timeline)
     test("T3: timeline session_id extracted", kwargs_tl.get("session_id") == "abc-123")
 
     # Verify /session/{id} still works (no regression)
     from browse.routes.session_detail import handle_session_detail
-    handler3, kwargs3 = match_route("/session/abc-123-def", "GET")
+    handler3, kwargs3, _dbg3 = match_route("/session/abc-123-def", "GET")
     test("T3: /session/{id} still resolves to session_detail", handler3 is handle_session_detail)
     test("T3: /session/{id} session_id correct", kwargs3.get("session_id") == "abc-123-def")
 

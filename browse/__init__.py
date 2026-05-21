@@ -672,6 +672,61 @@ def main() -> None:
             "Exits after removal — does NOT start a server."
         ),
     )
+    # ── Debug-log storage flags (WBS-103) ─────────────────────────────────────
+    p.add_argument(
+        "--debug-log",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable debug-log storage and the /api/debug-log/healthz probe route. "
+            "Disabled by default.  Also enabled via BROWSE_DEBUG_LOG_ENABLED=1. "
+            "Debug routes require Bearer or cookie auth — ?token= is rejected. "
+            "See docs/DEBUG-LOG-CONTRACT.md for the full contract."
+        ),
+    )
+    p.add_argument(
+        "--debug-log-dir",
+        metavar="DIR",
+        default="",
+        help=(
+            "Directory for the debug-log SQLite DB (default: "
+            "~/.copilot/operator-console/debug-log/). "
+            "Also configurable via BROWSE_DEBUG_LOG_DIR."
+        ),
+    )
+    p.add_argument(
+        "--debug-log-max-age-seconds",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Max age in seconds for debug-log events (default: 86400). "
+             "Also via BROWSE_DEBUG_LOG_MAX_AGE_S.",
+    )
+    p.add_argument(
+        "--debug-log-max-bytes",
+        type=int,
+        default=0,
+        metavar="BYTES",
+        help="Max total size in bytes for debug-log events (default: 52428800). "
+             "Also via BROWSE_DEBUG_LOG_MAX_BYTES.",
+    )
+    p.add_argument(
+        "--debug-log-retention-interval",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Interval in seconds between retention runs (default: 300). "
+             "Also via BROWSE_DEBUG_LOG_RETENTION_INTERVAL_S.",
+    )
+    p.add_argument(
+        "--debug-log-ephemeral",
+        action="store_true",
+        default=False,
+        help=(
+            "Remove the debug-log DB and WAL/SHM files on shutdown. "
+            "Also via BROWSE_DEBUG_LOG_EPHEMERAL=1."
+        ),
+    )
     args = p.parse_args()
 
     # --install-launcher: one-shot install — exit after writing launcher files.
@@ -993,6 +1048,35 @@ def main() -> None:
     if not args.no_tunnel:
         stop_tunnel = _start_cloudflared(local_base_url, token, token_env_source=token_env_source)
 
+    # ── Debug-log storage initialization (WBS-103) ────────────────────────────
+    # Check both CLI flag and env variable; set env so is_enabled() returns True.
+    _dl_enabled = args.debug_log or os.environ.get(
+        "BROWSE_DEBUG_LOG_ENABLED", ""
+    ).strip().lower() in ("1", "true", "yes")
+    if _dl_enabled:
+        os.environ["BROWSE_DEBUG_LOG_ENABLED"] = "1"
+        from browse.core.debug_log_storage import (  # noqa: PLC0415
+            init_storage as _dl_init,
+            start_retention_thread as _dl_start,
+        )
+        import browse.routes.debug_log  # noqa: F401 — registers /api/debug-log/healthz
+
+        _dl_db_path = (
+            Path(args.debug_log_dir) / "debug-log.db"
+            if args.debug_log_dir
+            else None
+        )
+        # init_storage raises OSError/sqlite3.OperationalError on failure (no silent fallback)
+        _dl_init(
+            db_path=_dl_db_path,
+            max_age_s=args.debug_log_max_age_seconds or None,
+            max_bytes=args.debug_log_max_bytes or None,
+            retention_interval_s=args.debug_log_retention_interval or None,
+            ephemeral=args.debug_log_ephemeral or None,
+        )
+        _dl_start()
+        print("[debug-log] storage initialized; /api/debug-log/healthz registered.", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1001,3 +1085,8 @@ def main() -> None:
         stop_tunnel()
         server.server_close()
         db.close()
+        # Explicit shutdown — NO atexit, NO signal handler (WBS-103)
+        if _dl_enabled:
+            from browse.core.debug_log_storage import shutdown_storage as _dl_shutdown  # noqa: PLC0415
+
+            _dl_shutdown()

@@ -10,17 +10,27 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-# Global route table: list of (path_pattern, methods, handler_fn)
+# Global route table: list of (path_pattern, methods, handler_fn, debug)
+# debug=True routes receive distinct auth gating in the server dispatcher.
 ROUTES: list = []
 
+# Set of paths registered with debug=True (used by server for fast lookup).
+_DEBUG_ROUTES: set = set()
 
-def route(path: str, methods: list | None = None):
-    """Decorator: @route('/path', methods=['GET']) registers handler in ROUTES."""
+
+def route(path: str, methods: list | None = None, debug: bool = False):
+    """Decorator: @route('/path', methods=['GET'], debug=False) registers handler in ROUTES.
+
+    debug=True marks a route as a debug-log endpoint that requires separate
+    auth gating (Bearer/cookie only, no ?token=, no open-auth).
+    """
     if methods is None:
         methods = ["GET"]
 
     def decorator(fn: Callable) -> Callable:
-        ROUTES.append((path, [m.upper() for m in methods], fn))
+        ROUTES.append((path, [m.upper() for m in methods], fn, debug))
+        if debug:
+            _DEBUG_ROUTES.add(path)
         return fn
 
     return decorator
@@ -28,34 +38,44 @@ def route(path: str, methods: list | None = None):
 
 def match_route(path: str, method: str) -> tuple:
     """
-    Returns (handler_fn, kwargs).
+    Returns (handler_fn, kwargs, debug_flag).
     1. Exact match.
     2. Generic {id} template matching — /session/{id}/suffix, /api/session/{id}/suffix.
        Check for comment 'Generic {id} template matching' to detect this block.
     3. Prefix fallback for /session/{id} (legacy).
     kwargs will contain {'session_id': value} for the /session/{id} pattern.
+    debug_flag is True when the matched route was registered with debug=True.
+
+    Backward compatibility: ROUTES entries may be 3-tuples (legacy direct appends
+    in tests); those are treated as debug=False.
     """
     method = method.upper()
 
+    def _debug_flag(entry: tuple) -> bool:
+        return bool(entry[3]) if len(entry) > 3 else False
+
     # Exact match
-    for route_path, route_methods, handler in ROUTES:
+    for entry in ROUTES:
+        route_path, route_methods, handler = entry[0], entry[1], entry[2]
         if path == route_path and method in route_methods:
-            return handler, {}
+            return handler, {}, _debug_flag(entry)
 
     # Generic {id} template matching — supports /session/{id}/suffix, /api/session/{id}/suffix
     # Sort by path length descending so more-specific routes (e.g. /session/{id}.md) win over
     # less-specific ones (e.g. /session/{id}) when both patterns would match.
-    for route_path, route_methods, handler in sorted(ROUTES, key=lambda r: -len(r[0])):
+    for entry in sorted(ROUTES, key=lambda r: -len(r[0])):
+        route_path, route_methods, handler = entry[0], entry[1], entry[2]
         if "{id}" in route_path and method in route_methods:
             pat = "^" + re.escape(route_path).replace("\\{id\\}", "(?P<session_id>[^/]+)") + "$"
             m = re.match(pat, path)
             if m:
-                return handler, {"session_id": m.group("session_id")}
+                return handler, {"session_id": m.group("session_id")}, _debug_flag(entry)
 
     # Prefix pattern for /session/{id} (legacy fallback — catches unknown sub-paths → 400)
-    for route_path, route_methods, handler in ROUTES:
+    for entry in ROUTES:
+        route_path, route_methods, handler = entry[0], entry[1], entry[2]
         if route_path == "/session/{id}" and path.startswith("/session/") and method in route_methods:
             session_id = path[len("/session/") :]
-            return handler, {"session_id": session_id}
+            return handler, {"session_id": session_id}, _debug_flag(entry)
 
-    return None, {}
+    return None, {}, False

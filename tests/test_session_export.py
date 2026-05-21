@@ -79,8 +79,8 @@ def run_all_tests() -> int:
     # T2: match_route returns handler + session_id kwarg
     print("\n-- T2: match_route extracts session_id")
     from browse.core.registry import match_route
-    handler, kw = match_route("/session/abc123.md", "GET")
-    api_handler, api_kw = match_route("/api/session/abc123/export", "GET")
+    handler, kw, _dbg = match_route("/session/abc123.md", "GET")
+    api_handler, api_kw, _dbg_api = match_route("/api/session/abc123/export", "GET")
     test("T2: legacy handler is not None", handler is not None)
     test("T2: legacy session_id kwarg == 'abc123'", kw.get("session_id") == "abc123")
     test("T2: API handler is not None", api_handler is not None)
