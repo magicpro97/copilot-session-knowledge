@@ -699,16 +699,14 @@ def main() -> None:
         type=int,
         default=0,
         metavar="SECONDS",
-        help="Max age in seconds for debug-log events (default: 86400). "
-             "Also via BROWSE_DEBUG_LOG_MAX_AGE_S.",
+        help="Max age in seconds for debug-log events (default: 86400). Also via BROWSE_DEBUG_LOG_MAX_AGE_S.",
     )
     p.add_argument(
         "--debug-log-max-bytes",
         type=int,
         default=0,
         metavar="BYTES",
-        help="Max total size in bytes for debug-log events (default: 52428800). "
-             "Also via BROWSE_DEBUG_LOG_MAX_BYTES.",
+        help="Max total size in bytes for debug-log events (default: 52428800). Also via BROWSE_DEBUG_LOG_MAX_BYTES.",
     )
     p.add_argument(
         "--debug-log-retention-interval",
@@ -716,16 +714,13 @@ def main() -> None:
         default=0,
         metavar="SECONDS",
         help="Interval in seconds between retention runs (default: 300). "
-             "Also via BROWSE_DEBUG_LOG_RETENTION_INTERVAL_S.",
+        "Also via BROWSE_DEBUG_LOG_RETENTION_INTERVAL_S.",
     )
     p.add_argument(
         "--debug-log-ephemeral",
         action="store_true",
         default=False,
-        help=(
-            "Remove the debug-log DB and WAL/SHM files on shutdown. "
-            "Also via BROWSE_DEBUG_LOG_EPHEMERAL=1."
-        ),
+        help=("Remove the debug-log DB and WAL/SHM files on shutdown. Also via BROWSE_DEBUG_LOG_EPHEMERAL=1."),
     )
     args = p.parse_args()
 
@@ -1050,9 +1045,11 @@ def main() -> None:
 
     # ── Debug-log storage initialization (WBS-103) ────────────────────────────
     # Check both CLI flag and env variable; set env so is_enabled() returns True.
-    _dl_enabled = args.debug_log or os.environ.get(
-        "BROWSE_DEBUG_LOG_ENABLED", ""
-    ).strip().lower() in ("1", "true", "yes")
+    _dl_enabled = args.debug_log or os.environ.get("BROWSE_DEBUG_LOG_ENABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if _dl_enabled:
         os.environ["BROWSE_DEBUG_LOG_ENABLED"] = "1"
         import browse.routes.debug_log  # noqa: F401 — registers /api/debug-log/healthz
@@ -1063,11 +1060,7 @@ def main() -> None:
             start_retention_thread as _dl_start,
         )
 
-        _dl_db_path = (
-            Path(args.debug_log_dir) / "debug-log.db"
-            if args.debug_log_dir
-            else None
-        )
+        _dl_db_path = Path(args.debug_log_dir) / "debug-log.db" if args.debug_log_dir else None
         # init_storage raises OSError/sqlite3.OperationalError on failure (no silent fallback)
         _dl_init(
             db_path=_dl_db_path,

@@ -200,55 +200,72 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             if not _is_debug_route or _dbg_handler is None:
                 # Route not registered (feature disabled) → 404
                 self._send(
-                    b"404 Not Found", "text/plain", 404, nonce,
-                    cors_headers=cors_resp_headers or None, send_body=send_body,
+                    b"404 Not Found",
+                    "text/plain",
+                    404,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                    send_body=send_body,
                 )
                 return
 
             # Reject ?token= query-string auth for debug routes
             if params.get("token"):
                 self._send(
-                    b"401 Unauthorized", "text/plain", 401, nonce,
-                    cors_headers=cors_resp_headers or None, send_body=send_body,
+                    b"401 Unauthorized",
+                    "text/plain",
+                    401,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                    send_body=send_body,
                 )
                 return
 
             # Static/demo slot active → 403 (debug not available in demo mode)
             from browse.core.pairing import get_static_slot as _dbg_get_static  # noqa: PLC0415
+
             if _dbg_get_static():
                 self._send(
-                    b"403 Forbidden", "text/plain", 403, nonce,
-                    cors_headers=cors_resp_headers or None, send_body=send_body,
+                    b"403 Forbidden",
+                    "text/plain",
+                    403,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                    send_body=send_body,
                 )
                 return
 
             # Debug token auth (Bearer or cookie; empty server token → False)
             _dbg_cookie = self.headers.get("Cookie", "")
             _dbg_auth_hdr = self.headers.get("Authorization", "")
-            _dbg_valid, _dbg_token_val = check_debug_token(
-                self.token, _dbg_cookie, _dbg_auth_hdr
-            )
+            _dbg_valid, _dbg_token_val = check_debug_token(self.token, _dbg_cookie, _dbg_auth_hdr)
 
             if not _dbg_valid:
                 # Non-loopback + no server token configured → 403 (insecure config)
                 _dbg_host = self.headers.get("Host", "")
                 if not self.token and not _is_loopback_host(_dbg_host):
                     self._send(
-                        b"403 Forbidden", "text/plain", 403, nonce,
-                        cors_headers=cors_resp_headers or None, send_body=send_body,
+                        b"403 Forbidden",
+                        "text/plain",
+                        403,
+                        nonce,
+                        cors_headers=cors_resp_headers or None,
+                        send_body=send_body,
                     )
                 else:
                     self._send(
-                        b"401 Unauthorized", "text/plain", 401, nonce,
-                        cors_headers=cors_resp_headers or None, send_body=send_body,
+                        b"401 Unauthorized",
+                        "text/plain",
+                        401,
+                        nonce,
+                        cors_headers=cors_resp_headers or None,
+                        send_body=send_body,
                     )
                 return
 
             # Dispatch debug handler
             try:
-                body, ct, status = _dbg_handler(
-                    self.db, params, _dbg_token_val, nonce, **_dbg_kwargs
-                )
+                body, ct, status = _dbg_handler(self.db, params, _dbg_token_val, nonce, **_dbg_kwargs)
             except Exception as _dbg_exc:
                 _dbg_req_id = str(uuid.uuid4())
                 print(
@@ -264,8 +281,12 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 cors_resp_headers["X-Request-ID"] = _dbg_req_id
 
             self._send(
-                body, ct, status, nonce,
-                send_body=send_body, cors_headers=cors_resp_headers or None,
+                body,
+                ct,
+                status,
+                nonce,
+                send_body=send_body,
+                cors_headers=cors_resp_headers or None,
             )
             return
         # ── End debug-log gate ────────────────────────────────────────────────

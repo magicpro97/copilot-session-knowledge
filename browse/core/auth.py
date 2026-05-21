@@ -184,7 +184,7 @@ def check_debug_token(token: str, cookie_header: str, auth_header: str) -> "tupl
 
     # Bearer header: authoritative, no fallback on failure
     if auth_header and auth_header.startswith("Bearer "):
-        provided = auth_header[len("Bearer "):].strip()
+        provided = auth_header[len("Bearer ") :].strip()
         if provided:
             try:
                 if hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
@@ -209,7 +209,6 @@ def check_debug_token(token: str, cookie_header: str, auth_header: str) -> "tupl
                 pass
 
     return False, ""
-
 
 
 # ── Loopback / open-auth guard (WBS-087) ─────────────────────────────────────

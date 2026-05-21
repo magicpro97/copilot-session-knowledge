@@ -35,9 +35,9 @@ _log = logging.getLogger("browse.debug_log_storage")
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-DEFAULT_MAX_AGE_S: int = 24 * 3600          # 24 hours
-DEFAULT_MAX_BYTES: int = 50 * 1024 * 1024   # 50 MB
-DEFAULT_RETENTION_INTERVAL_S: int = 300     # 5 minutes
+DEFAULT_MAX_AGE_S: int = 24 * 3600  # 24 hours
+DEFAULT_MAX_BYTES: int = 50 * 1024 * 1024  # 50 MB
+DEFAULT_RETENTION_INTERVAL_S: int = 300  # 5 minutes
 
 _DB_FILENAME = "debug-log.db"
 
@@ -172,9 +172,7 @@ def init_storage(
             )
         )
         resolved_max_bytes = (
-            max_bytes
-            if max_bytes is not None
-            else _env_int("BROWSE_DEBUG_LOG_MAX_BYTES", DEFAULT_MAX_BYTES)
+            max_bytes if max_bytes is not None else _env_int("BROWSE_DEBUG_LOG_MAX_BYTES", DEFAULT_MAX_BYTES)
         )
         resolved_interval = (
             retention_interval_s
@@ -185,9 +183,7 @@ def init_storage(
                 aliases=("BROWSE_DEBUG_LOG_RETENTION_INTERVAL_SECONDS",),
             )
         )
-        resolved_ephemeral = (
-            ephemeral if ephemeral is not None else _env_bool("BROWSE_DEBUG_LOG_EPHEMERAL")
-        )
+        resolved_ephemeral = ephemeral if ephemeral is not None else _env_bool("BROWSE_DEBUG_LOG_EPHEMERAL")
 
         # Open DB — errors propagate, no silent fallback
         conn = _open_storage_conn(resolved_path)
@@ -257,9 +253,7 @@ def append_event(session_id: str, idx: int, kind: str, payload: Any) -> None:
 
     redacted_dict = redact_entry(payload)
     if "redacted" not in redacted_dict:
-        raise ValueError(
-            "redact_entry result missing 'redacted' key; refusing to store unsafe payload"
-        )
+        raise ValueError("redact_entry result missing 'redacted' key; refusing to store unsafe payload")
 
     payload_json = json.dumps(redacted_dict, ensure_ascii=False)
     byte_len = len(payload_json.encode("utf-8"))
@@ -267,12 +261,9 @@ def append_event(session_id: str, idx: int, kind: str, payload: Any) -> None:
 
     with _lock:
         if _conn is None:
-            raise RuntimeError(
-                "debug_log_storage not initialized; call init_storage() first"
-            )
+            raise RuntimeError("debug_log_storage not initialized; call init_storage() first")
         _conn.execute(
-            "INSERT INTO debug_log_events (ts_ns, session_id, idx, kind, payload, byte_len)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO debug_log_events (ts_ns, session_id, idx, kind, payload, byte_len) VALUES (?, ?, ?, ?, ?, ?)",
             (ts_ns, session_id, idx, kind, payload_json, byte_len),
         )
         _conn.commit()
