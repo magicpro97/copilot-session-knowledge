@@ -6,6 +6,7 @@ page paths), and directly for /_next/* static assets (no auth required).
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import unquote
@@ -16,6 +17,7 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 _V2_DIST = (Path(__file__).parent.parent.parent / "browse-ui" / "dist").resolve()
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 _CT: dict = {
     ".html": "text/html; charset=utf-8",
@@ -47,10 +49,14 @@ def _session_placeholder_fallback_paths(rel_path: str) -> tuple[str, list[Path]]
     suffix_parts = list(parts[2:])
     fallback_paths: list[Path] = []
 
+    session_id = unquote(parts[1])
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return "", []
+
     if suffix_parts:
         fallback_paths.append(placeholder_base.joinpath(*suffix_parts))
     fallback_paths.append(placeholder_base / "index.html")
-    return unquote(parts[1]), fallback_paths
+    return session_id, fallback_paths
 
 
 def _rewrite_session_placeholder(body: bytes, content_type: str, session_id: str) -> bytes:
