@@ -283,7 +283,8 @@ def run_all_tests() -> int:
         root_script_src = _script_src(csp)
         test("T9: CSP header present", bool(csp))
         test("T9: default-src 'self'", "default-src 'self'" in csp)
-        test("T9: static-export script-src allows unsafe-inline", "'unsafe-inline'" in root_script_src)
+        # PR #440 (WBS-084): root uses nonce-based strict CSP; unsafe-inline must be absent.
+        test("T9: root script-src uses nonce (strict CSP)", "nonce-" in root_script_src and "'unsafe-inline'" not in root_script_src)
 
         status_health, hdrs_health, _ = _get(host, port, "/healthz")
         status_api, hdrs_api, _ = _get(host, port, "/api/search?token=tok&q=session")
@@ -384,8 +385,8 @@ def run_all_tests() -> int:
     _, _, code5 = serve_static(None, "vendor/cytoscape.min.js")
     test("T12: static serves valid file (200 or 404 if missing)", code5 in (200, 404))
 
-    # ── T13: canonical root CSP allows static-export inline bootstrap scripts ──
-    print("\n-- T13: canonical root CSP (static-export inline script compatibility)")
+    # ── T13: canonical root CSP uses nonce-based strict CSP (PR #440 / WBS-084) ──
+    print("\n-- T13: canonical root CSP (nonce-based strict CSP; PR #440)")
     import re as _re
     db13 = _make_test_db()
     server13, host13, port13 = _start_server(db13, token="tok")
@@ -394,8 +395,9 @@ def run_all_tests() -> int:
         csp13 = hdrs13.get("content-security-policy", "")
         script_src13 = _script_src(csp13)
         test("T13: CSP has script-src", bool(script_src13))
-        test("T13: script-src allows unsafe-inline for static export", "'unsafe-inline'" in script_src13)
-        test("T13: script-src has no nonce for static export", "nonce-" not in script_src13)
+        # PR #440 (WBS-084): server injects nonce into inline scripts; unsafe-inline not needed.
+        test("T13: script-src uses nonce (no unsafe-inline)", "nonce-" in script_src13)
+        test("T13: script-src has no unsafe-inline", "'unsafe-inline'" not in script_src13)
         test("T13: CSP has no unsafe-eval", "unsafe-eval" not in csp13)
         test("T13: root page is HTML", b"<!DOCTYPE html>" in body13 or b"<html" in body13.lower())
         test("T13: root page is non-empty", len(body13) > 100)
