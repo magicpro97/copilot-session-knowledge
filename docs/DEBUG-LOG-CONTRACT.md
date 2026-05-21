@@ -1,8 +1,8 @@
 # Agent Debug Log Browse Contract
 
 **Schema version:** `1`
-**Status:** WBS-101 complete; WBS-103 storage/transport complete
-**Blocks:** WBS-104/WBS-105 (UI), WBS-106 (TS/Zod schemas)
+**Status:** WBS-101 complete; WBS-103 storage/transport complete; WBS-105 operator capture complete
+**Blocks:** WBS-104 (UI panel), WBS-106 (TS/Zod schemas)
 **Redaction policy:** See [Security & Redaction](#security--redaction) — WBS-102
 
 ---
@@ -355,7 +355,7 @@ No CSP loosening is applied for debug routes.
 The following are explicitly **out of scope** for the current debug-log contract:
 
 1. Full debug-log read/query API (`GET /api/session/{id}/debug-log`) — WBS-103 implemented only the healthz probe and storage layer; the session-scoped read route remains future work.
-2. Frontend UI panel or event row renderer — WBS-104/WBS-105.
+2. Frontend UI panel or event row renderer — WBS-104.
 3. TypeScript / Zod schema implementation — WBS-106.
 4. SSE streaming of debug log events — WBS-107.
 5. Redaction engine implementation — WBS-102.
@@ -364,6 +364,112 @@ The following are explicitly **out of scope** for the current debug-log contract
 7. Real-time filtering or search — WBS-108+.
 8. Performance benchmarks — WBS-109.
 9. CI integration — WBS-110.
+
+---
+
+## WBS-105 Operator Debug Event Capture
+
+### Overview
+
+WBS-105 adds a bounded, redacted **debug-event sidecar** to every operator run.  The sidecar is
+stored as `run["debug_events"]` in-memory and persisted to disk alongside `run["events"]` by
+`_persist_run`.  It is **never emitted over the SSE stream** — the SSE stream shape, resume
+tokens, `_CHECKPOINT_INTERVAL`, and `_MAX_OUTPUT_LINES` semantics are unchanged.
+
+### Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `_MAX_DEBUG_EVENTS` | `5000` | Maximum sidecar entries per run; on overflow a sentinel is appended and further events are dropped |
+| `_DEBUG_SOURCE` | `"operator_console"` | `source` label applied to every debug entry |
+
+### Event classification (`_classify_debug_kind`)
+
+Each Copilot CLI output line is classified into a `kind` value for the debug sidecar.
+
+| Source event `type` | BrowseDebugEntry `kind` |
+|---|---|
+| `session_start` | `session_start` |
+| `turn_start` | `turn_start` |
+| `llm_request`, `assistant.request` | `llm_request` |
+| `tool_call`, `tool_result` | `tool_call` |
+| `hook`, `hook_pre`, `hook_post` | `hook` |
+| `subagent`, `subagent_start`, `subagent_result` | `subagent` |
+| `assistant.message`, `assistant.message_delta` | `agent_response` |
+| `error`, `exception` | `error` |
+| Any other typed JSON | `generic` |
+| Missing `type` or non-JSON | `raw` |
+
+### Synthetic span-ID formula
+
+Every debug entry receives a deterministic synthetic `span_id` computed as:
+
+```python
+hashlib.sha1(f"operator_console:{idx}:{seq}".encode("utf-8")).hexdigest()[:16]
+```
+
+The result must not equal `"0000000000000000"` (increment `seq` and re-hash if it does).
+
+### Sidecar lifecycle
+
+1. **Initialization** — `start_run` initializes `debug_events: []`, `_debug_idx: 0`, `_debug_seq: 1`.
+2. **Per-event append** — `_run_copilot_thread` calls `_build_debug_entry` + `_append_debug_event`
+   after each call to `_parse_output_event`.
+3. **Terminal debug events** — appended before `_persist_run` for success, failure, timeout,
+   cancellation, `FileNotFoundError`, and generic exceptions.
+4. **Persistence** — `_persist_run` writes `debug_events` to disk while excluding `_debug_idx`,
+   `_debug_seq`, and `proc` (private mutable state).
+5. **Storage** — when `BROWSE_DEBUG_LOG_ENABLED=1` and WBS-103 storage is initialized,
+   `_store_debug_event` calls `debug_log_storage.append_event`.  Storage errors are logged and
+   do **not** propagate — operator runs must never fail because of a debug-log hiccup.
+
+### Truncation sentinel
+
+When the sidecar reaches `_MAX_DEBUG_EVENTS - 1` entries, exactly one sentinel is appended:
+
+```json
+{
+  "kind": "generic",
+  "source": "operator_console",
+  "message": "[DEBUG TRUNCATED]",
+  "attrs": {"truncated": true, "event_count": 5000}
+}
+```
+
+All subsequent `_append_debug_event` calls are silently dropped.  The `run["events"]` SSE list
+and `_MAX_OUTPUT_LINES` are **unaffected**.
+
+### Terminal debug event shapes
+
+**Success** (`exit_code == 0`):
+```json
+{"kind": "generic", "status": "ok", "attrs": {"exit_code": 0}}
+```
+
+**Failure** (`exit_code != 0`):
+```json
+{"kind": "error", "status": "error", "attrs": {"exit_code": N, "error_category": "nonzero_exit"}}
+```
+
+**Timeout**:
+```json
+{"kind": "error", "status": "error", "attrs": {"error_category": "timeout"}}
+```
+
+**Cancellation**:
+```json
+{"kind": "generic", "status": "cancelled", "attrs": {}}
+```
+
+**FileNotFoundError** (CLI not found):
+```json
+{"kind": "error", "status": "error", "attrs": {"error_category": "cli_not_found"}}
+```
+
+**Generic exception**:
+```json
+{"kind": "error", "status": "error", "attrs": {"error_category": "exception"}}
+```
 
 ---
 

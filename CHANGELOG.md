@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Bounded redacted operator debug-event sidecar (WBS-105, #430):**
+  - `browse/core/operator_console.py`:
+    - Constants `_MAX_DEBUG_EVENTS = 5000` and `_DEBUG_SOURCE = "operator_console"`.
+    - `_classify_debug_kind(event_type)` — maps Copilot CLI event types to BrowseDebugEntry kinds
+      (session_start, turn_start, llm_request, tool_call, hook, subagent, agent_response, error,
+      generic, raw); unknown typed JSON → generic; None/empty → raw.
+    - `_synthetic_span_id(idx, seq)` — deterministic `sha1("operator_console:{idx}:{seq}")[:16]`;
+      re-hashes on all-zeros (astronomically unlikely).
+    - `_build_debug_entry(parsed_event, debug_idx, run_seq)` — builds a BrowseDebugEntry-shaped
+      dict: source=operator_console, message ≤ 2048 chars, synthetic span_id, allowlisted attrs.
+    - `_append_debug_event(run_state, entry, session_id)` — appends to `run["debug_events"]`;
+      enforces cap: at `_MAX_DEBUG_EVENTS - 1` appends a single sentinel
+      `{message: "[DEBUG TRUNCATED]", attrs: {truncated: True, event_count: 5000}}`; subsequent
+      events dropped. Returns the redacted entry to callers, which invoke `_store_debug_event`
+      outside `_RUNS_LOCK`; storage errors are logged and do not propagate.
+    - `start_run` initializes `debug_events: []`, `_debug_idx: 0`, `_debug_seq: 1`.
+    - `_run_copilot_thread` appends a classified debug entry after each stream event (does not
+      interleave into `run["events"]`; never emitted over SSE).  Appends terminal debug events
+      for success, failure, timeout, cancellation, FileNotFoundError, and generic exceptions.
+    - `_persist_run` writes `debug_events` to disk while excluding `_debug_idx`, `_debug_seq`,
+      and `proc`.
+    - SSE stream shape, `make_stream_generator`, `_RESUME_TOKENS`, `_CHECKPOINT_INTERVAL`, and
+      `_MAX_OUTPUT_LINES` semantics are **unchanged**.
+    - `debug_log_storage` lifecycle remains in `browse/__init__.py`; never initialized from
+      `operator_console`.
+  - `tests/test_browse_operator_debug_events.py`: 27-test-case suite (204 assertions) covering classification
+    fixtures, synthetic span-id format/determinism/no-zeros, entry construction for raw and
+    structured events, sidecar cap and sentinel, sealed-sidecar drop, redaction pass, stream
+    byte-equality (debug_events absent from SSE), _MAX_OUTPUT_LINES sidecar independence,
+    feature-disabled path, persistence (debug_events written, _debug_idx/_debug_seq excluded),
+    failed-exit and FileNotFoundError terminal events, raw truncation at 2048 chars, and public
+    status/runs response filtering.
+  - `docs/DEBUG-LOG-CONTRACT.md`: new **WBS-105 Operator Debug Event Capture** section
+    documenting constants, classification table, synthetic span-id formula, sidecar lifecycle,
+    truncation sentinel shape, and all terminal debug event shapes.
+
 - **Debug-log separate SQLite storage and healthz probe (WBS-103, #428):**
   - `browse/core/debug_log_storage.py`: new isolated debug-log store — separate SQLite DB at
     `~/.copilot/operator-console/debug-log/debug-log.db` (outside session-state and `knowledge.db`).
