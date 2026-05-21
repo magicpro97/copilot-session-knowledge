@@ -518,6 +518,6 @@ if __name__ == "__main__":
     print("\n-- CSP")
     test_no_unsafe_inline_in_csp()
 
-    print(f"\n==================================================")
+    print("\n==================================================")
     print(f"Results: {_PASS} passed, {_FAIL} failed")
     sys.exit(0 if _FAIL == 0 else 1)

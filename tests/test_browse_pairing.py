@@ -8,8 +8,8 @@ issue #59 (static pairing slot / demo mode).
 import io
 import json
 import sys
-import time
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -144,8 +144,8 @@ def test_verify_expired_ticket():
     token = "tok"
     base_url = "http://127.0.0.1:8765"
     # Manually craft an old ticket
-    import hmac as _hmac
     import hashlib as _hashlib
+    import hmac as _hmac
     import secrets as _secrets
 
     old_time = int(time.time()) - 400  # 400s ago
@@ -301,6 +301,7 @@ def test_static_slot_ticket_url():
 def test_static_slot_ticket_stays_valid_beyond_default_qr_window():
     """Static slot ticket keeps its signed TTL instead of expiring after 5 minutes."""
     from unittest.mock import patch
+
     import browse.core.pairing as pairing_mod
 
     terminate_static_slot()
@@ -324,8 +325,8 @@ def test_render_terminal_qr_url_box_fallback():
     is absent.  We temporarily mock ``qrcode`` as unavailable to force the box
     path, then verify the output contains the URL and the expected instructions.
     """
-    import io
     import sys
+
     from browse.core.pairing import _print_url_box
 
     url = "browse://connect?ticket=dGVzdAo"
@@ -349,8 +350,8 @@ def test_render_terminal_qr_dispatches():
     Confirms the runtime fallback chain (qrcode → URL-in-box) is solid and
     provides end-to-end proof that the terminal QR path does not crash.
     """
-    import io
     import sys
+
     from browse.core.pairing import render_terminal_qr
 
     url = "browse://connect?ticket=dGVzdHRlc3Q"
@@ -384,6 +385,7 @@ def test_render_terminal_qr_dispatches():
 def test_pairing_verify_endpoint_valid():
     """POST /api/operator/pairing/verify returns valid=true for a fresh ticket."""
     import sqlite3
+
     from browse.api.pairing import handle_verify_pairing_ticket
 
     token = "api_test_token_abc"
@@ -406,6 +408,7 @@ def test_pairing_verify_endpoint_wrong_token():
     """POST /api/operator/pairing/verify returns valid=false for wrong server token."""
     import json
     import sqlite3
+
     from browse.api.pairing import handle_verify_pairing_ticket
 
     ticket_url = create_pairing_ticket("correct_token", "http://127.0.0.1:9999")
@@ -422,6 +425,7 @@ def test_pairing_verify_endpoint_wrong_token():
 def test_pairing_verify_endpoint_missing_ticket():
     """POST /api/operator/pairing/verify returns 400 when ticket is absent."""
     import json
+
     from browse.api.pairing import handle_verify_pairing_ticket
 
     body = json.dumps({"other_field": "value"})
@@ -433,6 +437,7 @@ def test_pairing_verify_endpoint_missing_ticket():
 def test_pairing_verify_endpoint_invalid_max_age_falls_back():
     """POST /api/operator/pairing/verify does not 500 on malformed max_age_seconds."""
     import json
+
     from browse.api.pairing import handle_verify_pairing_ticket
 
     token = "api_test_token_abc"
@@ -453,6 +458,7 @@ def test_pairing_verify_endpoint_invalid_max_age_falls_back():
 def test_static_slot_api_get():
     """GET /api/operator/pairing/static returns active=false when no slot."""
     import json
+
     from browse.api.pairing import handle_get_static_slot
 
     terminate_static_slot()
@@ -465,6 +471,7 @@ def test_static_slot_api_get():
 def test_static_slot_api_get_active():
     """GET /api/operator/pairing/static returns full info when slot is active."""
     import json
+
     from browse.api.pairing import handle_get_static_slot
 
     terminate_static_slot()
@@ -484,6 +491,7 @@ def test_static_slot_api_get_active():
 def test_static_slot_api_terminate():
     """DELETE /api/operator/pairing/static terminates active slot."""
     import json
+
     from browse.api.pairing import handle_terminate_static_slot
 
     terminate_static_slot()
@@ -498,6 +506,7 @@ def test_static_slot_api_terminate():
 def test_static_slot_api_terminate_idempotent():
     """DELETE /api/operator/pairing/static returns terminated=false when no slot."""
     import json
+
     from browse.api.pairing import handle_terminate_static_slot
 
     terminate_static_slot()
@@ -509,6 +518,7 @@ def test_static_slot_api_terminate_idempotent():
 def test_static_slot_api_refresh():
     """POST /api/operator/pairing/static/refresh terminates old slot and creates new one."""
     import json
+
     from browse.api.pairing import handle_refresh_static_slot
 
     terminate_static_slot()
@@ -538,6 +548,7 @@ def test_static_slot_api_refresh():
 def test_static_slot_api_terminate_forbidden_for_static_session():
     """DELETE /api/operator/pairing/static rejects static-slot callers."""
     import json
+
     from browse.api.pairing import handle_terminate_static_slot
 
     terminate_static_slot()
@@ -558,6 +569,7 @@ def test_static_slot_api_terminate_forbidden_for_static_session():
 def test_static_slot_api_refresh_forbidden_for_static_session():
     """POST /api/operator/pairing/static/refresh rejects static-slot callers."""
     import json
+
     from browse.api.pairing import handle_refresh_static_slot
 
     terminate_static_slot()
@@ -636,7 +648,8 @@ def test_static_token_reaches_real_server_auth_path():
     db = sqlite3.connect(":memory:")
 
     # Register a test route under /api/ so the server dispatches it via registry.
-    from browse.core.registry import ROUTES, route as _route
+    from browse.core.registry import ROUTES
+    from browse.core.registry import route as _route
 
     _route_path = "/api/test/static-session-kind-echo"
 
@@ -688,7 +701,7 @@ def test_static_token_reaches_real_server_auth_path():
         db.close()
         terminate_static_slot()
         # Remove test route from global ROUTES to avoid polluting other tests.
-        ROUTES[:] = [(p, m, h) for p, m, h in ROUTES if p != _route_path]
+        ROUTES[:] = [r for r in ROUTES if r[0] != _route_path]
 
 
 # ── Open verify endpoint – request-path proof (#58) ───────────────────────────
@@ -703,6 +716,7 @@ def test_open_verify_endpoint_real_server():
     import sqlite3
     import urllib.request
     from http.server import ThreadingHTTPServer
+
     from browse.core.server import _make_handler_class
     from browse.routes import discovery as _disc  # noqa: F401 — register routes
 

@@ -193,8 +193,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         # Must precede normal auth check — debug routes use a distinct auth path:
         # Bearer/cookie only, no ?token=, no open-auth, static-slot → 403.
         if path.startswith("/api/debug-log/"):
-            from browse.core.auth import _is_loopback_host  # noqa: PLC0415
-            from browse.core.auth import check_debug_token  # noqa: PLC0415
+            from browse.core.auth import _is_loopback_host, check_debug_token  # noqa: PLC0415
 
             _dbg_handler, _dbg_kwargs, _is_debug_route = match_route(path, "GET")
 

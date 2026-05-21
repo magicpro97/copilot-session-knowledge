@@ -367,6 +367,50 @@ def test_retention_thread_stops_on_shutdown():
         test("retention_thread_stop: thread not alive after shutdown", not t.is_alive())
 
 
+def test_retention_thread_not_revived_by_stop_event_reset():
+    """Retention thread cannot become a zombie when _stop_event is reassigned.
+
+    Regression test for WBS-103: start_retention_thread() must capture the
+    stop Event in a closure (not look it up via module-global each iteration).
+    If shutdown_storage() times out on join and replaces _stop_event with a
+    fresh unset Event, the thread must still observe the *original* (signalled)
+    Event and exit — not continue running against a reinitialized connection.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "zombie.db"
+        _reset()
+        _dls.init_storage(db_path=db_path, retention_interval_s=60)
+        _dls.start_retention_thread()
+
+        with _dls._lock:
+            t = _dls._thread
+        # Capture the event the thread was started with (same object the
+        # fixed _loop closure holds).
+        original_stop = _dls._stop_event
+
+        assert t is not None and t.is_alive(), "thread should be alive before test"
+
+        # Step 1: signal the original event (as shutdown_storage() does).
+        original_stop.set()
+
+        # Step 2: replace the module-level _stop_event with a fresh unset
+        # Event, exactly as shutdown_storage() does after a timed-out join.
+        _dls._stop_event = threading.Event()  # new, unset — must NOT revive thread
+
+        # Step 3: the thread must exit because its closure still holds
+        # original_stop (which is set), not the fresh replacement.
+        t.join(timeout=3.0)
+        test(
+            "zombie_prevention: thread exits when original stop event is set "
+            "even after module-level _stop_event is replaced with new unset event",
+            not t.is_alive(),
+        )
+
+        # Clean module state for subsequent tests (_thread still points to
+        # the now-dead thread; shutdown_storage handles that gracefully).
+        _reset()
+
+
 def test_retention_thread_prunes():
     """Retention thread calls prune_now and deletes expired rows."""
     with tempfile.TemporaryDirectory() as td:
@@ -526,6 +570,7 @@ if __name__ == "__main__":
     print("\n-- Retention thread")
     test_retention_thread_starts()
     test_retention_thread_stops_on_shutdown()
+    test_retention_thread_not_revived_by_stop_event_reset()
     test_retention_thread_prunes()
 
     print("\n-- get_config")
@@ -536,6 +581,6 @@ if __name__ == "__main__":
     test_default_path_override_via_env()
     test_init_raises_on_bad_path()
 
-    print(f"\n==================================================")
+    print("\n==================================================")
     print(f"Results: {_PASS} passed, {_FAIL} failed")
     sys.exit(0 if _FAIL == 0 else 1)

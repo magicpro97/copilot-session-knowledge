@@ -15,6 +15,7 @@ Verifies that the debug-log DB is correctly isolated from all other pipelines:
 import os
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 if os.name == "nt":
@@ -285,12 +286,13 @@ def test_build_session_index_no_debug_log_ref():
 
 def test_session_export_no_debug_log():
     """Session export (*.md route) output does not include debug-log path or content."""
-    import sqlite3
-    from browse.core.server import _make_handler_class
-    from http.server import ThreadingHTTPServer
     import http.client
-    import threading
     import json
+    import sqlite3
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from browse.core.server import _make_handler_class
 
     db = sqlite3.connect(":memory:", check_same_thread=False)
     db.row_factory = sqlite3.Row
@@ -375,7 +377,6 @@ class _WatchSigsHelper:
 
 
 # Monkey-patch the helper module reference used by test_watch_get_file_signatures_ignores_db_files
-import types
 _shim = types.ModuleType("watch_sessions_import_helper")
 _shim.get_file_signatures_fn = None
 sys.modules["watch_sessions_import_helper"] = _shim
@@ -419,6 +420,6 @@ if __name__ == "__main__":
     print("\n-- session export exclusion")
     test_session_export_no_debug_log()
 
-    print(f"\n==================================================")
+    print("\n==================================================")
     print(f"Results: {_PASS} passed, {_FAIL} failed")
     sys.exit(0 if _FAIL == 0 else 1)

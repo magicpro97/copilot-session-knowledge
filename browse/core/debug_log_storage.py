@@ -210,15 +210,22 @@ def start_retention_thread() -> None:
     with _lock:
         if _thread is not None and _thread.is_alive():
             return
+        # Capture the stop event under the lock so the thread holds a stable
+        # reference to this specific Event for its entire lifetime.  If
+        # shutdown_storage() times out on join and then replaces the
+        # module-level _stop_event with a fresh unset Event, the thread still
+        # observes the *original* (signalled) event and exits rather than
+        # running as an untracked zombie against a re-initialized connection.
+        stop = _stop_event
 
     def _loop() -> None:
         interval = _retention_interval_s
-        while not _stop_event.is_set():
+        while not stop.is_set():
             try:
                 prune_now()
             except Exception:
                 _log.exception("[debug_log] retention loop error")
-            _stop_event.wait(interval)
+            stop.wait(interval)
 
     t = threading.Thread(target=_loop, daemon=True, name="debug-log-retention")
     with _lock:
