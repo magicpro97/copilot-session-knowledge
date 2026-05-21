@@ -26,6 +26,11 @@ _V2_DIST = (Path(__file__).parent.parent.parent / "browse-ui" / "dist").resolve(
 # Used by _inject_csp_nonce; see INV-3, INV-4.
 _SCRIPT_OPEN_RE = re.compile(rb"<script(\s[^>]*)?>", re.IGNORECASE)
 
+# Regex matching HTML comments (<!-- ... -->), including multi-line content.
+# Used by _inject_csp_nonce to skip <script> tokens that appear inside comments
+# (e.g. framework-generated conditional comments in browse-ui/dist output).
+_HTML_COMMENT_RE = re.compile(rb"<!--.*?-->", re.DOTALL)
+
 # Attribute-boundary regexes for ``src`` and ``nonce`` attribute detection.
 # Using word-boundary variants (?:^|\s) ensures we detect the attribute name
 # proper (with optional whitespace around ``=``) rather than substring matches
@@ -60,11 +65,13 @@ def _inject_csp_nonce(body: bytes, nonce: str) -> bytes:
 
     Mutates ONLY opening ``<script>`` tags that:
     - have **no** ``src=`` attribute (inline scripts only), and
-    - have **no** existing ``nonce=`` attribute (idempotent / INV-9).
+    - have **no** existing ``nonce=`` attribute (idempotent / INV-9), and
+    - are **not** inside an HTML comment (``<!-- ... -->``).
 
     Never touches ``<script src=...>``, ``</script>`` closing tags, script
-    bodies, style tags, or text nodes.  Applied ONLY to trusted
-    ``browse-ui/dist`` HTML (see INV-1..INV-10 in G3 security review).
+    bodies, style tags, text nodes, or ``<script>`` tokens that appear inside
+    HTML comments.  Applied ONLY to trusted ``browse-ui/dist`` HTML (see
+    INV-1..INV-10 in G3 security review).
 
     If *nonce* is empty/falsy the body is returned unchanged (INV-2, INV-10).
     """
@@ -83,7 +90,22 @@ def _inject_csp_nonce(body: bytes, nonce: str) -> bytes:
             return m.group(0)
         return b"<script" + attrs + b' nonce="' + nonce_bytes + b'">'
 
-    return _SCRIPT_OPEN_RE.sub(_replace, body)
+    # Process body in segments, skipping HTML comment blocks entirely.
+    # This prevents nonce injection into <script> tokens that appear inside
+    # HTML comments (e.g. framework-generated conditional comments in dist).
+    result: list[bytes] = []
+    last = 0
+    for comment in _HTML_COMMENT_RE.finditer(body):
+        c_start, c_end = comment.span()
+        # Inject into the non-comment segment that precedes this comment.
+        result.append(_SCRIPT_OPEN_RE.sub(_replace, body[last:c_start]))
+        # Preserve the comment block verbatim.
+        result.append(comment.group(0))
+        last = c_end
+    # Inject into remaining content after the last comment (or the whole body
+    # when there are no comments).
+    result.append(_SCRIPT_OPEN_RE.sub(_replace, body[last:]))
+    return b"".join(result)
 
 
 def _session_placeholder_fallback_paths(rel_path: str) -> tuple[str, list[Path]]:

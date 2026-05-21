@@ -303,27 +303,93 @@ class TestClosingTagNotModified(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test i: HTML comment with <script> literal — behaviour documented
+# Test i: HTML comment with <script> literal — comment-aware injection
 # ---------------------------------------------------------------------------
 
 class TestHtmlCommentBehaviour(unittest.TestCase):
-    """Document: the regex matches <script> inside HTML comments because it
-    operates on raw bytes, not a parsed DOM tree.  This is an accepted
-    trade-off since browse-ui/dist does NOT contain <script> inside HTML
-    comments.  callers must only invoke _inject_csp_nonce on trusted dist HTML.
+    """<script> tags inside HTML comments are NOT nonced.
+
+    _inject_csp_nonce processes the body in segments, skipping content inside
+    ``<!-- ... -->`` blocks entirely.  Any ``<script>`` token inside a comment
+    is left verbatim.  Real inline scripts outside comments still receive the
+    nonce.
+
+    This handles browse-ui/dist output where framework build tools may emit
+    HTML comments that contain ``<script>`` tokens.
     """
 
-    def test_real_inline_script_gets_nonce_alongside_comment(self):
-        """At minimum, the real inline script in the page receives the nonce."""
+    def test_script_inside_comment_not_nonced(self):
+        """A <script> tag that is entirely inside an HTML comment must NOT receive a nonce."""
+        body = b"<!-- <script>comment only</script> -->"
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertEqual(result, body)
+        self.assertNotIn(NONCE.encode(), result)
+
+    def test_real_inline_script_after_comment_gets_nonce(self):
+        """Real inline script after a comment block must still receive nonce."""
         body = b"<!-- <script> comment --><script>real()</script>"
         result = _inject_csp_nonce(body, NONCE)
-        # The genuine inline script must be nonced.
+        # The comment block is preserved verbatim.
+        self.assertIn(b"<!-- <script> comment -->", result)
+        # The genuine inline script gets the nonce.
         self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+        # Total nonce count: exactly one (the real script, not the comment).
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 1)
+
+    def test_real_inline_script_before_comment_gets_nonce(self):
+        """Real inline script before a comment block must receive nonce."""
+        body = b"<script>real()</script><!-- <script>inside comment</script> -->"
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+        # Comment preserved verbatim.
+        self.assertIn(b"<!-- <script>inside comment</script> -->", result)
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 1)
+
+    def test_multiline_comment_script_not_nonced(self):
+        """Multi-line HTML comment containing <script> is left untouched."""
+        body = (
+            b"<!--\n"
+            b"  <script>some deferred code()</script>\n"
+            b"-->"
+            b"<script>real()</script>"
+        )
+        result = _inject_csp_nonce(body, NONCE)
+        # Comment block preserved verbatim.
+        self.assertIn(b"<!--\n  <script>some deferred code()</script>\n-->", result)
+        # Real script gets nonce.
+        self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 1)
+
+    def test_comment_only_document_unchanged(self):
+        """Document consisting only of a comment is returned unchanged."""
+        body = b"<!-- <script>foo()</script> <script>bar()</script> -->"
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertEqual(result, body)
+
+    def test_multiple_comments_with_real_scripts_between(self):
+        """Comments at start and end; real scripts in between all get nonced."""
+        body = (
+            b"<!-- <script>c1</script> -->"
+            b"<script>real1()</script>"
+            b"<!-- <script>c2</script> -->"
+            b"<script>real2()</script>"
+            b"<!-- <script>c3</script> -->"
+        )
+        result = _inject_csp_nonce(body, NONCE)
+        # Both real scripts get nonces.
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 2)
+        # All three comment blocks preserved verbatim.
+        self.assertIn(b"<!-- <script>c1</script> -->", result)
+        self.assertIn(b"<!-- <script>c2</script> -->", result)
+        self.assertIn(b"<!-- <script>c3</script> -->", result)
 
     def test_no_comment_scripts_in_real_dist_output(self):
-        """Verify that browse-ui/dist HTML contains no <script> inside comments.
-        Fails when CI=true and dist is absent (must build first in CI).
+        """Verify that browse-ui/dist HTML comment blocks with <script> tokens
+        survive nonce injection unchanged — comment bytes must be preserved exactly.
+
         Skipped locally when dist is absent.
+        Fails in CI when dist is absent (must run ``cd browse-ui && pnpm build``
+        before this test suite).
         """
         import os as _os
         dist_path = Path(__file__).parent.parent / "browse-ui" / "dist"
@@ -335,15 +401,27 @@ class TestHtmlCommentBehaviour(unittest.TestCase):
                 )
             self.skipTest("browse-ui/dist not present; skipping dist-level assertion")
 
-        comment_re = re.compile(rb"<!--.*?<script.*?-->", re.DOTALL)
+        comment_script_re = re.compile(rb"<!--.*?<script.*?-->", re.DOTALL)
+        nonce = "distTestNonce_CI"
+        nonce_bytes = nonce.encode()
         for html_file in dist_path.rglob("*.html"):
             content = html_file.read_bytes()
-            matches = comment_re.findall(content)
-            self.assertEqual(
-                len(matches),
-                0,
-                f"{html_file.relative_to(dist_path)}: found <script> inside HTML comment",
-            )
+            injected = _inject_csp_nonce(content, nonce)
+            # Any comment block that contains a <script> token must survive verbatim.
+            for orig_comment in comment_script_re.finditer(content):
+                comment_bytes = orig_comment.group(0)
+                # Sanity: the original comment must not already contain our test nonce.
+                self.assertNotIn(
+                    nonce_bytes,
+                    comment_bytes,
+                    f"{html_file.relative_to(dist_path)}: original comment already contains test nonce (unexpected)",
+                )
+                # The exact comment bytes must appear unchanged in the injected output.
+                self.assertIn(
+                    comment_bytes,
+                    injected,
+                    f"{html_file.relative_to(dist_path)}: HTML comment block was modified by nonce injection",
+                )
 
 
 # ---------------------------------------------------------------------------
