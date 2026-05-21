@@ -81,8 +81,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .benchmarks/sk-python-startup-baseline.json
-          key: ubuntu-latest-sk-python-startup-baseline-v1
-          restore-keys: ubuntu-latest-sk-python-startup-baseline-v1-
+          key: ubuntu-latest-py3.11-sk-python-startup-baseline-v2
+          restore-keys: ubuntu-latest-py3.11-sk-python-startup-baseline-v2-
 
       - name: Startup regression guard (sk.py --version)
         run: >
