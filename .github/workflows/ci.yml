@@ -300,7 +300,9 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: Run E2E smoke tests
-        run: pnpm exec playwright test --project=behavioral --reporter=html
+        env:
+          DEBUG: pw:api,pw:webserver
+        run: pnpm exec playwright test --project=behavioral --reporter=list,html --max-failures=1
 
       - name: Upload Playwright smoke report
         if: always()
@@ -309,6 +311,15 @@ jobs:
           name: e2e-smoke-report
           path: browse-ui/playwright-report/
           retention-days: 30
+
+      - name: Upload Playwright smoke test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-test-results
+          path: browse-ui/test-results/
+          retention-days: 7
+          if-no-files-found: warn
 
   # Visual E2E remains gated to manual dispatch only.
   #
