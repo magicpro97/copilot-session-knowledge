@@ -1,7 +1,7 @@
 # DEBUG-LOG-REDACTION.md
 
-> **Status:** Implemented — `browse/core/redaction.py` (WBS-102 / Issue #427).
-> Merge is blocked on WBS-101 final field allowlist reconciliation (#426 merge-gate).
+> **Status:** Implemented and reconciled — `browse/core/redaction.py` (WBS-102 / Issue #427).
+> Reconciled against WBS-101 `docs/DEBUG-LOG-CONTRACT.md` (PR #438).
 
 ---
 
@@ -30,24 +30,24 @@ allow-listed and reviewed before they can carry data through the pipeline.
 
 | Field | Type | Rule |
 |---|---|---|
-| `idx` | `int` | Required; must be `>= 0`; coerced to `0` if invalid. |
-| `timestamp` | `str \| None` | ISO-8601 UTC string or `None`; invalid → `None`. |
+| `idx` | `int` | Required; must be `>= 0`; bool rejected; coerced to `0` if invalid. |
+| `timestamp` | `str \| None` | ISO-8601 with explicit TZ (`Z` or `±HH:MM`) or `None`; naive ISO (no TZ) → `None` + `redacted=True`. |
 | `kind` | `str` | Enum — see below; unknown → `"generic"`. |
-| `level` | `str` | Enum `debug\|info\|warn\|error`; unknown → `"info"`. |
-| `source` | `str` | Enum `cli\|hook\|browse\|vscode\|unknown`; unknown → `"unknown"`. |
-| `message` | `str` | Capped at 2048 chars; bearer/URL-token/path-username redacted. |
+| `level` | `str \| None` | Nullable enum `debug\|info\|warn\|error`; missing/`None` → `None` (no redaction); unknown → `None` + `redacted=True`. |
+| `source` | `str` | Enum `cli\|hook\|browse\|vscode\|operator_console\|hook_runner\|sk_watch\|unknown`; unknown/missing → `"unknown"` + `redacted=True`. |
+| `message` | `str` | Producer cap is upstream; redact_entry caps at **2048 chars** and scrubs bearer/URL-token/path-username; route handlers may apply a further 200-char preview cap. |
 | `tool_name` | `str` | Pattern `^[a-zA-Z0-9_.-]{1,64}$`; invalid → dropped. |
-| `duration_ms` | `int` | Must be `>= 0`; invalid → dropped. |
-| `span_id` | `str` | Lowercase hex `^[0-9a-f]{8,32}$`; invalid → dropped. |
+| `duration_ms` | `int \| float` | Must be finite `>= 0`; `bool` rejected; `NaN`/`Inf` rejected; keeps `int` as `int` and `float` as `float`; invalid → dropped + `redacted=True`. |
+| `span_id` | `str` | Exactly 16 lowercase hex chars `^[0-9a-f]{16}$`; invalid → dropped. |
 | `parent_span_id` | `str` | Same pattern as `span_id`. |
-| `status` | `str` | Enum `ok\|error\|cancelled\|timeout\|pending`; unknown → `"error"`. |
+| `status` | `str \| omitted` | Enum `ok\|error\|cancelled`; missing/`None` → omitted (no flag); unknown → omitted + `redacted=True` (not coerced to `"error"`). |
 | `attrs` | `dict` | Strict flat scalar allowlist (see below). |
 | `redacted` | `bool` | Set by the sanitizer; any input value is overwritten. |
 
 ### `kind` Enum
 
 `session_start` · `turn_start` · `llm_request` · `tool_call` · `hook` ·
-`subagent` · `agent_response` · `error` · `generic`
+`subagent` · `agent_response` · `error` · `generic` · `raw`
 
 ---
 
@@ -114,7 +114,21 @@ string value:
    JWTs, and generic `key=value` assignments.  Import failures are logged at
    DEBUG and the module-level patterns above still apply.
 
-`message` is capped at **2048 characters** before any redaction pass.
+`message` is capped at **2048 characters** before any redaction pass.  Route
+handlers may apply a further **200-character preview cap** for display surfaces;
+producers are responsible for keeping messages reasonably sized upstream.
+
+---
+
+## Timestamp Strictness
+
+`redact_entry` requires an **explicit timezone** in every ISO-8601 timestamp.
+Accepted forms: trailing `Z` (UTC) or a signed offset `±HH:MM` (e.g.,
+`+05:30`, `-07:00`).
+
+Naive timestamps (e.g., `2024-01-15T10:30:00` with no timezone indicator) are
+**rejected**: `timestamp` is set to `None` and `redacted=True` is set.  This
+prevents ambiguous local-time values from silently persisting in the log.
 
 ---
 
@@ -192,26 +206,25 @@ merge this module's allowlist logic back into `operator_console.py`.
 
 ---
 
-## #426 Merge-Gate Reconciliation
+## Reconciliation — WBS-101 × WBS-102 (Complete)
 
-This module was implemented in parallel with **WBS-101** (which produces
-`docs/DEBUG-LOG-CONTRACT.md`).  The provisional field allowlists above are
-based on the Opus security decision recorded in the WBS-102 context packet.
+This module was reconciled against **WBS-101** (`docs/DEBUG-LOG-CONTRACT.md`,
+PR #438) before merging.  The following changes were made during the
+reconciliation pass (WBS-102 / PR #439):
 
-**Before merging this PR:**
+| Item | Resolution |
+|---|---|
+| `kind="raw"` | Added to `_KIND_ENUM` and docs. |
+| `status` tightened | Removed `timeout` and `pending`; unknown status omitted + `redacted=True` (not coerced to `"error"`). |
+| `source` superset | Added `operator_console`, `hook_runner`, `sk_watch` to `_SOURCE_ENUM`; missing/unknown source → `"unknown"` + `redacted=True`. |
+| `span_id` exact 16 hex | Tightened from `{8,32}` to exactly `{16}` lowercase hex chars. |
+| `level` nullability | Missing/`None` level → `None` (no redaction trigger); unknown level → `None` + `redacted=True`; removes the prior silent coercion to `"info"`. |
+| `duration_ms` numeric alignment | Accepts finite `int` or `float` ≥ 0; `bool`, `NaN`, `Inf` rejected. |
+| `message` 200/2048 layering | Clarified: `redact_entry` enforces 2048-char cap; route handlers apply separate 200-char preview cap. |
+| Timestamp strictness | Naive ISO strings (no explicit TZ) → `None` + `redacted=True`. |
 
-1. Compare `_TOP_LEVEL_KEYS` and `_ATTRS_ALLOWLIST` in `browse/core/redaction.py`
-   against the final field table in `docs/DEBUG-LOG-CONTRACT.md` (WBS-101).
-2. For any field in the contract that is absent from the allowlists here, add
-   it with an explicit validator and a corresponding test case.
-3. For any field in the allowlists here that is absent from the contract,
-   either add it to the contract or remove it from the allowlist.
-4. Update this doc to reference the contract version after reconciliation.
-5. Re-run `python tests/test_browse_redaction.py` and `python test_security.py`
-   to confirm no regressions.
-
-See also: issue [#427](https://github.com/magicpro97/copilot-session-knowledge/issues/427)
-and the blocking issue [#426](https://github.com/magicpro97/copilot-session-knowledge/issues/426).
+See [issue #427](https://github.com/magicpro97/copilot-session-knowledge/issues/427)
+and [PR #439](https://github.com/magicpro97/copilot-session-knowledge/pull/439).
 
 ---
 

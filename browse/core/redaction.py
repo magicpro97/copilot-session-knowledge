@@ -16,6 +16,7 @@ No third-party dependencies.  Python 3.10+ stdlib only.
 """
 
 import logging
+import math
 import os
 import re
 import sys
@@ -45,11 +46,23 @@ _KIND_ENUM = frozenset(
         "agent_response",
         "error",
         "generic",
+        "raw",
     }
 )
 _LEVEL_ENUM = frozenset({"debug", "info", "warn", "error"})
-_SOURCE_ENUM = frozenset({"cli", "hook", "browse", "vscode", "unknown"})
-_STATUS_ENUM = frozenset({"ok", "error", "cancelled", "timeout", "pending"})
+_SOURCE_ENUM = frozenset(
+    {
+        "cli",
+        "hook",
+        "browse",
+        "vscode",
+        "operator_console",
+        "hook_runner",
+        "sk_watch",
+        "unknown",
+    }
+)
+_STATUS_ENUM = frozenset({"ok", "error", "cancelled"})
 
 # ── Top-level field allowlist ─────────────────────────────────────────────────
 
@@ -98,7 +111,7 @@ _ATTRS_ALLOWLIST = frozenset(
 # ── Compiled patterns ─────────────────────────────────────────────────────────
 
 _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
-_SPAN_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+_SPAN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 _ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$")
 _SESSION_UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -116,13 +129,20 @@ _URL_QUERY_TOKEN_RE = re.compile(
     r"([?&]\w*(?:token|key|secret|auth)\w*=)[^\s&]+",
     re.IGNORECASE,
 )
+# JWT fallback pattern: matches compact JWTs (header.payload.signature) even
+# when browse.core.operator_console.redact_secrets is unavailable.
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 
 
 # ── Text redaction ────────────────────────────────────────────────────────────
 
 
 def _redact_text(text: str) -> str:
-    """Scrub bearer tokens, URL query tokens, and path usernames from *text*.
+    """Scrub bearer tokens, URL query tokens, JWTs, and path usernames from *text*.
+
+    ``_JWT_RE`` runs unconditionally as a local fallback before the optional
+    ``browse.core.operator_console.redact_secrets`` pass, so JWTs are caught
+    even when that import is unavailable.
 
     Applies ``browse.core.operator_console.redact_secrets`` as a final
     defence-in-depth pass (pattern-matched; graceful fallback if unavailable).
@@ -132,12 +152,39 @@ def _redact_text(text: str) -> str:
     text = _WIN_PATH_RE.sub(r"\1[REDACTED]", text)
     text = _UNIX_PATH_RE.sub(r"\1[REDACTED]", text)
     text = _MACOS_PATH_RE.sub(r"\1[REDACTED]", text)
+    # JWT fallback: applied before redact_secrets so JWTs are caught locally.
+    text = _JWT_RE.sub("[REDACTED]", text)
     try:
         from browse.core.operator_console import redact_secrets  # noqa: PLC0415
 
         text = redact_secrets(text)
     except Exception:
         _log.debug("redact_secrets unavailable; text-pattern redaction only applied")
+    return text
+
+
+def _redact_route_text(text: str) -> str:
+    """Scrub route-safe secret patterns from an HTTP route string.
+
+    Applies ``_BEARER_RE``, ``_JWT_RE``, and ``_URL_QUERY_TOKEN_RE`` (the last
+    is defence-in-depth; query strings are already rejected before this is
+    called).  Does **not** apply the filesystem path username patterns
+    (``_WIN_PATH_RE``, ``_UNIX_PATH_RE``, ``_MACOS_PATH_RE``) so that valid
+    HTTP routes such as ``/Users/alice/settings`` are preserved unchanged.
+
+    Applies ``browse.core.operator_console.redact_secrets`` as a final
+    defence-in-depth pass (graceful fallback if unavailable).
+    """
+    text = _BEARER_RE.sub("[REDACTED]", text)
+    text = _URL_QUERY_TOKEN_RE.sub(r"\1[REDACTED]", text)
+    # JWT fallback: applied before redact_secrets so JWTs are caught locally.
+    text = _JWT_RE.sub("[REDACTED]", text)
+    try:
+        from browse.core.operator_console import redact_secrets  # noqa: PLC0415
+
+        text = redact_secrets(text)
+    except Exception:
+        _log.debug("redact_secrets unavailable; route-pattern redaction only applied")
     return text
 
 
@@ -176,12 +223,22 @@ def _redact_attrs(raw_attrs: Any) -> tuple[dict, bool]:
             if not isinstance(v, str) or not _SESSION_UUID_RE.match(v):
                 redacted = True
                 continue
-        # Scrub string values
+        # Scrub string values.
+        # `route` is an HTTP path validated above (no query string); applying
+        # generic text-redaction patterns like _MACOS_PATH_RE would corrupt
+        # valid routes such as /Users/alice/settings.  Use _redact_route_text
+        # instead of _redact_text so JWT/Bearer tokens are still scrubbed.
         if isinstance(v, str):
-            clean = _redact_text(v)
-            if clean != v:
-                redacted = True
-            out[k] = clean
+            if k == "route":
+                clean = _redact_route_text(v)
+                if clean != v:
+                    redacted = True
+                out[k] = clean
+            else:
+                clean = _redact_text(v)
+                if clean != v:
+                    redacted = True
+                out[k] = clean
         else:
             out[k] = v
 
@@ -196,7 +253,7 @@ def _validate_core_fields(entry: dict, out: dict) -> bool:
     redacted = False
 
     raw_idx = entry.get("idx")
-    if isinstance(raw_idx, int) and raw_idx >= 0:
+    if isinstance(raw_idx, int) and not isinstance(raw_idx, bool) and raw_idx >= 0:
         out["idx"] = raw_idx
     else:
         out["idx"] = 0
@@ -217,10 +274,20 @@ def _validate_core_fields(entry: dict, out: dict) -> bool:
         redacted = True
 
     raw_level = entry.get("level")
-    out["level"] = raw_level if raw_level in _LEVEL_ENUM else "info"
+    if raw_level is None:
+        out["level"] = None
+    elif raw_level in _LEVEL_ENUM:
+        out["level"] = raw_level
+    else:
+        out["level"] = None
+        redacted = True
 
     raw_source = entry.get("source")
-    out["source"] = raw_source if raw_source in _SOURCE_ENUM else "unknown"
+    if raw_source in _SOURCE_ENUM:
+        out["source"] = raw_source
+    else:
+        out["source"] = "unknown"
+        redacted = True
 
     return redacted
 
@@ -231,6 +298,10 @@ def _validate_payload_fields(entry: dict, out: dict) -> bool:
 
     raw_msg = entry.get("message")
     if raw_msg is not None:
+        if not isinstance(raw_msg, str):
+            # Type coercion: contract says message must be str; stringify for
+            # safe output but mark redacted regardless of content changes.
+            redacted = True
         original = str(raw_msg)[:_MESSAGE_MAX]
         clean = _redact_text(original)
         if clean != original:
@@ -246,7 +317,12 @@ def _validate_payload_fields(entry: dict, out: dict) -> bool:
 
     raw_dur = entry.get("duration_ms")
     if raw_dur is not None:
-        if isinstance(raw_dur, int) and raw_dur >= 0:
+        if (
+            not isinstance(raw_dur, bool)
+            and isinstance(raw_dur, (int, float))
+            and math.isfinite(raw_dur)
+            and raw_dur >= 0
+        ):
             out["duration_ms"] = raw_dur
         else:
             redacted = True
@@ -264,8 +340,7 @@ def _validate_payload_fields(entry: dict, out: dict) -> bool:
         if raw_status in _STATUS_ENUM:
             out["status"] = raw_status
         else:
-            out["status"] = "error"
-            redacted = True
+            redacted = True  # unknown status omitted, not coerced
 
     return redacted
 
@@ -294,7 +369,7 @@ def _sentinel(entry: Any) -> dict:
     if isinstance(entry, dict):
         try:
             raw_idx = entry.get("idx")
-            if isinstance(raw_idx, int) and raw_idx >= 0:
+            if isinstance(raw_idx, int) and not isinstance(raw_idx, bool) and raw_idx >= 0:
                 idx = raw_idx
         except Exception:
             pass

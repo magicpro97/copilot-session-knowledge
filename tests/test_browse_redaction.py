@@ -310,9 +310,11 @@ class TestBrowseRedactionCase12NonDictAttrs(unittest.TestCase):
         self.assertTrue(result["redacted"])
 
     def test_none_attrs_allowed(self) -> None:
-        result = redact_entry(_entry(attrs=None))
+        # Include a valid source so that only the attrs=None case is under test.
+        result = redact_entry(_entry(attrs=None, source="cli"))
         # None means attrs not supplied — should not set redacted just for this
         self.assertEqual(result["attrs"], {})
+        self.assertFalse(result["redacted"], "attrs=None must not set redacted True")
 
 
 class TestBrowseRedactionCase13AllowlistedAttrJWT(unittest.TestCase):
@@ -369,7 +371,7 @@ class TestBrowseRedactionCase15RouteQueryString(unittest.TestCase):
         self.assertEqual(result["attrs"]["route"], "/api/sessions")
 
     def test_route_without_query_kept(self) -> None:
-        result = redact_entry(_entry(attrs={"route": "/api/v2/debug-log"}))
+        result = redact_entry(_entry(attrs={"route": "/api/v2/debug-log"}, source="cli"))
         self.assertIn("route", result["attrs"])
         self.assertFalse(result["redacted"])
 
@@ -397,13 +399,15 @@ class TestBrowseRedactionValidators(unittest.TestCase):
         result = redact_entry(_entry(timestamp=ts))
         self.assertEqual(result["timestamp"], ts)
 
-    def test_unknown_level_becomes_info(self) -> None:
-        result = redact_entry(_entry(level="verbose"))
-        self.assertEqual(result["level"], "info")
+    def test_unknown_level_becomes_none(self) -> None:
+        result = redact_entry(_entry(level="verbose", source="cli"))
+        self.assertIsNone(result["level"], "Unknown level must become None")
+        self.assertTrue(result["redacted"], "Unknown level must set redacted True")
 
     def test_unknown_source_becomes_unknown(self) -> None:
         result = redact_entry(_entry(source="custom_source"))
         self.assertEqual(result["source"], "unknown")
+        self.assertTrue(result["redacted"], "Unknown source must set redacted True")
 
     def test_invalid_tool_name_dropped(self) -> None:
         result = redact_entry(_entry(tool_name="bad name with spaces"))
@@ -434,9 +438,9 @@ class TestBrowseRedactionValidators(unittest.TestCase):
         self.assertNotIn("span_id", result)
         self.assertTrue(result["redacted"])
 
-    def test_unknown_status_coerced_to_error(self) -> None:
+    def test_unknown_status_omitted_and_redacted(self) -> None:
         result = redact_entry(_entry(status="unknown_status"))
-        self.assertEqual(result.get("status"), "error")
+        self.assertNotIn("status", result, "Unknown status must be omitted, not coerced")
         self.assertTrue(result["redacted"])
 
     def test_unknown_top_level_key_dropped(self) -> None:
@@ -459,6 +463,225 @@ class TestBrowseRedactionValidators(unittest.TestCase):
             }
         )
         self.assertFalse(result["redacted"], "Clean entry must not be flagged as redacted")
+
+
+class TestBrowseRedactionWBS102Reconciliation(unittest.TestCase):
+    """WBS-102 reconciliation coverage: new kind/source/status/span/duration/level/timestamp rules."""
+
+    # ── kind ──────────────────────────────────────────────────────────────────
+
+    def test_kind_raw_preserved_no_redaction(self) -> None:
+        result = redact_entry({"idx": 0, "kind": "raw", "source": "cli"})
+        self.assertEqual(result["kind"], "raw")
+        self.assertFalse(result["redacted"], "kind=raw with valid source must not be flagged")
+
+    # ── status ────────────────────────────────────────────────────────────────
+
+    def test_status_timeout_omitted_and_redacted(self) -> None:
+        result = redact_entry(_entry(status="timeout"))
+        self.assertNotIn("status", result, "status=timeout must be omitted")
+        self.assertTrue(result["redacted"])
+
+    def test_status_pending_omitted_and_redacted(self) -> None:
+        result = redact_entry(_entry(status="pending"))
+        self.assertNotIn("status", result, "status=pending must be omitted")
+        self.assertTrue(result["redacted"])
+
+    # ── source ────────────────────────────────────────────────────────────────
+
+    def test_source_operator_console_preserved(self) -> None:
+        result = redact_entry(_entry(source="operator_console"))
+        self.assertEqual(result["source"], "operator_console")
+
+    def test_source_hook_runner_preserved(self) -> None:
+        result = redact_entry(_entry(source="hook_runner"))
+        self.assertEqual(result["source"], "hook_runner")
+
+    def test_source_sk_watch_preserved(self) -> None:
+        result = redact_entry(_entry(source="sk_watch"))
+        self.assertEqual(result["source"], "sk_watch")
+
+    def test_missing_source_becomes_unknown_and_redacted(self) -> None:
+        result = redact_entry({"idx": 0, "kind": "generic"})  # no source key
+        self.assertEqual(result["source"], "unknown")
+        self.assertTrue(result["redacted"])
+
+    # ── level ─────────────────────────────────────────────────────────────────
+
+    def test_missing_level_preserves_none_no_redaction_trigger(self) -> None:
+        """Missing level must be None and must NOT by itself trigger redacted=True."""
+        result = redact_entry({"idx": 0, "kind": "generic", "source": "cli"})
+        self.assertIsNone(result["level"])
+        self.assertFalse(result["redacted"], "Missing level alone must not set redacted True")
+
+    # ── span_id ───────────────────────────────────────────────────────────────
+
+    def test_span_id_exactly_16_hex_accepted(self) -> None:
+        result = redact_entry(_entry(span_id="0123456789abcdef"))
+        self.assertEqual(result.get("span_id"), "0123456789abcdef")
+
+    def test_span_id_8_chars_dropped_and_redacted(self) -> None:
+        result = redact_entry(_entry(span_id="01234567"))
+        self.assertNotIn("span_id", result)
+        self.assertTrue(result["redacted"])
+
+    def test_span_id_15_chars_dropped_and_redacted(self) -> None:
+        result = redact_entry(_entry(span_id="0123456789abcde"))
+        self.assertNotIn("span_id", result)
+        self.assertTrue(result["redacted"])
+
+    def test_span_id_17_chars_dropped_and_redacted(self) -> None:
+        result = redact_entry(_entry(span_id="0123456789abcdef0"))
+        self.assertNotIn("span_id", result)
+        self.assertTrue(result["redacted"])
+
+    # ── duration_ms ───────────────────────────────────────────────────────────
+
+    def test_duration_ms_float_accepted(self) -> None:
+        result = redact_entry(_entry(duration_ms=12.5, source="cli"))
+        self.assertEqual(result.get("duration_ms"), 12.5)
+
+    def test_duration_ms_zero_accepted(self) -> None:
+        result = redact_entry(_entry(duration_ms=0, source="cli"))
+        self.assertEqual(result.get("duration_ms"), 0)
+
+    def test_duration_ms_bool_rejected(self) -> None:
+        result = redact_entry(_entry(duration_ms=True))
+        self.assertNotIn("duration_ms", result)
+        self.assertTrue(result["redacted"])
+
+    def test_duration_ms_nan_rejected(self) -> None:
+        result = redact_entry(_entry(duration_ms=float("nan")))
+        self.assertNotIn("duration_ms", result)
+        self.assertTrue(result["redacted"])
+
+    def test_duration_ms_inf_rejected(self) -> None:
+        result = redact_entry(_entry(duration_ms=float("inf")))
+        self.assertNotIn("duration_ms", result)
+        self.assertTrue(result["redacted"])
+
+    # ── idx ───────────────────────────────────────────────────────────────────
+
+    def test_idx_bool_rejected(self) -> None:
+        result = redact_entry({"idx": True, "kind": "generic"})
+        self.assertEqual(result["idx"], 0)
+        self.assertTrue(result["redacted"])
+
+    # ── timestamp ─────────────────────────────────────────────────────────────
+
+    def test_naive_iso_timestamp_dropped_and_redacted(self) -> None:
+        result = redact_entry(_entry(timestamp="2024-01-15T10:30:00"))  # no TZ
+        self.assertIsNone(result.get("timestamp"))
+        self.assertTrue(result["redacted"])
+
+    def test_iso_timestamp_with_offset_kept(self) -> None:
+        ts = "2024-01-15T10:30:00+05:30"
+        result = redact_entry(_entry(timestamp=ts, source="cli"))
+        self.assertEqual(result["timestamp"], ts)
+
+
+class TestBrowseRedactionNonStringMessage(unittest.TestCase):
+    """Finding 1: Non-string message must be stringified AND set redacted=True."""
+
+    def test_int_message_stringified_and_redacted(self) -> None:
+        result = redact_entry(_entry(message=123))
+        self.assertEqual(result.get("message"), "123", "int message must be stringified")
+        self.assertTrue(result["redacted"], "int message must set redacted=True")
+
+    def test_dict_message_stringified_and_redacted(self) -> None:
+        result = redact_entry(_entry(message={"key": "value"}))
+        self.assertIsInstance(result.get("message"), str, "dict message must be stringified")
+        self.assertTrue(result["redacted"], "dict message must set redacted=True")
+
+    def test_list_message_stringified_and_redacted(self) -> None:
+        result = redact_entry(_entry(message=[1, 2, 3]))
+        self.assertIsInstance(result.get("message"), str)
+        self.assertTrue(result["redacted"])
+
+    def test_str_message_clean_not_flagged(self) -> None:
+        """A plain string message that needs no text-redaction must NOT set redacted."""
+        result = redact_entry(_entry(message="hello world", source="cli"))
+        self.assertEqual(result.get("message"), "hello world")
+        self.assertFalse(result["redacted"], "clean string message must not set redacted")
+
+
+class TestBrowseRedactionJWTFallback(unittest.TestCase):
+    """Finding 2: JWT must be redacted even when redact_secrets is unavailable."""
+
+    _JWT = (
+        "eyJhbGciOiJIUzI1NiJ9"
+        ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
+
+    def test_jwt_redacted_without_redact_secrets(self) -> None:
+        """JWT in message must be redacted by local _JWT_RE when redact_secrets is unavailable."""
+        import sys
+
+        # Patch sys.modules so any attempt to import browse.core.operator_console
+        # raises ImportError — simulates the module being unavailable.
+        with patch.dict(sys.modules, {"browse.core.operator_console": None}):
+            result = redact_entry(_entry(message=f"token={self._JWT}"))
+        msg = result.get("message", "")
+        self.assertNotIn("eyJ", msg, "JWT header must not appear in output")
+        self.assertIn("[REDACTED]", msg, "JWT must be replaced with [REDACTED]")
+        self.assertTrue(result["redacted"], "JWT in message must set redacted=True")
+
+    def test_jwt_in_message_redacted_normally(self) -> None:
+        """JWT in message must be redacted in the normal (no mock) path too."""
+        result = redact_entry(_entry(message=f"auth header: {self._JWT}"))
+        msg = result.get("message", "")
+        self.assertNotIn(self._JWT, msg)
+        self.assertIn("[REDACTED]", msg)
+        self.assertTrue(result["redacted"])
+
+
+class TestBrowseRedactionRoutePreservedFromTextRedaction(unittest.TestCase):
+    """Finding 3: attrs.route must not be mutated by generic text-redaction patterns,
+    but JWT and Bearer tokens embedded in route strings must still be scrubbed.
+    """
+
+    def test_route_with_users_path_preserved(self) -> None:
+        """/Users/alice/settings is a valid HTTP route; must not trigger redacted."""
+        result = redact_entry(_entry(attrs={"route": "/Users/alice/settings"}, source="cli"))
+        self.assertIn("route", result["attrs"], "route must be present in output")
+        self.assertEqual(
+            result["attrs"]["route"],
+            "/Users/alice/settings",
+            "route value must be unchanged",
+        )
+        self.assertFalse(result["redacted"], "valid route must not set redacted=True")
+
+    def test_route_without_query_still_kept(self) -> None:
+        result = redact_entry(_entry(attrs={"route": "/api/v1/sessions"}, source="cli"))
+        self.assertIn("route", result["attrs"])
+        self.assertEqual(result["attrs"]["route"], "/api/v1/sessions")
+        self.assertFalse(result["redacted"])
+
+    def test_route_with_query_string_still_dropped(self) -> None:
+        """Query-string rejection must still work after the route text-redaction bypass."""
+        result = redact_entry(_entry(attrs={"route": "/Users/alice/settings?token=abc"}))
+        self.assertNotIn("route", result["attrs"])
+        self.assertTrue(result["redacted"])
+
+    def test_route_with_jwt_in_path_segment_redacted(self) -> None:
+        """JWT embedded in a route path segment must be redacted and redacted=True."""
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        route = f"/api/reset/{jwt}"
+        result = redact_entry(_entry(attrs={"route": route}, source="cli"))
+        self.assertIn("route", result["attrs"], "route key must be present (not dropped)")
+        self.assertNotIn(jwt, result["attrs"]["route"], "JWT must not appear in route output")
+        self.assertIn("[REDACTED]", result["attrs"]["route"], "JWT must be replaced with [REDACTED]")
+        self.assertTrue(result["redacted"], "JWT in route must set redacted=True")
+
+    def test_route_with_bearer_token_redacted(self) -> None:
+        """Bearer token embedded in a route string must be redacted and redacted=True."""
+        route = "/api/Bearer secrettoken123"
+        result = redact_entry(_entry(attrs={"route": route}, source="cli"))
+        self.assertIn("route", result["attrs"], "route key must be present (not dropped)")
+        self.assertNotIn("secrettoken123", result["attrs"]["route"], "Bearer token must not appear in route output")
+        self.assertIn("[REDACTED]", result["attrs"]["route"], "Bearer token must be replaced with [REDACTED]")
+        self.assertTrue(result["redacted"], "Bearer token in route must set redacted=True")
 
 
 if __name__ == "__main__":
