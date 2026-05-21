@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { useDebugLog } from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
+import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -165,6 +166,7 @@ function DetailDrawer({ entry, onClose }: DetailDrawerProps) {
 
   return (
     <div
+      id={`detail-${entry.idx}`}
       className="border-border bg-card fixed inset-y-0 right-0 z-30 flex w-full max-w-md flex-col overflow-y-auto border-l shadow-xl sm:w-[420px]"
       role="dialog"
       aria-label="Debug event detail"
@@ -353,14 +355,24 @@ type EventRowProps = {
 };
 
 function EventRow({ entry, isSelected, onSelect }: EventRowProps) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTableRowElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelect(entry);
+    }
+  };
+
   return (
     <tr
       className={`hover:bg-muted/50 cursor-pointer border-b text-xs transition-colors ${
         isSelected ? "bg-muted/70" : ""
       }`}
       onClick={() => onSelect(entry)}
-      role="button"
-      aria-pressed={isSelected}
+      onKeyDown={handleKeyDown}
+      role="row"
+      tabIndex={0}
+      aria-expanded={isSelected}
+      aria-controls={`detail-${entry.idx}`}
       aria-label={`Debug event ${entry.idx}: ${entry.kind} from ${entry.source}`}
     >
       {/* Expand indicator */}
@@ -411,6 +423,179 @@ function EventRow({ entry, isSelected, onSelect }: EventRowProps) {
   );
 }
 
+// ── Span Tree View ─────────────────────────────────────────────────────────────
+
+type SpanTreeViewProps = {
+  entries: BrowseDebugEntry[];
+  selectedEntry: BrowseDebugEntry | null;
+  onSelect: (entry: BrowseDebugEntry) => void;
+};
+
+/**
+ * Collapsible span tree derived from `entries`.
+ * - Click row or press Enter/Space to expand/collapse children and open detail.
+ * - ArrowRight expands; ArrowLeft collapses.
+ * - Error nodes get a red/orange background; orphan nodes get a dashed border.
+ * - Duration rollup badge shown when parent has no own duration but children do.
+ */
+function SpanTreeView({ entries, selectedEntry, onSelect }: SpanTreeViewProps) {
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
+
+  const roots = deriveSpanTree(entries);
+
+  function toggleKey(key: string): void {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function expandKey(key: string): void {
+    setExpandedKeys((prev) => new Set([...prev, key]));
+  }
+
+  function collapseKey(key: string): void {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  }
+
+  function renderNode(node: SpanTreeNode) {
+    const key = node.entry.idx === -1 ? "synthetic-orphan" : String(node.entry.idx);
+    const hasChildren = node.children.length > 0;
+    const isExpanded = expandedKeys.has(key);
+    const isSelected = selectedEntry?.idx === node.entry.idx;
+    const isSynthetic = node.entry.idx === -1;
+    const isError = node.entry.status === "error";
+    const childrenId = `span-children-${key}`;
+
+    const rowClasses = [
+      "flex items-center gap-2 rounded px-2 py-1.5 text-xs cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      isError
+        ? "bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/60"
+        : isSelected
+          ? "bg-muted/70"
+          : "hover:bg-muted/50",
+      node.isOrphan ? "border border-dashed border-border my-0.5" : "",
+      isSynthetic ? "text-muted-foreground italic" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return (
+      <div key={key}>
+        <div
+          role="treeitem"
+          aria-expanded={hasChildren ? isExpanded : undefined}
+          aria-controls={hasChildren && isExpanded ? childrenId : undefined}
+          aria-selected={isSelected}
+          aria-label={
+            isSynthetic
+              ? "orphans group"
+              : `Span event ${node.entry.idx}: ${node.entry.kind} from ${node.entry.source}`
+          }
+          tabIndex={0}
+          className={rowClasses}
+          style={{ paddingLeft: `${node.depth * 16 + 8}px` }}
+          onClick={() => {
+            if (hasChildren) toggleKey(key);
+            if (!isSynthetic) onSelect(node.entry);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              if (hasChildren) toggleKey(key);
+              if (!isSynthetic) onSelect(node.entry);
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              if (hasChildren && !isExpanded) expandKey(key);
+            } else if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              if (isExpanded) collapseKey(key);
+            }
+          }}
+        >
+          {/* Expand indicator */}
+          <span className="w-3 shrink-0">
+            {hasChildren ? (
+              isExpanded ? (
+                <ChevronDown className="size-3" aria-hidden />
+              ) : (
+                <ChevronRight className="size-3" aria-hidden />
+              )
+            ) : null}
+          </span>
+
+          {/* Kind badge */}
+          <span className="border-border shrink-0 rounded border px-1 py-0.5 font-mono text-[10px]">
+            {node.entry.kind}
+          </span>
+
+          {/* Source */}
+          <span className="text-muted-foreground max-w-[100px] shrink-0 truncate">
+            {node.entry.source}
+          </span>
+
+          {/* Tool name */}
+          {node.entry.tool_name ? (
+            <span className="shrink-0 font-mono text-[10px]">{node.entry.tool_name}</span>
+          ) : null}
+
+          {/* Message */}
+          <span className="min-w-0 flex-1 truncate">
+            <span className={node.entry.redacted ? "italic" : ""}>{node.entry.message}</span>
+            {node.entry.redacted ? (
+              <span className="text-muted-foreground ml-1 text-[10px]">[redacted]</span>
+            ) : null}
+          </span>
+
+          {/* Duration: rollup badge or own duration */}
+          {node.rollupDurationMs !== null ? (
+            <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 py-0.5 font-mono text-[10px]">
+              {formatDuration(node.rollupDurationMs)} (∑)
+            </span>
+          ) : node.entry.duration_ms !== null ? (
+            <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+              {formatDuration(node.entry.duration_ms)}
+            </span>
+          ) : null}
+
+          {/* Status */}
+          {node.entry.status ? (
+            <span className={`shrink-0 ${statusClass(node.entry.status)}`}>
+              {node.entry.status}
+            </span>
+          ) : null}
+        </div>
+
+        {hasChildren && isExpanded ? (
+          <div id={childrenId} role="group">
+            {node.children.map((child) => renderNode(child))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (roots.length === 0) {
+    return (
+      <div className="text-muted-foreground py-8 text-center text-sm">
+        No events match the current filters.
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-border rounded-xl border p-2" role="tree" aria-label="Debug span tree">
+      {roots.map((root) => renderNode(root))}
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 /**
@@ -436,6 +621,7 @@ export function DebugLogTab({ sessionId, runId, host }: DebugLogTabProps) {
   });
   const [page, setPage] = useState(0);
   const [selectedEntry, setSelectedEntry] = useState<BrowseDebugEntry | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "tree">("list");
 
   const isEnabled = Boolean(sessionId) && Boolean(runId);
 
@@ -449,6 +635,9 @@ export function DebugLogTab({ sessionId, runId, host }: DebugLogTabProps) {
 
   // Apply client-side filters (text, kind, level, status) — AND composition.
   const filteredEvents = query.data?.events ? applyFilters(query.data.events, filters) : [];
+
+  // Show tree toggle only when any raw event has a span_id.
+  const hasSpanIds = Boolean(query.data?.events.some((e) => e.span_id !== null));
 
   const handleSelect = (entry: BrowseDebugEntry) => {
     setSelectedEntry((prev) => (prev?.idx === entry.idx ? null : entry));
@@ -512,55 +701,94 @@ export function DebugLogTab({ sessionId, runId, host }: DebugLogTabProps) {
         totalCount={query.data.events.length}
       />
 
-      {/* Event table */}
-      <div className="border-border overflow-x-auto rounded-xl border">
-        <table className="w-full text-sm" role="grid" aria-label="Debug log events">
-          <thead>
-            <tr className="border-border bg-muted/40 border-b">
-              <th className="w-4 px-1 py-2" aria-label="Expand" />
-              <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
-                Time
-              </th>
-              <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
-                Kind
-              </th>
-              <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
-                Source
-              </th>
-              <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
-                Tool
-              </th>
-              <th className="text-muted-foreground px-2 py-2 text-right text-xs font-medium whitespace-nowrap">
-                Duration
-              </th>
-              <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
-                Status
-              </th>
-              <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium">
-                Message
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredEvents.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="text-muted-foreground py-8 text-center text-sm">
-                  No events match the current filters.
-                </td>
+      {/* View mode toggle — only shown when the dataset has span_ids */}
+      {hasSpanIds && (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className={`rounded px-2 py-1 text-xs transition-colors ${
+              viewMode === "list"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            aria-pressed={viewMode === "list"}
+            onClick={() => setViewMode("list")}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            className={`rounded px-2 py-1 text-xs transition-colors ${
+              viewMode === "tree"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            aria-pressed={viewMode === "tree"}
+            onClick={() => setViewMode("tree")}
+          >
+            Tree
+          </button>
+        </div>
+      )}
+
+      {/* Tree view */}
+      {viewMode === "tree" ? (
+        <SpanTreeView
+          entries={filteredEvents}
+          selectedEntry={selectedEntry}
+          onSelect={handleSelect}
+        />
+      ) : (
+        /* Event table */
+        <div className="border-border overflow-x-auto rounded-xl border">
+          <table className="w-full text-sm" role="grid" aria-label="Debug log events">
+            <thead>
+              <tr className="border-border bg-muted/40 border-b">
+                <th className="w-4 px-1 py-2" aria-label="Expand" />
+                <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
+                  Time
+                </th>
+                <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
+                  Kind
+                </th>
+                <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
+                  Source
+                </th>
+                <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
+                  Tool
+                </th>
+                <th className="text-muted-foreground px-2 py-2 text-right text-xs font-medium whitespace-nowrap">
+                  Duration
+                </th>
+                <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium whitespace-nowrap">
+                  Status
+                </th>
+                <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium">
+                  Message
+                </th>
               </tr>
-            ) : (
-              filteredEvents.map((entry) => (
-                <EventRow
-                  key={entry.idx}
-                  entry={entry}
-                  isSelected={selectedEntry?.idx === entry.idx}
-                  onSelect={handleSelect}
-                />
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filteredEvents.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="text-muted-foreground py-8 text-center text-sm">
+                    No events match the current filters.
+                  </td>
+                </tr>
+              ) : (
+                filteredEvents.map((entry) => (
+                  <EventRow
+                    key={entry.idx}
+                    entry={entry}
+                    isSelected={selectedEntry?.idx === entry.idx}
+                    onSelect={handleSelect}
+                  />
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Server-side pagination controls */}
       {(page > 0 || has_more) && (

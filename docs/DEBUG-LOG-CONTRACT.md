@@ -679,3 +679,32 @@ if errors:
 print('OK: all synthetic span_ids consistent with formula and paired-tool-call reuse rule')
 "
 ```
+
+---
+
+## Shipped Status
+
+All work items in the debug-log feature cluster have shipped:
+
+| Item | Description | Status |
+|---|---|---|
+| WBS-106 | Debug log importers — VS Code Agent Mode + OTel `ReadableSpan` parsers with format detection, bounded reading, and WBS-102 redaction | ✅ Shipped |
+| WBS-107 | Debug Log tab — new 5th tab on `/sessions/[id]` with event list, filter toolbar, detail drawer | ✅ Shipped |
+| WBS-108 | Span tree visualization — collapsible parent/child span hierarchy in the detail drawer | ✅ Shipped |
+| WBS-109 | Soak diagnostics — `soak-diagnostics.py` with `ThresholdEvaluator`, `--smoke` / `--full` modes, structured JSON report | ✅ Shipped |
+| WBS-110 | Final closeout — CHANGELOG entries, README update, accessibility fixes, this contract doc update | ✅ Shipped |
+| #441 | CSP hardening — eliminated `unsafe-inline` from `script-src`; all inline scripts use per-request nonces | ✅ Shipped |
+
+The canonical implementation references are:
+
+- **`soak-diagnostics.py`** — `ThresholdEvaluator`, smoke/full soak runner, structured JSON
+  verdict report.
+- **`browse-ui/src/app/sessions/[id]/debug-log-tab.tsx`** — Debug Log tab component (event
+  list, filter toolbar, detail drawer, span tree view).
+- **`browse/api/operator.py`** — `GET /api/operator/sessions/{session_id}/runs/{run_id}/debug`
+  read endpoint (WBS-104).
+- **`browse/core/debug_log_storage.py`** — isolated SQLite debug-log store (WBS-103).
+- **`browse/core/operator_console.py`** — bounded sidecar capture (WBS-105).
+
+For the commit hash, run `git log --oneline -1` in the repo root after the WBS-110 merge commit
+lands.

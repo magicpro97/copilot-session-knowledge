@@ -43,11 +43,16 @@ pnpm build
 |------|-------------|
 | `/chat` | Operator console — run Copilot CLI prompts, review touched files, and inspect inline diffs |
 | `/sessions` | Session list |
-| `/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
+| `/sessions/[id]` | Session detail (real UUID paths) + Overview / Timeline / Mindmap / Checkpoints / **Debug Log** tabs |
 | `/search` | Full-text + semantic search |
 | `/insights` | Knowledge insights |
 | `/graph` | Graph workspace: Evidence + Similarity + Communities |
 | `/settings` | Preferences + **Hosts & connections** (host management) |
+
+> **Debug Log tab** (`/sessions/[id]`, 5th tab): displays debug events for the most recent
+> operator run — event list table with timestamp/kind/source/duration/status columns, filter
+> toolbar (text, kind, level, status), detail drawer with full field view, and span tree
+> visualization when parent/child spans are present.
 
 > **Deployment prefix:** Canonical routes are root-relative on both the local Python browse server
 > and the Firebase-hosted deployment. Compatibility redirects from `/v2/*` → `/*` remain for old

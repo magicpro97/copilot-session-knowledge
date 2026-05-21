@@ -169,8 +169,9 @@ describe("DebugLogTab – populated state", () => {
   it("renders event table with correct number of rows", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     const table = screen.getByRole("grid", { name: /debug log events/i });
-    // thead row + 3 data rows
-    expect(within(table).getAllByRole("button")).toHaveLength(3);
+    // thead row + 3 data rows (data rows use role="row" with aria-label)
+    const dataRows = within(table).getAllByRole("row", { name: /debug event/i });
+    expect(dataRows).toHaveLength(3);
   });
 
   it("renders message text as text — no dangerouslySetInnerHTML", () => {
@@ -222,7 +223,7 @@ describe("DebugLogTab – detail expansion", () => {
 
   it("clicking a row opens the detail drawer", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
-    const row = screen.getByRole("button", {
+    const row = screen.getByRole("row", {
       name: /debug event 0: tool_call from operator_console/i,
     });
     fireEvent.click(row);
@@ -232,7 +233,7 @@ describe("DebugLogTab – detail expansion", () => {
   it("detail drawer shows all entry fields as text", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     fireEvent.click(
-      screen.getByRole("button", { name: /debug event 0: tool_call from operator_console/i })
+      screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
     const drawer = screen.getByRole("dialog", { name: /debug event detail/i });
     expect(within(drawer).getByText("tool_call")).toBeInTheDocument();
@@ -244,7 +245,7 @@ describe("DebugLogTab – detail expansion", () => {
   it("detail drawer renders attrs as pre-formatted JSON text — no raw HTML", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     fireEvent.click(
-      screen.getByRole("button", { name: /debug event 0: tool_call from operator_console/i })
+      screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
     const drawer = screen.getByRole("dialog", { name: /debug event detail/i });
     const preEl = drawer.querySelector("pre");
@@ -258,7 +259,7 @@ describe("DebugLogTab – detail expansion", () => {
 
   it("clicking row again closes the detail drawer (toggle)", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
-    const row = screen.getByRole("button", {
+    const row = screen.getByRole("row", {
       name: /debug event 0: tool_call from operator_console/i,
     });
     fireEvent.click(row);
@@ -269,7 +270,7 @@ describe("DebugLogTab – detail expansion", () => {
   it("close button in detail drawer dismisses the drawer", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     fireEvent.click(
-      screen.getByRole("button", { name: /debug event 0: tool_call from operator_console/i })
+      screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
     const closeBtn = screen.getByRole("button", { name: /close detail panel/i });
     fireEvent.click(closeBtn);
@@ -356,7 +357,7 @@ describe("DebugLogTab – filter behavior", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     // Open drawer for first row
     fireEvent.click(
-      screen.getByRole("button", { name: /debug event 0: tool_call from operator_console/i })
+      screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
     expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
     // Change filter
@@ -388,5 +389,322 @@ describe("DebugLogTab – pagination", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     expect(screen.queryByRole("button", { name: /next/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /previous/i })).not.toBeInTheDocument();
+  });
+});
+
+// ── Tree view toggle ──────────────────────────────────────────────────────────
+
+describe("DebugLogTab – tree view toggle visibility", () => {
+  it("shows List/Tree toggle buttons when entries have span_ids", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([
+        makeEntry({ idx: 0, span_id: "aabbccddeeff0011", parent_span_id: null }),
+      ]),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByRole("button", { name: /^list$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^tree$/i })).toBeInTheDocument();
+  });
+
+  it("does NOT show toggle when all entries have span_id=null", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry({ idx: 0, span_id: null, parent_span_id: null })]),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.queryByRole("button", { name: /^list$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^tree$/i })).not.toBeInTheDocument();
+  });
+
+  it("default view is list — event table is rendered initially", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry({ idx: 0, span_id: "aabbccddeeff0011" })]),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByRole("grid", { name: /debug log events/i })).toBeInTheDocument();
+    expect(screen.queryByRole("tree", { name: /debug span tree/i })).not.toBeInTheDocument();
+  });
+
+  it("clicking Tree button switches to tree view", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([
+        makeEntry({ idx: 0, span_id: "aabbccddeeff0011", parent_span_id: null }),
+      ]),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+    expect(screen.getByRole("tree", { name: /debug span tree/i })).toBeInTheDocument();
+    expect(screen.queryByRole("grid", { name: /debug log events/i })).not.toBeInTheDocument();
+  });
+
+  it("clicking List button switches back to list view", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([
+        makeEntry({ idx: 0, span_id: "aabbccddeeff0011", parent_span_id: null }),
+      ]),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^list$/i }));
+    expect(screen.getByRole("grid", { name: /debug log events/i })).toBeInTheDocument();
+    expect(screen.queryByRole("tree", { name: /debug span tree/i })).not.toBeInTheDocument();
+  });
+});
+
+// ── Tree view – expand/collapse ───────────────────────────────────────────────
+
+describe("DebugLogTab – tree view expand/collapse", () => {
+  const parentEntry = makeEntry({
+    idx: 10,
+    span_id: "parent0000000010",
+    parent_span_id: null,
+    message: "Parent event",
+    kind: "tool_call",
+  });
+  const childEntry = makeEntry({
+    idx: 11,
+    span_id: "child00000000011",
+    parent_span_id: "parent0000000010",
+    message: "Child event",
+    kind: "tool_call",
+  });
+
+  beforeEach(() => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([parentEntry, childEntry]),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("child node is not visible before expanding parent", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+    expect(screen.queryByText("Child event")).not.toBeInTheDocument();
+  });
+
+  it("clicking parent row expands and shows child", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 10: tool_call from operator_console/i,
+    });
+    fireEvent.click(parentRow);
+    expect(screen.getByText("Child event")).toBeInTheDocument();
+  });
+
+  it("clicking parent row again collapses and hides child", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 10: tool_call from operator_console/i,
+    });
+    fireEvent.click(parentRow);
+    expect(screen.getByText("Child event")).toBeInTheDocument();
+    fireEvent.click(parentRow);
+    expect(screen.queryByText("Child event")).not.toBeInTheDocument();
+  });
+
+  it("expanded parent row has aria-expanded=true", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 10: tool_call from operator_console/i,
+    });
+    expect(parentRow).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(parentRow);
+    expect(parentRow).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("leaf node does not have aria-expanded attribute", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 10: tool_call from operator_console/i,
+    });
+    fireEvent.click(parentRow); // expand to reveal child
+    const childRow = screen.getByRole("treeitem", {
+      name: /span event 11: tool_call from operator_console/i,
+    });
+    expect(childRow).not.toHaveAttribute("aria-expanded");
+  });
+});
+
+// ── Tree view – keyboard navigation ──────────────────────────────────────────
+
+describe("DebugLogTab – tree view keyboard navigation", () => {
+  const parentEntry = makeEntry({
+    idx: 20,
+    span_id: "parent0000000020",
+    parent_span_id: null,
+    message: "KB parent event",
+    kind: "tool_call",
+  });
+  const childEntry = makeEntry({
+    idx: 21,
+    span_id: "child00000000021",
+    parent_span_id: "parent0000000020",
+    message: "KB child event",
+    kind: "tool_call",
+  });
+
+  beforeEach(() => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([parentEntry, childEntry]),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("Enter key expands a collapsed node", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 20: tool_call from operator_console/i,
+    });
+    fireEvent.keyDown(parentRow, { key: "Enter" });
+    expect(screen.getByText("KB child event")).toBeInTheDocument();
+  });
+
+  it("Space key expands a collapsed node", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 20: tool_call from operator_console/i,
+    });
+    fireEvent.keyDown(parentRow, { key: " " });
+    expect(screen.getByText("KB child event")).toBeInTheDocument();
+  });
+
+  it("ArrowRight expands a collapsed node", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 20: tool_call from operator_console/i,
+    });
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+    expect(screen.getByText("KB child event")).toBeInTheDocument();
+  });
+
+  it("ArrowLeft collapses an expanded node", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const parentRow = screen.getByRole("treeitem", {
+      name: /span event 20: tool_call from operator_console/i,
+    });
+    // Expand first
+    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+    expect(screen.getByText("KB child event")).toBeInTheDocument();
+    // Now collapse
+    fireEvent.keyDown(parentRow, { key: "ArrowLeft" });
+    expect(screen.queryByText("KB child event")).not.toBeInTheDocument();
+  });
+});
+
+// ── Tree view – error node styling ───────────────────────────────────────────
+
+describe("DebugLogTab – tree view error node styling", () => {
+  it("error entries get a red background class in tree view", () => {
+    const errorEntry = makeEntry({
+      idx: 30,
+      span_id: "error00000000030",
+      parent_span_id: null,
+      status: "error",
+      message: "Error event",
+      kind: "error",
+    });
+
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([errorEntry]),
+      error: null,
+      isLoading: false,
+    });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const row = screen.getByRole("treeitem", {
+      name: /span event 30: error from operator_console/i,
+    });
+    // Error rows should have the red background class
+    expect(row.className).toMatch(/red/);
+  });
+
+  it("non-error entries do NOT get the red background class", () => {
+    const okEntry = makeEntry({
+      idx: 31,
+      span_id: "ok000000000000031",
+      parent_span_id: null,
+      status: "ok",
+      message: "Ok event",
+    });
+
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([okEntry]),
+      error: null,
+      isLoading: false,
+    });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const row = screen.getByRole("treeitem", {
+      name: /span event 31: tool_call from operator_console/i,
+    });
+    expect(row.className).not.toMatch(/red-50|red-950/);
+  });
+});
+
+// ── Tree view – filter integration ───────────────────────────────────────────
+
+describe("DebugLogTab – tree view shares filter state", () => {
+  it("text filter applies in tree view — only matching entries shown", () => {
+    const entries = [
+      makeEntry({
+        idx: 40,
+        span_id: "span40aaaaaaaaaa",
+        parent_span_id: null,
+        message: "Alpha tool call",
+      }),
+      makeEntry({
+        idx: 41,
+        span_id: "span41aaaaaaaaaa",
+        parent_span_id: null,
+        message: "Beta event",
+        tool_name: null,
+      }),
+    ];
+
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(entries),
+      error: null,
+      isLoading: false,
+    });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+
+    const textInput = screen.getByRole("textbox", { name: /filter by text/i });
+    fireEvent.change(textInput, { target: { value: "Alpha" } });
+
+    expect(screen.getByText("Alpha tool call")).toBeInTheDocument();
+    expect(screen.queryByText("Beta event")).not.toBeInTheDocument();
   });
 });
