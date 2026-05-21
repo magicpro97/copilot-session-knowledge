@@ -106,6 +106,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         nonce = generate_nonce()
+        request_method = "GET" if send_body else "HEAD"
         secure_cookie = is_https_request(self.headers)
 
         # /.well-known/browse-host — discovery endpoint; no auth required
@@ -189,16 +190,22 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                     "Vary": "Origin",
                 }
 
-        # ── Debug-log route gate (WBS-103) ────────────────────────────────────
-        # Must precede normal auth check — debug routes use a distinct auth path:
-        # Bearer/cookie only, no ?token=, no open-auth, static-slot → 403.
-        if path.startswith("/api/debug-log/"):
+        # ── Registry-driven debug route gate (WBS-103/WBS-104) ──────────────────
+        # Must precede normal auth check. Any route registered with debug=True uses
+        # a distinct auth path: Bearer/cookie only, no ?token=, no open-auth,
+        # static-slot → 403.  Driven by registry flag rather than a hard-coded URL
+        # prefix so new debug=True routes (e.g. WBS-104 /api/operator/…/debug) are
+        # automatically covered without modifying this dispatcher.
+        _probe_handler, _probe_kwargs, _probe_is_debug = match_route(path, "GET")
+        if _probe_is_debug:
             from browse.core.auth import _is_loopback_host, check_debug_token  # noqa: PLC0415
 
-            _dbg_handler, _dbg_kwargs, _is_debug_route = match_route(path, "GET")
+            _dbg_handler = _probe_handler
+            _dbg_kwargs = _probe_kwargs
 
-            if not _is_debug_route or _dbg_handler is None:
-                # Route not registered (feature disabled) → 404
+            if _dbg_handler is None:
+                # Defensive guard: match_route only sets debug=True for registered
+                # routes, so this branch should never be reached in normal operation.
                 self._send(
                     b"404 Not Found",
                     "text/plain",
@@ -269,7 +276,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             except Exception as _dbg_exc:
                 _dbg_req_id = str(uuid.uuid4())
                 print(
-                    f"[error] request_id={_dbg_req_id} method=GET path={path} 500: {_dbg_exc}",
+                    f"[error] request_id={_dbg_req_id} method={request_method} path={path} 500: {_dbg_exc}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -289,7 +296,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 cors_headers=cors_resp_headers or None,
             )
             return
-        # ── End debug-log gate ────────────────────────────────────────────────
+        # ── End registry-driven debug gate ───────────────────────────────────
 
         # Auth check (Bearer header, query-string token, or cookie)
         cookie_header = self.headers.get("Cookie", "")
@@ -328,7 +335,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         params["_session_kind"] = [session_kind]
         if session_kind == "static":
             print(
-                f"[audit] session_kind=static path={path} method=GET",
+                f"[audit] session_kind=static path={path} method={request_method}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -346,7 +353,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         # Route dispatch: /api/* and .md data exports via registry;
         # everything else is served by the Next.js root app.
         if path.startswith("/api/") or path.endswith(".md"):
-            handler_fn, kwargs, _dbg = match_route(path, "GET")
+            handler_fn, kwargs, _dbg = _probe_handler, _probe_kwargs, _probe_is_debug
             if handler_fn is None:
                 self._send(
                     b"404 Not Found",
@@ -363,7 +370,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 req_id = str(uuid.uuid4())
                 print(
-                    f"[error] request_id={req_id} method=GET path={path} 500: {exc}",
+                    f"[error] request_id={req_id} method={request_method} path={path} 500: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -596,6 +603,71 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 "Access-Control-Allow-Origin": cors_origin,
                 "Vary": "Origin",
             }
+
+        # Debug routes are read-only. Apply the debug auth guard before normal
+        # mutating auth so query-string tokens/static slots/open-auth cannot be
+        # used against a debug path even when the method is unsupported.
+        _debug_get_handler, _debug_get_kwargs, _debug_path = match_route(path, "GET")
+        if _debug_path:
+            from browse.core.auth import _is_loopback_host, check_debug_token  # noqa: PLC0415
+
+            if _debug_get_handler is None:
+                self._send(
+                    b"404 Not Found",
+                    "text/plain",
+                    404,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                )
+                return
+
+            if params.get("token"):
+                self._send(
+                    b"401 Unauthorized",
+                    "text/plain",
+                    401,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                )
+                return
+
+            from browse.core.pairing import get_static_slot as _dbg_get_static  # noqa: PLC0415
+
+            if _dbg_get_static():
+                self._send(
+                    b"403 Forbidden",
+                    "text/plain",
+                    403,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                )
+                return
+
+            _dbg_valid, _dbg_token_val = check_debug_token(
+                self.token,
+                self.headers.get("Cookie", ""),
+                self.headers.get("Authorization", ""),
+            )
+            if not _dbg_valid:
+                _dbg_host = self.headers.get("Host", "")
+                status = 403 if not self.token and not _is_loopback_host(_dbg_host) else 401
+                self._send(
+                    b"403 Forbidden" if status == 403 else b"401 Unauthorized",
+                    "text/plain",
+                    status,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                )
+                return
+
+            self._send(
+                b"404 Not Found",
+                "text/plain",
+                404,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+            )
+            return
 
         # Auth check (Bearer header, cookie, or query-string token)
         cookie_header = self.headers.get("Cookie", "")

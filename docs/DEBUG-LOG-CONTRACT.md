@@ -56,7 +56,10 @@ output stream.
 
 ### `DebugLogResponse`
 
-The HTTP response envelope for `GET /api/session/{id}/debug-log`.
+The HTTP response envelope for planned `GET /api/session/{id}/debug-log` consumers.
+For the WBS-104 operator run debug endpoint, see
+[WBS-104 Response Shape](#response-shape); it uses `events` instead of `entries`
+and includes `run_id`, `from`, `limit`, and `has_more`.
 
 | Field | Type | Nullable | Description |
 |---|---|---|---|
@@ -354,8 +357,9 @@ No CSP loosening is applied for debug routes.
 
 The following are explicitly **out of scope** for the current debug-log contract:
 
-1. Full debug-log read/query API (`GET /api/session/{id}/debug-log`) — WBS-103 implemented only the healthz probe and storage layer; the session-scoped read route remains future work.
-2. Frontend UI panel or event row renderer — WBS-104.
+1. Session-scoped debug-log read/query API (`GET /api/session/{id}/debug-log`) — future work.
+   WBS-104 implements the operator-run read endpoint below.
+2. Frontend UI panel or event row renderer — future work.
 3. TypeScript / Zod schema implementation — WBS-106.
 4. SSE streaming of debug log events — WBS-107.
 5. Redaction engine implementation — WBS-102.
@@ -364,6 +368,146 @@ The following are explicitly **out of scope** for the current debug-log contract
 7. Real-time filtering or search — WBS-108+.
 8. Performance benchmarks — WBS-109.
 9. CI integration — WBS-110.
+
+---
+
+## WBS-104 Debug-Log Read API
+
+### Endpoint
+
+```
+GET /api/operator/sessions/{session_id}/runs/{run_id}/debug
+```
+
+**Registered with `debug=True`** — uses the same Bearer/cookie-only auth gate as
+`/api/debug-log/healthz`.  Query-string `?token=` is rejected with `401`.
+
+### Auth and Status Semantics
+
+| Condition | Response |
+|---|---|
+| Route not registered | `404 Not Found` (falls through to regular 404 dispatch) |
+| `?token=` query-string auth present | `401 Unauthorized` |
+| Static/demo slot active | `403 Forbidden` |
+| Non-loopback host, no server token configured | `403 Forbidden` |
+| Missing or invalid Bearer/cookie token | `401 Unauthorized` |
+| Valid Bearer header or session cookie | `200 OK` |
+| Unknown `session_id` (or not a valid UUID4) | `404 application/json` |
+| Unknown `run_id` | `404 application/json` |
+| `run.session_id != session_id` (ownership mismatch) | `404 application/json` |
+| Bad query parameter | `400 application/json` |
+
+**No UUID / path leakage** — 404 error bodies never echo back the session_id, run_id,
+or any filesystem path.
+
+### Query Parameters
+
+| Parameter | Type | Default | Constraint | Description |
+|---|---|---|---|---|
+| `from` | integer | `0` | `>= 0` | Pagination offset (zero-based) |
+| `limit` | integer | `100` | `1..100` | Page size |
+| `kind` | string | — | one of `_KIND_ENUM` | Filter by event kind |
+| `level` | string | — | one of `_LEVEL_ENUM` | Filter by severity level |
+| `since` | string | — | parseable ISO-8601 | Include only events with `timestamp >= since` |
+
+Bad parameter values → `400 application/json` with `{"error": "...", "code": "BAD_PARAM"}`.
+
+### Response Shape
+
+```json
+{
+  "schema_version": "1",
+  "session_id": "<uuid>",
+  "run_id": "<uuid>",
+  "total": 42,
+  "from": 0,
+  "limit": 100,
+  "has_more": false,
+  "events": [<BrowseDebugEntry>, ...]
+}
+```
+
+`total` is the count **after** filters are applied but **before** pagination.
+`has_more` is `true` when `from + limit < total`.
+`events` contains at most `limit` entries, starting from the `from` index of the
+filtered result set.  All entries pass through `browse.core.redaction.redact_entry`
+before being returned.
+Operator-console entries return nullable `tool_name`, `duration_ms`,
+`parent_span_id`, and `status` keys explicitly as `null` when no source value is
+available.
+
+### Data Source
+
+Entries are read from persisted operator run JSON `run["events"]` only:
+- `get_session(session_id)` — validates the session exists
+- `get_run_status(run_id)` — loads from `_ACTIVE_RUNS` memory or `~/.copilot/session-state/operator-console/runs/{session_id}/{run_id}.json`
+- Strict `run["session_id"] == session_id` ownership check before reading events
+
+**No WBS-103 SQLite debug-log storage is consulted** — that store has no `run_id`
+key and no current producers.
+
+**No WBS-105 sidecar source yet** — this endpoint intentionally does not read
+`run["debug_events"]`.  Reconciling the sidecar with the read endpoint is a
+follow-up for #434, because the sidecar currently has different span-id,
+timestamp, nullable-field, and cap semantics.
+
+### Operator Event → BrowseDebugEntry Mapping
+
+| Operator event `type` | `BrowseDebugEntry.kind` |
+|---|---|
+| `"raw"` (non-JSON line) | `"raw"` |
+| `"assistant.message"`, `"assistant.message_delta"` | `"agent_response"` |
+| `"tool_call"`, `"tool_result"` | `"tool_call"` |
+| `"session_start"` | `"session_start"` |
+| `"turn_start"` | `"turn_start"` |
+| `"llm_request"` | `"llm_request"` |
+| `"hook"` | `"hook"` |
+| `"subagent"` | `"subagent"` |
+| `"error"`, `"exception"` | `"error"` |
+| any other `type` | `"generic"` |
+
+**Fixed fields for all operator events:**
+- `source` = `"operator_console"`
+- `level` = `null` (operator events carry no severity field)
+- `timestamp` = extracted from inner event `timestamp`/`ts` field; `null` when absent
+- `span_id` = `synthetic_span_id("operator_console", idx, 1)` (see
+  [Synthetic Span-ID Rule](#synthetic-span-id-rule))
+
+### Large-Event Truncation
+
+If the serialized JSON bytes of a raw operator event exceed **8192 bytes**:
+
+- `message` is replaced with: `[TRUNCATED sha256=<hex16> bytes=<n>]`
+- `attrs.truncated` = `true`
+- `attrs.bytes_in` = `<n>` (original byte count)
+- Raw event content is **never** included in the response
+
+Both `truncated` and `bytes_in` are in the `attrs` allowlist and survive the
+redaction pass.
+
+### `since` Filter Semantics
+
+Events with `timestamp = null` are **excluded** when the `since` parameter is
+provided.  If the timestamp cannot be parsed as ISO-8601, the event is also
+excluded.
+
+### Registry-Driven Debug Auth Gate (WBS-104 Generalisation)
+
+`browse/core/server.py` no longer hard-codes the `/api/debug-log/` URL prefix.
+The gate is now driven by `match_route(path, "GET")` returning `debug_flag=True`.
+Any route registered with `debug=True` — regardless of path prefix — automatically
+receives Bearer/cookie-only auth, `?token=` rejection, static-slot blocking, and the
+non-loopback insecure-config 403 rule.
+
+The `/api/debug-log/healthz` behaviour is unchanged.
+
+### Performance
+
+The implementation slices the filtered entry list **before** calling `redact_entry`,
+so at most `limit` (default 100, max 100) entries are redacted per request.
+
+A performance test (`tests/test_browse_debug_log_api.py::DB26`) verifies that
+100 entries are served from a 1000-event run in under 200 ms.
 
 ---
 

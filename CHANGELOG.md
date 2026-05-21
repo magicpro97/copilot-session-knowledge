@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Debug-log read API and registry-driven debug auth gate (WBS-104, #429):**
+  - `browse/api/operator.py`: new `GET /api/operator/sessions/{session_id}/runs/{run_id}/debug`
+    endpoint (registered with `debug=True`).  Returns a paginated, redacted `DebugLogResponse`
+    envelope with `schema_version`, `session_id`, `run_id`, `total`, `from`, `limit`,
+    `has_more`, and `events` (array of `BrowseDebugEntry`).  Reads events exclusively from
+    persisted operator run JSON (`get_session` + `get_run_status`); no WBS-103 SQLite storage
+    consulted.  Supports `from`, `limit`, `kind`, `level`, and `since` query parameters with
+    strict validation (bad params → 400 JSON).  Operator events are mapped to BrowseDebugEntry
+    via the WBS-101 taxonomy; `source="operator_console"`, `level=null`, synthetic span_id via
+    `sha1("operator_console:{idx}:1")[:16]`.  Events whose serialized JSON exceeds 8192 bytes
+    receive a truncation marker (`[TRUNCATED sha256=<hex16> bytes=<n>]`) with
+    `attrs.truncated=true` and `attrs.bytes_in=n`.  All entries pass through
+    `browse.core.redaction.redact_entry`; redaction runs on at most `limit` entries (≤100)
+    per request.  Session/run 404 errors include no UUID or path leakage.
+  - `browse/core/registry.py`: generalized `match_route` from hard-coded `{id}` → `session_id`
+    to arbitrary `{name}` named placeholders.  `{id}` still maps to kwarg `session_id` for
+    backward compatibility.  New `_build_route_pattern()` helper splits on `_PLACEHOLDER_RE`
+    and constructs named-group regex patterns.  Multi-placeholder paths such as
+    `/sessions/{session_id}/runs/{run_id}/debug` are fully supported.
+  - `browse/core/server.py`: debug auth gate generalized from prefix `/api/debug-log/` to
+    registry-driven `match_route(path, "GET")` returning `debug_flag=True`.  Any route
+    registered with `debug=True` — regardless of URL prefix — automatically receives
+    Bearer/cookie-only auth, `?token=` rejection (401), static-slot blocking (403), and the
+    non-loopback insecure-config 403 rule.  `/api/debug-log/healthz` behaviour is unchanged.
+  - `tests/test_browse_debug_log_api.py`: 36 tests (105 assertions) covering unknown/non-UUID session/run 404
+    no leakage; ownership mismatch 404; missing/invalid auth 401; `?token=` rejection 401;
+    valid Bearer and cookie 200; static slot 403; pagination (default/explicit/overflow/max
+    limit/negative from); kind/level/since filters and bad params; redaction; truncation
+    indicator; CORS disallowed no ACAO; HEAD status/body; JSON content-type on all responses;
+    performance 100 entries from 1000-event run <200 ms; empty run; schema_version; non-UUID
+    session_id.
+  - `docs/DEBUG-LOG-CONTRACT.md`: updated with WBS-104 section documenting the read API
+    endpoint, auth/status semantics, query parameters, response shape, data source, event
+    mapping, truncation semantics, `since` filter semantics, and registry-driven debug auth
+    gate generalisation.
+
 - **Bounded redacted operator debug-event sidecar (WBS-105, #430):**
   - `browse/core/operator_console.py`:
     - Constants `_MAX_DEBUG_EVENTS = 5000` and `_DEBUG_SOURCE = "operator_console"`.
