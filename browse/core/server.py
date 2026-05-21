@@ -149,7 +149,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             from browse.core.csp import build_v2_csp_header
             from browse.routes.serve_v2 import serve_v2
 
-            body, ct, status = serve_v2(rel_path_asset)
+            body, ct, status = serve_v2(rel_path_asset, nonce=nonce)
             # WBS-084: Pass nonce to build_v2_csp_header so unsafe-inline is not needed.
             self._send(body, ct, status, nonce, csp_header=build_v2_csp_header(nonce), send_body=send_body)
             return
@@ -318,7 +318,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         from browse.core.csp import build_v2_csp_header
         from browse.routes.serve_v2 import serve_v2
 
-        body, ct, status = serve_v2(path.lstrip("/"))
+        body, ct, status = serve_v2(path.lstrip("/"), nonce=nonce)
         self._send(
             body,
             ct,

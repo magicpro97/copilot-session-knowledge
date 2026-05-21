@@ -6,9 +6,12 @@ page paths), and directly for /_next/* static assets (no auth required).
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import unquote
+
+from browse.core.fts import _SESSION_ID_RE
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
@@ -16,6 +19,20 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 _V2_DIST = (Path(__file__).parent.parent.parent / "browse-ui" / "dist").resolve()
+
+# Regex matching opening <script ...> tags (not closing tags, not <script src=...>).
+# Group 1 captures everything between "<script" and ">".
+# Conservative: only matches tags where the tag body contains no ">".
+# Used by _inject_csp_nonce; see INV-3, INV-4.
+_SCRIPT_OPEN_RE = re.compile(rb"<script(\s[^>]*)?>", re.IGNORECASE)
+
+# Attribute-boundary regexes for ``src`` and ``nonce`` attribute detection.
+# Using word-boundary variants (?:^|\s) ensures we detect the attribute name
+# proper (with optional whitespace around ``=``) rather than substring matches
+# that would falsely fire on ``data-src=`` or ``data-nonce=`` attributes.
+# re.IGNORECASE covers SRC=, Src=, nonce=, NONCE=, etc.
+_SRC_ATTR_RE = re.compile(rb"(?:^|\s)src\s*=", re.IGNORECASE)
+_NONCE_ATTR_RE = re.compile(rb"(?:^|\s)nonce\s*=", re.IGNORECASE)
 
 _CT: dict = {
     ".html": "text/html; charset=utf-8",
@@ -38,9 +55,48 @@ def _content_type(path: Path) -> str:
     return _CT.get(path.suffix.lower(), "application/octet-stream")
 
 
+def _inject_csp_nonce(body: bytes, nonce: str) -> bytes:
+    """Inject ``nonce="<nonce>"`` into inline ``<script>`` opening tags.
+
+    Mutates ONLY opening ``<script>`` tags that:
+    - have **no** ``src=`` attribute (inline scripts only), and
+    - have **no** existing ``nonce=`` attribute (idempotent / INV-9).
+
+    Never touches ``<script src=...>``, ``</script>`` closing tags, script
+    bodies, style tags, or text nodes.  Applied ONLY to trusted
+    ``browse-ui/dist`` HTML (see INV-1..INV-10 in G3 security review).
+
+    If *nonce* is empty/falsy the body is returned unchanged (INV-2, INV-10).
+    """
+    if not nonce:
+        return body
+
+    nonce_bytes = nonce.encode("ascii")
+
+    def _replace(m: re.Match) -> bytes:
+        attrs: bytes = m.group(1) or b""
+        # Skip external scripts (<script src=...>) and already-nonced tags.
+        # Use attribute-boundary regexes to avoid false positives on data-src=
+        # or data-nonce= attributes, and to handle optional whitespace around =
+        # (e.g. ``src = "x.js"``, ``nonce\t=``).
+        if _SRC_ATTR_RE.search(attrs) or _NONCE_ATTR_RE.search(attrs):
+            return m.group(0)
+        return b"<script" + attrs + b' nonce="' + nonce_bytes + b'">'
+
+    return _SCRIPT_OPEN_RE.sub(_replace, body)
+
+
 def _session_placeholder_fallback_paths(rel_path: str) -> tuple[str, list[Path]]:
     parts = Path(rel_path).parts
     if len(parts) < 2 or parts[0] != "sessions" or parts[1] == "_placeholder":
+        return "", []
+
+    session_id = unquote(parts[1])
+    # Security (INV-7): validate session_id cannot synthesise HTML tokens such
+    # as ``<script>``.  Uses the canonical _SESSION_ID_RE from browse.core.fts
+    # (^[a-zA-Z0-9._-]{1,128}$) which accepts dots and enforces a 128-char cap,
+    # consistent with all other route validators in this package.
+    if not _SESSION_ID_RE.match(session_id):
         return "", []
 
     placeholder_base = _V2_DIST / "sessions" / "_placeholder"
@@ -50,7 +106,7 @@ def _session_placeholder_fallback_paths(rel_path: str) -> tuple[str, list[Path]]
     if suffix_parts:
         fallback_paths.append(placeholder_base.joinpath(*suffix_parts))
     fallback_paths.append(placeholder_base / "index.html")
-    return unquote(parts[1]), fallback_paths
+    return session_id, fallback_paths
 
 
 def _rewrite_session_placeholder(body: bytes, content_type: str, session_id: str) -> bytes:
@@ -65,11 +121,16 @@ def _rewrite_session_placeholder(body: bytes, content_type: str, session_id: str
     return body.replace(b"_placeholder", session_id.encode("utf-8"))
 
 
-def serve_v2(rel_path: str) -> tuple:
+def serve_v2(rel_path: str, nonce: str = "") -> tuple:
     """Serve files from browse-ui/dist/ with SPA fallback.
 
     rel_path: path relative to dist/ root (e.g. '' for root, 'sessions/' for
     sessions page, '_next/static/chunks/abc.js' for a static asset).
+    nonce: per-request CSP nonce.  When truthy and the response content-type
+    is ``text/html``, the nonce is injected into every inline ``<script>``
+    tag (no ``src=``, no existing ``nonce=``) before the response is returned.
+    The same nonce MUST appear in the ``Content-Security-Policy`` header
+    emitted by the caller (INV-5).
     Returns (body_bytes, content_type, status_code).
     """
     if not _V2_DIST.exists():
@@ -91,7 +152,11 @@ def serve_v2(rel_path: str) -> tuple:
 
     # Serve exact file first (JS/CSS/fonts/_next assets)
     if candidate.is_file():
-        return candidate.read_bytes(), _content_type(candidate), 200
+        body = candidate.read_bytes()
+        ct = _content_type(candidate)
+        if nonce and ct.startswith("text/html"):
+            body = _inject_csp_nonce(body, nonce)
+        return body, ct, 200
 
     # Dynamic session detail fallback: /sessions/{id}/... -> /sessions/_placeholder/...
     session_id, fallback_paths = _session_placeholder_fallback_paths(rel_path)
@@ -103,7 +168,12 @@ def serve_v2(rel_path: str) -> tuple:
             continue
         if resolved.is_file():
             content_type = _content_type(resolved)
+            # Placeholder rewrite runs first (INV-7 order-of-operations).
             body = _rewrite_session_placeholder(resolved.read_bytes(), content_type, session_id)
+            # Nonce injection runs after placeholder rewrite so any (hypothetical)
+            # script tag introduced by the rewrite would also be nonced.
+            if nonce and content_type.startswith("text/html"):
+                body = _inject_csp_nonce(body, nonce)
             return body, content_type, 200
 
     # SPA fallback: try {rel_path}/index.html, then {rel_path}.html, then dist/index.html
@@ -118,6 +188,9 @@ def serve_v2(rel_path: str) -> tuple:
         except ValueError:
             continue
         if resolved.is_file():
-            return resolved.read_bytes(), "text/html; charset=utf-8", 200
+            body = resolved.read_bytes()
+            if nonce:
+                body = _inject_csp_nonce(body, nonce)
+            return body, "text/html; charset=utf-8", 200
 
     return b"404 Not Found", "text/plain", 404
