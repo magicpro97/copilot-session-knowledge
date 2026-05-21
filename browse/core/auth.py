@@ -163,6 +163,54 @@ def check_origin(request_headers: object, host: str) -> tuple:
     return False, is_https
 
 
+# ── Debug-log token auth (WBS-103) ────────────────────────────────────────────
+
+
+def check_debug_token(token: str, cookie_header: str, auth_header: str) -> "tuple[bool, str]":
+    """Check debug-log authentication: Bearer header or cookie only.
+
+    No query-string / params auth accepted.
+    Empty server *token* always returns (False, '') — debug endpoints are
+    never open-auth.
+
+    Returns (valid: bool, token_val: str).
+
+    Priority: Bearer header > cookie.
+    If a Bearer header is present and fails, fails closed with no cookie
+    fallback (matching the strict-auth pattern of check_token for Bearer).
+    """
+    if not token:
+        return False, ""
+
+    # Bearer header: authoritative, no fallback on failure
+    if auth_header and auth_header.startswith("Bearer "):
+        provided = auth_header[len("Bearer ") :].strip()
+        if provided:
+            try:
+                if hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
+                    return True, provided
+            except Exception:
+                pass
+        return False, ""
+
+    # Cookie fallback (no Bearer header present)
+    if cookie_header:
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(cookie_header)
+        except Exception:
+            pass
+        morsel = jar.get("browse_token")
+        if morsel:
+            try:
+                if hmac.compare_digest(morsel.value.encode("utf-8"), token.encode("utf-8")):
+                    return True, morsel.value
+            except Exception:
+                pass
+
+    return False, ""
+
+
 # ── Loopback / open-auth guard (WBS-087) ─────────────────────────────────────
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "127.0.0.0"})

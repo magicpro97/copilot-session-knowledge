@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Debug-log separate SQLite storage and healthz probe (WBS-103, #428):**
+  - `browse/core/debug_log_storage.py`: new isolated debug-log store — separate SQLite DB at
+    `~/.copilot/operator-console/debug-log/debug-log.db` (outside session-state and `knowledge.db`).
+    WAL/NORMAL pragmas; redaction before insert (JSON-only); deterministic age-then-size pruning;
+    optional background retention thread; explicit shutdown, no `atexit`/signal handlers.
+  - `browse/routes/debug_log.py`: `GET /api/debug-log/healthz` — safe probe route (enabled only);
+    returns `ok`, `enabled`, and `retention` config; no paths, event counts, or session content.
+  - `browse/__init__.py`: new CLI flags and env vars:
+    `--debug-log` / `BROWSE_DEBUG_LOG_ENABLED=1` (disabled by default);
+    `--debug-log-dir` / `BROWSE_DEBUG_LOG_DIR`;
+    `--debug-log-max-age-seconds` / `BROWSE_DEBUG_LOG_MAX_AGE_S` (default 86400);
+    `--debug-log-max-bytes` / `BROWSE_DEBUG_LOG_MAX_BYTES` (default 52428800);
+    `--debug-log-retention-interval` / `BROWSE_DEBUG_LOG_RETENTION_INTERVAL_S` (default 300);
+    `--debug-log-ephemeral` / `BROWSE_DEBUG_LOG_EPHEMERAL`.
+  - `browse/core/server.py`: debug-log gate — disabled route → 404; `?token=` rejected with 401;
+    static/demo mode → 403; non-loopback with no server token → 403; auth via `check_debug_token`
+    (Bearer/cookie only, no open-auth); inherits `/api` CORS/PNA/Vary policy.
+  - `tests/test_browse_debug_log_storage.py`, `tests/test_browse_debug_log_transport.py`,
+    `tests/test_browse_debug_log_exclusion.py`: isolation verified — default path outside
+    session-state; `.db` ignored by watcher; sync auto-detect excludes `operator-console/`;
+    session export body excludes debug-log content.
+  - `docs/DEBUG-LOG-CONTRACT.md`: updated to document WBS-103 storage/transport contract.
+
 - **Explicit improvement signal tracking (#126):**
   - `migrate.py` v24: new `improvement_signals` table in the session knowledge DB — stores explicit user-reported `missed_match`, `wrong_skill`, and `outdated_skill` signals linked to session IDs, with `consumed` tracking and indexes on `consumed`, `signal_type`, `created_at`, and `mentioned_skill`.
   - `improvement-signals.py`: new standalone stdlib-only script exposing `record`, `list`, `consume`, and `stats` subcommands. Supports `--format json` throughout. Fail-open on missing DB. Creates the table itself if migration has not yet run.

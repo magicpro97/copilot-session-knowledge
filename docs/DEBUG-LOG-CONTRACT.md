@@ -1,8 +1,8 @@
 # Agent Debug Log Browse Contract
 
 **Schema version:** `1`
-**Status:** Draft — WBS-101
-**Blocks:** WBS-103 (backend route), WBS-104/WBS-105 (UI), WBS-106 (TS/Zod schemas)
+**Status:** WBS-101 complete; WBS-103 storage/transport complete
+**Blocks:** WBS-104/WBS-105 (UI), WBS-106 (TS/Zod schemas)
 **Redaction policy:** See [Security & Redaction](#security--redaction) — WBS-102
 
 ---
@@ -171,7 +171,7 @@ the formula for its own `span_id`; it simply inherits the start row's value.
 - Full raw prompt text, tool input/output payloads, and assistant response bodies are **excluded**
   from the default `BrowseDebugEntry` contract.
 - If the UI requires full content, a separate `GET /api/session/{id}/debug-log/{idx}/raw`
-  endpoint is reserved for WBS-103 design.
+  endpoint is reserved for a future WBS iteration beyond WBS-103.
 
 ---
 
@@ -230,17 +230,137 @@ This contract defines only the **boundary**:
 
 ---
 
+## WBS-103 Storage and Transport Contract
+
+### Feature gating
+
+The debug-log feature is **disabled by default**. Enable via:
+
+- CLI flag `--debug-log`, or
+- environment variable `BROWSE_DEBUG_LOG_ENABLED=1`
+
+When disabled, `/api/debug-log/healthz` returns **404**. No DB is opened, no events are stored.
+
+### Storage location and isolation
+
+| Property | Value |
+|---|---|
+| Default DB path | `~/.copilot/operator-console/debug-log/debug-log.db` |
+| Override directory | `--debug-log-dir <dir>` / `BROWSE_DEBUG_LOG_DIR` |
+| SQLite pragmas | `journal_mode=WAL`, `synchronous=NORMAL` |
+| Relation to `knowledge.db` | **Separate DB**; never merged or co-located |
+| Relation to session-state | Path is outside `~/.copilot/session-state/` by default |
+
+**Isolation guarantees (verified by `tests/test_browse_debug_log_exclusion.py`):**
+
+- `watch-sessions.py` ignores `.db` files by extension — `debug-log.db` is never indexed.
+- `sync-knowledge.py` auto-detect targets only `knowledge.db` paths; `operator-console/` is excluded.
+- `build-session-index.py` has no reference to `operator-console` or `debug-log`.
+- Session export body (`/session/{id}.md`) excludes `debug-log`/`operator-console` content.
+
+### CLI flags and environment variables
+
+| CLI flag | Env variable | Default | Description |
+|---|---|---|---|
+| `--debug-log` | `BROWSE_DEBUG_LOG_ENABLED=1` | disabled | Enable feature |
+| `--debug-log-dir` | `BROWSE_DEBUG_LOG_DIR` | `~/.copilot/operator-console/debug-log/` | Storage directory |
+| `--debug-log-max-age-seconds` | `BROWSE_DEBUG_LOG_MAX_AGE_S` | `86400` (24 h) | Max event age in seconds |
+| `--debug-log-max-bytes` | `BROWSE_DEBUG_LOG_MAX_BYTES` | `52428800` (50 MiB) | Max total DB payload bytes |
+| `--debug-log-retention-interval` | `BROWSE_DEBUG_LOG_RETENTION_INTERVAL_S` | `300` (5 min) | Retention daemon poll interval |
+| `--debug-log-ephemeral` | `BROWSE_DEBUG_LOG_EPHEMERAL=1` | off | Remove DB + WAL/SHM on clean shutdown |
+
+### Storage schema (`debug_log_storage.py`)
+
+```sql
+CREATE TABLE debug_log_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_ns      INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    idx        INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    payload    TEXT NOT NULL,   -- redacted JSON only
+    byte_len   INTEGER NOT NULL
+);
+CREATE TABLE debug_log_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- schema_version = '1'
+```
+
+### Retention and pruning
+
+Pruning is deterministic and runs in two ordered passes:
+
+1. **Age pass** — delete rows where `ts_ns < now_ns - (max_age_s × 1 000 000 000)`.
+2. **Size pass** — while `SUM(byte_len) > max_bytes`, delete the oldest 100 rows by `(ts_ns ASC, id ASC)`.
+
+The optional background retention thread polls every `retention_interval_s` seconds.
+`shutdown_storage()` stops the thread (2-second join), closes the DB, and optionally removes files.
+**No `atexit` handlers; no signal handlers.** Clean shutdown must be triggered explicitly from `main`'s
+`finally` block. SIGKILL / process kill can leave `debug-log.db`, `-wal`, and `-shm` files on disk.
+
+### Payload serialization
+
+`append_event()` passes every payload through `browse.core.redaction.redact_entry` before insert.
+Only the **redacted JSON string** is stored; unredacted data is never written to the DB.
+If `redact_entry` returns a dict without a `redacted` key, the insert is refused with `ValueError`.
+
+### `/api/debug-log/healthz` endpoint
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| Path | `/api/debug-log/healthz` |
+| Registered when | feature enabled only |
+| Response `Content-Type` | `application/json` |
+
+**Response body (non-sensitive only):**
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "retention": {
+    "max_age_seconds": 86400,
+    "max_bytes": 52428800,
+    "interval_seconds": 300
+  }
+}
+```
+
+The response **never** includes filesystem paths, event counts, session content, or stored debug data.
+
+### Authentication and status semantics
+
+| Condition | Response |
+|---|---|
+| Feature disabled (route not registered) | `404 Not Found` |
+| Feature enabled; `?token=` query-string auth present | `401 Unauthorized` (query-string auth rejected for debug routes) |
+| Feature enabled; static/demo slot active | `403 Forbidden` |
+| Feature enabled; non-loopback host with no server token configured | `403 Forbidden` |
+| Feature enabled; missing or invalid Bearer/cookie token | `401 Unauthorized` |
+| Feature enabled; valid Bearer header or session cookie | `200 OK` |
+
+Auth is handled by `check_debug_token()` in `browse/core/auth.py`: Bearer header > cookie; empty
+server token always returns `(False, "")` — **no open-auth debug route**.
+
+### Transport security
+
+`/api/debug-log/*` inherits the same CORS/PNA/Vary policy as all `/api` routes:
+allowlisted `Origin` only; `Vary: Origin` set; Private Network Access preflight supported.
+No CSP loosening is applied for debug routes.
+
+---
+
 ## Non-Goals
 
-The following are explicitly **out of scope** for this contract (WBS-101):
+The following are explicitly **out of scope** for the current debug-log contract:
 
-1. Backend HTTP route implementation (`GET /api/session/{id}/debug-log`) — WBS-103.
+1. Full debug-log read/query API (`GET /api/session/{id}/debug-log`) — WBS-103 implemented only the healthz probe and storage layer; the session-scoped read route remains future work.
 2. Frontend UI panel or event row renderer — WBS-104/WBS-105.
 3. TypeScript / Zod schema implementation — WBS-106.
 4. SSE streaming of debug log events — WBS-107.
 5. Redaction engine implementation — WBS-102.
-6. Persistence or indexing of debug log entries — existing `event_offsets` table handles raw
-   indexing; WBS-101 does not change the DB schema.
+6. Syncing or indexing debug-log entries into `knowledge.db` / session-state — WBS-103 persistence
+   stays in the isolated local debug-log DB only.
 7. Real-time filtering or search — WBS-108+.
 8. Performance benchmarks — WBS-109.
 9. CI integration — WBS-110.

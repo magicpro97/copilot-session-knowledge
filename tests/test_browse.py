@@ -564,7 +564,7 @@ def run_all_tests() -> int:
     import browse.routes.session_compare  # noqa: F401 — registers @route
     from browse.core.registry import match_route as _match_route
 
-    h20, kw20 = _match_route("/compare", "GET")
+    h20, kw20, _dbg20 = _match_route("/compare", "GET")
     test("T20: /compare route registered", h20 is not None)
 
     # Form fallback when params are empty
