@@ -9,7 +9,7 @@ Usage:
     python3 run_all_tests.py --help   # show usage
     python3 run_all_tests.py --dry    # list test files without running
 
-Exits 0 if all pass, 1 if any fail. Total wall-time budget: 5 minutes.
+Exits 0 if all pass, 1 if any fail. Per-test timeout: 5 minutes; total wall-time budget: 15 minutes.
 
 Note: This runner covers Python tests only.  To mirror CI fully, also run the
 browse-ui quality gates from the browse-ui/ directory:
@@ -37,8 +37,8 @@ if os.name == "nt":
 REPO = Path(__file__).resolve().parent
 EXCLUDE_DIRS = {".octogent", "__pycache__", ".git", ".venv", "venv"}
 EXCLUDE_PATH_PARTS = {"fixtures"}  # skip tests/fixtures/
-TIMEOUT_PER_TEST = 60  # seconds
-TOTAL_BUDGET = 300  # 5 minutes
+TIMEOUT_PER_TEST = 300  # seconds — generous for slow Windows tests (test_db_retrieval_schema ~153s)
+TOTAL_BUDGET = 900  # 15 minutes
 
 
 def discover_tests(root: Path) -> list[Path]:
