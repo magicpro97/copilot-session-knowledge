@@ -105,8 +105,8 @@ BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
     "detective-investigation",
 )
 
-# Global Copilot CLI skills directory.  deploy_skills() creates missing VENDORED
-# skill dirs here and updates both VENDORED and already-installed BUILTIN dirs.
+# Global Copilot CLI skills directory.  install.py --deploy-global-skills creates
+# the initial dirs; deploy_skills() keeps already-installed dirs refreshed.
 GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
 
 
@@ -593,6 +593,7 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
             or f == "templates/session-knowledge.instructions.md"
             or f.startswith("templates/instructions/")
         ],
+        "global_skills": [f for f in changed if f == "install.py" or f.startswith("skills/")],
         "managed_hooks": [
             f
             for f in changed
@@ -682,7 +683,11 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         if changes.get("global_instructions"):
             refresh_global_instructions()
 
-        # 5. Template/SKILL.md changed → redeploy
+        # 5. Skill sources or installer changed → initialize/refresh global skills
+        if changes.get("global_skills"):
+            refresh_global_skills()
+
+        # 5b. Template/SKILL.md changed → redeploy project skills
         if changes.get("templates") or changes.get("skills"):
             deploy_skills()
 
@@ -840,6 +845,16 @@ def refresh_sk_launcher():
         "sk launcher",
         "sk.py or install.py changed — refreshing managed sk launcher...",
         timeout=30,
+    )
+
+
+def refresh_global_skills():
+    """Create or refresh global Copilot CLI skills via install.py."""
+    _refresh_via_install(
+        "--deploy-global-skills",
+        "global skills",
+        "Skill sources changed — refreshing global Copilot skills...",
+        timeout=120,
     )
 
 
@@ -1366,6 +1381,8 @@ def write_manifest(sha: str, changes: dict):
     actions.append("migrate")  # always runs
     if changes.get("launchd"):
         actions.append("reinstall-launchagents")
+    if changes.get("global_skills"):
+        actions.append("deploy-global-skills")
     if changes.get("templates") or changes.get("skills"):
         actions.append("deploy-skills")
     if changes.get("py_scripts"):
@@ -1431,6 +1448,7 @@ def write_manifest(sha: str, changes: dict):
             "templates",
             "py_scripts",
             "sk_launcher",
+            "global_skills",
             "sk_binary",
         )
         if key in changes
@@ -1657,7 +1675,8 @@ def deploy_skills():
     # --- global Copilot CLI skills ----------------------------------------
     # Both VENDORED and BUILTIN_PROJECT_SKILLS are update-only: never
     # auto-create a global skill dir that doesn't already exist.  Dir
-    # creation is handled by the Copilot CLI marketplace / install.py.
+    # creation is handled by install.py deploy_global_skills() (also exposed
+    # as install.py --deploy-global-skills and called by install()).
     # For asset files: only overwrite files that are already present —
     # do not create missing asset files.
     for global_skills_root in _global_copilot_skill_dirs():
@@ -1955,7 +1974,8 @@ def list_coverage():
         print()
     print("Pipeline actions by category:")
     print("  *.py / browse/ / providers/  → restart-services (if watcher running)")
-    print("  skills/ / templates/         → deploy-skills (to registered projects + global)")
+    print("  skills/                      → deploy-global-skills + deploy-skills")
+    print("  templates/                   → deploy-skills")
     print("  launchd/                     → reinstall-launchagents (macOS only)")
     print("  hooks/ (Python scripts)      → warn: re-run install.py --deploy-hooks")
     print("  hooks/ (pre-commit/pre-push) → warn: re-run install.py --install-git-hooks per repo")

@@ -7,6 +7,7 @@ Usage:
     python install.py --install-sk           # Install/refresh sk launcher in ~/.copilot/bin/
     python install.py --uninstall-launcher   # Remove only the managed sk launcher
     python install.py --deploy-skill         # Deploy SKILL.md to current project
+    python install.py --deploy-global-skills # Deploy all skills to ~/.copilot/skills/
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
@@ -72,6 +73,20 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_bytes(content.encode(encoding))
+        os.replace(str(tmp), str(path))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Write bytes to path atomically via temp + os.replace."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(content)
         os.replace(str(tmp), str(path))
     except Exception:
         try:
@@ -274,6 +289,21 @@ def _support_dir_files(base_dir: Path) -> list[Path]:
             continue
         files.extend(sorted(p for p in root.rglob("*") if p.is_file()))
     return files
+
+
+def _is_deployable_skill_asset(rel_path: Path) -> bool:
+    """Return False for generated artifacts that should not deploy with skills."""
+    return "__pycache__" not in rel_path.parts and rel_path.suffix != ".pyc"
+
+
+def _sync_skill_file(src: Path, dst: Path) -> bool:
+    """Copy a skill file atomically when content differs."""
+    content = src.read_bytes()
+    if dst.is_file() and dst.read_bytes() == content:
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(dst, content)
+    return True
 
 
 def _prune_empty_dir(root: Path) -> None:
@@ -1552,6 +1582,56 @@ def deploy_skill():
     _register_project(project_root)
 
 
+def deploy_global_skills():
+    """Create or refresh ~/.copilot/skills/<name>/ from tools/skills/<name>/."""
+    global_skills_dir = COPILOT_DIR / "skills"
+    skills_src_dir = TOOLS_DIR / "skills"
+
+    print("\nDeploy Global Skills")
+    print(f"  Source: {_tilde(skills_src_dir)}")
+    print(f"  Target: {_tilde(global_skills_dir)}")
+
+    if not skills_src_dir.is_dir():
+        print(f"  {FAIL} Source skills dir not found: {_tilde(skills_src_dir)}")
+        return
+
+    global_skills_dir.mkdir(parents=True, exist_ok=True)
+    changed: list[Path] = []
+    up_to_date = 0
+
+    for skill_dir in sorted(p for p in skills_src_dir.iterdir() if p.is_dir()):
+        skill_md_src = skill_dir / "SKILL.md"
+        if not skill_md_src.is_file():
+            continue
+
+        target_dir = global_skills_dir / skill_dir.name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_md = target_dir / "SKILL.md"
+        skill_changed = _sync_skill_file(skill_md_src, target_md)
+        if skill_changed:
+            changed.append(target_md)
+
+        for asset_file in sorted(p for p in skill_dir.rglob("*") if p.is_file() and p.name != "SKILL.md"):
+            rel = asset_file.relative_to(skill_dir)
+            if not _is_deployable_skill_asset(rel):
+                continue
+            target_asset = target_dir / rel
+            if _sync_skill_file(asset_file, target_asset):
+                changed.append(target_asset)
+                skill_changed = True
+
+        if skill_changed:
+            print(f"  {OK} {skill_dir.name}")
+        else:
+            up_to_date += 1
+
+    if up_to_date:
+        print(f"  {INFO} {up_to_date} skill(s) already up to date")
+    print(f"\n  Deployed {len(changed)} file(s) to {_tilde(global_skills_dir)}")
+    if changed:
+        _record_managed_paths(changed)
+
+
 # ===================================================================
 # 2b. Global Instructions Injection
 # ===================================================================
@@ -2127,6 +2207,7 @@ def install():
     # Install the managed sk launcher
     print("\n  Installing sk launcher...")
     install_sk_launcher()
+    deploy_global_skills()
     _record_managed_paths(managed_paths)
     _show_usage_hints()
 
@@ -2152,6 +2233,7 @@ def _show_usage_hints():
     print(f"    python {inst} --install-sk             # Refresh sk launcher")
     print(f"    python {inst} --uninstall-launcher    # Remove sk launcher only")
     print(f"    python {inst} --deploy-skill          # Add skill to project")
+    print(f"    python {inst} --deploy-global-skills  # Deploy skills to ~/.copilot/skills/")
     print(f"    python {inst} --deploy-hooks           # Deploy hooks")
     print(f"    python {inst} --deploy-instructions   # Deploy global instructions")
     print(f"    python {inst} --inject-global         # Add to global copilot-instructions")
@@ -2711,6 +2793,10 @@ def main():
 
     if "--deploy-skill" in args:
         deploy_skill()
+        return
+
+    if "--deploy-global-skills" in args:
+        deploy_global_skills()
         return
 
     if "--deploy-hooks" in args:

@@ -81,7 +81,8 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 |---|---|
 | Python scripts (`*.py`) | Restart services |
 | LaunchAgent templates (`launchd/`) | Reinstall LaunchAgents |
-| `skills/` or `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`), update built-in skill bodies + assets for all skills in `BUILTIN_PROJECT_SKILLS` (e.g. `forge-ecosystem`) and vendored skills (e.g. `karpathy-guidelines`) to already-deployed **project** destinations, and refresh already-installed **global Copilot CLI** `~/.copilot/skills/<name>/` entries for vendored + built-in skills |
+| `skills/` | Create/refresh built-in **global Copilot CLI** skills with `install.py --deploy-global-skills`, then update already-deployed project skill destinations |
+| `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`) and update already-deployed project skill destinations |
 | Embedding logic | Rebuild embeddings (background) |
 | `auto-update-tools.py` itself | Self-exec with new code |
 | Hook templates (`hooks/references/`) | Detected only — no auto-deploy (templates are copied manually) |
@@ -90,8 +91,10 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > (`project-context.py`, `host_manifest.py`, `codebase-map.py`, etc.) is automatically
 > covered by the `*.py` detection rule — the watcher service is restarted when they change.
 >
-> **`skills/` changes and references/:** When files under `skills/` change, auto-update calls
-> `deploy_skills()`, which does five things:
+> **`skills/` changes and references/:** When files under `skills/` change, auto-update first calls
+> `install.py --deploy-global-skills`, which creates or refreshes `~/.copilot/skills/<name>/`
+> from `tools/skills/<name>/` including bundled references/assets. It then calls `deploy_skills()`,
+> which does five update-only things:
 > (1) updates `templates/SKILL.md` (the session-knowledge skill) in already-deployed project destinations,
 > (2) updates vendored skill bodies and asset subdirs for skills listed in `VENDORED_SKILLS`
 > (currently `karpathy-guidelines`) in already-deployed project destinations,
@@ -105,11 +108,11 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > entries using update-only behavior for directories, while syncing missing asset files inside those already-installed dirs.
 > When auto-update runs inside WSL and
 > can resolve the current Windows user's profile, it also refreshes that Windows Copilot CLI global
-> skill directory — but only if it already exists there from a separate manual install. This is
+> skill directory. This is
 > **Copilot CLI scope only** —
-> `~/.claude/skills/` global installs are **not** touched by auto-update. All five operations are
-> **update-only, don't-create** at the deployment-directory level — new skill deployments are never
-> created automatically. Custom or third-party skill files not
+> `~/.claude/skills/` global installs are **not** touched by auto-update. The `deploy_skills()`
+> operations remain **update-only, don't-create** at the deployment-directory level; new global
+> built-in Copilot CLI deployments are initialized by `install.py --deploy-global-skills`. Custom or third-party skill files not
 > listed in `BUILTIN_PROJECT_SKILLS` or `VENDORED_SKILLS` are not re-deployed by auto-update; to pick
 > up changes to those, run `setup-project.py` (or `install.py --deploy-skill`) manually in the
 > target project.

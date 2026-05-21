@@ -118,6 +118,8 @@ for label, files, key in cases:
 result = _fake_changes(["skills/my-skill/SKILL.md", "launchd/com.copilot.plist"])
 test("classify_changes still detects skills/",
      bool(result.get("skills")), f"skills={result.get('skills')!r}")
+test("classify_changes detects global skill refresh for skills/",
+     bool(result.get("global_skills")), f"global_skills={result.get('global_skills')!r}")
 test("classify_changes still detects launchd/",
      bool(result.get("launchd")), f"launchd={result.get('launchd')!r}")
 
@@ -190,6 +192,7 @@ try:
         "migrate": False,
         "self_update": False,
         "watch_sessions": False,
+        "global_skills": ["skills/x/SKILL.md"],
     }
 
     with _mock.patch.object(_aut, "MANIFEST_FILE", _fake_manifest_path), \
@@ -217,6 +220,12 @@ try:
         test("manifest changed_categories.browse is True",
              manifest.get("changed_categories", {}).get("browse") is True,
              f"changed_categories={manifest.get('changed_categories')}")
+        test("manifest changed_categories.global_skills is True",
+             manifest.get("changed_categories", {}).get("global_skills") is True,
+             f"changed_categories={manifest.get('changed_categories')}")
+        test("manifest pipeline actions include deploy-global-skills",
+             "deploy-global-skills" in manifest.get("pipeline_actions", []),
+             f"pipeline_actions={manifest.get('pipeline_actions')}")
     else:
         test("manifest file written", False, "write_manifest did not produce a file")
 finally:
@@ -334,6 +343,9 @@ result_inst = _fake_changes(["install.py"])
 test("classify_changes sk_launcher=True when install.py changed",
      result_inst.get("sk_launcher") is True,
      f"got sk_launcher={result_inst.get('sk_launcher')!r}")
+test("classify_changes global_skills when install.py changed",
+     bool(result_inst.get("global_skills")),
+     f"got global_skills={result_inst.get('global_skills')!r}")
 
 # classify_changes() must return sk_launcher=False for unrelated changes
 result_unrel = _fake_changes(["watch-sessions.py", "migrate.py", "docs/README.md"])

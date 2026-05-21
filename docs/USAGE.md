@@ -16,6 +16,7 @@ sk tentacle create api-export --scope "src/api/*.py" --desc "Export API"  # → 
 sk tentacle split planner --into research builder reviewer                # → tentacle.py
 sk tentacle auto add on-push --command "sk tentacle status"              # → tentacle.py
 sk install --deploy-skill                # → install.py
+sk install --deploy-global-skills         # → install.py
 sk setup --profile python                # → setup-project.py
 sk update                                # → auto-update-tools.py
 sk update --force
@@ -1616,6 +1617,7 @@ python3 ~/.copilot/tools/watch-sessions.py --install-hint      # Show auto-start
 python3 ~/.copilot/tools/embed.py --status                      # Embedding coverage stats
 python3 ~/.copilot/tools/embed.py --build                       # Rebuild all embeddings
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
+python3 ~/.copilot/tools/install.py --deploy-global-skills      # Deploy global Copilot CLI skills
 python3 ~/.copilot/tools/install.py --deploy-hooks              # Deploy Copilot CLI hooks
 python3 ~/.copilot/tools/install.py --install-git-hooks         # Install pre-commit/pre-push git hooks (per repo)
 python3 ~/.copilot/tools/install.py --deploy-instructions       # Deploy global instructions

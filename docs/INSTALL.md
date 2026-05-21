@@ -33,9 +33,12 @@ python3 ~/.copilot/tools/migrate.py
 
 # 4. Verify install — also auto-provisions the sk launcher on your PATH
 python3 ~/.copilot/tools/install.py --test
+
+# 5. Make bundled Copilot CLI skills available globally
+python3 ~/.copilot/tools/install.py --deploy-global-skills
 ```
 
-After step 4, the `sk` launcher is added to your user PATH. Verify with `sk --help`.
+After step 4, the `sk` launcher is added to your user PATH. Step 5 creates or refreshes `~/.copilot/skills/<name>/` from the bundled `tools/skills/` source so Copilot CLI can discover global skills. Verify with `sk --help`.
 On already-running Windows PowerShell sessions, refresh the current process with `$env:Path = "$env:USERPROFILE\.copilot\bin;$env:Path"` or restart the terminal/Copilot CLI. Until then, run `python "$env:USERPROFILE\.copilot\tools\sk.py"` as the equivalent fallback.
 
 ### macOS — LaunchAgent (auto-start on login)

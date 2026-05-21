@@ -117,12 +117,48 @@ class InstallSandboxTests(unittest.TestCase):
             self.assertTrue((self.fake_home / ".copilot" / "tools" / "install.py").is_file())
             self.assertTrue((self.fake_home / ".copilot" / "manifest.json").is_file())
             self.assertTrue(any(path.is_file() for path in install._sk_launcher_script_paths()))
+            self.assertTrue(
+                (self.fake_home / ".copilot" / "skills" / "session-knowledge" / "SKILL.md").is_file()
+            )
 
             fake_root = self.fake_home.resolve()
             for path in self.fake_home.rglob("*"):
                 self.assertTrue(path.resolve().is_relative_to(fake_root), str(path))
 
             self.assertFalse((self.tmpdir / ".copilot").exists())
+
+    def test_deploy_global_skills_creates_skill_dirs_and_assets(self):
+        with _load_install(self.fake_home) as install:
+            fake_tools_skills = self.fake_home / ".copilot" / "tools" / "skills"
+            (fake_tools_skills / "my-skill" / "references").mkdir(parents=True)
+            (fake_tools_skills / "my-skill" / "SKILL.md").write_text(
+                "---\nname: my-skill\n---\n# My Skill\nSee references/detail.md\n",
+                encoding="utf-8",
+            )
+            (fake_tools_skills / "my-skill" / "references" / "detail.md").write_text(
+                "detail",
+                encoding="utf-8",
+            )
+            (fake_tools_skills / "my-skill" / "__pycache__").mkdir()
+            (fake_tools_skills / "my-skill" / "__pycache__" / "generated.pyc").write_bytes(b"skip")
+            (fake_tools_skills / "references").mkdir()
+            install.TOOLS_DIR = self.fake_home / ".copilot" / "tools"
+
+            install.deploy_global_skills()
+
+            target_root = self.fake_home / ".copilot" / "skills"
+            target = target_root / "my-skill" / "SKILL.md"
+            self.assertTrue(target.is_file(), f"Expected {target} to be created")
+            self.assertIn("My Skill", target.read_text(encoding="utf-8"))
+            self.assertEqual(
+                (target_root / "my-skill" / "references" / "detail.md").read_text(encoding="utf-8"),
+                "detail",
+            )
+            self.assertFalse((target_root / "my-skill" / "__pycache__").exists())
+            self.assertFalse((target_root / "references").exists())
+
+            install.deploy_global_skills()
+            self.assertTrue(target.is_file())
 
     def test_reinstall_is_idempotent_for_path_and_git_hooks(self):
         with _load_install(self.fake_home) as install:
