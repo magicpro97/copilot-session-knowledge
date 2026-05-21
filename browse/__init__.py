@@ -1055,11 +1055,13 @@ def main() -> None:
     ).strip().lower() in ("1", "true", "yes")
     if _dl_enabled:
         os.environ["BROWSE_DEBUG_LOG_ENABLED"] = "1"
+        import browse.routes.debug_log  # noqa: F401 — registers /api/debug-log/healthz
         from browse.core.debug_log_storage import (  # noqa: PLC0415
             init_storage as _dl_init,
+        )
+        from browse.core.debug_log_storage import (
             start_retention_thread as _dl_start,
         )
-        import browse.routes.debug_log  # noqa: F401 — registers /api/debug-log/healthz
 
         _dl_db_path = (
             Path(args.debug_log_dir) / "debug-log.db"
