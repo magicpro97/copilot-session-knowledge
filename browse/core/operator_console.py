@@ -17,7 +17,9 @@ Design invariants:
 """
 
 import difflib
+import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -29,6 +31,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+_log = logging.getLogger("browse.operator_console")
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -38,6 +42,11 @@ if os.name == "nt":
 
 _EXEC_TIMEOUT = 300  # seconds: hard execution time limit per run
 _MAX_OUTPUT_LINES = 10_000  # events buffered per run
+
+# ── WBS-105: debug-event sidecar constants ────────────────────────────────────
+
+_MAX_DEBUG_EVENTS = 5000  # cap for run["debug_events"] sidecar list
+_DEBUG_SOURCE = "operator_console"  # source label for all debug entries
 _MAX_FILE_SIZE = 256 * 1024  # 256 KB: file preview size cap
 _MAX_SUGGESTIONS = 50  # path suggestions cap
 
@@ -379,6 +388,190 @@ def _parse_output_event(raw_line: str, idx: int) -> dict:
         elif content is not None:
             event["data"] = {"content": content}
     return event
+
+
+# ── WBS-105: debug-event sidecar helpers ──────────────────────────────────────
+
+# Map SSE event type strings → BrowseDebugEntry kind
+_DEBUG_KIND_MAP: dict[str, str] = {
+    "session_start": "session_start",
+    "turn_start": "turn_start",
+    "llm_request": "llm_request",
+    "assistant.request": "llm_request",
+    "tool_call": "tool_call",
+    "tool_result": "tool_call",
+    "hook": "hook",
+    "hook_pre": "hook",
+    "hook_post": "hook",
+    "subagent": "subagent",
+    "subagent_start": "subagent",
+    "subagent_result": "subagent",
+    "assistant.message": "agent_response",
+    "assistant.message_delta": "agent_response",
+    "error": "error",
+    "exception": "error",
+}
+
+# Attrs keys promoted from the source event into the debug entry
+_DEBUG_ATTRS_PROMOTE = frozenset(
+    {
+        "exit_code",
+        "error_category",
+        "status_code",
+        "model",
+        "attempt",
+        "cache_hit",
+        "tokens_in",
+        "tokens_out",
+        "latency_ms",
+    }
+)
+
+
+def _classify_debug_kind(event_type: "str | None") -> str:
+    """Map a Copilot CLI event type string to a BrowseDebugEntry kind.
+
+    Unknown typed JSON → generic.
+    Missing/non-JSON (event_type is None or empty) → raw.
+    """
+    if not event_type:
+        return "raw"
+    return _DEBUG_KIND_MAP.get(str(event_type), "generic")
+
+
+def _synthetic_span_id(idx: int, seq: int) -> str:
+    """Return a 16-char lowercase hex span_id deterministically from idx+seq.
+
+    Formula: sha1(f"{_DEBUG_SOURCE}:{idx}:{seq}")[:16].  Increment seq by 1 and
+    re-hash in the astronomically unlikely event of an all-zeros result.
+    """
+    candidate = hashlib.sha1(f"{_DEBUG_SOURCE}:{idx}:{seq}".encode()).hexdigest()[:16]
+    if candidate == "0000000000000000":
+        return _synthetic_span_id(idx, seq + 1)
+    return candidate
+
+
+def _build_debug_entry(parsed_event: dict, debug_idx: int, run_seq: int) -> dict:
+    """Build a BrowseDebugEntry-shaped dict from a parsed SSE event.
+
+    *parsed_event* is the SSE event dict from ``_parse_output_event``:
+    ``{"type": str, "idx": int, "event": {...}, ...}``.
+
+    For raw events (type=="raw") *parsed_event* is ``{"type": "raw", "idx": int, "text": str}``.
+
+    Rules:
+    - source is always _DEBUG_SOURCE.
+    - span_id is synthesized from debug_idx + run_seq.
+    - message is the "text" field (raw) or a 2048-char preview of the sanitized
+      event JSON (structured).
+    - attrs: allowlisted keys from the inner event dict only.
+    - status/level are NOT set (only terminal debug events set these).
+    """
+    event_type = str(parsed_event.get("type") or "")
+    kind = _classify_debug_kind(event_type if event_type != "raw" else None)
+    span_id = _synthetic_span_id(debug_idx, run_seq)
+
+    if event_type == "raw":
+        message = str(parsed_event.get("text", ""))[:2048]
+        attrs: dict = {}
+    else:
+        inner = parsed_event.get("event") or {}
+        if isinstance(inner, dict):
+            raw_msg = inner.get("message") or inner.get("content") or inner.get("text") or ""
+            message = str(raw_msg)[:2048] if raw_msg else json.dumps(inner, ensure_ascii=False)[:2048]
+            attrs = {
+                k: inner[k]
+                for k in _DEBUG_ATTRS_PROMOTE
+                if k in inner and isinstance(inner[k], (str, int, float, bool, type(None)))
+            }
+        else:
+            message = str(inner)[:2048]
+            attrs = {}
+
+    entry: dict = {
+        "idx": debug_idx,
+        "kind": kind,
+        "source": _DEBUG_SOURCE,
+        "message": message,
+        "span_id": span_id,
+        "attrs": attrs,
+    }
+    return entry
+
+
+def _append_debug_event(run_state: dict, entry: dict, _session_id: str) -> "dict | None":
+    """Append a debug entry to the run sidecar with cap + sentinel enforcement.
+
+    When the sidecar has already reached ``_MAX_DEBUG_EVENTS - 1`` items,
+    appends exactly one sentinel entry and marks the run so subsequent calls
+    are dropped.
+
+    *run_state* is the in-memory run dict (held under _RUNS_LOCK by the caller).
+    *entry* is the BrowseDebugEntry-shaped dict to append.
+    Returns the redacted entry that was appended, or ``None`` when the sidecar
+    is sealed. Callers persist the returned entry outside _RUNS_LOCK.
+    """
+    from browse.core.redaction import redact_entry  # noqa: PLC0415
+
+    debug_events: list = run_state.setdefault("debug_events", [])
+
+    # Check if sentinel was already appended (truncation flag on last entry)
+    if debug_events:
+        last_event = debug_events[-1]
+        if last_event.get("attrs", {}).get("truncated") or last_event.get("message") == "[DEBUG TRUNCATED]":
+            return None  # sidecar is sealed; drop silently
+
+    if len(debug_events) >= _MAX_DEBUG_EVENTS - 1:
+        # Append the one-and-only truncation sentinel
+        sentinel: dict = {
+            "idx": entry.get("idx", len(debug_events)),
+            "kind": "generic",
+            "source": _DEBUG_SOURCE,
+            "message": "[DEBUG TRUNCATED]",
+            "span_id": _synthetic_span_id(entry.get("idx", len(debug_events)), 999),
+            "attrs": {"truncated": True, "event_count": _MAX_DEBUG_EVENTS},
+        }
+        safe_sentinel = redact_entry(sentinel)
+        debug_events.append(safe_sentinel)
+        return safe_sentinel
+
+    safe_entry = redact_entry(entry)
+    debug_events.append(safe_entry)
+    return safe_entry
+
+
+def _store_debug_event(session_id: str, entry: dict) -> None:
+    """Persist a single debug entry to WBS-103 storage if enabled and initialized.
+
+    Errors are logged (not swallowed silently) and do NOT propagate — operator
+    runs must never fail because of a storage hiccup.
+    """
+    try:
+        from browse.core import debug_log_storage as _dls  # noqa: PLC0415
+
+        if not _dls.is_enabled():
+            return
+        # append_event raises RuntimeError if not initialized; catch below.
+        _dls.append_event(
+            session_id=session_id,
+            idx=int(entry.get("idx", 0)),
+            kind=str(entry.get("kind", "generic")),
+            payload=entry,
+        )
+    except RuntimeError:
+        _log.warning(
+            "[debug_events] storage enabled but not initialized for session %s idx %s; continuing run",
+            session_id,
+            entry.get("idx"),
+            exc_info=True,
+        )
+    except Exception:
+        _log.warning(
+            "[debug_events] storage error for session %s idx %s; continuing run",
+            session_id,
+            entry.get("idx"),
+            exc_info=True,
+        )
 
 
 # ── JSON persistence helpers ──────────────────────────────────────────────────
@@ -857,28 +1050,76 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
         for line in proc.stdout:
             if time.monotonic() > deadline:
                 proc.kill()
+                _debug_storage_entry = None
                 with _RUNS_LOCK:
                     if run_id in _ACTIVE_RUNS:
                         run_state = _ACTIVE_RUNS[run_id]
                         events = run_state["events"]
                         events.append(_raw_event("[TIMEOUT: execution exceeded limit]", len(events)))
                         _ACTIVE_RUNS[run_id]["status"] = "timeout"
+                        # WBS-105: terminal debug event for timeout
+                        _d_idx = run_state.get("_debug_idx", 0)
+                        _d_seq = run_state.get("_debug_seq", 1)
+                        _term = {
+                            "idx": _d_idx,
+                            "kind": "error",
+                            "source": _DEBUG_SOURCE,
+                            "message": "[TIMEOUT: execution exceeded limit]",
+                            "span_id": _synthetic_span_id(_d_idx, _d_seq),
+                            "attrs": {"error_category": "timeout"},
+                            "status": "error",
+                        }
+                        run_state["_debug_idx"] = _d_idx + 1
+                        run_state["_debug_seq"] = _d_seq + 1
+                        _debug_storage_entry = _append_debug_event(run_state, _term, session_id)
+                if _debug_storage_entry is not None:
+                    _store_debug_event(session_id, _debug_storage_entry)
                 break
 
+            _debug_storage_entry = None
+            _run_cancelled = False
             with _RUNS_LOCK:
                 if run_id in _ACTIVE_RUNS:
                     run_state = _ACTIVE_RUNS[run_id]
                     if run_state["status"] == "cancelled":
-                        break
-                    events = run_state["events"]
-                    if len(events) < _MAX_OUTPUT_LINES:
+                        # WBS-105: terminal debug event for cancellation
+                        _d_idx = run_state.get("_debug_idx", 0)
+                        _d_seq = run_state.get("_debug_seq", 1)
+                        _term = {
+                            "idx": _d_idx,
+                            "kind": "generic",
+                            "source": _DEBUG_SOURCE,
+                            "message": "[run cancelled]",
+                            "span_id": _synthetic_span_id(_d_idx, _d_seq),
+                            "attrs": {},
+                            "status": "cancelled",
+                        }
+                        run_state["_debug_idx"] = _d_idx + 1
+                        run_state["_debug_seq"] = _d_seq + 1
+                        _debug_storage_entry = _append_debug_event(run_state, _term, session_id)
+                        _run_cancelled = True
+                    else:
+                        events = run_state["events"]
                         event = _parse_output_event(line, len(events))
-                        events.append(event)
-                        if event["type"] == "result":
-                            result = event.get("event", {})
-                            exit_code = result.get("exitCode")
-                            if isinstance(exit_code, int):
-                                run_state["exit_code"] = exit_code
+                        if len(events) < _MAX_OUTPUT_LINES:
+                            events.append(event)
+                            if event["type"] == "result":
+                                result = event.get("event", {})
+                                exit_code = result.get("exitCode")
+                                if isinstance(exit_code, int):
+                                    run_state["exit_code"] = exit_code
+                        # WBS-105: append a classified debug entry for each stream event,
+                        # even when the public SSE buffer has reached its cap.
+                        _d_idx = run_state.get("_debug_idx", 0)
+                        _d_seq = run_state.get("_debug_seq", 1)
+                        _entry = _build_debug_entry(event, _d_idx, _d_seq)
+                        run_state["_debug_idx"] = _d_idx + 1
+                        run_state["_debug_seq"] = _d_seq + 1
+                        _debug_storage_entry = _append_debug_event(run_state, _entry, session_id)
+            if _debug_storage_entry is not None:
+                _store_debug_event(session_id, _debug_storage_entry)
+            if _run_cancelled:
+                break
 
         try:
             proc.wait(timeout=5)
@@ -887,6 +1128,7 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
 
         exit_code = proc.returncode if proc.returncode is not None else 0
 
+        _debug_storage_entry = None
         with _RUNS_LOCK:
             if run_id in _ACTIVE_RUNS:
                 run_state = _ACTIVE_RUNS[run_id]
@@ -897,6 +1139,36 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
                     run_state["status"] = "done" if exit_code == 0 else "failed"
                 run_state["exit_code"] = exit_code
                 run_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+                # WBS-105: terminal debug event for success / failure
+                _final_status = run_state["status"]
+                if _final_status not in ("timeout", "cancelled"):
+                    _d_idx = run_state.get("_debug_idx", 0)
+                    _d_seq = run_state.get("_debug_seq", 1)
+                    if exit_code == 0:
+                        _term = {
+                            "idx": _d_idx,
+                            "kind": "generic",
+                            "source": _DEBUG_SOURCE,
+                            "message": "[run complete]",
+                            "span_id": _synthetic_span_id(_d_idx, _d_seq),
+                            "attrs": {"exit_code": 0},
+                            "status": "ok",
+                        }
+                    else:
+                        _term = {
+                            "idx": _d_idx,
+                            "kind": "error",
+                            "source": _DEBUG_SOURCE,
+                            "message": f"[run failed with exit_code={exit_code}]",
+                            "span_id": _synthetic_span_id(_d_idx, _d_seq),
+                            "attrs": {"exit_code": exit_code, "error_category": "nonzero_exit"},
+                            "status": "error",
+                        }
+                    run_state["_debug_idx"] = _d_idx + 1
+                    run_state["_debug_seq"] = _d_seq + 1
+                    _debug_storage_entry = _append_debug_event(run_state, _term, session_id)
+        if _debug_storage_entry is not None:
+            _store_debug_event(session_id, _debug_storage_entry)
 
         if exit_code == 0:
             _patch_session(
@@ -910,6 +1182,7 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
             )
 
     except FileNotFoundError:
+        _debug_storage_entry = None
         with _RUNS_LOCK:
             if run_id in _ACTIVE_RUNS:
                 run_state = _ACTIVE_RUNS[run_id]
@@ -917,8 +1190,26 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
                 events = run_state["events"]
                 events.append(_raw_event("[ERROR: copilot CLI not found in PATH]", len(events)))
                 run_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+                # WBS-105: terminal debug event for FileNotFoundError
+                _d_idx = run_state.get("_debug_idx", 0)
+                _d_seq = run_state.get("_debug_seq", 1)
+                _term = {
+                    "idx": _d_idx,
+                    "kind": "error",
+                    "source": _DEBUG_SOURCE,
+                    "message": "[ERROR: copilot CLI not found in PATH]",
+                    "span_id": _synthetic_span_id(_d_idx, _d_seq),
+                    "attrs": {"error_category": "cli_not_found"},
+                    "status": "error",
+                }
+                run_state["_debug_idx"] = _d_idx + 1
+                run_state["_debug_seq"] = _d_seq + 1
+                _debug_storage_entry = _append_debug_event(run_state, _term, session_id)
+        if _debug_storage_entry is not None:
+            _store_debug_event(session_id, _debug_storage_entry)
     except Exception as exc:
         msg = redact_secrets(str(exc))
+        _debug_storage_entry = None
         with _RUNS_LOCK:
             if run_id in _ACTIVE_RUNS:
                 run_state = _ACTIVE_RUNS[run_id]
@@ -926,6 +1217,23 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
                 events = run_state["events"]
                 events.append(_raw_event(f"[ERROR: {msg}]", len(events)))
                 run_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+                # WBS-105: terminal debug event for generic exception
+                _d_idx = run_state.get("_debug_idx", 0)
+                _d_seq = run_state.get("_debug_seq", 1)
+                _term = {
+                    "idx": _d_idx,
+                    "kind": "error",
+                    "source": _DEBUG_SOURCE,
+                    "message": f"[ERROR: {msg}]",
+                    "span_id": _synthetic_span_id(_d_idx, _d_seq),
+                    "attrs": {"error_category": "exception"},
+                    "status": "error",
+                }
+                run_state["_debug_idx"] = _d_idx + 1
+                run_state["_debug_seq"] = _d_seq + 1
+                _debug_storage_entry = _append_debug_event(run_state, _term, session_id)
+        if _debug_storage_entry is not None:
+            _store_debug_event(session_id, _debug_storage_entry)
     finally:
         if proc is not None and proc.poll() is None:
             try:
@@ -951,7 +1259,7 @@ def _persist_run(run_id: str) -> None:
     if not _is_valid_id(session_id):
         return
     try:
-        data = {k: v for k, v in run.items() if k != "proc"}
+        data = {k: v for k, v in run.items() if k not in ("proc", "_debug_idx", "_debug_seq")}
         _write_json(_runs_dir(session_id) / f"{run_id}.json", data)
         if data.get("status") in _TERMINAL_RUN_STATUSES:
             with _RUNS_LOCK:
@@ -1072,6 +1380,10 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
         "resume_used": resume_used,
         "events": [],
         "proc": None,
+        # WBS-105: bounded debug-event sidecar (never emitted over SSE)
+        "debug_events": [],
+        "_debug_idx": 0,
+        "_debug_seq": 1,
     }
     if staged_meta:
         run["attachments"] = staged_meta

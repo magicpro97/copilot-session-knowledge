@@ -54,6 +54,15 @@ from browse.core.registry import route
 _MAX_PROMPT_LEN = 4096  # characters
 _MAX_ATTACHMENTS = 10  # max files per prompt submission
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024  # 5 MB per decoded file
+_PRIVATE_RUN_KEYS = frozenset(
+    {
+        "attachments",
+        "proc",
+        "debug_events",
+        "_debug_idx",
+        "_debug_seq",
+    }
+)
 
 
 def _parse_json_body(params: dict) -> tuple:
@@ -77,10 +86,10 @@ def _str_param(params: dict, key: str, default: str = "", max_len: int = 256) ->
 
 
 def _public_run_info(run: dict | None) -> dict | None:
-    """Strip server-only attachment staging metadata from public API responses."""
+    """Strip server-only run metadata from public API responses."""
     if not isinstance(run, dict):
         return None
-    return {key: value for key, value in run.items() if key != "attachments"}
+    return {key: value for key, value in run.items() if key not in _PRIVATE_RUN_KEYS}
 
 
 def _parse_attachments(body: dict) -> tuple:
