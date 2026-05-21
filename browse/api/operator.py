@@ -61,6 +61,7 @@ _PRIVATE_RUN_KEYS = frozenset(
         "debug_events",
         "_debug_idx",
         "_debug_seq",
+        "_debug_events_truncated",
     }
 )
 

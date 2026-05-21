@@ -28,6 +28,7 @@ Covers:
   DE24: _append_debug_event with session_id does not crash
   DE25: _public_run_info strips debug sidecar/internal counters
   DE26: status/runs API responses exclude debug sidecar/internal counters
+  DE27: literal sentinel-like output message does not seal the sidecar
 """
 
 import json
@@ -266,6 +267,39 @@ def test_append_debug_event_sentinel_shape():
     test("DE12: truncated in attrs", sentinel["attrs"].get("truncated") is True)
 
 
+def test_append_debug_event_literal_sentinel_message_not_sealed():
+    """DE27: a legitimate '[DEBUG TRUNCATED]' output message does not seal the sidecar."""
+    run_state: dict = {"debug_events": [], "_debug_idx": 0, "_debug_seq": 1}
+    _append_debug_event(
+        run_state,
+        {
+            "idx": 0,
+            "kind": "raw",
+            "source": _DEBUG_SOURCE,
+            "message": "[DEBUG TRUNCATED]",
+            "span_id": "a" * 16,
+            "attrs": {},
+        },
+        "",
+    )
+    _append_debug_event(
+        run_state,
+        {
+            "idx": 1,
+            "kind": "raw",
+            "source": _DEBUG_SOURCE,
+            "message": "still captured",
+            "span_id": "b" * 16,
+            "attrs": {},
+        },
+        "",
+    )
+    test("DE27: literal sentinel-like message appended", len(run_state["debug_events"]) >= 1)
+    test("DE27: literal message did not set truncation flag", run_state.get("_debug_events_truncated") is not True)
+    test("DE27: follow-up event appended", len(run_state["debug_events"]) == 2)
+    test("DE27: follow-up message preserved", run_state["debug_events"][1].get("message") == "still captured")
+
+
 # ── DE13-DE14: redaction ──────────────────────────────────────────────────────
 
 
@@ -315,6 +349,7 @@ def test_debug_events_absent_from_sse_stream():
         ],
         "_debug_idx": 1,
         "_debug_seq": 2,
+        "_debug_events_truncated": True,
         "exit_code": 0,
     }
     with _RUNS_LOCK:
@@ -526,6 +561,10 @@ def test_persist_run_includes_debug_events():
             test(
                 "DE20: _debug_seq NOT in persisted data", isinstance(persisted, dict) and "_debug_seq" not in persisted
             )
+            test(
+                "DE20: _debug_events_truncated NOT in persisted data",
+                isinstance(persisted, dict) and "_debug_events_truncated" not in persisted,
+            )
             test("DE20: proc NOT in persisted data", isinstance(persisted, dict) and "proc" not in persisted)
             if isinstance(persisted, dict) and "debug_events" in persisted:
                 test("DE20: debug_events has 1 entry", len(persisted["debug_events"]) == 1)
@@ -634,11 +673,12 @@ def test_public_run_info_strips_debug_sidecar():
             "debug_events": [{"message": "debug"}],
             "_debug_idx": 1,
             "_debug_seq": 2,
+            "_debug_events_truncated": True,
         }
     )
     test("DE25: public info returned", isinstance(public, dict))
     if isinstance(public, dict):
-        for key in ("attachments", "proc", "debug_events", "_debug_idx", "_debug_seq"):
+        for key in ("attachments", "proc", "debug_events", "_debug_idx", "_debug_seq", "_debug_events_truncated"):
             test(f"DE25: {key} stripped", key not in public)
         test("DE25: status preserved", public.get("status") == "done")
 
@@ -665,6 +705,7 @@ def test_status_and_runs_api_strip_debug_sidecar():
             "debug_events": [{"idx": 0, "kind": "raw", "source": _DEBUG_SOURCE, "message": "debug", "attrs": {}}],
             "_debug_idx": 1,
             "_debug_seq": 2,
+            "_debug_events_truncated": True,
             "exit_code": 0,
             "started_at": "2024-01-01T00:00:00Z",
             "finished_at": "2024-01-01T00:00:01Z",
@@ -696,7 +737,7 @@ def test_status_and_runs_api_strip_debug_sidecar():
             public_run = status_payload.get("run") or {}
             runs = runs_payload.get("runs") or []
             public_history = runs[0] if runs else {}
-            for key in ("debug_events", "_debug_idx", "_debug_seq"):
+            for key in ("debug_events", "_debug_idx", "_debug_seq", "_debug_events_truncated"):
                 test(f"DE26: status strips {key}", key not in public_run)
                 test(f"DE26: runs strips {key}", key not in public_history)
             test("DE26: run id preserved in status", public_run.get("id") == run_id)
@@ -727,6 +768,7 @@ if __name__ == "__main__":
     test_append_debug_event_cap_sentinel()
     test_append_debug_event_sealed()
     test_append_debug_event_sentinel_shape()
+    test_append_debug_event_literal_sentinel_message_not_sealed()
     test_redact_entry_accepts_debug_entry()
     test_redact_secrets_in_message()
     test_debug_events_absent_from_sse_stream()

@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
       `_MAX_OUTPUT_LINES` semantics are **unchanged**.
     - `debug_log_storage` lifecycle remains in `browse/__init__.py`; never initialized from
       `operator_console`.
-  - `tests/test_browse_operator_debug_events.py`: 26-test-case suite (196 assertions) covering classification
+  - `tests/test_browse_operator_debug_events.py`: 27-test-case suite (204 assertions) covering classification
     fixtures, synthetic span-id format/determinism/no-zeros, entry construction for raw and
     structured events, sidecar cap and sentinel, sealed-sidecar drop, redaction pass, stream
     byte-equality (debug_events absent from SSE), _MAX_OUTPUT_LINES sidecar independence,

@@ -515,10 +515,14 @@ def _append_debug_event(run_state: dict, entry: dict, _session_id: str) -> "dict
 
     debug_events: list = run_state.setdefault("debug_events", [])
 
-    # Check if sentinel was already appended (truncation flag on last entry)
+    if run_state.get("_debug_events_truncated"):
+        return None  # sidecar is sealed; drop silently
+
+    # Backward-compatible seal detection for already-appended sentinel entries.
     if debug_events:
         last_event = debug_events[-1]
-        if last_event.get("attrs", {}).get("truncated") or last_event.get("message") == "[DEBUG TRUNCATED]":
+        if isinstance(last_event, dict) and last_event.get("attrs", {}).get("truncated") is True:
+            run_state["_debug_events_truncated"] = True
             return None  # sidecar is sealed; drop silently
 
     if len(debug_events) >= _MAX_DEBUG_EVENTS - 1:
@@ -533,6 +537,7 @@ def _append_debug_event(run_state: dict, entry: dict, _session_id: str) -> "dict
         }
         safe_sentinel = redact_entry(sentinel)
         debug_events.append(safe_sentinel)
+        run_state["_debug_events_truncated"] = True
         return safe_sentinel
 
     safe_entry = redact_entry(entry)
@@ -1259,7 +1264,9 @@ def _persist_run(run_id: str) -> None:
     if not _is_valid_id(session_id):
         return
     try:
-        data = {k: v for k, v in run.items() if k not in ("proc", "_debug_idx", "_debug_seq")}
+        data = {
+            k: v for k, v in run.items() if k not in ("proc", "_debug_idx", "_debug_seq", "_debug_events_truncated")
+        }
         _write_json(_runs_dir(session_id) / f"{run_id}.json", data)
         if data.get("status") in _TERMINAL_RUN_STATUSES:
             with _RUNS_LOCK:
