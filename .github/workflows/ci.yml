@@ -300,16 +300,24 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: Run E2E smoke tests
+        timeout-minutes: 12
         env:
-          DEBUG: pw:api,pw:webserver
-        run: pnpm exec playwright test --project=behavioral --reporter=list,html --max-failures=1
+          DEBUG: pw:api,pw:browser*
+        run: >
+          pnpm exec playwright test --project=behavioral
+          --reporter=list,html
+          --max-failures=1
+          --global-timeout=900000
+          --timeout=60000
 
       - name: Upload Playwright smoke report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-smoke-report
-          path: browse-ui/playwright-report/
+          path: |
+            browse-ui/playwright-report/
+            browse-ui/test-results/
           retention-days: 30
 
       - name: Upload Playwright smoke test results
@@ -361,17 +369,25 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: Run visual E2E snapshots
+        timeout-minutes: 12
+        env:
+          DEBUG: pw:api,pw:browser*
         run: >
           pnpm exec playwright test e2e/visual.spec.ts
           --project=visual
-          --reporter=html
+          --reporter=list,html
+          --max-failures=1
+          --global-timeout=900000
+          --timeout=60000
 
       - name: Upload Playwright visual report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-visual-report
-          path: browse-ui/playwright-report/
+          path: |
+            browse-ui/playwright-report/
+            browse-ui/test-results/
           retention-days: 30
 
   # Pairing E2E — Edge desktop + mobile Chrome (#58 acceptance proof).
@@ -423,18 +439,26 @@ jobs:
         run: npx playwright install msedge chromium --with-deps
 
       - name: Run pairing E2E — Edge desktop + mobile Chrome
+        timeout-minutes: 12
+        env:
+          DEBUG: pw:api,pw:browser*
         run: >
           pnpm exec playwright test e2e/host-pairing.spec.ts
           --project=pairing-edge-desktop
           --project=pairing-mobile-chrome
-          --reporter=html
+          --reporter=list,html
+          --max-failures=1
+          --global-timeout=900000
+          --timeout=60000
 
       - name: Upload Playwright report (trace + screenshot evidence)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pairing-e2e-report
-          path: browse-ui/playwright-report/
+          path: |
+            browse-ui/playwright-report/
+            browse-ui/test-results/
           retention-days: 30
 
   agents-release-hook:
