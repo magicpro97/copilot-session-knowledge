@@ -150,8 +150,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             from browse.routes.serve_v2 import serve_v2
 
             body, ct, status = serve_v2(rel_path_asset)
-            # WBS-084: Pass nonce to build_v2_csp_header so unsafe-inline is not needed.
-            self._send(body, ct, status, nonce, csp_header=build_v2_csp_header(nonce), send_body=send_body)
+            # Static Next export bootstrap scripts lack nonce attrs; #441 tracks hardened CSP.
+            self._send(body, ct, status, nonce, csp_header=build_v2_csp_header(), send_body=send_body)
             return
 
         # /v2/* — compatibility redirect: strip the /v2 prefix and redirect to canonical path
@@ -325,7 +325,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             status,
             nonce,
             set_cookie=token_val if should_set_cookie else None,
-            csp_header=build_v2_csp_header(nonce),  # WBS-084: pass nonce
+            # serve_v2 validates reflective placeholders; #441 tracks removing unsafe-inline.
+            csp_header=build_v2_csp_header(),
             send_body=send_body,
             secure_cookie=secure_cookie,
         )
