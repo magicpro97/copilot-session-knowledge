@@ -14,7 +14,8 @@ if os.name == "nt":
 # debug=True routes receive distinct auth gating in the server dispatcher.
 ROUTES: list = []
 
-# Set of paths registered with debug=True (used by server for fast lookup).
+# Set of paths registered with debug=True. Exposed for test reset; the dispatcher
+# reads the per-route debug flag returned by match_route().
 _DEBUG_ROUTES: set = set()
 
 
@@ -26,9 +27,15 @@ def route(path: str, methods: list | None = None, debug: bool = False):
     """
     if methods is None:
         methods = ["GET"]
+    upper_methods = [m.upper() for m in methods]
+    if debug and upper_methods != ["GET"]:
+        raise ValueError(
+            f"debug=True routes must be GET-only (got {upper_methods} for {path}); "
+            "debug-log endpoints are read-only by contract (WBS-103)."
+        )
 
     def decorator(fn: Callable) -> Callable:
-        ROUTES.append((path, [m.upper() for m in methods], fn, debug))
+        ROUTES.append((path, upper_methods, fn, debug))
         if debug:
             _DEBUG_ROUTES.add(path)
         return fn

@@ -31,12 +31,16 @@ def test(name: str, expr: bool) -> None:
 def _with_clean_routes(fn):
     """Run fn with a clean ROUTES list, restoring original after."""
     original = list(registry_mod.ROUTES)
+    original_debug = set(registry_mod._DEBUG_ROUTES)
     registry_mod.ROUTES.clear()
+    registry_mod._DEBUG_ROUTES.clear()
     try:
         fn()
     finally:
         registry_mod.ROUTES.clear()
+        registry_mod._DEBUG_ROUTES.clear()
         registry_mod.ROUTES.extend(original)
+        registry_mod._DEBUG_ROUTES.update(original_debug)
 
 
 # ── @route decorator ──────────────────────────────────────────────────────────
@@ -79,6 +83,7 @@ def test_route_decorator_multiple_methods():
 
 def test_route_decorator_returns_fn():
     """Decorator should return the original function unchanged."""
+
     def _inner():
         def original():
             return "original"
@@ -86,6 +91,72 @@ def test_route_decorator_returns_fn():
         decorated = registry_mod.route("/noop", methods=["GET"])(original)
         test("route_decorator: returns fn", decorated is original)
         test("route_decorator: fn callable", decorated() == "original")
+
+    _with_clean_routes(_inner)
+
+
+def test_debug_route_accepts_get_only():
+    """debug=True routes are GET-only and match with debug=True."""
+
+    def _inner():
+        @registry_mod.route("/api/debug-log/test", methods=["GET"], debug=True)
+        def _handler():
+            pass
+
+        fn, kwargs, dbg = registry_mod.match_route("/api/debug-log/test", "GET")
+        test("debug_route_get: handler found", fn is _handler)
+        test("debug_route_get: no kwargs", kwargs == {})
+        test("debug_route_get: debug True", dbg is True)
+        test(
+            "debug_route_get: debug path tracked",
+            "/api/debug-log/test" in registry_mod._DEBUG_ROUTES,
+        )
+
+    _with_clean_routes(_inner)
+
+
+def test_debug_route_default_methods_ok():
+    """debug=True without methods defaults to GET and is accepted."""
+
+    def _inner():
+        @registry_mod.route("/api/debug-log/default", debug=True)
+        def _handler():
+            pass
+
+        fn, _, dbg = registry_mod.match_route("/api/debug-log/default", "GET")
+        test("debug_route_default: handler found", fn is _handler)
+        test("debug_route_default: debug True", dbg is True)
+
+    _with_clean_routes(_inner)
+
+
+def test_debug_route_rejects_post():
+    """debug=True rejects mutating-only routes instead of silently bypassing debug auth."""
+
+    def _inner():
+        try:
+            registry_mod.route("/api/debug-log/post", methods=["POST"], debug=True)(lambda: None)
+            test("debug_route_post: rejected", False)
+        except ValueError as exc:
+            message = str(exc)
+            test("debug_route_post: rejected", True)
+            test("debug_route_post: mentions GET-only", "GET-only" in message)
+            test("debug_route_post: mentions path", "/api/debug-log/post" in message)
+
+    _with_clean_routes(_inner)
+
+
+def test_debug_route_rejects_mixed_methods():
+    """debug=True rejects mixed GET+mutating routes."""
+
+    def _inner():
+        try:
+            registry_mod.route("/api/debug-log/mixed", methods=["GET", "POST"], debug=True)(lambda: None)
+            test("debug_route_mixed: rejected", False)
+        except ValueError as exc:
+            message = str(exc)
+            test("debug_route_mixed: rejected", True)
+            test("debug_route_mixed: mentions WBS-103", "WBS-103" in message)
 
     _with_clean_routes(_inner)
 
@@ -208,6 +279,10 @@ if __name__ == "__main__":
     test_route_decorator_default_methods()
     test_route_decorator_multiple_methods()
     test_route_decorator_returns_fn()
+    test_debug_route_accepts_get_only()
+    test_debug_route_default_methods_ok()
+    test_debug_route_rejects_post()
+    test_debug_route_rejects_mixed_methods()
     test_match_route_exact()
     test_match_route_no_match()
     test_match_route_method_mismatch()
