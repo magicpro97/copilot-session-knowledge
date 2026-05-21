@@ -131,6 +131,14 @@ def _get(host: str, port: int, path: str) -> tuple[int, dict, bytes]:
         conn.close()
 
 
+def _script_src(csp: str) -> str:
+    for directive in csp.split(";"):
+        cleaned = directive.strip()
+        if cleaned.startswith("script-src "):
+            return cleaned
+    return ""
+
+
 def run_all_tests() -> int:
     print("=== test_browse.py ===")
 
@@ -272,9 +280,24 @@ def run_all_tests() -> int:
     try:
         _, hdrs, _ = _get(host, port, "/?token=tok")
         csp = hdrs.get("content-security-policy", "")
+        root_script_src = _script_src(csp)
         test("T9: CSP header present", bool(csp))
         test("T9: default-src 'self'", "default-src 'self'" in csp)
-        test("T9: style-src unsafe-inline", "unsafe-inline" in csp)
+        test("T9: static-export script-src allows unsafe-inline", "'unsafe-inline'" in root_script_src)
+
+        status_health, hdrs_health, _ = _get(host, port, "/healthz")
+        status_api, hdrs_api, _ = _get(host, port, "/api/search?token=tok&q=session")
+        status_static, hdrs_static, _ = _get(host, port, "/static/missing.js")
+        non_export_routes = [
+            ("healthz", status_health == 200, hdrs_health),
+            ("api", status_api == 200, hdrs_api),
+            ("static", status_static in (200, 404), hdrs_static),
+        ]
+        for label, status_ok, route_hdrs in non_export_routes:
+            script_src = _script_src(route_hdrs.get("content-security-policy", ""))
+            test(f"T9: {label} route reachable", status_ok)
+            test(f"T9: {label} script-src keeps nonce", "nonce-" in script_src)
+            test(f"T9: {label} script-src has no unsafe-inline", "'unsafe-inline'" not in script_src)
     finally:
         server.shutdown()
 
@@ -361,20 +384,32 @@ def run_all_tests() -> int:
     _, _, code5 = serve_static(None, "vendor/cytoscape.min.js")
     test("T12: static serves valid file (200 or 404 if missing)", code5 in (200, 404))
 
-    # ── T13: canonical root CSP uses nonce (WBS-084: no longer unsafe-inline) ──
-    print("\n-- T13: canonical root CSP (nonce-based, no unsafe-inline)")
+    # ── T13: canonical root CSP allows static-export inline bootstrap scripts ──
+    print("\n-- T13: canonical root CSP (static-export inline script compatibility)")
     import re as _re
     db13 = _make_test_db()
     server13, host13, port13 = _start_server(db13, token="tok")
     try:
         status13, hdrs13, body13 = _get(host13, port13, "/?token=tok")
         csp13 = hdrs13.get("content-security-policy", "")
-        # WBS-084: Root now uses per-request nonce instead of unsafe-inline.
-        test("T13: CSP has nonce (WBS-084: nonce replaces unsafe-inline)", "nonce-" in csp13)
-        test("T13: CSP has no unsafe-inline in script-src (WBS-084)", not ("'unsafe-inline'" in csp13 and "script-src" in csp13.split("'unsafe-inline'")[0].split(";")[-1]))
+        script_src13 = _script_src(csp13)
+        test("T13: CSP has script-src", bool(script_src13))
+        test("T13: script-src allows unsafe-inline for static export", "'unsafe-inline'" in script_src13)
+        test("T13: script-src has no nonce for static export", "nonce-" not in script_src13)
         test("T13: CSP has no unsafe-eval", "unsafe-eval" not in csp13)
         test("T13: root page is HTML", b"<!DOCTYPE html>" in body13 or b"<html" in body13.lower())
         test("T13: root page is non-empty", len(body13) > 100)
+
+        attack_marker = b"xss_probe_441"
+        attack_path = "/sessions/xss_probe_441%22%29%3Balert%281%29%3B%2F%2F/?token=tok"
+        status13b, hdrs13b, body13b = _get(host13, port13, attack_path)
+        test("T13: invalid session ID request does not crash", status13b in (200, 404))
+        test(
+            "T13: invalid session ID response is HTML or 404 text",
+            hdrs13b.get("content-type", "").startswith(("text/html", "text/plain")),
+        )
+        test("T13: invalid session ID marker is not reflected", attack_marker not in body13b)
+        test("T13: invalid session ID script payload is not reflected", b"alert(1)" not in body13b)
     finally:
         server13.shutdown()
 

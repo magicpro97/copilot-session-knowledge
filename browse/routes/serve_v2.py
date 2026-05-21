@@ -118,7 +118,7 @@ def _session_placeholder_fallback_paths(rel_path: str) -> tuple[str, list[Path]]
     # as ``<script>``.  Uses the canonical _SESSION_ID_RE from browse.core.fts
     # (^[a-zA-Z0-9._-]{1,128}$) which accepts dots and enforces a 128-char cap,
     # consistent with all other route validators in this package.
-    if not _SESSION_ID_RE.match(session_id):
+    if not _SESSION_ID_RE.fullmatch(session_id):
         return "", []
 
     placeholder_base = _V2_DIST / "sessions" / "_placeholder"

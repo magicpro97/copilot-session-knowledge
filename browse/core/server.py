@@ -325,7 +325,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             status,
             nonce,
             set_cookie=token_val if should_set_cookie else None,
-            csp_header=build_v2_csp_header(nonce),  # WBS-084: pass nonce
+            # serve_v2 validates reflective placeholders; WBS-084: pass nonce.
+            csp_header=build_v2_csp_header(nonce),
             send_body=send_body,
             secure_cookie=secure_cookie,
         )
