@@ -13,6 +13,8 @@ Endpoints:
   GET   /api/operator/suggest               → path suggestions under ~/
   GET   /api/operator/preview               → file content under ~/
   GET   /api/operator/diff                  → unified diff of two files under ~/
+  GET   /api/operator/sessions/{session_id}/runs/{run_id}/debug
+        → paginated BrowseDebugEntry list (debug=True; Bearer/cookie auth only)
 
 POST body: JSON-encoded, passed as params["_body"][0].
 SSE stream: follows live.py factory(stop_event) → generator pattern.
@@ -20,9 +22,11 @@ Path confinement: all paths are validated to be under ~/; 403 returned otherwise
 """
 
 import base64
+import hashlib as _hashlib
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
@@ -577,3 +581,313 @@ def handle_diff(db, params, token, nonce) -> tuple:
         )
 
     return json_ok(result)
+
+
+# ── Debug log read API (WBS-104) ──────────────────────────────────────────────
+
+# Event kind and level enums mirror browse/core/redaction.py allowlists.
+_DEBUG_KIND_ENUM = frozenset(
+    {
+        "session_start",
+        "turn_start",
+        "llm_request",
+        "tool_call",
+        "hook",
+        "subagent",
+        "agent_response",
+        "error",
+        "generic",
+        "raw",
+    }
+)
+_DEBUG_LEVEL_ENUM = frozenset({"debug", "info", "warn", "error"})
+
+# Copilot CLI event-type → BrowseDebugEntry kind taxonomy.
+_EVENT_TYPE_TO_KIND: dict = {
+    "assistant.message": "agent_response",
+    "assistant.message_delta": "agent_response",
+    "tool_call": "tool_call",
+    "tool_result": "tool_call",
+    "session_start": "session_start",
+    "turn_start": "turn_start",
+    "llm_request": "llm_request",
+    "hook": "hook",
+    "subagent": "subagent",
+    "error": "error",
+    "exception": "error",
+}
+
+# Raw event JSON byte limit. Events whose serialized size exceeds this threshold
+# are replaced by a truncation marker; raw content is not exposed.
+_TRUNCATION_BYTES = 8192
+
+# Preview length for the message field (matches _PREVIEW_LEN in timeline.py).
+_DEBUG_MSG_MAX = 200
+
+_NULLABLE_DEBUG_ENTRY_FIELDS = ("tool_name", "duration_ms", "parent_span_id", "status")
+
+
+def _synthetic_span_id(source: str, idx: int, seq: int = 1) -> str:
+    """Return a deterministic 16-char lowercase hex span_id.
+
+    Formula: sha1("{source}:{idx}:{seq}")[:16]; never returns the all-zero sentinel.
+    """
+    candidate = _hashlib.sha1(f"{source}:{idx}:{seq}".encode()).hexdigest()[:16]
+    if candidate == "0000000000000000":
+        return _synthetic_span_id(source, idx, seq + 1)
+    return candidate
+
+
+def _map_operator_event(event: dict) -> dict:
+    """Map one operator-console event dict to a pre-redaction BrowseDebugEntry dict.
+
+    Contract:
+    - ``source`` is always ``"operator_console"``
+    - ``span_id`` is always a synthetic 16-hex value (sha1 formula)
+    - ``timestamp`` is extracted from the inner event when present; never synthesized
+    - ``level`` is always null (operator events carry no severity field)
+    - If serialized event JSON exceeds _TRUNCATION_BYTES, message is replaced with a
+      truncation marker and attrs carry ``truncated=True`` and ``bytes_in=<n>``
+    """
+    idx = int(event.get("idx") or 0)
+    event_type = str(event.get("type") or "raw")
+
+    # Compute raw bytes once for the truncation check and fingerprint.
+    try:
+        raw_blob = json.dumps(event).encode("utf-8", errors="replace")
+        raw_bytes = len(raw_blob)
+    except Exception:
+        raw_blob = b""
+        raw_bytes = 0
+
+    attrs: dict = {}
+    truncated = raw_bytes > _TRUNCATION_BYTES
+
+    if event_type == "raw":
+        text = str(event.get("text") or "")
+        if truncated:
+            sha = _hashlib.sha256(raw_blob).hexdigest()[:16]
+            message = f"[TRUNCATED sha256={sha} bytes={raw_bytes}]"
+            attrs["truncated"] = True
+            attrs["bytes_in"] = raw_bytes
+        else:
+            message = text[:_DEBUG_MSG_MAX]
+
+        return {
+            "idx": idx,
+            "timestamp": None,
+            "kind": "raw",
+            "level": None,
+            "source": "operator_console",
+            "message": message,
+            "span_id": _synthetic_span_id("operator_console", idx),
+            "attrs": attrs,
+        }
+
+    # JSON structured event
+    kind = _EVENT_TYPE_TO_KIND.get(event_type, "generic")
+    inner = event.get("event")
+    if not isinstance(inner, dict):
+        inner = event
+
+    # Timestamp: use first found timestamp-like field from inner event; do NOT synthesize.
+    ts = None
+    for _ts_key in ("timestamp", "ts"):
+        _ts_val = inner.get(_ts_key)
+        if _ts_val and isinstance(_ts_val, str):
+            ts = _ts_val
+            break
+
+    if truncated:
+        sha = _hashlib.sha256(raw_blob).hexdigest()[:16]
+        message = f"[TRUNCATED sha256={sha} bytes={raw_bytes}]"
+        attrs["truncated"] = True
+        attrs["bytes_in"] = raw_bytes
+    else:
+        # Extract human-readable message based on event taxonomy.
+        if event_type in ("assistant.message", "assistant.message_delta"):
+            content = inner.get("content") or inner.get("deltaContent") or ""
+            message = str(content)[:_DEBUG_MSG_MAX]
+        elif event_type in ("tool_call", "tool_result"):
+            tool = (
+                inner.get("toolName") or inner.get("tool_name") or inner.get("name") or inner.get("tool") or event_type
+            )
+            message = str(tool)[:_DEBUG_MSG_MAX]
+        else:
+            text = inner.get("text") or inner.get("message") or inner.get("content") or event_type
+            message = str(text)[:_DEBUG_MSG_MAX]
+
+    return {
+        "idx": idx,
+        "timestamp": ts,
+        "kind": kind,
+        "level": None,
+        "source": "operator_console",
+        "message": message,
+        "span_id": _synthetic_span_id("operator_console", idx),
+        "attrs": attrs,
+    }
+
+
+@route(
+    "/api/operator/sessions/{session_id}/runs/{run_id}/debug",
+    methods=["GET"],
+    debug=True,
+)
+def handle_debug_log(
+    db,
+    params,
+    token,
+    nonce,
+    session_id: str = "",
+    run_id: str = "",
+) -> tuple:
+    """GET /api/operator/sessions/{session_id}/runs/{run_id}/debug — debug log read API.
+
+    Returns a paginated list of BrowseDebugEntry objects for a specific operator
+    session run, sourced from persisted operator run JSON only (no SQLite debug-log
+    storage; WBS-103 SQLite storage has no run_id and no current producers).
+
+    Query parameters:
+      from    int >= 0          (default 0)    — pagination offset
+      limit   1..100            (default 100)  — page size
+      kind    <KIND_ENUM>       (optional)     — filter by event kind
+      level   <LEVEL_ENUM>      (optional)     — filter by severity
+      since   ISO-8601 datetime (optional)     — include only events after this time
+
+    Bad parameters → 400 JSON error.  Unknown session or run → 404 with no ID leakage.
+
+    Response shape:
+      {
+        "schema_version": "1",
+        "session_id": "...",
+        "run_id": "...",
+        "total": N,
+        "from": from,
+        "limit": limit,
+        "has_more": bool,
+        "events": [BrowseDebugEntry, ...]
+      }
+    """
+    from browse.core.redaction import redact_entry  # noqa: PLC0415
+
+    def not_found() -> tuple:
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    # ── Validate session / run (404 with no UUID/path leakage) ────────────────
+    session = get_session(session_id)
+    if session is None:
+        return not_found()
+
+    run = get_run_status(run_id)
+    if run is None:
+        return not_found()
+
+    # Strict ownership: run must belong to the given session.
+    if run.get("session_id") != session_id:
+        return not_found()
+
+    # ── Parse and validate query parameters ───────────────────────────────────
+    try:
+        from_idx = int(params.get("from", ["0"])[0] or "0")
+        if from_idx < 0:
+            raise ValueError("from must be >= 0")
+    except (ValueError, TypeError):
+        return json_error("'from' must be a non-negative integer", "BAD_PARAM", 400)
+
+    try:
+        limit = int(params.get("limit", ["100"])[0] or "100")
+        if not (1 <= limit <= 100):
+            raise ValueError("limit out of range")
+    except (ValueError, TypeError):
+        return json_error("'limit' must be an integer between 1 and 100", "BAD_PARAM", 400)
+
+    kind_filter = (params.get("kind", [""])[0] or "").strip() or None
+    if kind_filter and kind_filter not in _DEBUG_KIND_ENUM:
+        return json_error(
+            f"'kind' must be one of: {', '.join(sorted(_DEBUG_KIND_ENUM))}",
+            "BAD_PARAM",
+            400,
+        )
+
+    level_filter = (params.get("level", [""])[0] or "").strip() or None
+    if level_filter and level_filter not in _DEBUG_LEVEL_ENUM:
+        return json_error(
+            f"'level' must be one of: {', '.join(sorted(_DEBUG_LEVEL_ENUM))}",
+            "BAD_PARAM",
+            400,
+        )
+
+    since_filter: datetime | None = None
+    since_str = (params.get("since", [""])[0] or "").strip() or None
+    if since_str:
+        try:
+            since_filter = datetime.fromisoformat(since_str.replace("Z", "+00:00"))
+            if since_filter.tzinfo is None:
+                since_filter = since_filter.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return json_error(
+                "'since' must be a valid ISO-8601 datetime string",
+                "BAD_PARAM",
+                400,
+            )
+
+    # ── Retrieve and map events ────────────────────────────────────────────────
+    events_raw = run.get("events") or []
+    if not isinstance(events_raw, list):
+        events_raw = []
+
+    # Map, filter (pre-redaction) — performance: only map what passes filters.
+    mapped: list = []
+    for event in events_raw:
+        if not isinstance(event, dict):
+            continue
+        entry = _map_operator_event(event)
+
+        # Kind filter
+        if kind_filter and entry.get("kind") != kind_filter:
+            continue
+
+        # Level filter (operator entries always have level=null; exclude on mismatch)
+        if level_filter and entry.get("level") != level_filter:
+            continue
+
+        # Since filter: events with no timestamp are excluded when since is set.
+        if since_filter is not None:
+            ts_val = entry.get("timestamp")
+            if not ts_val:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(ts_val).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts < since_filter:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+        mapped.append(entry)
+
+    total = len(mapped)
+
+    # Slice first, then redact — ensures redaction runs at most `limit` entries.
+    page = mapped[from_idx : from_idx + limit]
+    has_more = (from_idx + limit) < total
+
+    redacted = [redact_entry(e) for e in page]
+    for entry in redacted:
+        for field in _NULLABLE_DEBUG_ENTRY_FIELDS:
+            entry.setdefault(field, None)
+
+    return json_ok(
+        {
+            "schema_version": "1",
+            "session_id": session_id,
+            "run_id": run_id,
+            "total": total,
+            "from": from_idx,
+            "limit": limit,
+            "has_more": has_more,
+            "events": redacted,
+        }
+    )

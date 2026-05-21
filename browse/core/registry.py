@@ -18,6 +18,40 @@ ROUTES: list = []
 # reads the per-route debug flag returned by match_route().
 _DEBUG_ROUTES: set = set()
 
+# Compiled regex for detecting {name} placeholders in route paths.
+_PLACEHOLDER_RE = re.compile(r"\{([^}]+)\}")
+
+
+def _build_route_pattern(route_path: str) -> str | None:
+    """Build a regex pattern from route_path containing {name} placeholders.
+
+    Returns a compiled-ready pattern string if any placeholders are found,
+    otherwise returns None (caller should use exact matching).
+
+    Placeholder mapping rules:
+    - ``{id}``        → named group ``session_id``  (backward compatibility)
+    - ``{name}``      → named group ``name``         (arbitrary names)
+
+    Each placeholder matches one or more non-slash characters (``[^/]+``).
+    """
+    if not _PLACEHOLDER_RE.search(route_path):
+        return None
+
+    # split() on the placeholder regex yields alternating literal / name segments:
+    # "/a/{id}/b/{run_id}" → ["/a/", "id", "/b/", "run_id", ""]
+    parts = _PLACEHOLDER_RE.split(route_path)
+    pattern = "^"
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Literal path segment — escape regex metacharacters
+            pattern += re.escape(part)
+        else:
+            # Placeholder name — map {id} to session_id for backward compat
+            group_name = "session_id" if part == "id" else part
+            pattern += f"(?P<{group_name}>[^/]+)"
+    pattern += "$"
+    return pattern
+
 
 def route(path: str, methods: list | None = None, debug: bool = False):
     """Decorator: @route('/path', methods=['GET'], debug=False) registers handler in ROUTES.
@@ -47,10 +81,11 @@ def match_route(path: str, method: str) -> tuple:
     """
     Returns (handler_fn, kwargs, debug_flag).
     1. Exact match.
-    2. Generic {id} template matching — /session/{id}/suffix, /api/session/{id}/suffix.
-       Check for comment 'Generic {id} template matching' to detect this block.
+    2. Named-placeholder template matching — supports arbitrary {name} patterns
+       including multi-placeholder paths like /sessions/{session_id}/runs/{run_id}/debug.
+       {id} maps to kwargs key ``session_id`` for backward compatibility.
+       Routes are sorted by path length descending so more-specific patterns win.
     3. Prefix fallback for /session/{id} (legacy).
-    kwargs will contain {'session_id': value} for the /session/{id} pattern.
     debug_flag is True when the matched route was registered with debug=True.
 
     Backward compatibility: ROUTES entries may be 3-tuples (legacy direct appends
@@ -67,16 +102,18 @@ def match_route(path: str, method: str) -> tuple:
         if path == route_path and method in route_methods:
             return handler, {}, _debug_flag(entry)
 
-    # Generic {id} template matching — supports /session/{id}/suffix, /api/session/{id}/suffix
-    # Sort by path length descending so more-specific routes (e.g. /session/{id}.md) win over
-    # less-specific ones (e.g. /session/{id}) when both patterns would match.
+    # Named-placeholder template matching — supports /session/{id}/suffix,
+    # /api/session/{id}/suffix, and arbitrary multi-placeholder paths such as
+    # /api/operator/sessions/{session_id}/runs/{run_id}/debug.
+    # Sort by path length descending so more-specific routes (e.g. /session/{id}.md)
+    # win over less-specific ones (e.g. /session/{id}) when both patterns match.
     for entry in sorted(ROUTES, key=lambda r: -len(r[0])):
         route_path, route_methods, handler = entry[0], entry[1], entry[2]
-        if "{id}" in route_path and method in route_methods:
-            pat = "^" + re.escape(route_path).replace("\\{id\\}", "(?P<session_id>[^/]+)") + "$"
+        pat = _build_route_pattern(route_path)
+        if pat is not None and method in route_methods:
             m = re.match(pat, path)
             if m:
-                return handler, {"session_id": m.group("session_id")}, _debug_flag(entry)
+                return handler, m.groupdict(), _debug_flag(entry)
 
     # Prefix pattern for /session/{id} (legacy fallback — catches unknown sub-paths → 400)
     for entry in ROUTES:
