@@ -93,6 +93,26 @@ export async function hostRequest(
 }
 
 /**
+ * Fetch debug log entries for a specific operator session run.
+ *
+ * Wraps `hostFetch` with a typed return; the caller is responsible for
+ * constructing the full path with query parameters.
+ *
+ * Path: /api/operator/sessions/{sessionId}/runs/{runId}/debug
+ * Params: from, limit (max 100), kind, level, since
+ *
+ * Returns a raw Response so the caller (hook) can stream or parse JSON.
+ * Use `hostFetch` when you need the parsed body directly.
+ */
+export async function fetchDebugLog(
+  path: string,
+  host: HostProfile,
+  init?: RequestInit
+): Promise<Response> {
+  return hostRequest(path, host, init);
+}
+
+/**
  * Fetch helper that routes to a specific host profile.
  *
  * - Uses `host.base_url` as the base URL when set; falls back to same-origin.

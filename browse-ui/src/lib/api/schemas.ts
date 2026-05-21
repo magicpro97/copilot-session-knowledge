@@ -1057,6 +1057,69 @@ export const operatorModelCatalogResponseSchema = z.object({
   default_model: z.string().nullable(),
 });
 
+// ── Debug Log (/api/operator/sessions/{sid}/runs/{rid}/debug) ────────
+
+/**
+ * Event taxonomy kinds for BrowseDebugEntry.
+ * See docs/DEBUG-LOG-CONTRACT.md §Event Taxonomy.
+ */
+export const debugKindSchema = z.union([
+  z.enum([
+    "session_start",
+    "turn_start",
+    "llm_request",
+    "tool_call",
+    "hook",
+    "subagent",
+    "agent_response",
+    "error",
+    "generic",
+    "raw",
+  ]),
+  z.string(),
+]);
+
+/** Severity levels. */
+export const debugLevelSchema = z.union([z.enum(["debug", "info", "warn", "error"]), z.string()]);
+
+/** Terminal status. */
+export const debugStatusSchema = z.union([z.enum(["ok", "error", "cancelled"]), z.string()]);
+
+/**
+ * One entry in the debug log.
+ * See docs/DEBUG-LOG-CONTRACT.md §BrowseDebugEntry.
+ */
+export const browseDebugEntrySchema = z.object({
+  idx: z.number().int().nonnegative(),
+  timestamp: z.string().nullable(),
+  kind: debugKindSchema,
+  level: debugLevelSchema.nullable(),
+  source: z.string(),
+  message: z.string(),
+  tool_name: z.string().nullable(),
+  duration_ms: z.number().nullable(),
+  span_id: z.string().nullable(),
+  parent_span_id: z.string().nullable(),
+  status: debugStatusSchema.nullable(),
+  attrs: z.record(z.string(), z.unknown()).nullable(),
+  redacted: z.boolean(),
+});
+
+/**
+ * HTTP response envelope for GET /api/operator/sessions/{sid}/runs/{rid}/debug.
+ * See docs/DEBUG-LOG-CONTRACT.md §WBS-104 Response Shape.
+ */
+export const debugLogResponseSchema = z.object({
+  schema_version: z.string(),
+  session_id: z.string(),
+  run_id: z.string(),
+  total: z.number().int().nonnegative(),
+  from: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  has_more: z.boolean(),
+  events: z.array(browseDebugEntrySchema),
+});
+
 // ── Host Profiles (client-side multi-host support) ─────────────────────
 
 /** Permissive CLI family schema — any non-empty string is accepted. */

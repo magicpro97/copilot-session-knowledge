@@ -1,0 +1,4 @@
+{"name": "fixture.hrtime.span", "id": "ff00000000000001", "traceId": "1122334455667788112233445566778811", "startTime": [1700000, 500000000], "duration": 250000, "attributes": {"model": "claude-3-fixture"}, "status": {"code": 1}}
+{"name": "fixture.iso.span", "spanId": "ff00000000000002", "traceId": "1122334455667788112233445566778811", "startTime": "2024-01-15T10:00:00.000Z", "duration": 1000000, "attributes": {}, "status": {"code": 1}}
+{"name": "fixture.iso.notz.span", "id": "ff00000000000003", "traceId": "1122334455667788112233445566778811", "startTime": "2024-01-15T10:00:01.500", "duration": 500000, "attributes": {}, "status": {"code": 0}}
+{"name": "fixture.timeunixnano.span", "id": "ff00000000000004", "traceId": "1122334455667788112233445566778811", "timeUnixNano": 1700000002000000000, "duration": 75000, "attributes": {"tokens_in": 64, "tokens_out": 32}, "status": {"code": 1}}

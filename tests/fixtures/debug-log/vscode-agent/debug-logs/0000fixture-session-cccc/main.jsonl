@@ -1,0 +1,5 @@
+{"ts": 1700000000000, "dur": 100, "sid": "0000fixture-session-cccc", "type": "session_start", "name": "session_start", "spanId": "a200000000000001", "status": "ok", "attrs": {"model": "claude-3-fixture"}, "v": 1}
+{"ts": 1700000001000, "dur": 50, "sid": "0000fixture-session-cccc", "type": "turn_start", "name": "turn_start", "spanId": "b200000000000002", "status": "ok", "attrs": {}, "v": 1}
+{"ts": 1700000000000, "dur": 100, "sid": "0000fixture-session-cccc", "type": "session_start", "name": "session_start", "spanId": "a200000000000001", "status": "ok", "attrs": {"model": "claude-3-fixture"}, "v": 1}
+{"ts": 1700000002000, "dur": 200, "sid": "0000fixture-session-cccc", "type": "agent_response", "name": "agent_response", "spanId": "c200000000000003", "status": "ok", "attrs": {}, "v": 1}
+{"ts": 1700000001000, "dur": 50, "sid": "0000fixture-session-cccc", "type": "turn_start", "name": "turn_start", "spanId": "b200000000000002", "status": "ok", "attrs": {}, "v": 1}

@@ -68,6 +68,21 @@ def _inject_csp_nonce(body: bytes, nonce: str) -> bytes:
     - have **no** existing ``nonce=`` attribute (idempotent / INV-9), and
     - are **not** inside an HTML comment (``<!-- ... -->``).
 
+    This covers all inline script types emitted by a Next.js static export,
+    including but not limited to:
+    - Standard ``<script>`` inline blocks
+    - Next.js App Router RSC bootstrap scripts
+      (``<script>(self.__next_f=self.__next_f||[]).push([...])</script>``)
+    - Suspense-boundary resolution helpers
+      (``<script>$RC("B:0","S:0")</script>``)
+    - Any ``<script>`` tags that appear *between* HTML comment markers
+      (e.g. ``<!--$-->...<script>...</script>...<!--/$-->``) — these are
+      outside the ``<!--...-->`` comment span and are processed normally.
+
+    Scripts that appear *inside* an HTML comment block (``<!-- <script>... -->``)
+    are intentionally left verbatim: browsers never execute HTML comment content,
+    so injecting a nonce there would have no effect and could corrupt the comment.
+
     Never touches ``<script src=...>``, ``</script>`` closing tags, script
     bodies, style tags, text nodes, or ``<script>`` tokens that appear inside
     HTML comments.  Applied ONLY to trusted ``browse-ui/dist`` HTML (see

@@ -28,6 +28,11 @@ vi.mock("@/lib/api/hooks", () => ({
     error: null,
     isLoading: false,
   })),
+  useOperatorRuns: vi.fn(() => ({
+    data: { runs: [], count: 0 },
+    error: null,
+    isLoading: false,
+  })),
 }));
 
 import { useSessionDetail } from "@/lib/api/hooks";
@@ -68,6 +73,9 @@ vi.mock("./mindmap-tab", () => ({
 }));
 vi.mock("./checkpoints-tab", () => ({
   CheckpointsTab: () => <div data-testid="checkpoints-tab">Checkpoints content</div>,
+}));
+vi.mock("./debug-log-tab", () => ({
+  DebugLogTab: () => <div data-testid="debug-log-tab">DebugLog content</div>,
 }));
 
 // ── compare sheet ────────────────────────────────────────────────────────────

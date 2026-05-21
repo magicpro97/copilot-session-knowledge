@@ -13,17 +13,18 @@ import { OverviewTab } from "./overview-tab";
 import { TimelineTab } from "./timeline-tab";
 import { MindmapTab } from "./mindmap-tab";
 import { CheckpointsTab } from "./checkpoints-tab";
+import { DebugLogTab } from "./debug-log-tab";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { hostRequest } from "@/lib/api/client";
-import { useSessionDetail } from "@/lib/api/hooks";
+import { useSessionDetail, useOperatorRuns } from "@/lib/api/hooks";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
 import { useHostFeature } from "@/lib/hosts";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHostState } from "@/providers/host-provider";
 
-type SessionTab = "overview" | "timeline" | "mindmap" | "checkpoints";
+type SessionTab = "overview" | "timeline" | "mindmap" | "checkpoints" | "debug-log";
 const PLACEHOLDER_SESSION_ID = "_placeholder";
 
 function hashToTab(hash: string): SessionTab | null {
@@ -32,6 +33,7 @@ function hashToTab(hash: string): SessionTab | null {
   if (cleaned === "timeline") return "timeline";
   if (cleaned === "mindmap") return "mindmap";
   if (cleaned === "checkpoints") return "checkpoints";
+  if (cleaned === "debug-log") return "debug-log";
   return null;
 }
 
@@ -80,6 +82,9 @@ export function SessionDetailClient() {
   const [exportError, setExportError] = useState<string | null>(null);
 
   const detailQuery = useSessionDetail(sessionId, sessionsEnabled && Boolean(sessionId), host);
+  const runsQuery = useOperatorRuns(sessionId, sessionsEnabled && Boolean(sessionId), host);
+  // Use the latest run ID (last item in runs list). Gracefully null when no runs.
+  const latestRunId = runsQuery.data?.runs[runsQuery.data.runs.length - 1]?.id ?? null;
   const shortId = formatSessionIdBadgeText(sessionId);
   const exportFileName = `${sessionId || "session"}.md`;
 
@@ -163,6 +168,11 @@ export function SessionDetailClient() {
       key: "4",
       preventDefault: true,
       handler: () => setActiveTab("checkpoints"),
+    },
+    {
+      key: "5",
+      preventDefault: true,
+      handler: () => setActiveTab("debug-log"),
     },
     {
       key: "e",
@@ -288,6 +298,7 @@ export function SessionDetailClient() {
             <TabsTrigger value="timeline">Timeline</TabsTrigger>
             <TabsTrigger value="mindmap">Mindmap</TabsTrigger>
             <TabsTrigger value="checkpoints">Checkpoints</TabsTrigger>
+            <TabsTrigger value="debug-log">Debug Log</TabsTrigger>
           </TabsList>
           <div className="border-border -mx-1 border-b" />
         </div>
@@ -306,6 +317,9 @@ export function SessionDetailClient() {
         </TabsContent>
         <TabsContent value="checkpoints">
           <CheckpointsTab sessionId={sessionId} host={host} />
+        </TabsContent>
+        <TabsContent value="debug-log">
+          <DebugLogTab sessionId={sessionId} runId={latestRunId} host={host} />
         </TabsContent>
       </Tabs>
 

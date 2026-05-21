@@ -44,6 +44,7 @@ import {
   createOperatorSessionRequestSchema,
   updateOperatorSessionRequestSchema,
   operatorModelCatalogResponseSchema,
+  debugLogResponseSchema,
 } from "@/lib/api/schemas";
 import type {
   CompareResponse,
@@ -86,6 +87,8 @@ import type {
   FilePreviewResponse,
   FileDiffResponse,
   OperatorModelCatalogResponse,
+  DebugLogResponse,
+  DebugLogParams,
 } from "@/lib/api/types";
 
 export type SessionsQueryParams = {
@@ -167,6 +170,12 @@ export const queryKeys = {
     ["operator-diff", hostId, pathA, pathB] as const,
   operatorModels: (hostId = LOCAL_HOST_ID) => ["operator-models", hostId] as const,
   operatorCapabilities: (hostId = LOCAL_HOST_ID) => ["operator-capabilities", hostId] as const,
+  debugLog: (
+    sessionId: string,
+    runId: string,
+    params: DebugLogParams = {},
+    hostId = LOCAL_HOST_ID
+  ) => ["debug-log", hostId, sessionId, runId, params] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1060,6 +1069,45 @@ export function useHostCapabilities(host: HostProfile = LOCAL_HOST, enabled = tr
         host
       );
       return hostCapabilitiesSchema.parse(data);
+    },
+  });
+}
+
+// ── Debug Log (/api/operator/sessions/{sid}/runs/{rid}/debug) ─────────
+
+/**
+ * Query hook for the debug log of a specific operator session run.
+ *
+ * Fetches GET /api/operator/sessions/{sessionId}/runs/{runId}/debug with
+ * optional filter params (from, limit, kind, level, since).
+ *
+ * Returns React Query result with typed DebugLogResponse.
+ */
+export function useDebugLog(
+  sessionId: string,
+  runId: string,
+  params: DebugLogParams = {},
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.debugLog(sessionId, runId, params, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId) && Boolean(runId),
+    queryFn: async (): Promise<DebugLogResponse> => {
+      const qs = createQueryString({
+        from: params.from,
+        limit: params.limit,
+        kind: params.kind,
+        level: params.level,
+        since: params.since,
+      });
+      const path = withLeadingSlash(
+        `/api/operator/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/debug${qs}`
+      );
+      const data = await hostFetch<DebugLogResponse>(path, host);
+      return debugLogResponseSchema.parse(data);
     },
   });
 }

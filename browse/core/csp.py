@@ -34,15 +34,16 @@ def build_csp_header(nonce: str) -> str:
 def build_v2_csp_header(nonce: str = "") -> str:
     """Build CSP for static /v2 export.
 
-    When *nonce* is provided, uses ``'nonce-{nonce}'`` for script-src so no
-    ``unsafe-inline`` is needed (WBS-084 fix).  When *nonce* is absent, falls
-    back to ``unsafe-inline`` for backward compatibility with pre-built exports
-    that cannot have nonces injected at serve-time.
+    Always uses ``'nonce-{nonce}'`` for script-src — ``'unsafe-inline'`` is
+    never emitted (issue #441 hardening).  The server.py call sites generate a
+    fresh per-request nonce before calling this function; the *nonce* parameter
+    should always be truthy in production.  As a last-resort defence-in-depth
+    measure, if *nonce* is absent or empty a new nonce is generated internally
+    so that ``'unsafe-inline'`` is **never** returned under any circumstance.
     """
-    if nonce:
-        script_src = f"'self' 'nonce-{nonce}'"
-    else:
-        script_src = "'self' 'unsafe-inline'"
+    if not nonce:
+        nonce = generate_nonce()
+    script_src = f"'self' 'nonce-{nonce}'"
     return (
         f"default-src 'self'; "
         f"script-src {script_src}; "

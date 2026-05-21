@@ -567,17 +567,22 @@ class TestCspHeaderAlignment(unittest.TestCase):
         self.assertIn(f"'nonce-{nonce}'", header)
         self.assertIn(f'nonce="{nonce}"'.encode(), injected)
 
-    def test_build_v2_csp_header_empty_nonce_fallback_uses_unsafe_inline(self):
-        """Backward-compat branch (INV-10 awareness test).
+    def test_build_v2_csp_header_empty_nonce_generates_nonce_never_unsafe_inline(self):
+        """Issue #441 hardening: build_v2_csp_header("") MUST NOT return 'unsafe-inline'.
 
-        This branch is unreachable from any current serve_v2 call site
-        (both server.py call sites now pass a truthy nonce).  The test
-        documents the fallback exists and asserts it is not used at runtime.
+        The unsafe-inline fallback was removed in issue #441.  When called with an
+        empty nonce (which should never happen at production call sites since
+        server.py always generates a per-request nonce), build_v2_csp_header now
+        generates a nonce internally rather than falling back to 'unsafe-inline'.
         """
         header = build_v2_csp_header("")
-        self.assertIn("'unsafe-inline'", header)
-        # Note: test_browse_core_csp.py asserts this branch is unreachable in
-        # production code paths; see INV-1 safe-to-merge condition 3.
+        match = re.search(r"script-src\s+([^;]+)", header)
+        self.assertIsNotNone(match, "script-src directive missing from CSP header")
+        script_src = match.group(1)
+        # 'unsafe-inline' must NEVER appear — even with empty nonce
+        self.assertNotIn("'unsafe-inline'", script_src)
+        # A generated nonce must be present instead
+        self.assertIn("'nonce-", header)
 
     def test_multiple_different_nonces_produce_different_headers(self):
         """Each request gets a unique CSP nonce (no nonce reuse)."""
@@ -594,6 +599,151 @@ class TestCspHeaderAlignment(unittest.TestCase):
             match = re.search(r"script-src\s+([^;]+)", header)
             self.assertIsNotNone(match)
             self.assertNotIn("'unsafe-inline'", match.group(1), f"unsafe-inline in script-src for nonce={nonce!r}")
+
+
+# ---------------------------------------------------------------------------
+# Test m: Next.js bootstrap scripts explicitly get nonce (issue #441)
+# ---------------------------------------------------------------------------
+
+class TestNextBootstrapScriptNonce(unittest.TestCase):
+    """Explicit coverage for Next.js App Router inline bootstrap patterns.
+
+    These scripts are emitted by Next.js static export (no server-side
+    rendering) and MUST receive a nonce so the CSP ``'nonce-{x}'`` directive
+    allows them to execute without any ``'unsafe-inline'`` fallback.
+    """
+
+    def test_self_next_f_push_script_gets_nonce(self):
+        """Next.js RSC payload push script receives nonce."""
+        body = b'<html><script>(self.__next_f=self.__next_f||[]).push([1,"data"])</script></html>'
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 1)
+
+    def test_multiple_self_next_f_push_scripts_all_get_nonce(self):
+        """Multiple RSC payload push scripts each receive a nonce."""
+        body = (
+            b"<html>"
+            b"<script>(self.__next_f=self.__next_f||[]).push([0])</script>"
+            b'<script>self.__next_f.push([1,"chunk1"])</script>'
+            b'<script>self.__next_f.push([1,"chunk2"])</script>'
+            b"</html>"
+        )
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 3)
+
+    def test_suspense_resolution_helper_gets_nonce(self):
+        """Next.js Suspense boundary resolution helper ``$RC(...)`` receives nonce."""
+        body = b'<script>$RC("B:0","S:0")</script>'
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+
+    def test_next_f_script_body_preserved(self):
+        """RSC payload script body is unchanged; only opening tag gains nonce."""
+        payload = b'(self.__next_f=self.__next_f||[]).push([1,"abc\\n"])'
+        body = b"<script>" + payload + b"</script>"
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertIn(payload, result)
+        self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+
+    def test_external_next_chunk_script_unchanged(self):
+        """``<script src="/_next/static/chunks/...">`` is not modified."""
+        body = b'<script src="/_next/static/chunks/main-abc123.js"></script>'
+        result = _inject_csp_nonce(body, NONCE)
+        self.assertEqual(result, body)
+        self.assertNotIn(NONCE.encode(), result)
+
+    def test_mixed_next_page_inline_and_external(self):
+        """Realistic Next.js page: inline bootstrap scripts nonced, external chunks unchanged."""
+        body = (
+            b"<!DOCTYPE html><html><head>"
+            b'<script src="/_next/static/chunks/webpack.js"></script>'
+            b'<script src="/_next/static/chunks/main.js"></script>'
+            b"</head><body>"
+            b"<div id='__next'></div>"
+            b"<script>(self.__next_f=self.__next_f||[]).push([0])</script>"
+            b'<script>self.__next_f.push([1,"[[\\"$\\",\\"div\\",null,{}]]\\n"])</script>'
+            b"</body></html>"
+        )
+        result = _inject_csp_nonce(body, NONCE)
+        # Two inline bootstrap scripts get nonces
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 2)
+        # External scripts unchanged
+        self.assertIn(b'src="/_next/static/chunks/webpack.js"', result)
+        self.assertIn(b'src="/_next/static/chunks/main.js"', result)
+        # No nonce on external scripts
+        nonce_bytes = f'nonce="{NONCE}"'.encode()
+        self.assertNotIn(b"webpack" + nonce_bytes, result)
+
+    def test_script_between_next_suspense_markers_gets_nonce(self):
+        """Scripts appearing between Next.js Suspense markers ``<!--$-->..<!--/$-->``
+        are outside HTML comment spans and must receive nonces."""
+        body = (
+            b"<!--$?--><template id='B:0'></template><!--/$?-->"
+            b"<div hidden id='S:0'><p>Content</p></div>"
+            b"<script>$RC('B:0','S:0')</script>"
+        )
+        result = _inject_csp_nonce(body, NONCE)
+        # The $RC script is between comment markers, not inside them → gets nonce
+        self.assertIn(f'<script nonce="{NONCE}">'.encode(), result)
+        self.assertEqual(result.count(f'nonce="{NONCE}"'.encode()), 1)
+        # Comment markers preserved verbatim
+        self.assertIn(b"<!--$?-->", result)
+        self.assertIn(b"<!--/$?-->", result)
+
+
+# ---------------------------------------------------------------------------
+# Test n: 'unsafe-inline' NEVER appears in any CSP header (issue #441)
+# ---------------------------------------------------------------------------
+
+class TestUnsafeInlineNeverInCsp(unittest.TestCase):
+    """Issue #441 regression guard: build_v2_csp_header must never emit
+    ``'unsafe-inline'`` in script-src for any nonce value — including empty.
+    """
+
+    def _assert_no_unsafe_inline_in_script_src(self, nonce_value: str, label: str = "") -> None:
+        header = build_v2_csp_header(nonce_value)
+        match = re.search(r"script-src\s+([^;]+)", header)
+        self.assertIsNotNone(match, f"script-src directive missing for nonce={label!r}")
+        script_src = match.group(1)
+        self.assertNotIn(
+            "'unsafe-inline'",
+            script_src,
+            f"'unsafe-inline' found in script-src for nonce={label!r}",
+        )
+
+    def test_no_unsafe_inline_empty_nonce(self):
+        self._assert_no_unsafe_inline_in_script_src("", "empty")
+
+    def test_no_unsafe_inline_short_nonce(self):
+        self._assert_no_unsafe_inline_in_script_src("a", "a")
+
+    def test_no_unsafe_inline_typical_nonce(self):
+        self._assert_no_unsafe_inline_in_script_src("qJhrJ1cWrukEyhTzX4K92g", "typical")
+
+    def test_no_unsafe_inline_long_nonce(self):
+        self._assert_no_unsafe_inline_in_script_src("x" * 32, "long")
+
+    def test_no_unsafe_inline_none_like_strings(self):
+        """Common programmer error: None-like strings must not trigger unsafe-inline."""
+        for nonce_val in ["None", "null", "undefined", "0", "false"]:
+            # These are truthy strings — build_v2_csp_header treats them as valid nonces
+            header = build_v2_csp_header(nonce_val)
+            match = re.search(r"script-src\s+([^;]+)", header)
+            self.assertIsNotNone(match)
+            self.assertNotIn("'unsafe-inline'", match.group(1),
+                             f"unsafe-inline appeared for nonce_val={nonce_val!r}")
+
+    def test_complete_csp_header_no_unsafe_inline_in_script_src_only(self):
+        """style-src may still use 'unsafe-inline' (for Pico/runtime CSS),
+        but script-src must not."""
+        header = build_v2_csp_header("testNonce")
+        # style-src retains 'unsafe-inline' (expected)
+        self.assertIn("style-src 'self' 'unsafe-inline'", header)
+        # script-src does NOT have 'unsafe-inline'
+        match = re.search(r"script-src\s+([^;]+)", header)
+        self.assertIsNotNone(match)
+        self.assertNotIn("'unsafe-inline'", match.group(1))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+{"name": "fixture.valid.span", "id": "aa10000000000001", "traceId": "deadbeef00000000deadbeef00000000", "timestamp": 1700000000000000, "duration": 100000, "attributes": {}, "status": {"code": 1}}
+this is not json
+{"id": "aa10000000000003", "traceId": "deadbeef00000000deadbeef00000000", "timestamp": 1700000002000000, "duration": 50000, "attributes": {}, "status": {"code": 1}}
+{"name": "fixture.another.valid", "id": "aa10000000000004", "traceId": "deadbeef00000000deadbeef00000000", "timestamp": 1700000003000000, "duration": 200000, "attributes": {}, "status": {"code": 1}}

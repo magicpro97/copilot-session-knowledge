@@ -1163,6 +1163,88 @@ export interface BrowseHostBootstrapResponse {
   demo_mode_badge?: string | null;
 }
 
+// ── Debug Log (/api/operator/sessions/{sid}/runs/{rid}/debug) ────────
+
+/**
+ * Event taxonomy kinds for BrowseDebugEntry.
+ * See docs/DEBUG-LOG-CONTRACT.md §Event Taxonomy.
+ */
+export type DebugKind =
+  | "session_start"
+  | "turn_start"
+  | "llm_request"
+  | "tool_call"
+  | "hook"
+  | "subagent"
+  | "agent_response"
+  | "error"
+  | "generic"
+  | "raw";
+
+/** Severity levels for BrowseDebugEntry. */
+export type DebugLevel = "debug" | "info" | "warn" | "error";
+
+/** Terminal status for a span/tool call. */
+export type DebugStatus = "ok" | "error" | "cancelled";
+
+/**
+ * One entry in the debug log, corresponding to a single parsed JSONL line
+ * from the Copilot CLI output stream.
+ * See docs/DEBUG-LOG-CONTRACT.md §BrowseDebugEntry.
+ */
+export interface BrowseDebugEntry {
+  /** Zero-based position; monotonically increasing per session run. */
+  idx: number;
+  /** Event wall-clock time (ISO-8601). null when absent in source. */
+  timestamp: string | null;
+  /** Event taxonomy value. */
+  kind: DebugKind | (string & {});
+  /** Severity level. null when absent in source. */
+  level: DebugLevel | (string & {}) | null;
+  /** Source identifier, e.g. "operator_console", "hook_runner". */
+  source: string;
+  /** Human-readable event message, truncated to 200 chars. */
+  message: string;
+  /** Tool name for tool_call events. null for other kinds. */
+  tool_name: string | null;
+  /** Elapsed milliseconds for completed tool calls or spans. null when unknown. */
+  duration_ms: number | null;
+  /** 16 lowercase hex chars. null when no span. */
+  span_id: string | null;
+  /** 16 lowercase hex chars for the parent span. null when no parent. */
+  parent_span_id: string | null;
+  /** Terminal status. null for non-terminal events. */
+  status: DebugStatus | (string & {}) | null;
+  /** Arbitrary key/value attributes, redacted before serving. */
+  attrs: Record<string, unknown> | null;
+  /** true if one or more fields were modified by the redaction pass. */
+  redacted: boolean;
+}
+
+/**
+ * HTTP response envelope for GET /api/operator/sessions/{sid}/runs/{rid}/debug.
+ * See docs/DEBUG-LOG-CONTRACT.md §WBS-104 Response Shape.
+ */
+export interface DebugLogResponse {
+  schema_version: string;
+  session_id: string;
+  run_id: string;
+  total: number;
+  from: number;
+  limit: number;
+  has_more: boolean;
+  events: BrowseDebugEntry[];
+}
+
+/** Query parameters for the debug log fetch function. */
+export interface DebugLogParams {
+  from?: number;
+  limit?: number;
+  kind?: string;
+  level?: string;
+  since?: string;
+}
+
 /**
  * Runtime capabilities contract returned by `GET /api/operator/capabilities`.
  * Describes what the connected CLI server supports so the UI can adapt.

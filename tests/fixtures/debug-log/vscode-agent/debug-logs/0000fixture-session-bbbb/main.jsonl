@@ -1,0 +1,8 @@
+{"ts": 1700000000000, "dur": 50, "sid": "0000fixture-session-bbbb", "type": "session_start", "name": "session_start", "spanId": "a100000000000001", "status": "ok", "attrs": {}, "v": 1}
+{"dur": 30, "sid": "0000fixture-session-bbbb", "type": "turn_start", "name": "turn_start", "spanId": "b100000000000002", "status": "ok", "attrs": {}}
+{"ts": 1700000001000, "type": "llm_request", "name": "llm_request", "spanId": "c100000000000003", "status": "ok", "attrs": {}}
+this line is not valid JSON at all
+{"ts": 1700000003000, "dur": 100, "sid": "0000fixture-session-bbbb", "type": "hook", "name": "hook", "spanId": "d100000000000004", "status": "ok", "attrs": {}, "v": 1}
+
+{"ts": 1700000004000, "dur": 20, "sid": "0000fixture-session-bbbb", "type": "generic", "name": "test", "spanId": "e100000000000005", "status": "ok", "attrs": {}, "v": 2}
+{"ts": 1700000005000, "dur": 20, "sid": "0000fixture-session-bbbb", "type": "turn_end", "name": "turn_end", "spanId": "f100000000000006", "status": "ok", "attrs": {}, "v": 1}
