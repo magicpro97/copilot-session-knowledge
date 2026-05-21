@@ -223,7 +223,14 @@ class InstallSandboxTests(unittest.TestCase):
             self._disable_windows_registry_writes(install)
             install.install_sk_launcher(quiet=True)
 
-            tool_script, tool_ok, tool_detail = install._launcher_probe()
+            missing_tool_result = install.subprocess.CompletedProcess(
+                [str(install._sk_launcher_script_paths()[0]), "--version"],
+                1,
+                stdout="",
+                stderr="can't open file sk.py",
+            )
+            with patch.object(install.subprocess, "run", return_value=missing_tool_result):
+                tool_script, tool_ok, tool_detail = install._launcher_probe()
             self.assertIsNotNone(tool_script)
             self.assertFalse(tool_ok)
             self.assertTrue(

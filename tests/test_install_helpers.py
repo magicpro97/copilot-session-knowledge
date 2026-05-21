@@ -875,8 +875,18 @@ if os.name == "nt":
         _launcher_content[:80],
     )
     test(
-        "Windows launcher references py -3 as fallback",
+        "Windows launcher references py -3 as preferred interpreter",
         "py -3" in _launcher_content,
+        _launcher_content[:300],
+    )
+    test(
+        "Windows launcher includes installer Python fallback",
+        "PYTHON_EXE" in _launcher_content,
+        _launcher_content[:300],
+    )
+    test(
+        "Windows launcher includes python3 fallback",
+        "python3" in _launcher_content,
         _launcher_content[:300],
     )
     test(
@@ -921,6 +931,16 @@ if os.name == "nt":
         "launcher content includes py -3 (WBS-008/004)",
         "py -3" in _launcher_diag_content,
         "Expected 'py -3' in Windows launcher content",
+    )
+    test(
+        "launcher content includes installer Python fallback (WBS-008/004)",
+        "PYTHON_EXE" in _launcher_diag_content,
+        "Expected 'PYTHON_EXE' in Windows launcher content",
+    )
+    test(
+        "launcher content includes python3 fallback (WBS-008/004)",
+        "python3" in _launcher_diag_content,
+        "Expected 'python3' in Windows launcher content",
     )
     test(
         "launcher content references SK_TOOLS_DIR (WBS-008/005)",
@@ -977,6 +997,16 @@ try:
         test(
             "_launcher_diagnostics reports missing py -3 for stale launcher",
             "py -3" in _diag_output_str,
+            f"output: {_diag_output_str[:300]!r}",
+        )
+        test(
+            "_launcher_diagnostics reports missing installer Python fallback for stale launcher",
+            "installer Python fallback" in _diag_output_str,
+            f"output: {_diag_output_str[:300]!r}",
+        )
+        test(
+            "_launcher_diagnostics reports missing python3 fallback for stale launcher",
+            "python3 fallback" in _diag_output_str,
             f"output: {_diag_output_str[:300]!r}",
         )
         test(

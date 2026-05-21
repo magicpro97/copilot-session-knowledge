@@ -804,22 +804,39 @@ def _sk_launcher_managed_paths() -> "list[Path]":
 def _sk_launcher_content() -> str:
     """Return the launcher script body for the current platform.
 
-    WBS-004: prefer py -3, fallback to python on Windows.
+    WBS-004: prefer py -3, fallback to python3/python on Windows.
     WBS-005: honor SK_TOOLS_DIR env var on both platforms.
     """
     if os.name == "nt":
-        # WBS-005: honor SK_TOOLS_DIR; WBS-004: prefer py -3, fallback to python
+        # WBS-005: honor SK_TOOLS_DIR; WBS-004: prefer py -3, fallback to python3/python
+        python_exe = str(Path(sys.executable))
         return (
             "@echo off\r\n"
             "setlocal\r\n"
             'set "TOOLS_DIR=%USERPROFILE%\\.copilot\\tools"\r\n'
             'if defined SK_TOOLS_DIR set "TOOLS_DIR=%SK_TOOLS_DIR%"\r\n'
-            "where py >nul 2>&1\r\n"
-            "if %ERRORLEVEL% equ 0 (\r\n"
-            '    py -3 "%TOOLS_DIR%\\sk.py" %*\r\n'
-            ") else (\r\n"
-            '    python "%TOOLS_DIR%\\sk.py" %*\r\n'
+            f'set "PYTHON_EXE={python_exe}"\r\n'
+            'if exist "%PYTHON_EXE%" (\r\n'
+            '    "%PYTHON_EXE%" "%TOOLS_DIR%\\sk.py" %*\r\n'
+            "    exit /b\r\n"
             ")\r\n"
+            "where py >nul 2>&1\r\n"
+            "if not errorlevel 1 (\r\n"
+            '    py -3 "%TOOLS_DIR%\\sk.py" %*\r\n'
+            "    exit /b\r\n"
+            ")\r\n"
+            "where python3 >nul 2>&1\r\n"
+            "if not errorlevel 1 (\r\n"
+            '    python3 "%TOOLS_DIR%\\sk.py" %*\r\n'
+            "    exit /b\r\n"
+            ")\r\n"
+            "where python >nul 2>&1\r\n"
+            "if not errorlevel 1 (\r\n"
+            '    python "%TOOLS_DIR%\\sk.py" %*\r\n'
+            "    exit /b\r\n"
+            ")\r\n"
+            "echo sk launcher could not find py, python3, or python on PATH. 1>&2\r\n"
+            "exit /b 1\r\n"
         )
     # POSIX: WBS-005: honor SK_TOOLS_DIR, fallback to $HOME/.copilot/tools
     return '#!/bin/sh\nTOOLS_DIR="${SK_TOOLS_DIR:-$HOME/.copilot/tools}"\nexec python3 "$TOOLS_DIR/sk.py" "$@"\n'
@@ -2379,6 +2396,16 @@ def _launcher_diagnostics() -> int:
                     print(f"  {OK} {script.name} uses py -3 (Python Launcher preferred)")
                 else:
                     print(f"  {WARN} {script.name} missing py -3 — reinstall launcher to fix")
+                    issues += 1
+                if "PYTHON_EXE" in content_str:
+                    print(f"  {OK} {script.name} includes installer Python fallback")
+                else:
+                    print(f"  {WARN} {script.name} missing installer Python fallback — reinstall launcher to fix")
+                    issues += 1
+                if "python3" in content_str:
+                    print(f"  {OK} {script.name} includes python3 fallback")
+                else:
+                    print(f"  {WARN} {script.name} missing python3 fallback — reinstall launcher to fix")
                     issues += 1
                 if "SK_TOOLS_DIR" in content_str:
                     print(f"  {OK} {script.name} honors SK_TOOLS_DIR env var")

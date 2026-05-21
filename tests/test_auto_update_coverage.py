@@ -353,6 +353,19 @@ test("classify_changes sk_launcher=False for unrelated files",
      result_unrel.get("sk_launcher") is False,
      f"got sk_launcher={result_unrel.get('sk_launcher')!r}")
 
+_pipeline_start = aut_src.index("def post_pull_pipeline")
+_pipeline_end = aut_src.index("def reinstall_launchagents", _pipeline_start)
+_pipeline_src = aut_src[_pipeline_start:_pipeline_end]
+_launcher_call = _pipeline_src.index("refresh_sk_launcher()")
+_binary_call = _pipeline_src.index("refresh_rust_binary()")
+_launcher_guard_window = _pipeline_src[max(0, _launcher_call - 160):_launcher_call]
+test("post_pull_pipeline refreshes sk launcher before Rust binary checks",
+     _launcher_call < _binary_call,
+     "refresh_sk_launcher() must run before refresh_rust_binary()")
+test("post_pull_pipeline does not gate sk launcher refresh on git diff",
+     'if changes.get("sk_launcher")' not in _launcher_guard_window,
+     "launcher refresh should be unconditional so PATH is repaired on binary-only updates")
+
 
 # ─── 8. Isolated auto-update simulation (SK_LOCAL_ARCHIVE) ──────────────────
 

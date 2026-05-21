@@ -158,7 +158,7 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
         ("presets/", "preset configurations"),
     ],
     "Launcher": [
-        ("~/.copilot/bin/", "managed sk launcher directory — refreshed on sk.py / install.py changes"),
+        ("~/.copilot/bin/", "managed sk launcher directory — refreshed on every update before Rust binary checks"),
         ("sk-rust/", "Rust sk binary source — triggers GitHub Release asset update check"),
     ],
 }
@@ -703,9 +703,10 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         if changes.get("browse_ui"):
             _rebuild_browse_ui()
 
-        # 7c. sk.py or install.py changed → refresh managed sk launcher
-        if changes.get("sk_launcher"):
-            refresh_sk_launcher()
+        # 7c. Always refresh the managed sk launcher/PATH before binary checks.
+        # Rust releases install into ~/.copilot/bin even when sk.py/install.py did
+        # not change, so PATH wiring must not depend on the git diff category.
+        refresh_sk_launcher()
 
         # 7d. Always check for new Rust binary release (unconditional — GitHub Release asset)
         refresh_rust_binary()

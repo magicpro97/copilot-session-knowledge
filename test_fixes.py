@@ -2203,7 +2203,7 @@ with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _
 
 _sk_refresh_calls.clear()
 
-# Sk2: classify_changes sk_launcher=False for unrelated files
+# Sk2: classify_changes stays diff-specific, but pipeline refreshes launcher unconditionally
 with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _sk_refresh_calls.append(1)):
     _sk_changes2 = _sk_fake_changes(["watch-sessions.py"])
     test(
@@ -2211,13 +2211,34 @@ with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _
         _sk_changes2.get("sk_launcher") is False,
         "got " + repr(_sk_changes2.get("sk_launcher")),
     )
-    if _sk_changes2.get("sk_launcher"):
-        _sk_aut.refresh_sk_launcher()
+
+_sk_pipeline_calls = []
+with (
+    _sk_mock.patch.object(_sk_aut, "_git_output", return_value="watch-sessions.py"),
+    _sk_mock.patch.object(_sk_aut, "run_migrations", side_effect=lambda: _sk_pipeline_calls.append("migrate")),
+    _sk_mock.patch.object(_sk_aut, "restart_processes", side_effect=lambda: _sk_pipeline_calls.append("restart")),
+    _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _sk_pipeline_calls.append("launcher")),
+    _sk_mock.patch.object(_sk_aut, "refresh_rust_binary", side_effect=lambda: _sk_pipeline_calls.append("rust")),
+    _sk_mock.patch.object(
+        _sk_aut, "ensure_post_merge_hook", side_effect=lambda: _sk_pipeline_calls.append("post-merge")
+    ),
+    _sk_mock.patch.object(_sk_aut, "write_manifest", side_effect=lambda *_args, **_kw: None),
+):
+    _sk_aut.post_pull_pipeline("aaa", "bbb")
+
+test(
+    "Sk2: pipeline refreshes sk launcher even when sk_launcher=False",
+    "launcher" in _sk_pipeline_calls,
+    f"pipeline calls: {_sk_pipeline_calls!r}",
+)
+if "launcher" in _sk_pipeline_calls and "rust" in _sk_pipeline_calls:
     test(
-        "Sk2: refresh_sk_launcher NOT called when sk_launcher=False",
-        len(_sk_refresh_calls) == 0,
-        f"unexpected call count: {len(_sk_refresh_calls)}",
+        "Sk2: pipeline refreshes sk launcher before Rust binary",
+        _sk_pipeline_calls.index("launcher") < _sk_pipeline_calls.index("rust"),
+        f"pipeline calls: {_sk_pipeline_calls!r}",
     )
+else:
+    test("Sk2: pipeline refreshes sk launcher before Rust binary", False, f"pipeline calls: {_sk_pipeline_calls!r}")
 
 # Sk3: instruction template changes trigger managed global-instructions refresh
 _sk_instruction_calls = []
