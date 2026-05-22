@@ -4,7 +4,6 @@
 //! listener and runs the server with graceful Ctrl-C shutdown).
 //!
 //! Nothing is wired to `Commands::Browse` yet; the Python fallback remains.
-//! DB fields in `/healthz` are `null` pending issue #449.
 
 use std::sync::Arc;
 
@@ -132,6 +131,15 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(healthz_handler))
         .route("/.well-known/browse-host", get(discovery_handler))
         .route("/api/live", get(crate::browse::api::live::handler))
+        .route(
+            "/api/sessions",
+            get(crate::browse::api::sessions::list_handler),
+        )
+        .route(
+            "/api/sessions/:id",
+            get(crate::browse::api::sessions::detail_handler),
+        )
+        .route("/api/compare", get(crate::browse::api::compare::handler))
         .fallback(serve_static)
         .with_state(state.clone())
         // innermost middleware — auth
@@ -179,16 +187,29 @@ pub async fn start(state: AppState) -> anyhow::Result<()> {
 
 /// `GET /healthz` — open endpoint, no auth required.
 ///
-/// DB fields are `null` until issue #449 lands.
-async fn healthz_handler() -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "schema_version": null,       // TODO(#449)
-        "sessions": null,             // TODO(#449)
-        "knowledge_entries": null,    // TODO(#449)
-        "last_indexed_at": null,      // TODO(#449)
-        "sync_status_endpoint": "/api/sync/status",
-    }))
+/// DB fields are populated from [`BrowseDb`].  If the DB query fails the
+/// response is still HTTP 200 but `status` is `"degraded"` and DB fields are
+/// `null` so callers can detect partial availability.
+async fn healthz_handler(State(db): State<Arc<BrowseDb>>) -> Json<Value> {
+    let result = tokio::task::spawn_blocking(move || db.healthz_stats()).await;
+    match result {
+        Ok(Ok(s)) => Json(json!({
+            "status": "ok",
+            "schema_version": s.schema_version,
+            "sessions": s.sessions,
+            "knowledge_entries": s.knowledge_entries,
+            "last_indexed_at": s.last_indexed_at,
+            "sync_status_endpoint": "/api/sync/status",
+        })),
+        _ => Json(json!({
+            "status": "degraded",
+            "schema_version": null,
+            "sessions": null,
+            "knowledge_entries": null,
+            "last_indexed_at": null,
+            "sync_status_endpoint": "/api/sync/status",
+        })),
+    }
 }
 
 /// `GET /.well-known/browse-host` — discovery endpoint, no auth required.
@@ -328,7 +349,10 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(v["status"], "ok", "status must be 'ok'");
+        assert!(
+            v["status"] == "ok" || v["status"] == "degraded",
+            "status must be ok or degraded"
+        );
         assert!(
             v.get("schema_version").is_some(),
             "schema_version key required"
@@ -346,16 +370,21 @@ mod tests {
             v["sync_status_endpoint"], "/api/sync/status",
             "sync_status_endpoint must be '/api/sync/status'"
         );
-        assert!(v["schema_version"].is_null(), "schema_version must be null");
-        assert!(v["sessions"].is_null(), "sessions must be null");
-        assert!(
-            v["knowledge_entries"].is_null(),
-            "knowledge_entries must be null"
-        );
-        assert!(
-            v["last_indexed_at"].is_null(),
-            "last_indexed_at must be null"
-        );
+        // When DB is reachable, numeric fields must not be null.
+        if v["status"] == "ok" {
+            assert!(
+                v["schema_version"].is_number(),
+                "schema_version must be a number when status=ok"
+            );
+            assert!(
+                v["sessions"].is_number(),
+                "sessions must be a number when status=ok"
+            );
+            assert!(
+                v["knowledge_entries"].is_number(),
+                "knowledge_entries must be a number when status=ok"
+            );
+        }
     }
 
     #[tokio::test]

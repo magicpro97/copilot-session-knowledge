@@ -8,6 +8,7 @@
 //! This module does NOT depend on `browse::server`.
 
 use anyhow::Context as _;
+use chrono::{DateTime, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OpenFlags;
@@ -67,6 +68,225 @@ impl Drop for CheckpointHandle {
             let _ = jh.join();
         }
     }
+}
+
+// ── Public data types ──────────────────────────────────────────────────────────
+
+/// Stats collected for `GET /healthz`.
+pub struct HealthzStats {
+    /// Highest migration version in `migration_log`, or `0` when absent.
+    pub schema_version: i64,
+    /// Count of rows in `sessions`, or `0` when the table is absent.
+    pub sessions: i64,
+    /// Count of non-soft-deleted rows in `knowledge_entries`.
+    pub knowledge_entries: i64,
+    /// `MAX(indexed_at)` from `sessions`, or `None` when the table is absent
+    /// or empty.
+    pub last_indexed_at: Option<String>,
+}
+
+// SessionMeta is represented as serde_json::Value — see build_session_meta().
+// The JSON contract matches the Python normalize_session_meta() output:
+//   { id, path, summary, source, event_count_estimate, fts_indexed_at,
+//     indexed_at_r, file_mtime, total_checkpoints, total_research,
+//     total_files, has_plan, doc_count }
+// `indexed_at` (legacy TEXT column) is normalized and then excluded from output.
+
+// ── Timestamp normalization helpers ───────────────────────────────────────────
+
+/// Normalize a REAL Unix-timestamp column to RFC3339/Z string.
+/// Values ≥ 1e11 in absolute value are treated as milliseconds.
+fn normalize_ts_real(ts: f64) -> String {
+    let secs = if ts.abs() >= 1e11 { ts / 1000.0 } else { ts };
+    match DateTime::from_timestamp(secs as i64, 0) {
+        Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        None => secs.to_string(),
+    }
+}
+
+/// Normalize a TEXT ISO-8601 timestamp to RFC3339/Z.  Returns `None` for blank input.
+fn normalize_ts_str(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Replace trailing Z with +00:00 so parse_from_rfc3339 handles it.
+    let s_utc = s.replace('Z', "+00:00");
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&s_utc) {
+        return Some(
+            dt.with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+        );
+    }
+    // Fallback: naive datetime (no timezone) → assume UTC.
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ndt.and_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    }
+    // Last resort: return as-is.
+    Some(s.to_string())
+}
+
+/// Build a normalized SessionMeta JSON value from raw column values.
+///
+/// Mirrors `browse/api/_common.py::normalize_session_meta`.
+#[allow(clippy::too_many_arguments)]
+fn build_session_meta(
+    id: String,
+    path: String,
+    summary: String,
+    source: String,
+    event_count_estimate: Option<i64>,
+    fts_indexed_at_raw: Option<f64>,
+    indexed_at_r_raw: Option<f64>,
+    indexed_at_raw: Option<String>,
+    file_mtime_raw: Option<f64>,
+    total_checkpoints: i64,
+    total_research: i64,
+    total_files: i64,
+    has_plan: i64,
+    doc_count: i64,
+) -> serde_json::Value {
+    // Step 1: normalize timestamp columns.
+    let fts_ts = fts_indexed_at_raw.map(normalize_ts_real);
+    let idx_r_ts = indexed_at_r_raw.map(normalize_ts_real);
+    let fm_ts = file_mtime_raw.map(normalize_ts_real);
+    let indexed_at_ts = indexed_at_raw.as_deref().and_then(normalize_ts_str);
+
+    // Step 2: derive event_count_estimate.
+    let derived =
+        total_checkpoints + total_research + total_files + if has_plan != 0 { 1 } else { 0 };
+    let mut ece = event_count_estimate.unwrap_or(0);
+    if ece <= 0 {
+        let fallback = if derived > 0 { derived } else { doc_count };
+        if fallback > 0 {
+            ece = fallback;
+        }
+    }
+
+    // Step 3: fallback timestamps when session has content evidence.
+    let has_content = ece > 0 || derived > 0 || doc_count > 0;
+    let fallback_ts: Option<String> = fts_ts
+        .as_ref()
+        .or(idx_r_ts.as_ref())
+        .or(indexed_at_ts.as_ref())
+        .or(fm_ts.as_ref())
+        .cloned();
+
+    let final_fts = if has_content && fallback_ts.is_some() {
+        fts_ts.or_else(|| fallback_ts.clone())
+    } else {
+        fts_ts
+    };
+    let final_idx_r = if has_content && fallback_ts.is_some() {
+        idx_r_ts.or_else(|| fallback_ts.clone())
+    } else {
+        idx_r_ts
+    };
+    // file_mtime is not subject to fallback — normalize only.
+    // indexed_at is excluded from output per Python contract.
+
+    serde_json::json!({
+        "id": id,
+        "path": path,
+        "summary": summary,
+        "source": source,
+        "event_count_estimate": ece,
+        "fts_indexed_at": final_fts,
+        "indexed_at_r": final_idx_r,
+        "file_mtime": fm_ts,
+        "total_checkpoints": total_checkpoints,
+        "total_research": total_research,
+        "total_files": total_files,
+        "has_plan": has_plan,
+        "doc_count": doc_count,
+    })
+}
+
+/// Fetch one session's meta + timeline from an open connection.
+///
+/// Returns `(None, [])` when the session does not exist or `sessions` table
+/// is absent.  Timeline is empty when `documents` / `sections` are absent.
+fn fetch_one_session_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
+    let meta = match conn.query_row(
+        "SELECT s.id,
+                COALESCE(s.path,'') AS path,
+                COALESCE(s.summary,'') AS summary,
+                COALESCE(s.source,'copilot') AS source,
+                s.event_count_estimate,
+                s.fts_indexed_at,
+                s.indexed_at_r,
+                s.indexed_at,
+                s.file_mtime,
+                COALESCE(s.total_checkpoints,0),
+                COALESCE(s.total_research,0),
+                COALESCE(s.total_files,0),
+                COALESCE(s.has_plan,0),
+                (SELECT COUNT(*) FROM documents d WHERE d.session_id = s.id) AS doc_count
+         FROM sessions s WHERE s.id = ?",
+        rusqlite::params![id],
+        |r| {
+            Ok(build_session_meta(
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+                r.get(11)?,
+                r.get(12)?,
+                r.get(13)?,
+            ))
+        },
+    ) {
+        Ok(m) => m,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return (None, vec![]),
+        Err(_) => return (None, vec![]), // sessions table absent or schema error
+    };
+
+    // Fetch timeline: documents LEFT JOIN sections, ordered by seq then section id.
+    let timeline: Vec<serde_json::Value> = match conn.prepare(
+        "SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
+         FROM documents d
+         LEFT JOIN sections s ON s.document_id = d.id
+         WHERE d.session_id = ?
+         ORDER BY d.seq, s.id",
+    ) {
+        Ok(mut stmt) => stmt
+            .query_map(rusqlite::params![id], |r| {
+                let seq: i64 = r.get(0)?;
+                let title: String = r.get(1)?;
+                let doc_type: String = r.get(2)?;
+                let section_name: Option<String> = r.get(3)?;
+                let content: Option<String> = r.get(4)?;
+                Ok((seq, title, doc_type, section_name, content))
+            })
+            .map(|iter| {
+                iter.filter_map(|r| r.ok())
+                    .map(|(seq, title, doc_type, section_name, content)| {
+                        serde_json::json!({
+                            "seq": seq,
+                            "title": title,
+                            "doc_type": doc_type,
+                            "section_name": section_name,
+                            "content": content,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => vec![], // documents or sections absent
+    };
+
+    (Some(meta), timeline)
 }
 
 // ── BrowseDb ───────────────────────────────────────────────────────────────────
@@ -420,6 +640,237 @@ impl BrowseDb {
     ) -> anyhow::Result<Vec<KnowledgeEntry>> {
         let conn = self.read_pool.get()?;
         Ok(search_by_wing_room(&conn, wing, room, category, limit))
+    }
+
+    // ── Healthz stats ─────────────────────────────────────────────────────────
+
+    /// Collect all fields needed by `GET /healthz` in a single DB connection.
+    ///
+    /// Returns `None` for fields whose backing table does not exist in the
+    /// current schema so older databases are handled gracefully.
+    pub fn healthz_stats(&self) -> anyhow::Result<HealthzStats> {
+        let conn = self.read_pool.get()?;
+
+        let schema_version = conn
+            .query_row("SELECT MAX(version) FROM migration_log", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .unwrap_or(None)
+            .unwrap_or(0);
+
+        let has_sd = crate::db::fts::has_soft_delete(&conn);
+        let ke_sql = if has_sd {
+            "SELECT COUNT(*) FROM knowledge_entries WHERE deleted_at IS NULL"
+        } else {
+            "SELECT COUNT(*) FROM knowledge_entries"
+        };
+        let knowledge_entries = conn
+            .query_row(ke_sql, [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0);
+
+        let sessions = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0);
+
+        let last_indexed_at = conn
+            .query_row("SELECT MAX(indexed_at) FROM sessions", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap_or(None);
+
+        Ok(HealthzStats {
+            schema_version,
+            sessions,
+            knowledge_entries,
+            last_indexed_at,
+        })
+    }
+
+    // ── Session list / detail / compare ───────────────────────────────────────
+
+    /// List sessions with optional FTS search, returning `(items, total)`.
+    ///
+    /// Parameters mirror the Python `/api/sessions` endpoint:
+    /// - `q`: optional FTS search term (falls back to full list if FTS unavailable)
+    /// - `page`: 1-based page number (clamped to ≥ 1)
+    /// - `page_size`: rows per page (clamped 1–200, default 50)
+    ///
+    /// If the `sessions` table does not exist, returns `([], 0)`.
+    pub fn list_sessions(
+        &self,
+        q: Option<&str>,
+        page: i64,
+        page_size: i64,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, i64)> {
+        let conn = self.read_pool.get()?;
+        let page = page.max(1);
+        let page_size = page_size.clamp(1, 200);
+        let offset = (page - 1) * page_size;
+
+        let select_cols = "SELECT s.id,
+                    COALESCE(s.path,'') AS path,
+                    COALESCE(s.summary,'') AS summary,
+                    COALESCE(s.source,'copilot') AS source,
+                    s.event_count_estimate,
+                    s.fts_indexed_at,
+                    s.indexed_at_r,
+                    s.indexed_at,
+                    s.file_mtime,
+                    COALESCE(s.total_checkpoints,0),
+                    COALESCE(s.total_research,0),
+                    COALESCE(s.total_files,0),
+                    COALESCE(s.has_plan,0),
+                    (SELECT COUNT(*) FROM documents d WHERE d.session_id = s.id) AS doc_count
+             FROM sessions s";
+
+        let order_clause = " ORDER BY CASE
+                 WHEN COALESCE(s.event_count_estimate,0) > 0
+                   OR COALESCE(s.total_checkpoints,0) + COALESCE(s.total_research,0)
+                      + COALESCE(s.total_files,0) + COALESCE(s.has_plan,0) > 0
+                   OR (SELECT COUNT(*) FROM documents d WHERE d.session_id = s.id) > 0
+                 THEN COALESCE(s.fts_indexed_at, s.indexed_at_r,
+                               CAST(strftime('%s', s.indexed_at) AS REAL),
+                               s.file_mtime, 0)
+                 ELSE COALESCE(s.fts_indexed_at, s.indexed_at_r, s.file_mtime, 0)
+               END DESC
+               LIMIT ?1 OFFSET ?2";
+
+        let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<serde_json::Value> {
+            Ok(build_session_meta(
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+                r.get(11)?,
+                r.get(12)?,
+                r.get(13)?,
+            ))
+        };
+
+        // Try FTS search when q is set and sessions_fts table exists.
+        let q_str = q.unwrap_or("").trim().to_string();
+        let mut use_fts = !q_str.is_empty();
+
+        if use_fts {
+            let has_fts: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='sessions_fts'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            use_fts = has_fts;
+        }
+
+        let (rows, total) = if use_fts {
+            let safe_q = sanitize_fts_query(&q_str);
+            let fts_sql = format!(
+                "{select_cols} WHERE s.id IN \
+                 (SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?3)\
+                 {order_clause}"
+            );
+            let fts_rows: Option<Vec<serde_json::Value>> =
+                conn.prepare(&fts_sql).ok().and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![page_size, offset, &safe_q], map_row)
+                        .ok()
+                        .map(|iter| iter.filter_map(|r| r.ok()).collect())
+                });
+
+            if let Some(rows) = fts_rows {
+                let total: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sessions \
+                         WHERE id IN (SELECT session_id FROM sessions_fts \
+                                      WHERE sessions_fts MATCH ?)",
+                        rusqlite::params![&safe_q],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                (rows, total)
+            } else {
+                // FTS failed — fall through to full scan.
+                self.list_sessions_full_scan(&conn, page_size, offset, select_cols, order_clause)?
+            }
+        } else {
+            self.list_sessions_full_scan(&conn, page_size, offset, select_cols, order_clause)?
+        };
+
+        Ok((rows, total))
+    }
+
+    fn list_sessions_full_scan(
+        &self,
+        conn: &rusqlite::Connection,
+        page_size: i64,
+        offset: i64,
+        select_cols: &str,
+        order_clause: &str,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, i64)> {
+        let sql = format!("{select_cols}{order_clause}");
+        let rows: Vec<serde_json::Value> = match conn.prepare(&sql) {
+            Ok(mut stmt) => stmt
+                .query_map(rusqlite::params![page_size, offset], |r| {
+                    Ok(build_session_meta(
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
+                        r.get(12)?,
+                        r.get(13)?,
+                    ))
+                })
+                .map(|iter| iter.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default(),
+            Err(_) => vec![], // sessions table absent
+        };
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok((rows, total))
+    }
+
+    /// Full session detail: `(SessionMeta, timeline)`.
+    ///
+    /// Returns `Ok(None)` when the session does not exist or when the `sessions`
+    /// table is absent.
+    pub fn get_session_detail(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<(serde_json::Value, Vec<serde_json::Value>)>> {
+        let conn = self.read_pool.get()?;
+        let (meta, timeline) = fetch_one_session_conn(&conn, id);
+        Ok(meta.map(|m| (m, timeline)))
+    }
+
+    /// Compare two sessions: returns `{ a: {session, timeline}, b: {session, timeline} }`.
+    ///
+    /// Missing sessions produce `session: null, timeline: []` — never a 404.
+    /// Always returns `Ok(value)`.
+    pub fn compare_sessions(&self, id_a: &str, id_b: &str) -> anyhow::Result<serde_json::Value> {
+        let conn = self.read_pool.get()?;
+        let (meta_a, tl_a) = fetch_one_session_conn(&conn, id_a);
+        let (meta_b, tl_b) = fetch_one_session_conn(&conn, id_b);
+        Ok(serde_json::json!({
+            "a": { "session": meta_a, "timeline": tl_a },
+            "b": { "session": meta_b, "timeline": tl_b },
+        }))
     }
 
     // ── SSE live-stream helper ─────────────────────────────────────────────────
