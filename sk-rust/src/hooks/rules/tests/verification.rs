@@ -19,12 +19,12 @@ fn verif_gate_post_never_denies() {
 }
 
 #[test]
-fn verif_gate_post_returns_none_for_non_bash() {
+fn verif_gate_post_returns_none_for_non_shell_command() {
     let rule = VerificationGatePostRule;
     let data = json!({"toolName": "edit"});
     assert!(
         rule.evaluate("postToolUse", &data).is_none(),
-        "non-bash tool must return None"
+        "non-shell command tool must return None"
     );
 }
 
@@ -75,12 +75,29 @@ fn extract_written_paths_detects_tee_target() {
 }
 
 #[test]
-fn verif_gate_post_fires_on_posttooluse_bash_only() {
+fn verif_gate_post_fires_on_posttooluse_shell_commands_only() {
     let rule = VerificationGatePostRule;
     assert!(rule.events().contains(&"postToolUse"));
     assert!(!rule.events().contains(&"preToolUse"));
     assert!(rule.tools().contains(&"bash"));
+    assert!(rule.tools().contains(&"powershell"));
     assert!(!rule.tools().contains(&"edit"));
+}
+
+#[test]
+fn verif_gate_post_accepts_powershell_test_evidence() {
+    let rule = VerificationGatePostRule;
+    let data = json!({
+        "toolName": "powershell",
+        "toolArgs": {"command": "python3 test_security.py && python3 test_fixes.py"},
+        "toolResult": {"exitCode": 0, "output": "security checks passed\nartifact checks passed"}
+    });
+    if let Some(v) = rule.evaluate("postToolUse", &data) {
+        assert!(
+            v.get("permissionDecision").is_none(),
+            "PowerShell evidence recording must never deny; got: {v}"
+        );
+    }
 }
 
 #[test]
@@ -359,11 +376,12 @@ fn verif_gate_pre_fires_on_pretooluse_only() {
 }
 
 #[test]
-fn verif_gate_pre_applies_to_edit_create_bash_task_complete() {
+fn verif_gate_pre_applies_to_edit_create_shell_command_task_complete() {
     let rule = VerificationGatePreRule;
     assert!(rule.tools().contains(&"edit"));
     assert!(rule.tools().contains(&"create"));
     assert!(rule.tools().contains(&"bash"));
+    assert!(rule.tools().contains(&"powershell"));
     assert!(rule.tools().contains(&"task_complete"));
 }
 
@@ -450,6 +468,13 @@ fn is_closeout_action_detects_task_complete() {
 fn is_closeout_action_detects_gh_issue_close() {
     let (ok, desc) = is_closeout_action("bash", "gh issue close 42");
     assert!(ok, "gh issue close must be a closeout");
+    assert_eq!(desc, "gh issue close");
+}
+
+#[test]
+fn is_closeout_action_detects_powershell_gh_issue_close() {
+    let (ok, desc) = is_closeout_action("powershell", "gh issue close 42");
+    assert!(ok, "PowerShell gh issue close must be a closeout");
     assert_eq!(desc, "gh issue close");
 }
 

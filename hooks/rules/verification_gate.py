@@ -279,7 +279,7 @@ def _is_closeout(tool_name, tool_args):
     """Return (is_closeout: bool, description: str) for known closeout actions."""
     if tool_name == "task_complete":
         return True, "task_complete"
-    if tool_name != "bash":
+    if tool_name not in ("bash", "powershell"):
         return False, ""
     cmd = tool_args.get("command", "")
     if re.search(r"\bgh\b.*\bissue\b.*\bclose\b", cmd):
@@ -299,13 +299,13 @@ class VerificationGateRule(Rule):
     """Require verification evidence before closeout actions.
 
     preToolUse[edit/create]: mark surface dirty, clear stale evidence.
-    postToolUse[bash]:       record evidence from successful commands.
-    preToolUse[bash/task_complete]: block closeout when evidence is missing.
+    postToolUse[bash/powershell]: record evidence from successful commands.
+    preToolUse[bash/powershell/task_complete]: block closeout when evidence is missing.
     """
 
     name = "verification-gate"
     events = ["preToolUse", "postToolUse"]
-    tools = ["edit", "create", "bash", "task_complete"]
+    tools = ["edit", "create", "bash", "powershell", "task_complete"]
 
     def evaluate(self, event, data):
         try:
@@ -372,7 +372,7 @@ class VerificationGateRule(Rule):
 
     def _post(self, data):
         tool_name = data.get("toolName", "")
-        if tool_name != "bash":
+        if tool_name not in ("bash", "powershell"):
             return None
         tool_args = data.get("toolArgs", {})
         if not isinstance(tool_args, dict):

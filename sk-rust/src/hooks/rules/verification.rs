@@ -490,11 +490,11 @@ pub(crate) fn extract_written_paths_simple(command: &str) -> Vec<String> {
 // VerificationGatePostRule
 // ---------------------------------------------------------------------------
 
-/// Records verification evidence and marks dirty surfaces (postToolUse bash).
+/// Records verification evidence and marks dirty surfaces (postToolUse shell command).
 ///
 /// postToolUse-only port of the `_post()` method of
 /// `hooks/rules/verification_gate.py::VerificationGateRule` (wave7):
-///   1. If the bash command appears to write source files, extracts written paths
+///   1. If a shell command appears to write source files, extracts written paths
 ///      and marks the affected surfaces (Python / browse-ui) as dirty in the ledger,
 ///      clearing stale evidence for those surfaces.
 ///   2. Detects evidence categories from the command pattern (Python tests, pnpm).
@@ -522,12 +522,12 @@ impl HookRule for VerificationGatePostRule {
     }
 
     fn tools(&self) -> &'static [&'static str] {
-        &["bash"]
+        &["bash", "powershell"]
     }
 
     fn evaluate(&self, _event: &str, data: &Value) -> Option<Value> {
         let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
-        if tool_name != "bash" {
+        if tool_name != "bash" && tool_name != "powershell" {
             return None;
         }
 
@@ -583,7 +583,7 @@ impl HookRule for VerificationGatePostRule {
 ///   - preToolUse [edit/create]: marks the affected surface (Python / browse-ui)
 ///     dirty in the verification ledger and clears now-stale evidence.
 ///     Always returns `None` (edits are never blocked here).
-///   - preToolUse [bash/task_complete]: detects closeout-style actions
+///   - preToolUse [bash/powershell/task_complete]: detects closeout-style actions
 ///     (`task_complete`, `gh issue close/comment`, `gh pr merge`,
 ///     `tentacle handoff --status DONE`, `tentacle complete`).  When the ledger
 ///     has dirty surfaces with missing evidence, returns a deny result listing
@@ -621,7 +621,7 @@ pub(crate) fn is_closeout_action(tool_name: &str, cmd: &str) -> (bool, &'static 
     if tool_name == "task_complete" {
         return (true, "task_complete");
     }
-    if tool_name != "bash" {
+    if tool_name != "bash" && tool_name != "powershell" {
         return (false, "");
     }
     if contains_ordered_words(cmd, &["gh", "issue", "close"]) {
@@ -655,7 +655,7 @@ impl HookRule for VerificationGatePreRule {
     }
 
     fn tools(&self) -> &'static [&'static str] {
-        &["edit", "create", "bash", "task_complete"]
+        &["edit", "create", "bash", "powershell", "task_complete"]
     }
 
     fn evaluate(&self, _event: &str, data: &Value) -> Option<Value> {
@@ -682,7 +682,7 @@ impl HookRule for VerificationGatePreRule {
                 return None; // always allow edits
             }
 
-            // ── bash / task_complete: gate closeout actions ──────────────────
+            // ── shell command / task_complete: gate closeout actions ─────────
             let cmd = tool_args
                 .and_then(|o| o.get("command"))
                 .and_then(|v| v.as_str())
