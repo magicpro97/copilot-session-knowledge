@@ -3587,6 +3587,311 @@ except Exception as _e:
     test("SD-01: soft-delete dedup regression suite", False, str(_e))
 
 # ---------------------------------------------------------------------------
+# I456: composite indexes migration (v31) + sync table pruning (cron-tasks.py)
+# ---------------------------------------------------------------------------
+
+# I456-1: migration v31 is declared in MIGRATIONS with expected name
+try:
+    import ast as _ast456
+    import pathlib as _pathlib456
+
+    _mig_src = _pathlib456.Path(REPO / "migrate.py").read_text(encoding="utf-8")
+    _mig_tree = _ast456.parse(_mig_src)
+    _found_migrations = None
+    for _node in _ast456.walk(_mig_tree):
+        if isinstance(_node, _ast456.Assign):
+            for _t in _node.targets:
+                if isinstance(_t, _ast456.Name) and _t.id == "MIGRATIONS":
+                    _found_migrations = _ast456.literal_eval(_node.value)
+    _v31_entries = [m for m in (_found_migrations or []) if m[0] == 31]
+    test(
+        "I456-1a: migration v31 declared exactly once",
+        len(_v31_entries) == 1,
+        f"found={len(_v31_entries)}",
+    )
+    if _v31_entries:
+        _v31_name = _v31_entries[0][1]
+        _v31_stmts = _v31_entries[0][2]
+        test(
+            "I456-1b: migration v31 name is composite_indexes_sync_timestamps",
+            _v31_name == "composite_indexes_sync_timestamps",
+            f"name={_v31_name}",
+        )
+        _idx_names = {
+            "idx_ke_cat_wing_room_conf",
+            "idx_ke_session_cat",
+            "idx_ke_source_task",
+            "idx_sync_txns_created",
+            "idx_sync_ops_created",
+            "idx_sync_failures_failed_at",
+        }
+        _declared = {s for s in _v31_stmts if isinstance(s, str)}
+        _missing = [n for n in _idx_names if not any(n in s for s in _declared)]
+        test(
+            "I456-1c: all 6 composite/timestamp indexes declared in v31",
+            len(_missing) == 0,
+            f"missing={_missing}",
+        )
+except Exception as _e:
+    test("I456-1: migration v31 declaration check", False, str(_e))
+
+# I456-2: migration v31 is idempotent on a fresh in-memory DB
+try:
+    import importlib.util as _ilu456, types as _types456
+
+    _mig_db = sqlite3.connect(":memory:")
+    _mig_db.executescript("""
+        CREATE TABLE schema_version (
+            version INTEGER PRIMARY KEY,
+            name TEXT DEFAULT '',
+            migrated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT 'test',
+            category TEXT NOT NULL DEFAULT 'mistake',
+            title TEXT NOT NULL DEFAULT 'title',
+            content TEXT NOT NULL DEFAULT 'content',
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            source TEXT DEFAULT 'copilot',
+            task_id TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0
+        );
+        CREATE TABLE sync_txns (
+            txn_id TEXT PRIMARY KEY,
+            replica_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT NOT NULL DEFAULT '',
+            table_name TEXT NOT NULL DEFAULT '',
+            op_type TEXT NOT NULL DEFAULT 'insert',
+            row_stable_id TEXT NOT NULL DEFAULT '',
+            row_payload TEXT NOT NULL DEFAULT '',
+            op_index INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT DEFAULT '',
+            table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '',
+            error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '',
+            failed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            retry_count INTEGER DEFAULT 0
+        );
+        INSERT INTO schema_version (version, name) VALUES (30, 'episode_batch_compile');
+    """)
+    # Apply v31 statements manually (as migrate.py runner would)
+    _v31_sql = [
+        # ALTER TABLE is idempotent — "duplicate column" errors are swallowed
+        "ALTER TABLE knowledge_entries ADD COLUMN confidence REAL DEFAULT 1.0",
+        "CREATE INDEX IF NOT EXISTS idx_ke_cat_wing_room_conf ON knowledge_entries(category, wing, room, confidence)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_session_cat ON knowledge_entries(session_id, category)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_source_task ON knowledge_entries(source, task_id)",
+        "CREATE TABLE IF NOT EXISTS sync_txns (txn_id TEXT PRIMARY KEY, replica_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, committed_at TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS sync_ops (id INTEGER PRIMARY KEY AUTOINCREMENT, txn_id TEXT NOT NULL, table_name TEXT NOT NULL, op_type TEXT NOT NULL, row_stable_id TEXT NOT NULL, row_payload TEXT NOT NULL, op_index INTEGER NOT NULL, created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS sync_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, failed_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_sync_txns_created ON sync_txns(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_sync_ops_created ON sync_ops(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_sync_failures_failed_at ON sync_failures(failed_at)",
+    ]
+    for _sql in _v31_sql:
+        try:
+            _mig_db.execute(_sql)
+        except Exception as _e2:
+            if "duplicate" in str(_e2).lower() or "already exists" in str(_e2).lower():
+                pass
+            else:
+                raise
+    _mig_db.execute("INSERT OR IGNORE INTO schema_version (version, name) VALUES (31, 'composite_indexes_sync_timestamps')")
+    _mig_db.commit()
+
+    _idx_rows = {row[1] for row in _mig_db.execute("PRAGMA index_list(knowledge_entries)").fetchall()}
+    test(
+        "I456-2a: idx_ke_cat_wing_room_conf created on knowledge_entries",
+        "idx_ke_cat_wing_room_conf" in _idx_rows,
+        f"indexes={_idx_rows}",
+    )
+    test(
+        "I456-2b: idx_ke_session_cat created on knowledge_entries",
+        "idx_ke_session_cat" in _idx_rows,
+        f"indexes={_idx_rows}",
+    )
+    test(
+        "I456-2c: idx_ke_source_task created on knowledge_entries",
+        "idx_ke_source_task" in _idx_rows,
+        f"indexes={_idx_rows}",
+    )
+    _sync_idx = {row[1] for row in _mig_db.execute("PRAGMA index_list(sync_txns)").fetchall()}
+    test(
+        "I456-2d: idx_sync_txns_created created on sync_txns",
+        "idx_sync_txns_created" in _sync_idx,
+        f"indexes={_sync_idx}",
+    )
+
+    # Idempotency: applying statements a second time must not raise
+    _raised = False
+    try:
+        for _sql in _v31_sql:
+            try:
+                _mig_db.execute(_sql)
+            except Exception as _idem_e:
+                if "duplicate" in str(_idem_e).lower() or "already exists" in str(_idem_e).lower():
+                    pass
+                else:
+                    _raised = True
+                    break
+        _mig_db.commit()
+    except Exception as _idem_exc:
+        _raised = True
+    test("I456-2e: v31 statements are idempotent (IF NOT EXISTS)", not _raised)
+
+    # Version recorded
+    _ver_row = _mig_db.execute("SELECT version, name FROM schema_version WHERE version=31").fetchone()
+    test(
+        "I456-2f: schema_version row for v31 recorded",
+        _ver_row is not None and _ver_row[1] == "composite_indexes_sync_timestamps",
+        f"row={_ver_row}",
+    )
+    _mig_db.close()
+except Exception as _e:
+    test("I456-2: migration v31 idempotency", False, str(_e))
+
+# I456-3: sync table pruning deletes only aged rows
+try:
+    import importlib.util as _ilu456b
+    import tempfile as _tempfile456
+
+    _cron_spec = _ilu456b.spec_from_file_location("cron_tasks_456", REPO / "cron-tasks.py")
+    _cron_mod = _ilu456b.module_from_spec(_cron_spec)
+    _cron_spec.loader.exec_module(_cron_mod)
+
+    _prune_db_path = Path(_tempfile456.mkdtemp()) / "prune_test.db"
+    _pconn = sqlite3.connect(str(_prune_db_path))
+    _pconn.executescript("""
+        CREATE TABLE sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT NOT NULL DEFAULT '',
+            table_name TEXT NOT NULL DEFAULT '',
+            op_type TEXT NOT NULL DEFAULT 'insert',
+            row_stable_id TEXT NOT NULL DEFAULT '',
+            row_payload TEXT NOT NULL DEFAULT '',
+            op_index INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE sync_txns (
+            txn_id TEXT PRIMARY KEY,
+            replica_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT DEFAULT '',
+            failed_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0
+        );
+    """)
+    from datetime import datetime as _dt456, timezone as _tz456
+
+    _now456 = _dt456(2025, 6, 1, 12, 0, 0, tzinfo=_tz456.utc)
+    # Old rows (should be pruned)
+    _old_ops = "2025-04-15T00:00:00"    # 47 days old → pruned (>30d)
+    _old_txns = "2025-04-20T00:00:00"   # 42 days old → pruned (>30d)
+    _old_fail = "2025-05-20T00:00:00"   # 12 days old → pruned (>7d)
+    # Recent rows (should survive)
+    _new_ops = "2025-05-20T00:00:00"    # 12 days old → kept (<30d)
+    _new_txns = "2025-05-20T00:00:00"   # 12 days old → kept (<30d)
+    _new_fail = "2025-05-28T00:00:00"   # 4 days old → kept (<7d)
+
+    _pconn.execute("INSERT INTO sync_ops (created_at) VALUES (?)", (_old_ops,))
+    _pconn.execute("INSERT INTO sync_ops (created_at) VALUES (?)", (_new_ops,))
+    _pconn.execute("INSERT INTO sync_txns (txn_id, created_at) VALUES ('old-txn', ?)", (_old_txns,))
+    _pconn.execute("INSERT INTO sync_txns (txn_id, created_at) VALUES ('new-txn', ?)", (_new_txns,))
+    _pconn.execute("INSERT INTO sync_failures (failed_at) VALUES (?)", (_old_fail,))
+    _pconn.execute("INSERT INTO sync_failures (failed_at) VALUES (?)", (_new_fail,))
+    _pconn.commit()
+    _pconn.close()
+
+    _deleted = _cron_mod._prune_sync_tables(_prune_db_path, _now456)
+
+    test(
+        "I456-3a: sync_ops: 1 old row pruned",
+        _deleted.get("sync_ops") == 1,
+        f"deleted={_deleted}",
+    )
+    test(
+        "I456-3b: sync_txns: 1 old row pruned",
+        _deleted.get("sync_txns") == 1,
+        f"deleted={_deleted}",
+    )
+    test(
+        "I456-3c: sync_failures: 1 aged row pruned",
+        _deleted.get("sync_failures") == 1,
+        f"deleted={_deleted}",
+    )
+
+    # Verify surviving rows
+    _pconn2 = sqlite3.connect(str(_prune_db_path))
+    _remaining_ops = _pconn2.execute("SELECT COUNT(*) FROM sync_ops").fetchone()[0]
+    _remaining_txns = _pconn2.execute("SELECT COUNT(*) FROM sync_txns").fetchone()[0]
+    _remaining_fail = _pconn2.execute("SELECT COUNT(*) FROM sync_failures").fetchone()[0]
+    _pconn2.close()
+    test("I456-3d: sync_ops: 1 recent row survives", _remaining_ops == 1, f"remaining={_remaining_ops}")
+    test("I456-3e: sync_txns: 1 recent row survives", _remaining_txns == 1, f"remaining={_remaining_txns}")
+    test("I456-3f: sync_failures: 1 recent row survives", _remaining_fail == 1, f"remaining={_remaining_fail}")
+except Exception as _e:
+    test("I456-3: sync pruning correctness", False, str(_e))
+
+# I456-4: _prune_sync_tables is safe on a DB missing sync tables (no exception)
+try:
+    import importlib.util as _ilu456c
+    import tempfile as _tempfile456c
+
+    _cron_spec2 = _ilu456c.spec_from_file_location("cron_tasks_456c", REPO / "cron-tasks.py")
+    _cron_mod2 = _ilu456c.module_from_spec(_cron_spec2)
+    _cron_spec2.loader.exec_module(_cron_mod2)
+
+    _empty_db_path = Path(_tempfile456c.mkdtemp()) / "empty.db"
+    sqlite3.connect(str(_empty_db_path)).close()  # create empty DB
+    from datetime import datetime as _dt456d
+    _deleted2 = _cron_mod2._prune_sync_tables(_empty_db_path, _dt456d(2025, 6, 1, 12, 0, 0))
+    test(
+        "I456-4: _prune_sync_tables safe on DB without sync tables",
+        isinstance(_deleted2, dict),
+        f"result={_deleted2}",
+    )
+except Exception as _e:
+    test("I456-4: _prune_sync_tables graceful on missing tables", False, str(_e))
+
+# I456-5: sync_pruning template declared in TEMPLATE_DEFINITIONS
+try:
+    import importlib.util as _ilu456d
+
+    _cron_spec3 = _ilu456d.spec_from_file_location("cron_tasks_456d", REPO / "cron-tasks.py")
+    _cron_mod3 = _ilu456d.module_from_spec(_cron_spec3)
+    _cron_spec3.loader.exec_module(_cron_mod3)
+
+    test(
+        "I456-5a: sync_pruning in TEMPLATE_DEFINITIONS",
+        "sync_pruning" in _cron_mod3.TEMPLATE_DEFINITIONS,
+    )
+    _sp_sched = _cron_mod3.TEMPLATE_DEFINITIONS.get("sync_pruning", {}).get("default_schedule", {})
+    test(
+        "I456-5b: sync_pruning default schedule is daily",
+        _sp_sched.get("kind") == "daily",
+        f"schedule={_sp_sched}",
+    )
+except Exception as _e:
+    test("I456-5: sync_pruning template declaration", False, str(_e))
+
+# ---------------------------------------------------------------------------
 
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:

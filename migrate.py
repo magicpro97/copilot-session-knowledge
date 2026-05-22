@@ -1638,6 +1638,69 @@ if __name__ == "__main__":
                 )""",
             ],
         ),
+        # v31: issue #456 — Composite indexes for hot query paths + sync table created_at indexes.
+        # knowledge_entries composite indexes:
+        #   - (category, wing, room, confidence): covers search_by_wing_room() filtering
+        #     in fts.rs and query-session.py category+wing+room lookups.
+        #   - (session_id, category): covers per-session category queries.
+        #   - (source, task_id): covers provenance lookups filtered by source and task.
+        # sync table timestamp indexes support the pruning cron task (cron-tasks.py
+        # sync_pruning template) without requiring full table scans.
+        # The ALTER TABLE is idempotent: the migration runner swallows "duplicate column"
+        # errors so the ADD COLUMN is safe to run on DBs that already have confidence.
+        # CREATE TABLE IF NOT EXISTS guards ensure sync tables exist before their indexes
+        # are created; _seed_sync_table_policies re-runs these with the same DDL after
+        # migrations so there is no double-ownership concern.
+        (
+            31,
+            "composite_indexes_sync_timestamps",
+            [
+                # Ensure columns exist before creating indexes that cover them.
+                # Legacy DBs created manually at a high version number (e.g. v22)
+                # may never have had the earlier ALTER TABLE migrations applied.
+                # These ALTERs are idempotent: "duplicate column" errors are swallowed.
+                "ALTER TABLE knowledge_entries ADD COLUMN confidence REAL DEFAULT 1.0",
+                "ALTER TABLE knowledge_entries ADD COLUMN session_id TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN source TEXT DEFAULT 'copilot'",
+                "ALTER TABLE knowledge_entries ADD COLUMN task_id TEXT DEFAULT ''",
+                "CREATE INDEX IF NOT EXISTS idx_ke_cat_wing_room_conf ON knowledge_entries(category, wing, room, confidence)",
+                "CREATE INDEX IF NOT EXISTS idx_ke_session_cat ON knowledge_entries(session_id, category)",
+                "CREATE INDEX IF NOT EXISTS idx_ke_source_task ON knowledge_entries(source, task_id)",
+                # Ensure sync tables exist before adding indexes; legacy DBs (< v13) may
+                # not have them yet at this point in the migration sequence.
+                """CREATE TABLE IF NOT EXISTS sync_txns (
+                    txn_id TEXT PRIMARY KEY,
+                    replica_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
+                    created_at TEXT NOT NULL,
+                    committed_at TEXT DEFAULT ''
+                )""",
+                """CREATE TABLE IF NOT EXISTS sync_ops (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    txn_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
+                    row_stable_id TEXT NOT NULL,
+                    row_payload TEXT NOT NULL,
+                    op_index INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(txn_id, op_index)
+                )""",
+                """CREATE TABLE IF NOT EXISTS sync_failures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    txn_id TEXT DEFAULT '',
+                    table_name TEXT DEFAULT '',
+                    row_stable_id TEXT DEFAULT '',
+                    error_code TEXT DEFAULT '',
+                    error_message TEXT DEFAULT '',
+                    failed_at TEXT NOT NULL,
+                    retry_count INTEGER DEFAULT 0
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_sync_txns_created ON sync_txns(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_sync_ops_created ON sync_ops(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_sync_failures_failed_at ON sync_failures(failed_at)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
