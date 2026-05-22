@@ -17,9 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 // Re-export FTS helpers so callers import from one place.
-pub use crate::db::fts::{
-    search_by_wing_room, search_fts, search_fts_filtered, KnowledgeEntry,
-};
+pub use crate::db::fts::{search_by_wing_room, search_fts, search_fts_filtered, KnowledgeEntry};
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
