@@ -3,7 +3,7 @@
 //! Ports `browse/importers/vscode_agent_debug_log.py`.
 //! Source tag: `vscode-agent-debug-log`; BrowseDebugEntry source: `vscode`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -222,7 +222,7 @@ fn detect_format(path: &Path) -> Result<(), ImportError> {
 
 /// `(sid, name, parent_span_id)` — excludes `rIdx` per contract.
 type PairKey = (String, String, Option<String>);
-type PairQueues = HashMap<PairKey, Vec<String>>;
+type PairQueues = HashMap<PairKey, VecDeque<String>>;
 
 // ── Per-line parser ───────────────────────────────────────────────────────────
 
@@ -366,12 +366,15 @@ fn parse_line(obj: &Value, idx: u64, candidate_queues: &mut PairQueues) -> Resul
         let key: PairKey = (sid.clone(), name.clone(), parent_span_id.clone());
         if event_type == "tool_call" {
             let syn = synthetic_span_id(BROWSE_SOURCE, idx);
-            candidate_queues.entry(key).or_default().push(syn.clone());
+            candidate_queues
+                .entry(key)
+                .or_default()
+                .push_back(syn.clone());
             syn
         } else {
             // tool_result: pop FIFO or generate own synthetic
             match candidate_queues.get_mut(&key) {
-                Some(q) if !q.is_empty() => q.remove(0),
+                Some(q) if !q.is_empty() => q.pop_front().unwrap(),
                 _ => synthetic_span_id(BROWSE_SOURCE, idx),
             }
         }
@@ -492,14 +495,14 @@ impl Importer for super::VscodeDebugImporter {
 
         let file = std::fs::File::open(&resolved)?;
         for bl in iter_bounded_lines(file, cap) {
-            // Strip trailing CR/LF; skip blank lines silently
+            // Strip trailing CR/LF only (Python parity); skip blank lines silently.
             let stripped: Vec<u8> = bl
                 .bytes
                 .iter()
                 .copied()
                 .filter(|&b| b != b'\r' && b != b'\n')
                 .collect();
-            if stripped.iter().all(|b| b.is_ascii_whitespace()) {
+            if stripped.is_empty() {
                 continue;
             }
 
@@ -1399,5 +1402,37 @@ mod tests {
         ));
         assert!(fnmatch_simple("tools_v2.json", "tools_*.json"));
         assert!(!fnmatch_simple("main.jsonl", "tools_*.json"));
+    }
+
+    // ── Whitespace-only line parity (Python importer strips only CR/LF) ───────
+
+    #[test]
+    fn whitespace_only_line_counts_as_malformed() {
+        // Python only strips CR/LF before the blank check, so a line that is
+        // only spaces/tabs is non-blank → must be counted in total_lines and
+        // reported as malformed (invalid JSON), not silently skipped.
+        let td = TempDir::new();
+        let ws_line = "   \t  \n"; // spaces and tab, no JSON content
+        let p = write_temp(&td, &[BASE_LINE, ws_line, BASE_LINE]);
+        let (_, summary) = importer().import(&p, None, false).unwrap();
+        // BASE_LINE appears twice but has identical content → second is deduped.
+        assert_eq!(
+            summary.total_lines, 3,
+            "whitespace-only line + both BASE_LINEs must count toward total_lines (got {})",
+            summary.total_lines
+        );
+        assert_eq!(
+            summary.malformed_count, 1,
+            "whitespace-only line must be reported as malformed (got {})",
+            summary.malformed_count
+        );
+        assert!(
+            summary.malformed_reports[0]
+                .reason
+                .to_lowercase()
+                .contains("json"),
+            "malformed reason must mention JSON: {:?}",
+            summary.malformed_reports[0].reason
+        );
     }
 }

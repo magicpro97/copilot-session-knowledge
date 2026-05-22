@@ -242,15 +242,18 @@ pub fn synthetic_span_id(source: &str, idx: u64) -> String {
     synthetic_span_id_seq(source, idx, 1)
 }
 
-fn synthetic_span_id_seq(source: &str, idx: u64, seq: u64) -> String {
-    let input = format!("{source}:{idx}:{seq}");
-    let hash = Sha1::digest(input.as_bytes());
-    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-    let candidate = &hex[..16];
-    if candidate == "0000000000000000" {
-        return synthetic_span_id_seq(source, idx, seq + 1);
+fn synthetic_span_id_seq(source: &str, idx: u64, start_seq: u64) -> String {
+    let mut seq = start_seq;
+    loop {
+        let input = format!("{source}:{idx}:{seq}");
+        let hash = Sha1::digest(input.as_bytes());
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        let candidate = &hex[..16];
+        if candidate != "0000000000000000" {
+            return candidate.to_string();
+        }
+        seq += 1;
     }
-    candidate.to_string()
 }
 
 // ── Content hash for dedup ────────────────────────────────────────────────────

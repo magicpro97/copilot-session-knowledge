@@ -457,10 +457,12 @@ fn sentinel(entry: &Value) -> BrowseDebugEntry {
 /// Always returns a value.  On unexpected panic the fail-closed sentinel is
 /// returned (sets `redacted = true`).
 pub fn redact_entry(entry: &Value) -> BrowseDebugEntry {
-    // Panic guard: use std::panic::catch_unwind to mirror Python's fail-closed.
-    // We use a simple match instead since Rust panics should not happen in
-    // well-formed code; the sentinel path is exercised via tests.
-    redact_entry_impl(entry)
+    // Panic guard: catch any unexpected panic and return the fail-closed sentinel
+    // so a single malformed entry never aborts the whole import.
+    match std::panic::catch_unwind(|| redact_entry_impl(entry)) {
+        Ok(result) => result,
+        Err(_) => sentinel(entry),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -836,5 +838,21 @@ mod tests {
         let s = sentinel(&v);
         assert_eq!(s.idx, 7);
         assert!(s.redacted);
+    }
+
+    // ── public wrapper non-panic contract ─────────────────────────────────────
+
+    #[test]
+    fn redact_entry_handles_non_object_and_object_inputs() {
+        let v = json!("this is a string not an object");
+        let result = redact_entry(&v);
+        assert_eq!(result.kind, "generic");
+        assert!(!result.redacted);
+
+        // Verify the public API wraps the impl correctly for a normal object.
+        let v2 = json!({"idx": 3, "kind": "tool_call", "source": "vscode"});
+        let e = redact_entry(&v2);
+        assert_eq!(e.idx, 3);
+        assert!(!e.redacted);
     }
 }

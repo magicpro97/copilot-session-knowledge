@@ -36,10 +36,12 @@ anyhow  = "1"
 chrono  = { version = "0.4", features = ["serde"] }
 ctrlc   = "3"
 
-# Optional — compiled-in only when the matching native-* feature is enabled.
-notify  = { version = "6",    optional = true }
+# Always-on — low overhead, used across browse importers and other native commands.
 regex   = "1"
 sha1    = "0.10"
+
+# Optional — compiled-in only when the matching native-* feature is enabled.
+notify  = { version = "6",    optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"], optional = true }
 tokio   = { version = "1",    features = ["rt-multi-thread", "macros"], optional = true }
 
