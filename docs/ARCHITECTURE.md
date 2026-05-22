@@ -57,6 +57,19 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 above remain on disk, are invoked by operators manually, and are referenced by name in `sk watch`
 recovery hints. None of these scripts are candidates for deletion as a consequence of wave20.
 
+## Native Rust Browse Importers
+
+`sk-rust/src/browse/importers/` contains a native Rust parity port for the debug-log
+importers documented in `docs/DEBUG-LOG-CONTRACT.md`: VS Code Agent Debug Log
+JSONL and OTel `ReadableSpan` JSONL. The port includes shared path-safety,
+bounded-line reading, SHA-1 synthetic span IDs, dedup hashing, and redaction
+helpers that mirror the production Python importers.
+
+This is parser-only infrastructure. It has no Browse DB persistence and no CLI
+subcommand yet, so the Python modules remain the production callable importer
+surface. The Rust port is kept compiled and tested in `sk-rust` so a later
+operator command can wire it in without changing the data contract.
+
 ## Python Lint Surface Inventory
 
 This is the canonical inventory for Python Ruff coverage. Keep it in sync with

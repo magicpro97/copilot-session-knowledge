@@ -515,7 +515,7 @@ A performance test (`tests/test_browse_debug_log_api.py::DB26`) verifies that
 
 ### Overview
 
-Two read-only Python importers normalise external source formats into the
+The production read-only Python importers normalise external source formats into the
 `BrowseDebugEntry` shape defined above, apply `redact_entry`, and return
 `(entries, summary)` without writing to the debug-log DB.
 
@@ -523,6 +523,12 @@ Two read-only Python importers normalise external source formats into the
 |---|---|---|---|
 | `browse.importers.vscode_agent_debug_log` | `vscode-agent-debug-log` | `vscode` | `python -m browse.importers.vscode_agent_debug_log --path ... --dry-run --json-summary` |
 | `browse.importers.otel_file` | `vscode-otel-file` | `vscode` | `python -m browse.importers.otel_file --path ... --dry-run --json-summary` |
+
+Issue #455 adds a native Rust parser port under `sk-rust/src/browse/importers/`
+for the same VS Code Agent Debug Log and OTel `ReadableSpan` formats. The Rust
+port mirrors the contracts below and has Rust golden coverage, but it is not yet
+the production CLI/DB persistence path; Python remains the callable importer
+surface until a follow-up wires Rust importers into an operator command.
 
 ### Path safety (both importers)
 
@@ -821,6 +827,9 @@ The canonical implementation references are:
   read endpoint (WBS-104).
 - **`browse/core/debug_log_storage.py`** — isolated SQLite debug-log store (WBS-103).
 - **`browse/core/operator_console.py`** — bounded sidecar capture (WBS-105).
+- **`sk-rust/src/browse/importers/`** — native Rust parser parity port for VS Code
+  Agent Debug Log and OTel `ReadableSpan` inputs (issue #455; no DB persistence
+  or CLI entry point yet).
 
 For the commit hash, run `git log --oneline -1` in the repo root after the WBS-110 merge commit
 lands.
