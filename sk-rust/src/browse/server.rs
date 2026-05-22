@@ -11,7 +11,7 @@ use axum::extract::{FromRef, Request, State};
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use serde_json::{json, Value};
 use tower_http::trace::TraceLayer;
@@ -140,6 +140,26 @@ pub fn app(state: AppState) -> Router {
             get(crate::browse::api::sessions::detail_handler),
         )
         .route("/api/compare", get(crate::browse::api::compare::handler))
+        // ── Operator API (issue #451 PR-A) ──────────────────────────────
+        .route(
+            "/api/operator/capabilities",
+            get(crate::browse::api::operator::handle_capabilities),
+        )
+        .route(
+            "/api/operator/sessions",
+            post(crate::browse::api::operator::handle_create_session)
+                .get(crate::browse::api::operator::handle_list_sessions),
+        )
+        .route(
+            "/api/operator/sessions/:id",
+            get(crate::browse::api::operator::handle_get_session)
+                .patch(crate::browse::api::operator::handle_update_session)
+                .delete(crate::browse::api::operator::handle_delete_session),
+        )
+        .route(
+            "/api/operator/sessions/:id/delete",
+            post(crate::browse::api::operator::handle_delete_session_post),
+        )
         .fallback(serve_static)
         .with_state(state.clone())
         // innermost middleware — auth

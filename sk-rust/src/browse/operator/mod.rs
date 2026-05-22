@@ -1,6 +1,9 @@
-//! Rust port of `browse/core/operator_actions.py` and related operator helpers.
+//! Operator module — session CRUD console and operator actions.
 //!
-//! Operator actions are read-only, copy-safe diagnostic command suggestions
-//! shown in the browse UI settings page. They are NEVER browser-executed.
+//! - `console` — session lifecycle, path confinement, model normalization
+//!   (issue #451 PR-A)
+//! - `actions` — read-only diagnostic command suggestions for the browse UI
+//!   settings page (NEVER browser-executed)
 
 pub mod actions;
+pub mod console;
