@@ -32,9 +32,9 @@ Run against an external backend URL (future Rust port, staging, etc.):
 Regenerate / update golden fixtures from the live Python server:
     python tests/test_browse_api_contract.py --update
 
-Only fixtures marked ``requires_python_mock: false`` (or absent) are run
-against an external backend; Python-mock-dependent tests are skipped when
-``BROWSE_BASE_URL`` is set.
+When ``BROWSE_BASE_URL`` is set, only a hard-coded subset of mock-free tests
+is run against the external backend; tests that require Python mocks are
+skipped.
 """
 
 import http.client
@@ -272,6 +272,11 @@ def _start_server(db: sqlite3.Connection, token: str = "tok") -> tuple:
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
 
+# Set to True by run_tests() when an https:// external URL is supplied so that
+# _request() can select HTTPSConnection without requiring signature changes on
+# every test_* function.
+_USE_SSL: bool = False
+
 
 def _request(
     method: str,
@@ -283,7 +288,7 @@ def _request(
 ) -> tuple[int, dict, object]:
     sep = "&" if "?" in path else "?"
     full_path = f"{path}{sep}token={urllib.parse.quote(token)}"
-    conn = http.client.HTTPConnection(host, port, timeout=5)
+    conn = (http.client.HTTPSConnection if _USE_SSL else http.client.HTTPConnection)(host, port, timeout=5)
     try:
         if method in ("POST", "PATCH", "DELETE") and body is not None:
             encoded = json.dumps(body).encode("utf-8")
@@ -366,9 +371,9 @@ def _match_value(actual: object, expected: object, path: str, diffs: list[str]) 
             if actual is not None:
                 types = _NULLABLE_SENTINELS[expected]
                 if not isinstance(actual, types) or isinstance(actual, bool):
+                    allowed = " or ".join(t.__name__ for t in types)
                     diffs.append(
-                        f"{path}: expected {expected} (None or {types[0].__name__}), "
-                        f"got {type(actual).__name__} ({actual!r})"
+                        f"{path}: expected {expected} (None or {allowed}), got {type(actual).__name__} ({actual!r})"
                     )
         else:
             diffs.append(f"{path}: unknown sentinel {expected!r}")
@@ -831,39 +836,35 @@ def test_match_value_unit() -> None:
         )
 
     # __null_or_float__ — regression: booleans must be rejected (Python bool is subclass of int)
-    _check(None,  "__null_or_float__", True,  "__null_or_float__ accepts None")
-    _check(1,     "__null_or_float__", True,  "__null_or_float__ accepts int 1")
-    _check(1.5,   "__null_or_float__", True,  "__null_or_float__ accepts float 1.5")
-    _check(True,  "__null_or_float__", False, "__null_or_float__ rejects True")
+    _check(None, "__null_or_float__", True, "__null_or_float__ accepts None")
+    _check(1, "__null_or_float__", True, "__null_or_float__ accepts int 1")
+    _check(1.5, "__null_or_float__", True, "__null_or_float__ accepts float 1.5")
+    _check(True, "__null_or_float__", False, "__null_or_float__ rejects True")
     _check(False, "__null_or_float__", False, "__null_or_float__ rejects False")
 
     # __null_or_int__ — existing bool guard should still hold
-    _check(None,  "__null_or_int__", True,  "__null_or_int__ accepts None")
-    _check(42,    "__null_or_int__", True,  "__null_or_int__ accepts int 42")
-    _check(True,  "__null_or_int__", False, "__null_or_int__ rejects True")
+    _check(None, "__null_or_int__", True, "__null_or_int__ accepts None")
+    _check(42, "__null_or_int__", True, "__null_or_int__ accepts int 42")
+    _check(True, "__null_or_int__", False, "__null_or_int__ rejects True")
     _check(False, "__null_or_int__", False, "__null_or_int__ rejects False")
 
     # __float__ (non-nullable) — should still reject booleans
-    _check(3.14,  "__float__", True,  "__float__ accepts float")
-    _check(2,     "__float__", True,  "__float__ accepts int")
-    _check(True,  "__float__", False, "__float__ rejects True")
+    _check(3.14, "__float__", True, "__float__ accepts float")
+    _check(2, "__float__", True, "__float__ accepts int")
+    _check(True, "__float__", False, "__float__ rejects True")
+
+    # Mismatch message for __null_or_float__ must list all allowed types (int and float)
+    diffs_msg: list[str] = []
+    _match_value("bad", "__null_or_float__", "x", diffs_msg)
+    msg_ok = diffs_msg and "int or float" in diffs_msg[0]
+    _record(
+        "match_value_unit: __null_or_float__ mismatch message includes 'int or float'",
+        bool(msg_ok),
+        [f"message was: {diffs_msg}"] if not msg_ok else None,
+    )
 
 
 # ── --update mode: capture Python responses as new fixture files ───────────────
-
-_DYNAMIC_KEYS_BY_FIXTURE = {
-    "healthz": ["schema_version", "sessions", "knowledge_entries", "last_indexed_at"],
-    "sessions_list": ["items", "total", "page", "page_size", "has_more"],
-    "dashboard": [
-        "totals",
-        "by_category",
-        "sessions_per_day",
-        "top_wings",
-        "red_flags",
-        "weekly_mistakes",
-        "top_modules",
-    ],
-}
 
 
 def _make_sentinel(value: object) -> object:
@@ -935,8 +936,10 @@ def run_tests(external_url: str | None = None) -> int:
         from urllib.parse import urlparse
 
         parsed = urlparse(external_url)
+        global _USE_SSL
+        _USE_SSL = parsed.scheme == "https"
         host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 80
+        port = parsed.port or (443 if _USE_SSL else 80)
         token = os.environ.get("BROWSE_TOKEN", "tok")
         print(f"=== test_browse_api_contract.py (external: {external_url}) ===")
         # External backend: run pure HTTP contract tests only (no Python mocks)
@@ -1002,7 +1005,11 @@ def run_tests(external_url: str | None = None) -> int:
 
 
 def run_update(token: str = "tok") -> None:
-    """Capture live Python responses and overwrite all fixture files."""
+    """Capture live Python responses and overwrite a subset of fixture files.
+
+    Updates: healthz, discovery, eval_stats, dashboard, sessions_list_empty.
+    Other fixtures must be updated manually or by extending this function.
+    """
     print("=== test_browse_api_contract.py --update (capturing fixtures) ===")
     db = _make_test_db()
     server, host, port = _start_server(db)
