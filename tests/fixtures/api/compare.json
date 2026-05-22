@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "id": "compare",
+    "endpoint": "GET /api/compare?a={id}&b={id}",
+    "description": "Session comparison — both sides have session meta + timeline"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "a": {
+      "session": {
+        "id": "__str__",
+        "fts_indexed_at": "__null_or_str__",
+        "indexed_at_r": "__null_or_str__"
+      },
+      "timeline": "__list__"
+    },
+    "b": {
+      "session": {
+        "id": "__str__",
+        "fts_indexed_at": "__null_or_str__",
+        "indexed_at_r": "__null_or_str__"
+      },
+      "timeline": "__list__"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "pairing_verify_bad_body",
+    "endpoint": "POST /api/operator/pairing/verify (empty body)",
+    "description": "Pairing ticket verify with empty body — 400 BAD_BODY error envelope"
+  },
+  "status": 400,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "BAD_BODY"
+  }
+}

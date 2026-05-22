@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "embeddings_503",
+    "endpoint": "GET /api/embeddings (no embeddings in DB)",
+    "description": "Embeddings projection when no vectors are stored — 503 with error envelope"
+  },
+  "status": 503,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "__str__"
+  }
+}

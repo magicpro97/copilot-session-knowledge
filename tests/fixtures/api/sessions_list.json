@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "id": "sessions_list",
+    "endpoint": "GET /api/sessions",
+    "description": "Session list with default pagination — envelope shape and item schema"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "items": [
+      {
+        "id": "__str__",
+        "path": "__any__",
+        "summary": "__any__",
+        "source": "__any__",
+        "event_count_estimate": "__any__",
+        "fts_indexed_at": "__null_or_str__",
+        "indexed_at_r": "__null_or_str__",
+        "file_mtime": "__null_or_str__",
+        "total_checkpoints": "__any__",
+        "total_research": "__any__",
+        "total_files": "__any__",
+        "has_plan": "__any__",
+        "doc_count": "__any__"
+      }
+    ],
+    "total": "__int__",
+    "page": "__int__",
+    "page_size": "__int__",
+    "has_more": "__bool__"
+  }
+}

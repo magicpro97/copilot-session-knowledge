@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "id": "skills_metrics",
+    "endpoint": "GET /api/skills/metrics",
+    "description": "Skills usage metrics — tables/summary/recent_outcomes/operator_actions shapes"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "status": "__str__",
+    "configured": "__bool__",
+    "db_path": "__str__",
+    "tables": "__dict__",
+    "summary": {
+      "total_outcomes": "__int__"
+    },
+    "recent_outcomes": "__list__",
+    "skill_usage": "__list__",
+    "event_skill_usage": "__list__",
+    "audit": "__dict__",
+    "operator_actions": "__list__",
+    "runtime": "__dict__"
+  }
+}

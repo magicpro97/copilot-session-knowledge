@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "eval_stats",
+    "endpoint": "GET /api/eval/stats",
+    "description": "Eval/feedback aggregate stats — both lists present (may be empty)"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "aggregation": "__list__",
+    "recent_comments": "__list__"
+  }
+}

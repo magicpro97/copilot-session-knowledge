@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "id": "skills_catalog",
+    "endpoint": "GET /api/skills/catalog",
+    "description": "Skills catalog — skills list with required per-entry fields"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "skills": "__list__",
+    "total": "__int__",
+    "sources": {
+      "global": "__str__"
+    },
+    "runtime": {
+      "generated_at": "__str__"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "id": "sessions_list_empty",
+    "endpoint": "GET /api/sessions (empty DB)",
+    "description": "Session list on an empty database — items must be [] and total=0"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "items": [],
+    "total": 0,
+    "page": 1,
+    "page_size": 50,
+    "has_more": false
+  }
+}

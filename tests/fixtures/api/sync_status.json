@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "id": "sync_status",
+    "endpoint": "GET /api/sync/status",
+    "description": "Sync diagnostics — full shape including rollout/runtime/operator_actions"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "status": "__str__",
+    "pending_txns": "__int__",
+    "failed_txns": "__int__",
+    "failed_ops": "__int__",
+    "local_replica_id": "__any__",
+    "connection": {
+      "target": "__str__"
+    },
+    "rollout": {
+      "client_contract": "http-gateway",
+      "direct_db_sync": false
+    },
+    "runtime": {
+      "db_mode": "__str__",
+      "sync_tables_ready": "__bool__"
+    },
+    "operator_actions": [
+      {
+        "id": "__str__",
+        "title": "__str__",
+        "description": "__str__",
+        "command": "__str__",
+        "safe": true
+      }
+    ]
+  }
+}
