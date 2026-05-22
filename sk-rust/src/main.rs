@@ -1,3 +1,4 @@
+mod browse;
 mod commands;
 mod config;
 mod daemon;
