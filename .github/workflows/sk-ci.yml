@@ -172,9 +172,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sk-rust/target/
-          key: ${{ matrix.os }}-cargo-browse-${{ hashFiles('sk-rust/Cargo.lock') }}
-          restore-keys: ${{ matrix.os }}-cargo-browse-
-      - name: Verify default build excludes browse-server
+          key: ${{ runner.os }}-cargo-browse-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-browse-
+      - name: Check default feature build
+        run: cargo check
+      - name: Check no-default-features build
         run: cargo check --no-default-features
       - name: Build with browse-server feature
         run: cargo build --features browse-server
