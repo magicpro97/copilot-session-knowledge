@@ -540,21 +540,8 @@ def test_session_detail_404(host: str, port: int, token: str = "tok") -> None:
 def test_session_detail_400(host: str, port: int, token: str = "tok") -> None:
     # Use a URL-encoded invalid ID (bad!id → bad%21id); path-traversal strings
     # are normalized by http.client before sending, so they never reach the route.
-    sep = "&" if "?" in "/api/sessions/bad%21id" else "?"
-    full_path = f"/api/sessions/bad%21id{sep}token={urllib.parse.quote(token)}"
-    conn = http.client.HTTPConnection(host, port, timeout=5)
-    try:
-        conn.request("GET", full_path)
-        resp = conn.getresponse()
-        raw = resp.read()
-        hdrs = {k.lower(): v for k, v in resp.getheaders()}
-        try:
-            body = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            body = raw
-        status = resp.status
-    finally:
-        conn.close()
+    # Use _get() so that _USE_SSL is respected (HTTPS when BROWSE_BASE_URL=https://...).
+    status, hdrs, body = _get(host, port, "/api/sessions/bad%21id", token)
     _run_fixture(
         "session_detail_400: GET /api/sessions/bad%21id → 400 BAD_SESSION_ID",
         "session_detail_400",
@@ -864,6 +851,34 @@ def test_match_value_unit() -> None:
     )
 
 
+def test_ssl_selection_unit() -> None:
+    """Unit test: _request() (and therefore test_session_detail_400) picks
+    HTTPSConnection when _USE_SSL is True, without hitting a live network."""
+    global _USE_SSL
+    original_use_ssl = _USE_SSL
+    try:
+        _USE_SSL = True
+        stub_resp = unittest.mock.MagicMock()
+        stub_resp.status = 200
+        stub_resp.read.return_value = b"{}"
+        stub_resp.getheaders.return_value = []
+        stub_conn = unittest.mock.MagicMock()
+        stub_conn.getresponse.return_value = stub_resp
+        with (
+            unittest.mock.patch.object(http.client, "HTTPSConnection", return_value=stub_conn) as mock_https,
+            unittest.mock.patch.object(http.client, "HTTPConnection") as mock_http,
+        ):
+            _request("GET", "example.com", 443, "/test")
+        ok = mock_https.called and not mock_http.called
+        _record(
+            "ssl_selection_unit: _request uses HTTPSConnection when _USE_SSL=True",
+            ok,
+            [f"https_called={mock_https.called} http_called={mock_http.called}"] if not ok else None,
+        )
+    finally:
+        _USE_SSL = original_use_ssl
+
+
 # ── --update mode: capture Python responses as new fixture files ───────────────
 
 
@@ -968,6 +983,7 @@ def run_tests(external_url: str | None = None) -> int:
         server_empty, host_empty, port_empty = _start_server(db_empty)
         try:
             test_match_value_unit()
+            test_ssl_selection_unit()
             test_healthz(host, port)
             test_discovery(host, port)
             test_discovery_verify_missing_ticket(host, port)
