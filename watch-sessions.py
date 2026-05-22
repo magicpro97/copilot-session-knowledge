@@ -46,6 +46,13 @@ LOG_FILE = SESSION_STATE / "watcher.log"
 
 DEFAULT_INTERVAL = 60  # seconds
 
+# Periodic hash verification: every this many check_and_index polls, re-hash
+# all stable files (mtime+size unchanged) to catch rare silent mutations such
+# as coarse-grained filesystem timestamps, same-size overwrites, or tools that
+# preserve timestamps.  Value of 30 ≈ 30 min at 60 s default interval.
+_PERIODIC_VERIFY_INTERVAL: int = 30
+_check_and_index_poll: int = 0
+
 # Matches canonical UUID format (8-4-4-4-12 hex digits)
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -142,8 +149,13 @@ def release_lock():
         pass
 
 
-def get_file_signatures(dirs: list[Path]) -> dict[str, tuple[float, int]]:
-    """Get modification time + size for all indexable files across dirs."""
+def get_file_signatures(dirs: list[Path]) -> dict[str, tuple[int, int]]:
+    """Get modification time (nanoseconds) + size for all indexable files across dirs.
+
+    Uses ``st_mtime_ns`` (integer nanoseconds) for sub-second precision, which
+    reduces false hot-path cache hits on filesystems with coarse mtime granularity
+    compared to the floating-point ``st_mtime``.
+    """
     sigs = {}
     extensions = ("*.md", "*.txt", "*.jsonl")
     for base_dir in dirs:
@@ -156,7 +168,7 @@ def get_file_signatures(dirs: list[Path]) -> dict[str, tuple[float, int]]:
                 for f in session_dir.rglob(ext):
                     try:
                         st = f.stat()
-                        sigs[str(f)] = (st.st_mtime, st.st_size)
+                        sigs[str(f)] = (st.st_mtime_ns, st.st_size)
                     except OSError:
                         continue
     return sigs
@@ -316,15 +328,26 @@ def run_extractor(changed_files: list | None = None, session_ids: list | None = 
 def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool = False) -> dict:
     """Compare current files with previous state, index if changed.
 
-    Uses hybrid mtime+size fast-path followed by content-hash verification.
-    Files whose mtime/size changed but whose content is identical are skipped
-    (e.g., touch, editor autosave with no edits) so the indexer only runs when
-    content actually differs.
+    Hot-path optimisation: files whose mtime_ns+size are unchanged skip the
+    content-hash read entirely — the stored hash is reused directly.  Only
+    new files and files with a changed mtime_ns or size pay the hash cost.
+    Files whose mtime_ns/size changed but whose content is identical are still
+    skipped from re-indexing (e.g., touch or editor autosave with no edits).
 
-    Returns enriched signatures {filepath: [mtime, size, content_hash]}.
+    Periodic safeguard: every _PERIODIC_VERIFY_INTERVAL polls, all stable files
+    are re-hashed regardless of metadata.  This catches rare silent mutations
+    such as same-size overwrites on coarse-timestamp filesystems or tools that
+    deliberately preserve timestamps.
+
+    Returns enriched signatures {filepath: [mtime_ns, size, content_hash]}.
     State is backward-compatible: old 2-element entries trigger a one-time
-    hash computation on the first poll after upgrade.
+    hash computation on the first poll after upgrade without re-indexing.
+    Old float-mtime entries (pre-mtime_ns) will appear as "changed" on the
+    first poll and receive a fresh hash — the safe fallback.
     """
+    global _check_and_index_poll
+    _check_and_index_poll += 1
+    force_verify = _check_and_index_poll % _PERIODIC_VERIFY_INTERVAL == 0
     current_mtime_sigs = get_file_signatures(watch_dirs)
 
     # Files that don't exist in previous state
@@ -337,7 +360,7 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool 
         if f in prev_sigs and (current_mtime_sigs[f][0], current_mtime_sigs[f][1]) != (prev_sigs[f][0], prev_sigs[f][1])
     }
 
-    # Build enriched sigs {fp: [mtime, size, hash]} and resolve true changes
+    # Build enriched sigs {fp: [mtime_ns, size, hash]} and resolve true changes
     content_changed = set()
     enriched_sigs: dict[str, list] = {}
 
@@ -351,19 +374,24 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool 
                 content_changed.add(fp)
             enriched_sigs[fp] = [mtime, size, h]
         else:
-            # mtime/size stable — verify hash to catch same-tick or same-size
-            # content changes that bypass mtime/size detection.  Also handles the
-            # one-time legacy backfill for 2-element entries (no stored hash yet).
+            # mtime_ns+size stable → skip disk read (hot-path cache hit).
+            # While metadata stability is a strong signal on most filesystems,
+            # edge cases exist (coarse timestamps, same-size overwrites, tools
+            # that preserve timestamps).  A periodic full re-hash (force_verify)
+            # provides a bounded safeguard without impacting the common case.
+            # Legacy 2-element entries have no stored hash yet — backfill on the
+            # first poll after upgrade, but do NOT mark the file as changed.
             prev = prev_sigs.get(fp, [])
             stored_hash = prev[2] if len(prev) >= 3 else ""
-            current_hash = _content_hash(Path(fp))
             if not stored_hash:
                 # First poll after upgrade: backfill without re-indexing.
-                stored_hash = current_hash
-            elif current_hash != stored_hash:
-                # Content changed despite stable mtime/size (e.g. same-tick write).
-                content_changed.add(fp)
-                stored_hash = current_hash
+                stored_hash = _content_hash(Path(fp))
+            elif force_verify:
+                # Periodic re-verification: catch silent mutations.
+                new_hash = _content_hash(Path(fp))
+                if new_hash and new_hash != stored_hash:
+                    content_changed.add(fp)
+                stored_hash = new_hash or stored_hash
             enriched_sigs[fp] = [mtime, size, stored_hash]
 
     all_changed = sorted(new_files | content_changed)
