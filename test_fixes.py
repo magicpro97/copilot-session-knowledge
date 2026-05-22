@@ -4013,8 +4013,7 @@ try:
     _vac_def = _cron_mod464a.TEMPLATE_DEFINITIONS["vacuum"]
     test(
         "I464-1c: vacuum default_schedule is weekly on sunday",
-        _vac_def["default_schedule"]["kind"] == "weekly"
-        and _vac_def["default_schedule"]["day"] == "sunday",
+        _vac_def["default_schedule"]["kind"] == "weekly" and _vac_def["default_schedule"]["day"] == "sunday",
         f"schedule={_vac_def['default_schedule']}",
     )
     _wal_def = _cron_mod464a.TEMPLATE_DEFINITIONS["wal-checkpoint"]

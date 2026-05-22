@@ -533,9 +533,7 @@ def _build_wal_checkpoint_artifact(task: dict, now: datetime, result: dict) -> s
         busy_flag = result.get("busy", 0)
         log_pages = result.get("log", 0)
         checkpointed = result.get("checkpointed", 0)
-        lines.append(
-            f"\nCheckpoint result: busy={busy_flag} log_pages={log_pages} checkpointed={checkpointed}\n"
-        )
+        lines.append(f"\nCheckpoint result: busy={busy_flag} log_pages={log_pages} checkpointed={checkpointed}\n")
         if before and after:
             lines.append(f"WAL size before: {before.get('wal', 0)} bytes\n")
             lines.append(f"WAL size after:  {after.get('wal', 0)} bytes\n")
