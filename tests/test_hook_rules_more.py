@@ -1074,6 +1074,14 @@ test("browse-ui .js → SURFACE_UI", _surfaces_from_path("browse-ui/src/main.js"
 test("browse-ui .css → empty (not tracked)", _surfaces_from_path("browse-ui/src/styles.css") == set())
 test("Regular .ts (not browse-ui) → empty", _surfaces_from_path("src/utils.ts") == set())
 test("Markdown → empty", _surfaces_from_path("README.md") == set())
+test(
+    "Global installed skill Python -> empty (not repo verification surface)",
+    _surfaces_from_path(str(Path.home() / ".copilot" / "skills" / "demo" / "scripts" / "tool.py")) == set(),
+)
+test(
+    "Session-state Python -> empty (not repo verification surface)",
+    _surfaces_from_path(str(Path.home() / ".copilot" / "session-state" / "session" / "notes.py")) == set(),
+)
 
 # ── 7c. _evidence_from_command ────────────────────────────────────────
 
@@ -1293,6 +1301,61 @@ try:
     test("postToolUse test run → returns None", result is None)
     test(
         "postToolUse test run → py_security + py_fixes evidence recorded",
+        {EV_PY_SECURITY, EV_PY_FIXES} <= ledger["evidence"],
+    )
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate(
+            "postToolUse",
+            {
+                "toolName": "powershell",
+                "toolInput": {"command": "python3 test_security.py && python3 test_fixes.py"},
+                "toolResult": {"exitCode": 0, "output": "security checks passed\nartifact checks passed"},
+            },
+        )
+        ledger = _read_ledger()
+    test("postToolUse toolInput PowerShell test run -> returns None", result is None)
+    test(
+        "postToolUse toolInput PowerShell test run -> py_security + py_fixes evidence recorded",
+        {EV_PY_SECURITY, EV_PY_FIXES} <= ledger["evidence"],
+    )
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate(
+            "postToolUse",
+            {
+                "toolName": "powershell",
+                "toolArgs": {"description": "Run required verification"},
+                "toolInput": {"command": "python3 test_security.py && python3 test_fixes.py"},
+                "toolResult": {"exitCode": 0, "output": "security checks passed\nartifact checks passed"},
+            },
+        )
+        ledger = _read_ledger()
+    test("postToolUse prefers command-bearing toolInput over metadata-only toolArgs", result is None)
+    test(
+        "postToolUse metadata toolArgs + command toolInput -> py evidence recorded",
+        {EV_PY_SECURITY, EV_PY_FIXES} <= ledger["evidence"],
+    )
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate(
+            "postToolUse",
+            {
+                "toolName": "powershell",
+                "input": {"command": "python3 test_security.py && python3 test_fixes.py"},
+                "toolResult": {"exitCode": 0, "output": "security checks passed\nartifact checks passed"},
+            },
+        )
+        ledger = _read_ledger()
+    test("postToolUse input PowerShell test run -> returns None", result is None)
+    test(
+        "postToolUse input PowerShell test run -> py_security + py_fixes evidence recorded",
         {EV_PY_SECURITY, EV_PY_FIXES} <= ledger["evidence"],
     )
 

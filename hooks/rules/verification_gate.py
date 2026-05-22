@@ -156,6 +156,25 @@ def _read_ledger():
     return {"dirty": set(), "evidence": set()}
 
 
+def _tool_input(data):
+    """Return tool arguments from either payload shape used by CLI hooks.
+
+    Most hooks historically used `toolArgs`, but newer/runtime-specific tool
+    events may provide the same values under `toolInput` or `input`.
+    Verification must accept all observed shapes so successful test commands
+    are not missed.
+    """
+    first_non_empty = {}
+    for key in ("toolArgs", "toolInput", "input"):
+        value = data.get(key, {})
+        if isinstance(value, dict):
+            if "command" in value or "path" in value:
+                return value
+            if value and not first_non_empty:
+                first_non_empty = value
+    return first_non_empty
+
+
 def _write_ledger(dirty, evidence):
     """Write the verification ledger (HMAC-signed via sign_list_marker)."""
     try:
@@ -174,6 +193,9 @@ def _surfaces_from_path(path):
     """Return set of surfaces affected by editing path."""
     surfaces = set()
     p = str(path)
+    norm = p.replace("\\", "/").lower()
+    if "/.copilot/session-state/" in norm or "/.copilot/skills/" in norm:
+        return surfaces
     suffix = Path(path).suffix.lower()
     if "browse-ui/" in p or p.startswith("browse-ui/"):
         if suffix in (".ts", ".tsx", ".js", ".jsx"):
@@ -321,9 +343,7 @@ class VerificationGateRule(Rule):
 
     def _pre(self, data):
         tool_name = data.get("toolName", "")
-        tool_args = data.get("toolArgs", {})
-        if not isinstance(tool_args, dict):
-            tool_args = {}
+        tool_args = _tool_input(data)
 
         # Track edits: mark surfaces dirty and clear now-stale evidence
         if tool_name in ("edit", "create"):
@@ -374,9 +394,7 @@ class VerificationGateRule(Rule):
         tool_name = data.get("toolName", "")
         if tool_name not in ("bash", "powershell"):
             return None
-        tool_args = data.get("toolArgs", {})
-        if not isinstance(tool_args, dict):
-            return None
+        tool_args = _tool_input(data)
         command = tool_args.get("command", "")
         if bash_writes_source_files(command):
             written_surfaces = set()

@@ -49,6 +49,10 @@ pub(crate) fn surfaces_from_path(path: &str) -> Vec<&'static str> {
     let mut surfaces = Vec::new();
     let lower = path.to_lowercase();
     let norm = path.replace('\\', "/");
+    let norm_lower = norm.to_lowercase();
+    if norm_lower.contains("/.copilot/session-state/") || norm_lower.contains("/.copilot/skills/") {
+        return surfaces;
+    }
     if (norm.contains("browse-ui/") || norm.starts_with("browse-ui/"))
         && (lower.ends_with(".ts")
             || lower.ends_with(".tsx")
@@ -106,6 +110,24 @@ pub(crate) fn evidence_from_command(command: &str) -> Vec<&'static str> {
         ev.push(EV_UI_BUILD);
     }
     ev
+}
+
+/// Return tool input object, accepting `toolArgs` (legacy), `toolInput`, and
+/// `input` (runtime payloads seen in the wild).
+pub(crate) fn tool_input_object(data: &Value) -> Option<&serde_json::Map<String, Value>> {
+    let mut first_non_empty = None;
+    for key in ["toolArgs", "toolInput", "input"] {
+        let Some(obj) = data.get(key).and_then(|a| a.as_object()) else {
+            continue;
+        };
+        if obj.contains_key("command") || obj.contains_key("path") {
+            return Some(obj);
+        }
+        if first_non_empty.is_none() && !obj.is_empty() {
+            first_non_empty = Some(obj);
+        }
+    }
+    first_non_empty
 }
 
 /// Return `true` if `needle` appears in `haystack` surrounded by non-word
@@ -531,9 +553,7 @@ impl HookRule for VerificationGatePostRule {
             return None;
         }
 
-        let command = data
-            .get("toolArgs")
-            .and_then(|a| a.as_object())
+        let command = tool_input_object(data)
             .and_then(|o| o.get("command"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
@@ -662,10 +682,7 @@ impl HookRule for VerificationGatePreRule {
         // Fail-open: any error inside this rule must not deny.
         let result = std::panic::catch_unwind(|| {
             let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
-            let tool_args = data
-                .get("toolArgs")
-                .and_then(|v| v.as_object())
-                .map(|o| o as &serde_json::Map<String, Value>);
+            let tool_args = tool_input_object(data);
 
             // ── edit / create: dirty-mark the surface, never block ──────────
             if tool_name == "edit" || tool_name == "create" {

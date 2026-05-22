@@ -101,6 +101,48 @@ fn verif_gate_post_accepts_powershell_test_evidence() {
 }
 
 #[test]
+fn verif_gate_post_accepts_toolinput_powershell_test_evidence() {
+    let rule = VerificationGatePostRule;
+    let data = json!({
+        "toolName": "powershell",
+        "toolInput": {"command": "python3 test_security.py && python3 test_fixes.py"},
+        "toolResult": {"exitCode": 0, "output": "security checks passed\nartifact checks passed"}
+    });
+    if let Some(v) = rule.evaluate("postToolUse", &data) {
+        assert!(
+            v.get("permissionDecision").is_none(),
+            "PowerShell toolInput evidence recording must never deny; got: {v}"
+        );
+    }
+}
+
+#[test]
+fn tool_input_object_prefers_command_bearing_toolinput() {
+    let data = json!({
+        "toolArgs": {"description": "Run required verification"},
+        "toolInput": {"command": "python3 test_security.py && python3 test_fixes.py"}
+    });
+    let command = tool_input_object(&data)
+        .and_then(|o| o.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(command, "python3 test_security.py && python3 test_fixes.py");
+}
+
+#[test]
+fn tool_input_object_accepts_input_command_payload() {
+    let data = json!({
+        "toolName": "powershell",
+        "input": {"command": "python3 test_security.py && python3 test_fixes.py"}
+    });
+    let command = tool_input_object(&data)
+        .and_then(|o| o.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(command, "python3 test_security.py && python3 test_fixes.py");
+}
+
+#[test]
 fn evidence_from_command_split_per_suite_and_broad() {
     // Wave 11 split: per-file commands earn only per-suite keys; broad runs
     // (`run_all_tests.py`, `pytest`) earn the full superset.
@@ -219,6 +261,10 @@ fn looks_successful_ignores_zero_count_patterns() {
 fn surfaces_from_path_detects_py_surface() {
     assert!(surfaces_from_path("hooks/rules/edit_tracker.py").contains(&SURFACE_PY));
     assert!(!surfaces_from_path("src/main.rs").contains(&SURFACE_PY));
+    assert!(surfaces_from_path("C:/Users/example/.copilot/skills/demo/scripts/tool.py").is_empty());
+    assert!(
+        surfaces_from_path("C:/Users/example/.copilot/session-state/session/notes.py").is_empty()
+    );
 }
 
 #[test]
