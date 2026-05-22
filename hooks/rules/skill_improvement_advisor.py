@@ -25,8 +25,14 @@ Fail-open: any exception returns None (never blocks session end).
 import json
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
+
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 from . import Rule
 
