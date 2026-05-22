@@ -102,6 +102,12 @@ describe("DebugLogTab – loading state", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     expect(screen.getByText(/loading debug log/i)).toBeInTheDocument();
   });
+
+  it("renders loading message while resolving the latest operator run", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} runsLoading host={HOST} />);
+    expect(screen.getByText(/loading debug log/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no run available/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("DebugLogTab – error state", () => {

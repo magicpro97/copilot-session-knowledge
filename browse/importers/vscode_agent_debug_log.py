@@ -170,8 +170,10 @@ def _epoch_ms_to_iso(ts_ms: Any) -> "str | None":
 def _detect_format(path: Path) -> None:
     """Check the file looks like VS Code Agent debug log JSONL.
 
-    Reads the first non-empty line and verifies it has the required fingerprint
-    fields (numeric ``ts`` and string ``sid``).
+    Oversized or malformed leading lines are not format evidence.  Detection
+    scans forward until the first parseable JSON value, then requires the VS
+    Code fingerprint (numeric ``ts`` > 0 and string ``sid``) on that value.
+    EOF without a parseable fingerprint raises ``UnsupportedFormatError``.
 
     Raises:
         UnsupportedFormatError: format fingerprint not recognised.
@@ -179,11 +181,11 @@ def _detect_format(path: Path) -> None:
     cap = max_line_bytes()
     with path.open("rb") as fh:
         for _, raw, over_cap_bytes in iter_bounded_lines(fh, cap):
-            if over_cap_bytes is not None:
-                continue
             line = raw.strip()
             if not line:
                 continue
+            if over_cap_bytes is not None:
+                continue  # oversized; not format evidence -- scan forward
             if line[:1] == b"[":
                 raise UnsupportedFormatError(
                     "File starts with '[': expected JSONL objects, got JSON array. Not a VS Code Agent debug log file."
@@ -191,11 +193,11 @@ def _detect_format(path: Path) -> None:
             try:
                 obj = json.loads(line.decode("utf-8", errors="replace"))
             except json.JSONDecodeError:
-                # First line not parseable; let main parser report it
-                return
+                continue  # unparseable; not format evidence -- scan forward
             if not isinstance(obj, dict):
                 raise UnsupportedFormatError(
-                    f"First JSON value is {type(obj).__name__}, expected dict. Not a VS Code Agent debug log file."
+                    f"First parseable JSON value is {type(obj).__name__}, expected dict. "
+                    "Not a VS Code Agent debug log file."
                 )
             ts_ok = (
                 isinstance(obj.get("ts"), (int, float)) and not isinstance(obj.get("ts"), bool) and obj.get("ts", 0) > 0
@@ -203,24 +205,37 @@ def _detect_format(path: Path) -> None:
             sid_ok = isinstance(obj.get("sid"), str)
             if not (ts_ok and sid_ok):
                 raise UnsupportedFormatError(
-                    "First JSON line lacks 'ts' (epoch-ms integer) or 'sid' (string). "
+                    "First parseable JSON line lacks 'ts' (epoch-ms integer) or 'sid' (string). "
                     "Not a VS Code Agent debug log JSONL file."
                 )
             return  # fingerprint accepted
-    raise UnsupportedFormatError("No parseable VS Code Agent Mode debug log fingerprint found before EOF.")
+    raise UnsupportedFormatError("No parseable VS Code Agent debug log fingerprint found before EOF.")
 
 
 # ── Main import logic ──────────────────────────────────────────────────────────
 
 
+def _pair_key(sid: str, name: str, parent_span_id: "str | None") -> tuple:
+    """Normalised FIFO pairing key for tool_call/tool_result synthetic span matching."""
+    return (sid, name, parent_span_id)
+
+
 def _parse_line(
     obj: dict,
     idx: int,
+    pair_queues: "dict | None" = None,
 ) -> "tuple[dict, str | None]":
     """Parse one IDebugLogEntry dict into a BrowseDebugEntry dict.
 
     Returns ``(entry_dict, None)`` on success, or ``({}, reason_str)`` if the
     line should be reported as malformed and skipped.
+
+    Args:
+        obj:         Parsed JSON object for one JSONL line.
+        idx:         Zero-based index of this entry in the ok-entry stream.
+        pair_queues: Per-file mutable dict for FIFO synthetic span-ID pairing
+                     of tool_call/tool_result rows with no valid native spanId.
+                     Pass ``None`` to disable pairing (e.g. in tests).
 
     Does NOT call ``redact_entry``; the caller does that.
     """
@@ -229,14 +244,11 @@ def _parse_line(
     if v is not None and v != 1:
         return {}, f"unsupported schema version v={v!r}"
 
-    # Required fields validation
+    # Required fields validation -- ts, sid, type, name
     ts_ms = obj.get("ts")
     sid = obj.get("sid")
     event_type = obj.get("type")
     name = obj.get("name")
-    span_id_raw = obj.get("spanId")
-    status_raw = obj.get("status")
-    attrs_raw = obj.get("attrs", {})
 
     if not (isinstance(ts_ms, (int, float)) and not isinstance(ts_ms, bool) and ts_ms > 0):
         return {}, "missing or invalid required field 'ts' (expected positive epoch-ms)"
@@ -246,6 +258,25 @@ def _parse_line(
         return {}, "missing or invalid required field 'type' (expected string)"
     if not isinstance(name, str):
         return {}, "missing or invalid required field 'name' (expected string)"
+
+    # Required presence + base-type checks for spanId, status, attrs
+    if "spanId" not in obj:
+        return {}, "missing required field 'spanId'"
+    if "status" not in obj:
+        return {}, "missing required field 'status'"
+    if "attrs" not in obj:
+        return {}, "missing required field 'attrs'"
+
+    span_id_raw = obj["spanId"]
+    status_raw = obj["status"]
+    attrs_raw = obj["attrs"]
+
+    if not isinstance(span_id_raw, str):
+        return {}, f"invalid required field 'spanId': expected string, got {type(span_id_raw).__name__}"
+    if status_raw is not None and not isinstance(status_raw, str):
+        return {}, f"invalid required field 'status': expected string or null, got {type(status_raw).__name__}"
+    if not isinstance(attrs_raw, dict):
+        return {}, f"invalid required field 'attrs': expected dict, got {type(attrs_raw).__name__}"
 
     # Type → kind
     kind = _TYPE_TO_KIND.get(event_type)
@@ -262,19 +293,32 @@ def _parse_line(
     if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
         duration_ms = float(dur)
 
-    # Span ID
-    if is_valid_span_id(span_id_raw):
-        span_id = span_id_raw
-    else:
-        span_id = synthetic_span_id(BROWSE_SOURCE, idx)
-
-    # Parent span ID
+    # Parent span ID -- computed before span_id so it can be used in pair key
     parent_raw = obj.get("parentSpanId")
     parent_span_id: str | None = parent_raw if is_valid_span_id(parent_raw) else None
 
-    # Status
+    # Span ID -- native path unchanged; synthetic path uses FIFO pairing for
+    # tool_call / tool_result rows that lack a valid native spanId.
+    if is_valid_span_id(span_id_raw):
+        span_id = span_id_raw
+    elif pair_queues is not None and event_type in ("tool_call", "tool_result"):
+        key = _pair_key(sid, name, parent_span_id)
+        if event_type == "tool_call":
+            syn = synthetic_span_id(BROWSE_SOURCE, idx)
+            pair_queues.setdefault(key, []).append(syn)
+            span_id = syn
+        else:  # tool_result
+            queue = pair_queues.get(key, [])
+            if queue:
+                span_id = queue.pop(0)  # FIFO: reuse start's synthetic span_id
+            else:
+                span_id = synthetic_span_id(BROWSE_SOURCE, idx)
+    else:
+        span_id = synthetic_span_id(BROWSE_SOURCE, idx)
+
+    # Status: recognised strings → mapped; null or unrecognised string → None/omitted
     _STATUS_MAP = {"ok": "ok", "error": "error", "cancelled": "cancelled"}
-    status: str | None = _STATUS_MAP.get(str(status_raw)) if status_raw is not None else None
+    status: str | None = _STATUS_MAP.get(status_raw) if status_raw is not None else None
 
     # Level: infer from kind
     level: str | None = "error" if kind == "error" else None
@@ -374,6 +418,7 @@ def import_file(
     ok_count = 0
     total_lines = 0
     entry_idx = 0
+    pair_queues: dict = {}  # FIFO synthetic span-id pairing for tool_call/tool_result
 
     with resolved.open("rb") as fh:
         for line_no, raw_bytes, over_cap_bytes in iter_bounded_lines(fh, cap):
@@ -415,8 +460,10 @@ def import_file(
                 )
                 continue
 
-            # Entry parse
-            entry_dict, malformed_reason = _parse_line(obj, entry_idx)
+            # Entry parse. Use a candidate queue so duplicate rows cannot mutate
+            # accepted FIFO state before the dedup gate below.
+            candidate_pair_queues = {key: list(queue) for key, queue in pair_queues.items()}
+            entry_dict, malformed_reason = _parse_line(obj, entry_idx, candidate_pair_queues)
             if malformed_reason:
                 malformed_reports.append(
                     {
@@ -441,6 +488,7 @@ def import_file(
             if dedup.is_duplicate(dedup_key):
                 continue
 
+            pair_queues = candidate_pair_queues
             ok_count += 1
             entry_idx += 1
             if not dry_run:

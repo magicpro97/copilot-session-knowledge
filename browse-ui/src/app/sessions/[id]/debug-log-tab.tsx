@@ -46,6 +46,8 @@ export type DebugLogTabProps = {
   sessionId: string;
   /** Run ID to show debug log for. null/empty = show unavailable state. */
   runId: string | null;
+  /** True while the parent is resolving the latest operator run for this session. */
+  runsLoading?: boolean;
   host: HostProfile;
 };
 
@@ -612,7 +614,7 @@ function SpanTreeView({ entries, selectedEntry, onSelect }: SpanTreeViewProps) {
  *
  * When runId is null or empty the tab shows an informational empty state.
  */
-export function DebugLogTab({ sessionId, runId, host }: DebugLogTabProps) {
+export function DebugLogTab({ sessionId, runId, runsLoading = false, host }: DebugLogTabProps) {
   const [filters, setFilters] = useState<FilterState>({
     text: "",
     kind: "",
@@ -648,6 +650,15 @@ export function DebugLogTab({ sessionId, runId, host }: DebugLogTabProps) {
     // Reset detail drawer when filters change to avoid stale context.
     setSelectedEntry(null);
   };
+
+  // ── Operator run lookup loading ────────────────────────────────────────────
+  if (runsLoading) {
+    return (
+      <div className="border-border text-muted-foreground rounded-xl border p-4 text-sm">
+        Loading debug log…
+      </div>
+    );
+  }
 
   // ── No run available ───────────────────────────────────────────────────────
   if (!runId) {
