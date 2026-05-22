@@ -637,6 +637,12 @@ pub fn search_tfidf_native(query: &str, model_blob: &[u8], limit: usize) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serialise all cache-mutating tests to prevent the global TFIDF_CACHE
+    // from being invalidated by a concurrent test between two lookups in the
+    // same test body.  This is a test-only lock; production code is unchanged.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn tokenize_produces_unigrams_and_bigrams() {
@@ -839,6 +845,7 @@ mod tests {
 
     #[test]
     fn cache_hit_returns_same_arc() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         invalidate_tfidf_cache();
         let texts = vec!["cache test document one", "cache test document two"];
         let doc_ids = vec![100i64, 200];
@@ -852,6 +859,7 @@ mod tests {
 
     #[test]
     fn cache_invalidated_on_new_generation() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         invalidate_tfidf_cache();
         let texts = vec!["invalidation test alpha"];
         let doc_ids = vec![1i64];
@@ -869,6 +877,7 @@ mod tests {
 
     #[test]
     fn cache_search_results_consistent() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         invalidate_tfidf_cache();
         let texts = vec!["knowledge database search", "embedding vector cosine"];
         let doc_ids = vec![1i64, 2];
@@ -892,6 +901,7 @@ mod tests {
 
     #[test]
     fn invalidate_then_reload_works() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let texts = vec!["reload after invalidation test"];
         let doc_ids = vec![42i64];
         let blob = build_tfidf_model(&texts, &doc_ids);
@@ -905,6 +915,7 @@ mod tests {
 
     #[test]
     fn cache_binary_path_works() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         invalidate_tfidf_cache();
         let texts = vec!["binary cache path test"];
         let doc_ids = vec![1i64];

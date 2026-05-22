@@ -26,11 +26,16 @@ native-extract = []
 browse-server  = [
     "dep:axum",
     "dep:tower-http",
+    "dep:tracing",
     "dep:r2d2",
     "dep:r2d2_sqlite",
     "dep:tokio",
+    "dep:rand",
     "tokio/rt-multi-thread",
     "tokio/macros",
+    "tokio/signal",
+    "tokio/net",
+    "tokio/fs",
 ]
 
 [dependencies]
@@ -61,18 +66,27 @@ tokio   = { version = "1",    features = ["rt-multi-thread", "macros"], optional
 # do not add a direct tower dep until needed to avoid duplicate-version splits.
 axum        = { version = "0.7", optional = true }
 tower-http  = { version = "0.6", features = ["cors", "trace"], optional = true }
+tracing     = { version = "0.1", optional = true }
 r2d2        = { version = "0.8", optional = true }
 r2d2_sqlite = { version = "0.24", optional = true }
+rand        = { version = "0.9", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
 dirs = "5"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite  = { version = "0.31", features = ["bundled"] }
+tower     = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile  = "3"
 
 [[bin]]
 name = "sk"
 path = "src/main.rs"
+
+[lib]
+name = "sk"
+path = "src/lib.rs"
 
 # Optimised release binary: smaller size, thin LTO, stripped symbols.
 [profile.release]
