@@ -150,3 +150,35 @@ jobs:
             bin="sk-rust/target/debug/sk.exe"
           fi
           python3 tests/test_py_rust_boundary.py --rust-bin "$bin"
+
+  browse-server:
+    name: Browse server (feature-gated, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: sk-rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sk-rust/target/
+          key: ${{ matrix.os }}-cargo-browse-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-browse-
+      - name: Verify default build excludes browse-server
+        run: cargo check --no-default-features
+      - name: Build with browse-server feature
+        run: cargo build --features browse-server
+      - name: Clippy with browse-server feature
+        run: cargo clippy --features browse-server --all-targets --no-deps -- -D warnings
+      - name: Test with browse-server feature
+        run: cargo test --features browse-server
