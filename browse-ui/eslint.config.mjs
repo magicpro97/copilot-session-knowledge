@@ -21,7 +21,7 @@ export default defineConfig([
     },
   },
   {
-    files: ["src/lib/hosts/**/*.{ts,tsx}"],
+    files: ["src/lib/**/*.{ts,tsx}"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
     },

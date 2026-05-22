@@ -1058,20 +1058,20 @@ def test_browse_ui_eslint_clean_zone_strategy():
         "browse-ui should keep the repo-wide no-explicit-any baseline advisory until legacy areas are clean",
     )
     test(
-        "browse-ui hosts clean zone is declared",
-        '"src/lib/hosts/**/*.{ts,tsx}"' in content,
-        "browse-ui eslint config should declare src/lib/hosts as a clean zone",
+        "browse-ui lib clean zone is declared",
+        '"src/lib/**/*.{ts,tsx}"' in content,
+        "browse-ui eslint config should declare src/lib/**/*.{ts,tsx} as a clean zone",
     )
-    hosts_override = re.search(
-        r'files:\s*\[\s*"src/lib/hosts/\*\*/\*\.\{ts,tsx\}"\s*\](?P<body>.*?)(?=^\s*\},\n\s*\{|^\s*globalIgnores|\Z)',
+    lib_override = re.search(
+        r'files:\s*\[\s*"src/lib/\*\*/\*\.\{ts,tsx\}"\s*\](?P<body>.*?)(?=^\s*\},\n\s*\{|^\s*globalIgnores|\Z)',
         content,
         re.MULTILINE | re.DOTALL,
     )
-    hosts_body = hosts_override.group("body") if hosts_override else ""
+    lib_body = lib_override.group("body") if lib_override else ""
     test(
-        "browse-ui hosts clean zone promotes no-explicit-any to error",
-        '"@typescript-eslint/no-explicit-any": "error"' in hosts_body,
-        "src/lib/hosts clean zone should make explicit any a lint error",
+        "browse-ui lib clean zone promotes no-explicit-any to error",
+        '"@typescript-eslint/no-explicit-any": "error"' in lib_body,
+        "src/lib clean zone should make explicit any a lint error",
     )
 
 
@@ -1271,7 +1271,7 @@ def test_contributing_md_local_vs_ci():
     )
     test(
         "CONTRIBUTING.md documents browse-ui clean zones",
-        "clean zone" in content and "src/lib/hosts" in content and "no-explicit-any" in content,
+        "clean zone" in content and "src/lib/**/*.{ts,tsx}" in content and "no-explicit-any" in content,
         "CONTRIBUTING.md should document the browse-ui clean-zone lint strategy",
     )
     test(
@@ -1330,7 +1330,7 @@ def test_architecture_md_ruff_surface():
     )
     test(
         "ARCHITECTURE.md documents browse-ui clean zones",
-        "clean zone" in content and "src/lib/hosts" in content and "no-explicit-any" in content,
+        "clean zone" in content and "src/lib/**/*.{ts,tsx}" in content and "no-explicit-any" in content,
         "docs/ARCHITECTURE.md should document the browse-ui clean-zone lint strategy",
     )
     test(
