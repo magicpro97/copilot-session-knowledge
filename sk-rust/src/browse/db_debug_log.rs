@@ -355,33 +355,36 @@ fn prune_inner(guard: &mut Inner) -> anyhow::Result<PruneStats> {
         rusqlite::params![age_cutoff_ns],
     )?;
 
-    // Size cap: delete oldest rows in chunks until total ≤ max_bytes.
+    // Size cap: compute total once, then delete oldest rows in chunks,
+    // decrementing the running total to avoid re-querying SUM every iteration.
+    let mut total: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(byte_len), 0) FROM debug_log_events",
+        [],
+        |r| r.get(0),
+    )?;
     let mut deleted_size = 0usize;
     let max_bytes = guard.config.max_bytes as i64;
-    loop {
-        let total: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(byte_len), 0) FROM debug_log_events",
-            [],
-            |r| r.get(0),
-        )?;
-        if total <= max_bytes {
-            break;
-        }
-        let ids: Vec<i64> = {
+    while total > max_bytes {
+        let rows: Vec<(i64, i64)> = {
             let mut stmt = conn.prepare(
-                "SELECT id FROM debug_log_events \
+                "SELECT id, byte_len FROM debug_log_events \
                  ORDER BY ts_ns ASC, id ASC LIMIT ?",
             )?;
-            let mapped = stmt.query_map(rusqlite::params![PRUNE_CHUNK], |r| r.get::<_, i64>(0))?;
+            let mapped = stmt.query_map(rusqlite::params![PRUNE_CHUNK], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
             mapped.filter_map(|r| r.ok()).collect()
         };
-        if ids.is_empty() {
+        if rows.is_empty() {
             break;
         }
+        let chunk_bytes: i64 = rows.iter().map(|(_, b)| b).sum();
+        let ids: Vec<i64> = rows.into_iter().map(|(id, _)| id).collect();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!("DELETE FROM debug_log_events WHERE id IN ({placeholders})");
         let n = conn.execute(&sql, rusqlite::params_from_iter(ids.iter()))?;
         deleted_size += n;
+        total -= chunk_bytes;
     }
 
     let remaining: usize =
@@ -606,18 +609,30 @@ mod tests {
 
     #[test]
     fn env_u64_primary_name_takes_precedence() {
-        // Test the env_u64 helper directly via DebugLogConfig::default() by
-        // verifying built-in defaults are returned when no env vars are set.
-        let cfg = DebugLogConfig {
-            path: temp_db_path(),
-            max_age_s: DEFAULT_MAX_AGE_S,
-            max_bytes: DEFAULT_MAX_BYTES,
-            retention_interval_s: DEFAULT_RETENTION_INTERVAL_S,
-            ephemeral: false,
-        };
-        assert_eq!(cfg.max_age_s, 86_400);
-        assert_eq!(cfg.max_bytes, 50 * 1024 * 1024);
-        assert_eq!(cfg.retention_interval_s, 300);
+        // Set primary and alias to different values; primary must win.
+        std::env::set_var("BROWSE_DEBUG_LOG_MAX_AGE_S", "9999");
+        std::env::set_var("BROWSE_DEBUG_LOG_MAX_AGE_SECONDS", "1111");
+        let cfg = DebugLogConfig::default();
+        // Clean up immediately so other tests are not affected.
+        std::env::remove_var("BROWSE_DEBUG_LOG_MAX_AGE_S");
+        std::env::remove_var("BROWSE_DEBUG_LOG_MAX_AGE_SECONDS");
+        assert_eq!(
+            cfg.max_age_s, 9999,
+            "primary env var must take precedence over alias"
+        );
+    }
+
+    #[test]
+    fn env_u64_alias_used_when_primary_absent() {
+        // Only the alias is set; it should be picked up.
+        std::env::remove_var("BROWSE_DEBUG_LOG_MAX_AGE_S");
+        std::env::set_var("BROWSE_DEBUG_LOG_MAX_AGE_SECONDS", "7777");
+        let cfg = DebugLogConfig::default();
+        std::env::remove_var("BROWSE_DEBUG_LOG_MAX_AGE_SECONDS");
+        assert_eq!(
+            cfg.max_age_s, 7777,
+            "alias env var must be used when primary is absent"
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 // Re-export FTS helpers so callers import from one place.
+use crate::db::fts::sanitize_fts_query;
 pub use crate::db::fts::{search_by_wing_room, search_fts, search_fts_filtered, KnowledgeEntry};
 
 // ── Config ─────────────────────────────────────────────────────────────────────
@@ -28,7 +29,8 @@ pub struct BrowseDbConfig {
     pub path: PathBuf,
     /// Read pool max connections (default 8).
     pub read_pool_size: u32,
-    /// Write pool max connections — clamped to ≥ 1 (default 1).
+    /// Write pool max connections — always clamped to exactly 1 to prevent
+    /// concurrent WAL writers; this field is reserved for future use.
     pub write_pool_size: u32,
     /// r2d2 connection-acquisition timeout (default 5 s).
     pub connection_timeout: Duration,
@@ -120,14 +122,14 @@ impl BrowseDb {
                 ))
             });
         let write_pool = Pool::builder()
-            .max_size(config.write_pool_size.max(1))
+            .max_size(1) // write pool is always max 1 to prevent concurrent WAL writers
             .connection_timeout(config.connection_timeout)
             .build(write_mgr)
             .context("browse write pool")?;
 
         // Optional background WAL checkpoint thread.
         let checkpoint = if with_checkpoint {
-            config.checkpoint_interval.map(|interval| {
+            if let Some(interval) = config.checkpoint_interval {
                 let wpool = write_pool.clone();
                 let (stop_tx, stop_rx) = mpsc::sync_channel::<()>(0);
                 let jh = thread::Builder::new()
@@ -141,12 +143,14 @@ impl BrowseDb {
                             let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
                         }
                     })
-                    .expect("browse checkpoint thread spawn");
-                CheckpointHandle {
+                    .context("browse checkpoint thread spawn")?;
+                Some(CheckpointHandle {
                     stop_tx,
                     join: Some(jh),
-                }
-            })
+                })
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -365,11 +369,11 @@ impl BrowseDb {
         Ok(v)
     }
 
-    /// `true` when the `ke_fts` FTS5 virtual table is present in the schema.
+    /// `true` when the `sessions_fts` FTS5 virtual table is present in the schema.
     pub fn has_sessions_fts(&self) -> anyhow::Result<bool> {
         let conn = self.read_pool.get()?;
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ke_fts'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions_fts'",
             [],
             |r| r.get(0),
         )?;
@@ -378,7 +382,7 @@ impl BrowseDb {
 
     // ── FTS wrapper methods ────────────────────────────────────────────────────
 
-    /// FTS5 search from the read pool.
+    /// FTS5 search from the read pool. Sanitizes `fts_query` before use.
     pub fn fts_search(
         &self,
         fts_query: &str,
@@ -386,10 +390,11 @@ impl BrowseDb {
         limit: usize,
     ) -> anyhow::Result<Vec<KnowledgeEntry>> {
         let conn = self.read_pool.get()?;
-        Ok(search_fts(&conn, fts_query, category, limit))
+        let sanitized = sanitize_fts_query(fts_query);
+        Ok(search_fts(&conn, &sanitized, category, limit))
     }
 
-    /// FTS5 search with wing/room filters from the read pool.
+    /// FTS5 search with wing/room filters from the read pool. Sanitizes `fts_query` before use.
     pub fn fts_search_filtered(
         &self,
         fts_query: &str,
@@ -399,8 +404,9 @@ impl BrowseDb {
         limit: usize,
     ) -> anyhow::Result<Vec<KnowledgeEntry>> {
         let conn = self.read_pool.get()?;
+        let sanitized = sanitize_fts_query(fts_query);
         Ok(search_fts_filtered(
-            &conn, fts_query, category, wing, room, limit,
+            &conn, &sanitized, category, wing, room, limit,
         ))
     }
 
@@ -454,6 +460,8 @@ mod tests {
              );
              CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts
                  USING fts5(content, content=knowledge_entries, content_rowid=id);
+             CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
+                 USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
              INSERT INTO migration_log VALUES (1);
              INSERT INTO sessions VALUES ('sess-1');
              INSERT INTO sessions VALUES ('sess-2');
@@ -563,8 +571,31 @@ mod tests {
 
     #[test]
     fn has_sessions_fts_true_with_table() {
+        // bootstrap creates sessions_fts — has_sessions_fts must return true.
         let (path, db) = test_db();
         assert!(db.has_sessions_fts().unwrap());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn has_sessions_fts_false_without_table() {
+        // Open a DB with no sessions_fts table — has_sessions_fts must return false.
+        let path = temp_db_path();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);
+             INSERT INTO migration_log VALUES (1);",
+        )
+        .unwrap();
+        drop(conn);
+        let cfg = BrowseDbConfig {
+            path: path.clone(),
+            checkpoint_interval: None,
+            ..Default::default()
+        };
+        let db = BrowseDb::new_without_checkpoint(cfg).unwrap();
+        assert!(!db.has_sessions_fts().unwrap());
         cleanup(&path);
     }
 
@@ -650,6 +681,31 @@ mod tests {
         let (path, db) = test_db();
         let (busy, _log, _ckpt) = db.checkpoint_truncate().unwrap();
         assert!(busy >= 0);
+        cleanup(&path);
+    }
+
+    // ── FTS sanitization ──────────────────────────────────────────────────────
+
+    /// fts_search must sanitize raw operators so they don't reach the FTS engine.
+    #[test]
+    fn fts_search_sanitizes_operators() {
+        let (path, db) = test_db();
+        // "content AND OR NOT" has FTS operators that would cause a parse error
+        // if forwarded raw; sanitization turns them into safe tokens.
+        let results = db.fts_search("content AND OR NOT", "", 10).unwrap();
+        // We just need the call to succeed without error.
+        let _ = results;
+        cleanup(&path);
+    }
+
+    /// fts_search_filtered must also sanitize its query.
+    #[test]
+    fn fts_search_filtered_sanitizes_operators() {
+        let (path, db) = test_db();
+        let results = db
+            .fts_search_filtered("content AND OR NOT", "", None, None, 10)
+            .unwrap();
+        let _ = results;
         cleanup(&path);
     }
 }
