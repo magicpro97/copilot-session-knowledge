@@ -94,6 +94,7 @@ def handle_api_retro_summary(db, params, token, nonce) -> tuple:
         result = subprocess.run(
             [sys.executable, str(_RETRO_SCRIPT), "--json", "--mode", mode, "--no-cache"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",

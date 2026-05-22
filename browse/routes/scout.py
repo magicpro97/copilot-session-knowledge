@@ -352,6 +352,7 @@ def handle_scout_research_pack_reload(db, params, token, nonce) -> tuple:
         result = subprocess.run(
             [sys.executable, str(_TREND_SCOUT_SCRIPT), "--research-pack"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=_RESEARCH_PACK_RELOAD_TIMEOUT_S,
             cwd=str(_REPO_ROOT),

@@ -88,6 +88,7 @@ def handle_api_knowledge_insights(db, params, token, nonce) -> tuple:
         result = subprocess.run(
             [sys.executable, str(_HEALTH_SCRIPT), "--insights", "--json"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",

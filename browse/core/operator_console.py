@@ -1027,6 +1027,7 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
     try:
         proc = subprocess.Popen(
             argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
@@ -1714,6 +1715,7 @@ def probe_available_models() -> dict:
         result = subprocess.run(
             [_resolve_copilot_command(env), "model", "list", "--output-format", "json"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",

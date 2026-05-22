@@ -56,6 +56,7 @@ def handle_api_workflow_health(db, params, token, nonce) -> tuple:
         result = subprocess.run(
             [sys.executable, str(_HEALTH_SCRIPT), "--json"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=_TIMEOUT_S,
             cwd=str(_TOOLS_DIR),

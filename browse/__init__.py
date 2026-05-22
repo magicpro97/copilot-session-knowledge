@@ -156,6 +156,7 @@ def _create_lnk_via_powershell(
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         env=env,
     )
@@ -490,6 +491,7 @@ def _start_cloudflared(local_base_url: str, token: str, token_env_source: str = 
         try:
             proc = subprocess.Popen(
                 ["cloudflared", "tunnel", "--url", local_base_url],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

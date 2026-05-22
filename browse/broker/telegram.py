@@ -255,6 +255,7 @@ def _run_briefing(topic: str) -> str:
         result = subprocess.run(
             [sys.executable, str(briefing_script), topic, "--compact"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=30,
             cwd=str(tools_dir),
