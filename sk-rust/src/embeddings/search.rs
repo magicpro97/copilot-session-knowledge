@@ -817,7 +817,7 @@ mod tests {
         // With any positive k, the 1st-ranked item should have a higher score.
         let list = vec![SearchKey::Knowledge(1), SearchKey::Knowledge(2)];
         for k in [1.0_f64, 10.0, 60.0, 1000.0] {
-            let merged = rrf_merge(&[list.clone()], k);
+            let merged = rrf_merge(std::slice::from_ref(&list), k);
             assert_eq!(merged.len(), 2);
             assert!(
                 merged[0].1 > merged[1].1,

@@ -50,6 +50,19 @@ export const test = base.extend<{ runtimeErrorGuard: void }>({
       page.on("console", onConsole);
       page.on("pageerror", onPageError);
       page.on("response", onResponse);
+
+      // Default stub for operator runs — returns 200 { runs: [] } so session-detail
+      // pages never produce a 404 runtimeErrorGuard failure for sessions that have
+      // no operator history.  chat.spec.ts registers its own per-test route AFTER
+      // this one; Playwright resolves last-registered route first, so chat stubs win.
+      await page.route("**/api/operator/sessions/*/runs", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ runs: [] }),
+        });
+      });
+
       await use();
       page.off("console", onConsole);
       page.off("pageerror", onPageError);

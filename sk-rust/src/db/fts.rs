@@ -2,11 +2,11 @@ use rusqlite::Connection;
 
 /// A knowledge entry row returned from queries.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct KnowledgeEntry {
     pub id: i64,
     pub title: String,
     pub content: String,
-    #[allow(dead_code)]
     pub tags: String,
     pub confidence: f64,
     pub wing: String,

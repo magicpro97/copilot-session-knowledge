@@ -114,14 +114,16 @@ def test_v2_csp_header_is_string():
 
 
 def test_v2_csp_header_no_nonce():
-    """v2 CSP uses unsafe-inline (no nonce for static export)."""
+    """v2 CSP hardening (issue #441): script-src must use nonce, never unsafe-inline."""
     header = build_v2_csp_header()
-    test("v2_csp: no nonce-", "nonce-" not in header)
+    test("v2_csp: nonce- in script-src", "'nonce-" in header)
 
 
 def test_v2_csp_header_unsafe_inline_script():
+    """v2 CSP hardening (issue #441): script-src must NOT contain unsafe-inline."""
     header = build_v2_csp_header()
-    test("v2_csp: unsafe-inline in script-src", "'unsafe-inline'" in header)
+    script_src = header.split("script-src")[1].split(";")[0]
+    test("v2_csp: no unsafe-inline in script-src", "unsafe-inline" not in script_src)
 
 
 def test_v2_csp_header_frame_ancestors_none():

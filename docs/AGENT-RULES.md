@@ -36,9 +36,12 @@ The `auto-briefing` hook fires automatically at `sessionStart` and writes a mark
 After modifying any Python file, run the relevant tests:
 
 ```bash
-python3 test_security.py    # If touching: embed.py, sync-knowledge.py, watch-sessions.py, learn.py
-python3 test_fixes.py       # If touching: any script
+python3 test_security.py AND python3 test_fixes.py
+# test_security.py: required when touching embed.py, sync-knowledge.py, watch-sessions.py, learn.py
+# test_fixes.py:    required when touching any script
 ```
+
+**Both suites are required for closeout.** The verification-gate ledger tracks `py_security` and `py_fixes` as separate evidence keys; both must succeed before `task_complete`, `DONE` handoff, or issue close is permitted.
 
 Do NOT mark a task complete until the relevant tests pass. If you hit a baseline failure, separate pre-existing breakage from regressions you introduced before proceeding.
 
@@ -272,6 +275,68 @@ Recovery sequence:
 
 > 📖 **Detailed recovery flows** (compaction, interruption, awaiting-gate, quota/rate-limit):
 > **[docs/RESILIENCE-RUNBOOK.md](RESILIENCE-RUNBOOK.md)**
+
+---
+
+## Quality Checklist
+
+> Canonical preflight/edit/verification/closeout checklist for every agent. Mirror a concise version in `AGENTS.md` and `.github/copilot-instructions.md`. Source of truth: this section.
+
+### Preflight (before every non-trivial task)
+
+1. `sk briefing --auto --compact` — surface past mistakes, patterns, and decisions before touching code/config/architecture.
+2. Read target files with `grep`/`glob`/`view`/LSP before any edit; do not modify without reading first.
+3. State which dirty surfaces apply: Python, Rust, browse-ui, remote-terminal, docs/hooks/skills/release.
+4. For tasks spanning multiple modules or high-risk changes, dispatch a specialized reviewer or opus-class agent.
+
+### Edit rules
+
+1. Minimal footprint — no speculative abstractions, every changed line traces to the task.
+2. No SQL string interpolation — use `?` placeholders only.
+3. No pickle — use JSON or `struct.pack`.
+4. New Python scripts include `if os.name == "nt": sys.stdout.reconfigure(encoding="utf-8")`.
+5. New files require existing-home search, responsibility statement, and wiring to tests/docs/CI (Rule 11).
+6. Functions over 50 lines or files over 400 lines require decomposition or explicit justification.
+
+### Verification by surface
+
+| Surface changed | Required evidence |
+|-----------------|-------------------|
+| Python | AST-parse modified files; `python3 test_security.py AND python3 test_fixes.py` (both required; `run_all_tests.py` covers both) |
+| Hooks / rules / skills / docs | `python3 tests/test_quality_gates.py`; hook-specific tests; `python3 hooks/lint-skills.py --all` if skill/agent files changed |
+| Platform / install / update | `python3 tests/test_platform_compat.py`; relevant install/update tests |
+| browse-ui | `pnpm typecheck`; `pnpm lint`; `pnpm format:check`; `pnpm test`; `pnpm build`; E2E when runtime/operator behavior changes |
+| Rust | `cargo fmt --all -- --check`; `cargo clippy -- -D warnings`; `cargo test` |
+| remote-terminal | `npm test`; `npm run lint`; `npm run lint:clean`; `npm run audit:high` |
+| Release / update | Checksum/provenance verification; migration/update evidence |
+
+### Closeout
+
+1. Do not claim tests/lint/build/CI pass without attaching command output or a CI URL.
+2. Say "not proven yet — run `<command>`" for anything not executed in this session.
+3. Run `sk learn --mistake|--pattern|--decision|--discovery` before `task_complete` for meaningful work.
+4. Subagents hand off via `tentacle.py handoff --status DONE --changed-file <file> --learn`; no `git commit`/`git push`.
+
+---
+
+## Per-Rule Enforcement Matrix
+
+| Rule | Policy | Advisory hook | Blocking hook | pre-commit | CI |
+|------|--------|--------------|---------------|------------|-----|
+| 1 — Investigate before acting | ✅ | `read-before-edit` (warn) | — | — | — |
+| 2 — Briefing before complex tasks | ✅ | — | `enforce-briefing` (blocks edit/create/bash) | — | — |
+| 3 — Test after every change | ✅ | `test-reminder` (warns after 3 edits) | `verification-gate` (blocks closeout until `py_security` + `py_fixes` evidence recorded) | syntax + Ruff (staged files) | `quality-gates` job |
+| 4 — Verify before committing | ✅ | — | `syntax-gate` (blocks py syntax errors) | `check_syntax.py` on all staged `.py` | — |
+| 5 — Sub-agent model selection | ✅ | — | — | — | — |
+| 6 — No guessing | ✅ | — | — | — | — |
+| 7 — Docs output quality | ✅ | — | `verification-gate` (partial: blocks closeout after dirty surfaces) | — | — |
+| 8 — Tentacle execution obligations | ✅ | `tentacle-suggest` (postToolUse) | `tentacle-enforce` + `subagent-git-guard` + `pre-push` | `pre-commit` subagent guard | — |
+| 9 — Claims require evidence | ✅ | — | `verification-gate` (blocks task_complete / DONE / gh close) | — | — |
+| 10 — Minimum footprint | ✅ | `file-size-advisory` (warns >400 lines) | — | `check_complexity.py` (advisory) | — |
+| 11 — New file justification | ✅ | `new-file-advisory` (warns on new root `.py`) | — | — | — |
+
+> All hooks **fail-open**: a hook crash or unavailability never blocks the agent. Hook failures are logged; work proceeds.
+> For the full hook description, see **[docs/HOOKS.md](HOOKS.md)**.
 
 ---
 

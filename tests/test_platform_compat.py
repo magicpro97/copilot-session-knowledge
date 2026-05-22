@@ -69,6 +69,13 @@ def _parse_inline_os_matrix(job_block: str) -> set[str]:
     return {item.strip().strip("'\"") for item in match.group(1).split(",")}
 
 
+def _parse_inline_python_matrix(job_block: str) -> set[str]:
+    match = re.search(r"python-version:\s*\[([^\]]+)\]", job_block)
+    if not match:
+        return set()
+    return {item.strip().strip("'\"") for item in match.group(1).split(",")}
+
+
 def _platform_probe() -> None:
     temp_root = Path(tempfile.gettempdir())
     with tempfile.TemporaryDirectory(prefix="sk-platform-probe-") as tmp:
@@ -144,9 +151,19 @@ def test_ci_has_cross_platform_python_safety_matrix() -> None:
     workflow = _read(".github/workflows/ci.yml")
     job = _extract_ci_job(workflow, "python-platform-safety")
     expected_os = {"ubuntu-latest", "macos-latest", "windows-latest"}
+    expected_python = {"3.10", "3.11", "3.12"}
     test("CI defines python-platform-safety job", bool(job))
     test("CI platform job uses setup-python", "actions/setup-python@v5" in job)
-    test("CI platform job pins Python version", 'python-version: "3.11"' in job)
+    test(
+        "CI platform job tests Python 3.10, 3.11, and 3.12 matrix",
+        _parse_inline_python_matrix(job) == expected_python,
+        f"python-version matrix={sorted(_parse_inline_python_matrix(job))}",
+    )
+    test(
+        "CI platform job wires matrix.python-version into setup-python",
+        "${{ matrix.python-version }}" in job,
+        "setup-python step must consume matrix.python-version, not a pinned literal",
+    )
     test(
         "CI platform job runs on Ubuntu, macOS, and Windows",
         _parse_inline_os_matrix(job) == expected_os,

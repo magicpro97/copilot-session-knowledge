@@ -306,6 +306,7 @@ pub fn store_batch_embeddings(
 ///
 /// Mirrors Python's inline `INSERT OR REPLACE INTO tfidf_model …` in
 /// `build_embeddings()`.
+#[allow(dead_code)] // legacy single-blob writer; superseded by store_tfidf_model_with_binary, kept for tests
 pub fn store_tfidf_model(
     conn: &Connection,
     model_blob: &[u8],

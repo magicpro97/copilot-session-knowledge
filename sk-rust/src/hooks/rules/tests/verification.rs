@@ -84,12 +84,43 @@ fn verif_gate_post_fires_on_posttooluse_bash_only() {
 }
 
 #[test]
-fn evidence_from_command_detects_py_tests() {
-    assert!(evidence_from_command("python3 test_security.py").contains(&EV_PY_TESTS));
-    assert!(evidence_from_command("python3 test_fixes.py").contains(&EV_PY_TESTS));
-    assert!(evidence_from_command("python3 run_all_tests.py").contains(&EV_PY_TESTS));
-    assert!(evidence_from_command("pytest --tb=short").contains(&EV_PY_TESTS));
-    assert!(!evidence_from_command("cargo test").contains(&EV_PY_TESTS));
+fn evidence_from_command_split_per_suite_and_broad() {
+    // Wave 11 split: per-file commands earn only per-suite keys; broad runs
+    // (`run_all_tests.py`, `pytest`) earn the full superset.
+    let only_security = evidence_from_command("python3 test_security.py");
+    assert!(only_security.contains(&EV_PY_SECURITY));
+    assert!(!only_security.contains(&EV_PY_FIXES));
+    assert!(!only_security.contains(&EV_PY_TESTS_BROAD));
+
+    let only_fixes = evidence_from_command("python3 test_fixes.py");
+    assert!(only_fixes.contains(&EV_PY_FIXES));
+    assert!(!only_fixes.contains(&EV_PY_SECURITY));
+    assert!(!only_fixes.contains(&EV_PY_TESTS_BROAD));
+
+    let both = evidence_from_command("python3 test_security.py && python3 test_fixes.py");
+    assert!(both.contains(&EV_PY_SECURITY));
+    assert!(both.contains(&EV_PY_FIXES));
+    assert!(!both.contains(&EV_PY_TESTS_BROAD));
+
+    let run_all = evidence_from_command("python3 run_all_tests.py");
+    assert!(run_all.contains(&EV_PY_SECURITY));
+    assert!(run_all.contains(&EV_PY_FIXES));
+    assert!(run_all.contains(&EV_PY_TESTS_BROAD));
+
+    let pytest = evidence_from_command("pytest --tb=short");
+    assert!(pytest.contains(&EV_PY_SECURITY));
+    assert!(pytest.contains(&EV_PY_FIXES));
+    assert!(pytest.contains(&EV_PY_TESTS_BROAD));
+
+    let random = evidence_from_command("python3 test_random.py");
+    assert_eq!(random, vec![EV_PY_TESTS_BROAD]);
+
+    let cargo = evidence_from_command("cargo test");
+    assert!(cargo.is_empty());
+
+    // EV_PY_TESTS alias identity
+    assert_eq!(EV_PY_TESTS, EV_PY_TESTS_BROAD);
+    assert_eq!(EV_PY_TESTS, "py_tests");
 }
 
 #[test]
@@ -98,7 +129,7 @@ fn evidence_from_command_detects_pnpm_checks() {
     assert!(evidence_from_command("cd browse-ui && pnpm lint").contains(&EV_UI_LINT));
     assert!(evidence_from_command("pnpm typecheck").contains(&EV_UI_TYPECHECK));
     assert!(evidence_from_command("pnpm build").contains(&EV_UI_BUILD));
-    assert!(!evidence_from_command("pnpm install").contains(&EV_PY_TESTS));
+    assert!(!evidence_from_command("pnpm install").contains(&EV_PY_TESTS_BROAD));
 }
 
 #[test]
@@ -206,7 +237,9 @@ fn ledger_write_read_round_trip() {
     let dirty: HashSet<String> = vec!["py".to_string(), "ui".to_string()]
         .into_iter()
         .collect();
-    let evidence: HashSet<String> = vec!["py_tests".to_string()].into_iter().collect();
+    let evidence: HashSet<String> = vec!["py_fixes".to_string(), "py_security".to_string()]
+        .into_iter()
+        .collect();
 
     let mut dirty_sorted: Vec<&str> = dirty.iter().map(|s| s.as_str()).collect();
     dirty_sorted.sort_unstable();
@@ -231,7 +264,40 @@ fn ledger_write_read_round_trip() {
     let (d, e) = parse_payload(&payload).expect("must parse");
     assert!(d.contains("py"), "dirty must contain 'py'");
     assert!(d.contains("ui"), "dirty must contain 'ui'");
-    assert!(e.contains("py_tests"), "evidence must contain 'py_tests'");
+    assert!(
+        e.contains("py_security"),
+        "evidence must contain 'py_security'"
+    );
+    assert!(e.contains("py_fixes"), "evidence must contain 'py_fixes'");
+}
+
+#[test]
+fn legacy_upgrade_expands_lone_py_tests() {
+    // Wave 11 read-side legacy upgrade: a ledger with only the broad alias
+    // "py_tests" must surface both per-suite keys to the in-memory caller.
+    let payload = "{\"dirty\":[\"py\"],\"evidence\":[\"py_tests\"]}";
+    let parsed: serde_json::Value = serde_json::from_str(payload).unwrap();
+    let mut evidence: HashSet<String> = parsed
+        .get("evidence")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+
+    // Mirror the upgrade branch in read_ledger.
+    if evidence.contains(EV_PY_TESTS_BROAD)
+        && !evidence.contains(EV_PY_SECURITY)
+        && !evidence.contains(EV_PY_FIXES)
+    {
+        evidence.insert(EV_PY_SECURITY.to_string());
+        evidence.insert(EV_PY_FIXES.to_string());
+    }
+
+    assert!(evidence.contains(EV_PY_SECURITY));
+    assert!(evidence.contains(EV_PY_FIXES));
+    assert!(evidence.contains(EV_PY_TESTS_BROAD));
 }
 
 #[test]
@@ -260,6 +326,26 @@ fn ledger_payload_format_matches_python_compact_json() {
     assert_eq!(
         payload, "{\"dirty\":[\"py\"],\"evidence\":[\"py_tests\"]}",
         "payload format must match Python compact JSON"
+    );
+}
+
+#[test]
+fn ledger_payload_format_split_keys_alpha_order() {
+    // Wave 11: with the per-suite split, the serialized array is
+    // ["py_fixes","py_security","py_tests"] (lex order).
+    let mut ev_sorted = ["py_security", "py_fixes", "py_tests"];
+    ev_sorted.sort_unstable();
+    let payload = format!(
+        "{{\"dirty\":[\"py\"],\"evidence\":[{}]}}",
+        ev_sorted
+            .iter()
+            .map(|s| format!("\"{}\"", s))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    assert_eq!(
+        payload, "{\"dirty\":[\"py\"],\"evidence\":[\"py_fixes\",\"py_security\",\"py_tests\"]}",
+        "alphabetical ordering must place py_fixes < py_security < py_tests"
     );
 }
 

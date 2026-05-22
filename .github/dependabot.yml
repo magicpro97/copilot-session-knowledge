@@ -1,0 +1,77 @@
+# Dependabot configuration — supply-chain hardening (P2).
+#
+# Surfaces:
+#   - Rust crate at /sk-rust          (native sk binary)
+#   - npm package at /browse-ui       (Next.js operator UI)
+#   - npm package at /remote-terminal (remote terminal Node service)
+#   - GitHub Actions workflows at /   (.github/workflows/*.yml)
+#
+# All ecosystems share a weekly cadence and the same review/label conventions
+# so PR triage stays predictable.  Conservative open-PR limits avoid swamping
+# review queues; security advisories bypass these limits per Dependabot defaults.
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/sk-rust"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  - package-ecosystem: "npm"
+    directory: "/browse-ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "browse-ui"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      types:
+        patterns:
+          - "@types/*"
+
+  - package-ecosystem: "npm"
+    directory: "/remote-terminal"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "remote-terminal"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"

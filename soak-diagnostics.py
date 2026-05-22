@@ -68,9 +68,7 @@ _TOKEN_PAT = re.compile(
 )
 _PATH_USER_PAT = re.compile(r"(/(?:Users|home)/)[^/\s\"']+(/)", re.IGNORECASE)
 _URL_QUERY_TOKEN_PAT = re.compile(r"([?&](?:token|key|secret|auth)[=])[^&\s\"']+", re.IGNORECASE)
-_SENSITIVE_KEY_PAT = re.compile(
-    r"(password|token|secret|api[_-]?key|bearer|auth)", re.IGNORECASE
-)
+_SENSITIVE_KEY_PAT = re.compile(r"(password|token|secret|api[_-]?key|bearer|auth)", re.IGNORECASE)
 
 
 def _redact_string(value: str) -> tuple[str, bool]:
@@ -128,13 +126,13 @@ class ThresholdEvaluator:
     """Evaluate per-metric pass/fail against soak thresholds."""
 
     # Thresholds (all times in milliseconds; rates per minute; counts)
-    LLM_P95_MS: float = 30_000.0      # LLM p95 latency < 30 s
-    TTFT_P95_MS: float = 10_000.0     # Time-to-first-token p95 < 10 s
-    TOOL_P95_MS: float = 20_000.0     # Tool execution p95 < 20 s
+    LLM_P95_MS: float = 30_000.0  # LLM p95 latency < 30 s
+    TTFT_P95_MS: float = 10_000.0  # Time-to-first-token p95 < 10 s
+    TOOL_P95_MS: float = 20_000.0  # Tool execution p95 < 20 s
     TOKEN_GROWTH_PER_MIN: float = 20_000.0  # Token growth <= 20k tokens/min
-    SSE_RECONNECTS_PER_10MIN: float = 1.0   # SSE reconnects <= 1 per 10-min window
-    TOOL_LOOP_MAX: int = 5             # Tool loops <= 5 consecutive
-    PEAK_HEAP_MB: float = 250.0        # Peak JS heap <= 250 MB (where available)
+    SSE_RECONNECTS_PER_10MIN: float = 1.0  # SSE reconnects <= 1 per 10-min window
+    TOOL_LOOP_MAX: int = 5  # Tool loops <= 5 consecutive
+    PEAK_HEAP_MB: float = 250.0  # Peak JS heap <= 250 MB (where available)
 
     # Zero-tolerance checks (counts that must be 0)
     SECURITY_ERRORS_ALLOWED: int = 0
@@ -245,8 +243,13 @@ class ThresholdEvaluator:
                 metrics.get("heap_events", []),
             )
         else:
-            results["peak_heap_mb"] = {"pass": True, "value": None, "threshold": self.PEAK_HEAP_MB,
-                                        "failures": [], "note": "unavailable (browser API absent)"}
+            results["peak_heap_mb"] = {
+                "pass": True,
+                "value": None,
+                "threshold": self.PEAK_HEAP_MB,
+                "failures": [],
+                "note": "unavailable (browser API absent)",
+            }
 
         # Balanced turns: agent:user ratio should be within 0.5–2.0
         agent_turns = metrics.get("agent_turns", 0)
@@ -307,10 +310,7 @@ class DebugLogCollector:
                 params.append(f"kind={kind}")
             if since:
                 params.append(f"since={since}")
-            url = (
-                f"{self.base_url}/api/operator/sessions/{session_id}"
-                f"/runs/{run_id}/debug?{'&'.join(params)}"
-            )
+            url = f"{self.base_url}/api/operator/sessions/{session_id}/runs/{run_id}/debug?{'&'.join(params)}"
             try:
                 req = urllib.request.Request(url)
                 if self.token:
@@ -689,27 +689,82 @@ def _make_smoke_events() -> list[dict]:
         return (now.replace(microsecond=0)).isoformat()
 
     events = [
-        {"idx": 0, "kind": "session_start", "level": "info", "source": "operator_console",
-         "message": "Smoke session started", "timestamp": _ts(0), "span_id": "a" * 16,
-         "parent_span_id": None, "tool_name": None, "duration_ms": None,
-         "status": None, "attrs": {}, "redacted": False},
+        {
+            "idx": 0,
+            "kind": "session_start",
+            "level": "info",
+            "source": "operator_console",
+            "message": "Smoke session started",
+            "timestamp": _ts(0),
+            "span_id": "a" * 16,
+            "parent_span_id": None,
+            "tool_name": None,
+            "duration_ms": None,
+            "status": None,
+            "attrs": {},
+            "redacted": False,
+        },
         # user turn → agent response
-        {"idx": 1, "kind": "turn_start", "level": "info", "source": "operator_console",
-         "message": "Turn 1", "timestamp": _ts(1), "span_id": "b" * 16,
-         "parent_span_id": "a" * 16, "tool_name": None, "duration_ms": None,
-         "status": None, "attrs": {}, "redacted": False},
-        {"idx": 2, "kind": "llm_request", "level": "debug", "source": "operator_console",
-         "message": "LLM request dispatched", "timestamp": _ts(1.5), "span_id": "c" * 16,
-         "parent_span_id": "b" * 16, "tool_name": None, "duration_ms": 1500.0,
-         "status": "ok", "attrs": {"total_tokens": 500, "first_token_ms": 800.0}, "redacted": False},
-        {"idx": 3, "kind": "tool_call", "level": "debug", "source": "operator_console",
-         "message": "Tool call: list_files", "timestamp": _ts(3), "span_id": "d" * 16,
-         "parent_span_id": "b" * 16, "tool_name": "list_files", "duration_ms": 350.0,
-         "status": "ok", "attrs": {}, "redacted": False},
-        {"idx": 4, "kind": "agent_response", "level": "info", "source": "operator_console",
-         "message": "Assistant reply", "timestamp": _ts(4), "span_id": "e" * 16,
-         "parent_span_id": "b" * 16, "tool_name": None, "duration_ms": None,
-         "status": "ok", "attrs": {}, "redacted": False},
+        {
+            "idx": 1,
+            "kind": "turn_start",
+            "level": "info",
+            "source": "operator_console",
+            "message": "Turn 1",
+            "timestamp": _ts(1),
+            "span_id": "b" * 16,
+            "parent_span_id": "a" * 16,
+            "tool_name": None,
+            "duration_ms": None,
+            "status": None,
+            "attrs": {},
+            "redacted": False,
+        },
+        {
+            "idx": 2,
+            "kind": "llm_request",
+            "level": "debug",
+            "source": "operator_console",
+            "message": "LLM request dispatched",
+            "timestamp": _ts(1.5),
+            "span_id": "c" * 16,
+            "parent_span_id": "b" * 16,
+            "tool_name": None,
+            "duration_ms": 1500.0,
+            "status": "ok",
+            "attrs": {"total_tokens": 500, "first_token_ms": 800.0},
+            "redacted": False,
+        },
+        {
+            "idx": 3,
+            "kind": "tool_call",
+            "level": "debug",
+            "source": "operator_console",
+            "message": "Tool call: list_files",
+            "timestamp": _ts(3),
+            "span_id": "d" * 16,
+            "parent_span_id": "b" * 16,
+            "tool_name": "list_files",
+            "duration_ms": 350.0,
+            "status": "ok",
+            "attrs": {},
+            "redacted": False,
+        },
+        {
+            "idx": 4,
+            "kind": "agent_response",
+            "level": "info",
+            "source": "operator_console",
+            "message": "Assistant reply",
+            "timestamp": _ts(4),
+            "span_id": "e" * 16,
+            "parent_span_id": "b" * 16,
+            "tool_name": None,
+            "duration_ms": None,
+            "status": "ok",
+            "attrs": {},
+            "redacted": False,
+        },
     ]
     return events
 

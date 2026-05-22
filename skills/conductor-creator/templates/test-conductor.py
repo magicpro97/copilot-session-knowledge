@@ -456,9 +456,9 @@ gtype2, _ = guess_task_type("deploy infrastructure to cloud", rules)
 test("Guess ops from deploy desc", gtype2 == "ops", f"got: {gtype2}")
 
 report = run_sync(rules)
-test(f"Sync finds 0 new unrouted", len(report.new_skills) == 0, f"new: {report.new_skills}")
-test(f"Sync finds 0 stale refs", len(report.stale) == 0, f"stale: {report.stale}")
-test(f"Sync in_sync count matches", len(report.in_sync) >= 50, f"got: {len(report.in_sync)}")
+test("Sync finds 0 new unrouted", len(report.new_skills) == 0, f"new: {report.new_skills}")
+test("Sync finds 0 stale refs", len(report.stale) == 0, f"stale: {report.stale}")
+test("Sync in_sync count matches", len(report.in_sync) >= 50, f"got: {len(report.in_sync)}")
 
 sync_output = format_sync(report)
 test("Sync report contains coverage", "Coverage:" in sync_output, f"output: {sync_output[:200]}")

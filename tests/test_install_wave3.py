@@ -368,13 +368,14 @@ try:
             break
 
     profile_path = _SK_HOME / ".zshrc"
-    test("install_sk_launcher creates preferred shell profile when missing", profile_path.exists())
-    if profile_path.exists():
-        profile_content = profile_path.read_text(encoding="utf-8")
-        test("launcher PATH marker added to shell profile",
-             _install._SK_PATH_MARKER_START in profile_content)
-        test("launcher PATH export references SK_LAUNCHER_DIR",
-             str(_install.SK_LAUNCHER_DIR) in profile_content)
+    if os.name != "nt":
+        test("install_sk_launcher creates preferred shell profile when missing", profile_path.exists())
+        if profile_path.exists():
+            profile_content = profile_path.read_text(encoding="utf-8")
+            test("launcher PATH marker added to shell profile",
+                 _install._SK_PATH_MARKER_START in profile_content)
+            test("launcher PATH export references SK_LAUNCHER_DIR",
+                 str(_install.SK_LAUNCHER_DIR) in profile_content)
 
     # Idempotency: second call returns False (already installed)
     result2 = _install.install_sk_launcher(quiet=True)
@@ -435,6 +436,7 @@ class _FakeWinreg:
     HKEY_CURRENT_USER = object()
     KEY_READ = 1
     KEY_WRITE = 2
+    KEY_SET_VALUE = 2
     REG_EXPAND_SZ = 2
 
     def __init__(self, path_value: str):

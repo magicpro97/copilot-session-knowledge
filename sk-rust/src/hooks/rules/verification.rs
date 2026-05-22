@@ -9,7 +9,13 @@ pub(crate) const SURFACE_PY: &str = "py";
 pub(crate) const SURFACE_UI: &str = "ui";
 
 // Evidence identifiers — match Python constants.
-pub(crate) const EV_PY_TESTS: &str = "py_tests";
+// Python suites are tracked per-file (wave 11): `EV_PY_TESTS` is retained as an
+// alias of the broad key for downstream importers and tests.
+pub(crate) const EV_PY_SECURITY: &str = "py_security";
+pub(crate) const EV_PY_FIXES: &str = "py_fixes";
+pub(crate) const EV_PY_TESTS_BROAD: &str = "py_tests";
+#[allow(dead_code)] // alias retained for external importers / parity tests
+pub(crate) const EV_PY_TESTS: &str = EV_PY_TESTS_BROAD;
 pub(crate) const EV_UI_FORMAT: &str = "ui_format";
 pub(crate) const EV_UI_LINT: &str = "ui_lint";
 pub(crate) const EV_UI_TYPECHECK: &str = "ui_typecheck";
@@ -17,14 +23,24 @@ pub(crate) const EV_UI_BUILD: &str = "ui_build";
 
 /// Requirements map: which evidence keys each surface needs.
 ///
-/// Mirrors Python `_REQUIREMENTS` dict.
+/// Mirrors Python `_REQUIREMENTS` dict — SURFACE_PY requires BOTH per-suite
+/// keys (`py_security` and `py_fixes`). Broad runs (`run_all_tests.py`,
+/// `pytest`) populate both per-suite keys, so they also satisfy the
+/// requirement.
 pub(crate) const SURFACE_REQUIREMENTS: &[(&str, &[&str])] = &[
-    (SURFACE_PY, &[EV_PY_TESTS]),
+    (SURFACE_PY, &[EV_PY_SECURITY, EV_PY_FIXES]),
     (
         SURFACE_UI,
         &[EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD],
     ),
 ];
+
+/// Evidence keys that must also be cleared when a surface is freshly dirtied,
+/// even though they are not part of `SURFACE_REQUIREMENTS`. Mirrors Python
+/// `_DEPRECATED_STALE_KEYS`: clearing `py_tests` on a `.py` edit prevents the
+/// read-time legacy upgrade from re-populating the in-memory ledger.
+pub(crate) const SURFACE_DEPRECATED_STALE: &[(&str, &[&str])] =
+    &[(SURFACE_PY, &[EV_PY_TESTS_BROAD])];
 
 /// Return the set of surfaces affected by editing `path`.
 ///
@@ -49,23 +65,33 @@ pub(crate) fn surfaces_from_path(path: &str) -> Vec<&'static str> {
 
 /// Detect evidence categories provided by a bash command.
 ///
-/// Mirrors Python `_evidence_from_command(command)`.
+/// Mirrors Python `_evidence_from_command(command)` (wave 11): per-file Python
+/// commands earn per-suite keys; broad runs (`run_all_tests.py`, `pytest`)
+/// earn the full superset. Word-boundary checks for `pytest` and
+/// `python[3]? test_*.py` use small hand-rolled scanners to avoid pulling in
+/// a new dependency.
 pub(crate) fn evidence_from_command(command: &str) -> Vec<&'static str> {
-    let mut ev = Vec::new();
-    if command.contains("test_security.py")
-        || command.contains("test_fixes.py")
-        || command.contains("run_all_tests.py")
-        || command.contains("pytest")
-    {
-        ev.push(EV_PY_TESTS);
+    let mut ev: Vec<&'static str> = Vec::new();
+    let has_security = command.contains("test_security.py");
+    let has_fixes = command.contains("test_fixes.py");
+    if has_security {
+        ev.push(EV_PY_SECURITY);
     }
-    // `python3 test_*.py` heuristic.
-    if (command.contains("python3 ") || command.contains("python "))
-        && command.contains("test_")
-        && command.contains(".py")
-        && !ev.contains(&EV_PY_TESTS)
-    {
-        ev.push(EV_PY_TESTS);
+    if has_fixes {
+        ev.push(EV_PY_FIXES);
+    }
+    let broad = command.contains("run_all_tests.py") || has_word_boundary_match(command, "pytest");
+    if broad {
+        if !has_security {
+            ev.push(EV_PY_SECURITY);
+        }
+        if !has_fixes {
+            ev.push(EV_PY_FIXES);
+        }
+        ev.push(EV_PY_TESTS_BROAD);
+    } else if !has_security && !has_fixes && has_python_test_star_match(command) {
+        // Generic `python[3]? test_<name>.py` earns only the broad alias.
+        ev.push(EV_PY_TESTS_BROAD);
     }
     if command.contains("pnpm format") {
         ev.push(EV_UI_FORMAT);
@@ -80,6 +106,86 @@ pub(crate) fn evidence_from_command(command: &str) -> Vec<&'static str> {
         ev.push(EV_UI_BUILD);
     }
     ev
+}
+
+/// Return `true` if `needle` appears in `haystack` surrounded by non-word
+/// characters (mirrors Python `\b<needle>\b`).
+fn has_word_boundary_match(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let n = needle.len();
+    let mut i = 0;
+    while i + n <= bytes.len() {
+        if &bytes[i..i + n] == needle.as_bytes() {
+            let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
+            let after_ok = i + n == bytes.len() || !is_word_byte(bytes[i + n]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Return `true` if the command matches `\bpython3?\s+test_\w+\.py\b`.
+fn has_python_test_star_match(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find `python` with leading word boundary.
+        if (i == 0 || !is_word_byte(bytes[i - 1])) && bytes[i..].starts_with(b"python") {
+            let mut j = i + b"python".len();
+            // Optional `3`.
+            if j < bytes.len() && bytes[j] == b'3' {
+                j += 1;
+            }
+            // Trailing word-char would mean wrong token (e.g. `python-foo`).
+            if j < bytes.len() && is_word_byte(bytes[j]) {
+                i += 1;
+                continue;
+            }
+            // Require at least one whitespace.
+            let ws_start = j;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j == ws_start {
+                i += 1;
+                continue;
+            }
+            // Require `test_` prefix.
+            if !bytes[j..].starts_with(b"test_") {
+                i += 1;
+                continue;
+            }
+            j += b"test_".len();
+            // Require one or more `\w` chars.
+            let name_start = j;
+            while j < bytes.len() && is_word_byte(bytes[j]) {
+                j += 1;
+            }
+            if j == name_start {
+                i += 1;
+                continue;
+            }
+            // Require literal `.py` followed by word boundary.
+            if !bytes[j..].starts_with(b".py") {
+                i += 1;
+                continue;
+            }
+            let after_py = j + b".py".len();
+            if after_py == bytes.len() || !is_word_byte(bytes[after_py]) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+#[inline]
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Return `true` when toolResult shows no obvious failure indicators.
@@ -163,6 +269,11 @@ fn output_has_failure_indicator(output: &str) -> bool {
 /// Returns `(dirty: HashSet<String>, evidence: HashSet<String>)`.
 /// Mirrors Python `_read_ledger()`: expects a single JSON payload string
 /// in the HMAC-signed set.
+///
+/// Legacy upgrade (wave 11): if `evidence` contains the broad alias
+/// `"py_tests"` but neither `"py_security"` nor `"py_fixes"`, the in-memory
+/// result is expanded to include both per-suite keys. The on-disk file is
+/// not rewritten here; the next legitimate `write_ledger` normalizes it.
 pub(crate) fn read_ledger() -> (HashSet<String>, HashSet<String>) {
     let ledger_path = markers_dir().join("verification-ledger");
     let raw_set = marker_auth::verify_list_marker(&ledger_path);
@@ -184,12 +295,23 @@ pub(crate) fn read_ledger() -> (HashSet<String>, HashSet<String>) {
         Some((dirty, evidence))
     };
 
+    let upgrade = |(dirty, mut evidence): (HashSet<String>, HashSet<String>)| {
+        if evidence.contains(EV_PY_TESTS_BROAD)
+            && !evidence.contains(EV_PY_SECURITY)
+            && !evidence.contains(EV_PY_FIXES)
+        {
+            evidence.insert(EV_PY_SECURITY.to_string());
+            evidence.insert(EV_PY_FIXES.to_string());
+        }
+        (dirty, evidence)
+    };
+
     if !raw_set.is_empty() {
         if raw_set.len() == 1 {
             let sole = raw_set.iter().next().unwrap();
             if sole.starts_with('{') {
                 if let Some(parsed) = parse_payload(sole) {
-                    return parsed;
+                    return upgrade(parsed);
                 }
             }
         }
@@ -201,7 +323,7 @@ pub(crate) fn read_ledger() -> (HashSet<String>, HashSet<String>) {
     if ledger_path.is_file() {
         if let Ok(content) = fs::read_to_string(&ledger_path) {
             if let Some(parsed) = parse_payload(content.trim()) {
-                return parsed;
+                return upgrade(parsed);
             }
         }
     }
@@ -241,19 +363,21 @@ pub(crate) fn write_ledger(dirty: &HashSet<String>, evidence: &HashSet<String>) 
 
 /// Mark surfaces dirty and clear now-stale evidence.
 ///
-/// Mirrors Python `_mark_dirty_surfaces(surfaces)`.
+/// Mirrors Python `_mark_dirty_surfaces(surfaces)`. Clears every evidence
+/// key referenced by `SURFACE_REQUIREMENTS` *and* `SURFACE_DEPRECATED_STALE`
+/// for newly-dirty surfaces (so the read-time legacy upgrade does not
+/// re-populate cleared keys).
 pub(crate) fn mark_dirty_surfaces(new_surfaces: &[&'static str]) {
     if new_surfaces.is_empty() {
         return;
     }
     let (mut dirty, mut evidence) = read_ledger();
-    // Add new dirty surfaces.
     for s in new_surfaces {
         dirty.insert(s.to_string());
     }
-    // Clear evidence that became stale for the newly-dirty surfaces.
     let stale_ev: HashSet<&str> = SURFACE_REQUIREMENTS
         .iter()
+        .chain(SURFACE_DEPRECATED_STALE.iter())
         .filter(|(surf, _)| new_surfaces.contains(surf))
         .flat_map(|(_, evs)| evs.iter().copied())
         .collect();
@@ -476,12 +600,18 @@ pub struct VerificationGatePreRule;
 
 /// Fix-command strings for each evidence key.
 ///
-/// Mirrors Python `_FIX_COMMANDS` in `verification_gate.py`.
-pub(crate) const FIX_PY_TESTS: &str = "python3 test_security.py && python3 test_fixes.py";
+/// Mirrors Python `_FIX_COMMANDS` in `verification_gate.py` (wave 11 split).
+pub(crate) const FIX_PY_SECURITY: &str = "python3 test_security.py";
+pub(crate) const FIX_PY_FIXES: &str = "python3 test_fixes.py";
+pub(crate) const FIX_PY_TESTS_BROAD: &str = "python3 run_all_tests.py";
 pub(crate) const FIX_UI_FORMAT: &str = "cd browse-ui && pnpm format:check";
 pub(crate) const FIX_UI_LINT: &str = "cd browse-ui && pnpm lint";
 pub(crate) const FIX_UI_TYPECHECK: &str = "cd browse-ui && pnpm typecheck";
 pub(crate) const FIX_UI_BUILD: &str = "cd browse-ui && pnpm build";
+
+/// Stable Python deny message — always lists both suites so test assertions
+/// and operator UX stay consistent regardless of which subset is missing.
+pub(crate) const PY_DENY_FIX: &str = "python3 test_security.py && python3 test_fixes.py";
 
 /// Return `(is_closeout, description)` for a tool invocation.
 ///
@@ -590,7 +720,9 @@ impl HookRule for VerificationGatePreRule {
                 let fix_parts: Vec<&str> = gaps
                     .iter()
                     .filter_map(|ev| match *ev {
-                        EV_PY_TESTS => Some(FIX_PY_TESTS),
+                        EV_PY_SECURITY => Some(FIX_PY_SECURITY),
+                        EV_PY_FIXES => Some(FIX_PY_FIXES),
+                        EV_PY_TESTS_BROAD => Some(FIX_PY_TESTS_BROAD),
                         EV_UI_FORMAT => Some(FIX_UI_FORMAT),
                         EV_UI_LINT => Some(FIX_UI_LINT),
                         EV_UI_TYPECHECK => Some(FIX_UI_TYPECHECK),
@@ -600,10 +732,10 @@ impl HookRule for VerificationGatePreRule {
                     .collect();
 
                 if *surface == SURFACE_PY {
-                    missing_msgs.push(format!(
-                        "Python edits need test evidence: {}",
-                        fix_parts.first().copied().unwrap_or("run tests")
-                    ));
+                    // Always present the AND-joined pair so the message is
+                    // stable regardless of which subset of py_security /
+                    // py_fixes is missing.
+                    missing_msgs.push(format!("Python edits need test evidence: {}", PY_DENY_FIX));
                 } else if *surface == SURFACE_UI {
                     let mut msg =
                         "browse-ui edits need format/lint/typecheck/build evidence:".to_string();

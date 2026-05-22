@@ -74,6 +74,12 @@ jobs:
       - name: Run tests
         run: python3 run_all_tests.py
 
+      # Instruction-surface drift gate: enforce parity (rule count + titles)
+      # across docs/AGENT-RULES.md, .github/copilot-instructions.md, and
+      # AGENTS.md, and require a '## Quality Checklist' anchor in each.
+      - name: Instruction drift + Quality Checklist parity (audit-instructions)
+        run: python3 audit-instructions.py --json --fail-on-drift
+
       # Issue #364: startup regression guard using benchmark.py startup.
       # Baseline is cached via actions/cache; first run creates it (rc=0),
       # subsequent runs compare against it and fail on >20% regression.
@@ -101,13 +107,14 @@ jobs:
           if-no-files-found: ignore
 
   python-platform-safety:
-    name: Python platform safety (${{ matrix.os }})
+    name: Python platform safety (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - name: Checkout
@@ -116,7 +123,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Run platform compatibility tests
         run: python tests/test_platform_compat.py
@@ -257,6 +264,12 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Supply-chain advisory gate: fail on HIGH or CRITICAL npm advisories.
+      # Backed by browse-ui/package.json `audit:high` script so the same gate
+      # is reproducible locally with `pnpm audit:high`.
+      - name: Dependency audit (high severity)
+        run: pnpm audit:high
 
   # E2E smoke runs on every push / PR. Visual snapshots remain manual-only.
   #

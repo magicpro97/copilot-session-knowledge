@@ -616,6 +616,7 @@ pub fn build_tfidf_model(texts: &[&str], doc_ids: &[i64]) -> Vec<u8> {
 /// Auto-detects binary (SKTIDF\x01) vs JSON format; delegates to
 /// `TfIdfModel::from_binary` / `TfIdfModel::from_json_blob` accordingly.
 /// Rejects legacy pickle blobs (prefix `\x80\x04` / `\x80\x05`).
+#[allow(dead_code)] // public test helper / library entry point; not consumed in this binary
 pub fn search_tfidf_native(query: &str, model_blob: &[u8], limit: usize) -> Vec<(i64, f32)> {
     if model_blob.starts_with(b"\x80\x04") || model_blob.starts_with(b"\x80\x05") {
         return vec![];
