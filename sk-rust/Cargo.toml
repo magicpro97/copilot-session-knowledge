@@ -21,6 +21,18 @@ native-hooks   = []
 # Python `extract-knowledge.py` remains for manual/fallback use but is no
 #   longer auto-spawned on the successful native watch path.
 native-extract = []
+# Issue #447 (server core) + #449 (DB layer): Axum HTTP server and r2d2 pool.
+# Not enabled by default; activate with --features browse-server.
+browse-server  = [
+    "dep:axum",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:r2d2",
+    "dep:r2d2_sqlite",
+    "dep:tokio",
+    "tokio/rt-multi-thread",
+    "tokio/macros",
+]
 
 [dependencies]
 clap      = { version = "4",    features = ["derive"] }
@@ -44,6 +56,13 @@ sha1    = "0.10"
 notify  = { version = "6",    optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"], optional = true }
 tokio   = { version = "1",    features = ["rt-multi-thread", "macros"], optional = true }
+
+# Optional — browse-server feature (issues #447 + #449).
+axum        = { version = "0.7", optional = true }
+tower       = { version = "0.4", optional = true }
+tower-http  = { version = "0.5", features = ["cors", "trace"], optional = true }
+r2d2        = { version = "0.8", optional = true }
+r2d2_sqlite = { version = "0.24", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
