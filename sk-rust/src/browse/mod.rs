@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+#[cfg(feature = "browse-server")]
 pub mod db;
 pub mod importers;
+#[cfg(feature = "browse-server")]
 pub mod server;

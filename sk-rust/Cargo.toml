@@ -25,7 +25,6 @@ native-extract = []
 # Not enabled by default; activate with --features browse-server.
 browse-server  = [
     "dep:axum",
-    "dep:tower",
     "dep:tower-http",
     "dep:r2d2",
     "dep:r2d2_sqlite",
@@ -58,9 +57,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 tokio   = { version = "1",    features = ["rt-multi-thread", "macros"], optional = true }
 
 # Optional — browse-server feature (issues #447 + #449).
+# tower is provided transitively by axum 0.7.9 (which requires tower 0.5);
+# do not add a direct tower dep until needed to avoid duplicate-version splits.
 axum        = { version = "0.7", optional = true }
-tower       = { version = "0.4", optional = true }
-tower-http  = { version = "0.5", features = ["cors", "trace"], optional = true }
+tower-http  = { version = "0.6", features = ["cors", "trace"], optional = true }
 r2d2        = { version = "0.8", optional = true }
 r2d2_sqlite = { version = "0.24", optional = true }
 
