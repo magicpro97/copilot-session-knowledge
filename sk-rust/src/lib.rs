@@ -3,3 +3,11 @@
 
 #[cfg(feature = "browse-server")]
 pub mod browse;
+
+#[cfg(feature = "browse-server")]
+#[allow(dead_code)]
+mod config;
+
+#[cfg(feature = "browse-server")]
+#[allow(dead_code)]
+mod db;
