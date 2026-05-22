@@ -17,6 +17,7 @@ pub mod db;
 #[cfg(feature = "browse-server")]
 pub mod db_debug_log;
 pub mod importers;
+pub mod operator;
 #[cfg(feature = "browse-server")]
 pub mod server;
 #[cfg(feature = "browse-server")]
