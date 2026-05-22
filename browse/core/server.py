@@ -478,7 +478,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", cors_origin)
             self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header(
+                "Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Resume-Token"
+            )
             self.send_header("Access-Control-Max-Age", "86400")
             self.send_header("Vary", "Origin")
             if _pna_ok(self.headers):
@@ -498,7 +500,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", cors_origin)
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header(
+                "Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Resume-Token"
+            )
             self.send_header("Access-Control-Max-Age", "86400")
             self.send_header("Vary", "Origin")
             if _pna_ok(self.headers):
@@ -519,7 +523,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", cors_origin)
             self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header(
+                "Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Resume-Token"
+            )
             self.send_header("Access-Control-Max-Age", "86400")
             self.send_header("Vary", "Origin")
             if _pna_ok(self.headers):
@@ -547,7 +553,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", cors_origin)
         self.send_header("Access-Control-Allow-Methods", allow_methods)
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Resume-Token")
         self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Vary", "Origin")
         if _pna_ok(self.headers):

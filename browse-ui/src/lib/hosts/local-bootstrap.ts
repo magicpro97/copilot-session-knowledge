@@ -102,11 +102,13 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         cache: "no-store",
         // Chrome 138+ Local Network Access (LNA): explicitly annotate this request as
-        // targeting the local address space so Chrome triggers the LNA permission flow
-        // instead of failing silently or blocking without a diagnostic.
+        // targeting the loopback address space (127.0.0.1 / localhost) so Chrome
+        // triggers the LNA permission flow instead of blocking with a mismatch error.
+        // "loopback" is required — "local" (private-network, e.g. 192.168.x) is a
+        // different address space and Chrome rejects the mismatch.
         // TypeScript lib.dom.d.ts does not yet include this option.
         // @ts-expect-error — targetAddressSpace is a Chrome LNA extension (Chrome 138+, stable Chrome 142+)
-        targetAddressSpace: "local",
+        targetAddressSpace: "loopback",
       });
 
       if (!response.ok) {
