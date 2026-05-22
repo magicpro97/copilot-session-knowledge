@@ -15,10 +15,10 @@ Measured from source via `ast.parse` + `Measure-Object -Line` (Windows, UTF-8):
 
 | File | Total lines | Non-blank/non-comment | Functions | Classes |
 |------|------------:|----------------------:|----------:|--------:|
-| `tentacle.py` | 4,515 | 3,779 | 86 | 0 |
-| `briefing.py` | 3,937 | 3,351 | 82 | 1 |
-| `query-session.py` | 2,840 | 2,415 | 49 | 0 |
-| **Sub-total** | **11,292** | **9,545** | **217** | **1** |
+| `tentacle.py` | 4,516 | 3,779 | 86 | 0 |
+| `briefing.py` | 3,938 | 3,351 | 82 | 1 |
+| `query-session.py` | 2,841 | 2,415 | 49 | 0 |
+| **Sub-total** | **11,295** | **9,545** | **217** | **1** |
 
 **Helper modules used exclusively by `tentacle.py`:**
 
@@ -47,7 +47,7 @@ is forwarded to the Python script. There is no native Rust implementation of any
 tentacle CLI subcommand.
 
 **Partial Rust coverage exists, but only for *hook enforcement rules***, not the CLI:
-- `sk-rust/src/hooks/rules/tentacle.rs` (479 lines) implements:
+- `sk-rust/src/hooks/rules/tentacle.rs` (526 lines) implements:
   - `TentacleSuggestRule` — postToolUse informational suggestion
   - `TentacleEnforceRule` — preToolUse deny gate for multi-module edits
   - Helper: `read_tentacle_edits_paths()`, `read_tentacle_edits_for_current_repo()`
@@ -80,7 +80,7 @@ tentacle CLI subcommand.
 Some(Commands::Briefing { args }) => commands::briefing::run_briefing_command(&args),
 ```
 
-**Rust handler** (`sk-rust/src/commands/briefing.rs`, 332 lines) covers:
+**Rust handler** (`sk-rust/src/commands/briefing.rs`, 372 lines) covers:
 
 | Flag | Rust function | Python equivalent |
 |------|---------------|-------------------|
@@ -123,7 +123,7 @@ run_fallback("briefing.py", args)  // briefing.rs line 26
 Some(Commands::Query { args }) => commands::query::run_query_command(&args),
 ```
 
-**Rust handler** (`sk-rust/src/commands/query.rs`, 550 lines) covers — **with no Python fallback**:
+**Rust handler** (`sk-rust/src/commands/query.rs`, 595 lines) covers — **with no Python fallback**:
 
 | Rust function | Flags handled |
 |---------------|--------------|
@@ -298,7 +298,7 @@ Recommended order based on operator impact and cross-script dependencies:
 | **Silent regression in `sk query`** | High | `run_query_command` has no Python fallback; unknown flags are silently ignored. Users running the Rust binary today cannot access session browsing, semantic search, export, or graph features. |
 | **Adaptive FTS quality gap** | Medium | Rust query and compact briefing use plain FTS; Python applies synonym expansion and query rewriting. Recall quality degrades for short or domain-specific queries without parity work. |
 | **Recall telemetry drift** | Medium | Rust compact briefing does not call `_record_recall_event`. Confidence scores for entries retrieved via `--compact`/`--auto`/`--wakeup` are never updated, causing the Python path's ranking to diverge over time. |
-| **`tentacle.py` port complexity** | Very High | The tentacle CLI is 4,515 Python LOC plus ~300 KB of helper modules. Goal-loop state (`_tentacle_goal.py`, 156 KB) involves complex state machines, HMAC-signed markers, worktree management, and async dispatch runtimes. A phased port (read-only commands first) is strongly recommended. |
+| **`tentacle.py` port complexity** | Very High | The tentacle CLI is 4,516 Python LOC plus ~300 KB of helper modules. Goal-loop state (`_tentacle_goal.py`, 156 KB) involves complex state machines, HMAC-signed markers, worktree management, and async dispatch runtimes. A phased port (read-only commands first) is strongly recommended. |
 | **`_tentacle_goal.py` behavioral parity** | High | Goal-loop resilience (paused-goal recovery, breadcrumb writes, `needs-human` escalation) is complex and has subtle timing dependencies. Any Rust port must replicate Python behavior exactly or breakage will be silent. |
 | **Marker format compatibility** | Low–Medium | Hook rules (`tentacle.rs`) already handle both legacy flat-path and new JSON-dict formats. Any new Rust code writing markers must maintain this dual-read compatibility or silently break the hook enforcement rules. |
 | **Windows path handling** | Low | `get_module_for_path` normalises `\` to `/`. Ensure any new Rust code touching file paths applies the same normalisation. |
