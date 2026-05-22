@@ -3637,7 +3637,8 @@ except Exception as _e:
 
 # I456-2: migration v31 is idempotent on a fresh in-memory DB
 try:
-    import importlib.util as _ilu456, types as _types456
+    import importlib.util as _ilu456
+    import types as _types456
 
     _mig_db = sqlite3.connect(":memory:")
     _mig_db.executescript("""
@@ -3709,7 +3710,9 @@ try:
                 pass
             else:
                 raise
-    _mig_db.execute("INSERT OR IGNORE INTO schema_version (version, name) VALUES (31, 'composite_indexes_sync_timestamps')")
+    _mig_db.execute(
+        "INSERT OR IGNORE INTO schema_version (version, name) VALUES (31, 'composite_indexes_sync_timestamps')"
+    )
     _mig_db.commit()
 
     _idx_rows = {row[1] for row in _mig_db.execute("PRAGMA index_list(knowledge_entries)").fetchall()}
@@ -3798,17 +3801,18 @@ try:
             retry_count INTEGER DEFAULT 0
         );
     """)
-    from datetime import datetime as _dt456, timezone as _tz456
+    from datetime import datetime as _dt456
+    from datetime import timezone as _tz456
 
     _now456 = _dt456(2025, 6, 1, 12, 0, 0, tzinfo=_tz456.utc)
     # Old rows (should be pruned)
-    _old_ops = "2025-04-15T00:00:00"    # 47 days old → pruned (>30d)
-    _old_txns = "2025-04-20T00:00:00"   # 42 days old → pruned (>30d)
-    _old_fail = "2025-05-20T00:00:00"   # 12 days old → pruned (>7d)
+    _old_ops = "2025-04-15T00:00:00"  # 47 days old → pruned (>30d)
+    _old_txns = "2025-04-20T00:00:00"  # 42 days old → pruned (>30d)
+    _old_fail = "2025-05-20T00:00:00"  # 12 days old → pruned (>7d)
     # Recent rows (should survive)
-    _new_ops = "2025-05-20T00:00:00"    # 12 days old → kept (<30d)
-    _new_txns = "2025-05-20T00:00:00"   # 12 days old → kept (<30d)
-    _new_fail = "2025-05-28T00:00:00"   # 4 days old → kept (<7d)
+    _new_ops = "2025-05-20T00:00:00"  # 12 days old → kept (<30d)
+    _new_txns = "2025-05-20T00:00:00"  # 12 days old → kept (<30d)
+    _new_fail = "2025-05-28T00:00:00"  # 4 days old → kept (<7d)
 
     _pconn.execute("INSERT INTO sync_ops (created_at) VALUES (?)", (_old_ops,))
     _pconn.execute("INSERT INTO sync_ops (created_at) VALUES (?)", (_new_ops,))
@@ -3861,6 +3865,7 @@ try:
     _empty_db_path = Path(_tempfile456c.mkdtemp()) / "empty.db"
     sqlite3.connect(str(_empty_db_path)).close()  # create empty DB
     from datetime import datetime as _dt456d
+
     _deleted2 = _cron_mod2._prune_sync_tables(_empty_db_path, _dt456d(2025, 6, 1, 12, 0, 0))
     test(
         "I456-4: _prune_sync_tables safe on DB without sync tables",
