@@ -295,15 +295,34 @@ test("hot-path: _content_hash NOT called for stable file", not called_for_hp,
      f"hash called for: {_hash_call_count}")
 test("hot-path: stored hash preserved", hp_sigs2.get(str(hp_f), [None, None, None])[2] == hp_sigs.get(str(hp_f))[2])
 
-# Write new content (mtime changes) → _content_hash MUST be called
+# Write new content; sleep briefly so mtime advances on coarse-grained filesystems.
+time.sleep(0.05)
 hp_f.write_text("changed content now", encoding="utf-8")
+
+# Capture the signature as seen by the OS *after* the write, before calling
+# check_and_index.  On coarse-grained filesystems or very fast writes the OS
+# may not have advanced mtime yet; skip the mtime-triggered assertions in that
+# case — the hot-path correctly reused the stored hash.
+_sig_after_write = _ws.get_file_signatures([hp_root]).get(str(hp_f))
+_prev_meta = (hp_sigs.get(str(hp_f), [None, None])[0], hp_sigs.get(str(hp_f), [None, None])[1])
+_sig_changed = _sig_after_write is not None and (
+    _sig_after_write[0] != _prev_meta[0] or _sig_after_write[1] != _prev_meta[1]
+)
+
 _hash_call_count.clear()
 _ws.run_indexer = lambda incremental=True: True  # keep no-op
 hp_sigs3 = _ws.check_and_index(hp_sigs, [hp_root])
 called_after_change = any(str(hp_f) in p for p in _hash_call_count)
-test("hot-path: _content_hash IS called after mtime changes", called_after_change,
-     f"hash NOT called despite content change")
-test("hot-path: new hash stored after change", hp_sigs3.get(str(hp_f), [None, None, None])[2] != hp_sigs.get(str(hp_f))[2])
+if _sig_changed:
+    test("hot-path: _content_hash IS called after mtime changes", called_after_change,
+         f"hash NOT called despite content change")
+    test("hot-path: new hash stored after change",
+         hp_sigs3.get(str(hp_f), [None, None, None])[2] != hp_sigs.get(str(hp_f))[2])
+else:
+    # Coarse-grained filesystem: signature unchanged → hot-path correctly
+    # reused stored hash; just verify the stored value was preserved.
+    test("hot-path: coarse-fs stable sig → stored hash preserved (hot-path no-op)",
+         hp_sigs3.get(str(hp_f), [None, None, None])[2] == hp_sigs.get(str(hp_f))[2])
 
 # Legacy backfill: prev_sigs has 2-element entry (no stored hash) → one hash call expected
 hp_f.write_text("stable content", encoding="utf-8")  # reset to stable
