@@ -170,6 +170,11 @@ pub fn app(state: AppState) -> Router {
             "/api/workflow/health",
             get(crate::browse::api::workflow::handle_workflow_health),
         )
+        // ── Knowledge Insights API (issue #453 PR-C) ─────────────────────
+        .route(
+            "/api/knowledge/insights",
+            get(crate::browse::api::insights::handle_knowledge_insights),
+        )
         .fallback(serve_static)
         .with_state(state.clone())
         // innermost middleware — auth
