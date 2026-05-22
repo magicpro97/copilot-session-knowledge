@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - **chore(quality):** add language-specific `.editorconfig` indent rules and advisory `pnpm lint:all` script (issue #459 PR-A; Rust/Python/global-any tightening deferred behind #450–#453).
+- **ci(#459):** run pnpm lint:all (src + e2e + scripts) as advisory CI step in browse-ui job.
 
 ### Added
 - **Rust workflow health proxy endpoint (#453 PR-B):** `GET /api/workflow/health` wired into the
