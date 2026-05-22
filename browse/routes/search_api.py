@@ -115,6 +115,8 @@ def _build_sessions_arm(safe_q: str, in_cols: list) -> tuple[str, list]:
         fts_query = safe_q
 
     # snippet col -1 = auto-pick best matching column
+    # ORDER BY uses the `score` alias; SQLite allows alias references in ORDER BY
+    # within the same SELECT, avoiding bm25() recomputation in the subquery.
     sql = (
         "SELECT 'session' AS type, s.id AS id, s.summary AS title,"
         " snippet(sessions_fts,-1,'<mark>','</mark>','...',15) AS snip,"
@@ -122,7 +124,7 @@ def _build_sessions_arm(safe_q: str, in_cols: list) -> tuple[str, list]:
         " FROM sessions_fts"
         " JOIN sessions AS s ON s.id = sessions_fts.session_id"
         " WHERE sessions_fts MATCH ?"
-        " ORDER BY bm25(sessions_fts) LIMIT ?"
+        " ORDER BY score LIMIT ?"
     )
     return sql, [fts_query]  # limit appended by caller
 
@@ -149,7 +151,9 @@ def _build_knowledge_arm(safe_q: str, in_cols: list, kind_list: list, ktable: st
         f" FROM ke_fts"
         f" JOIN {ktable} AS k ON k.id = ke_fts.rowid"
         f" WHERE ke_fts MATCH ?{kind_clause}"
-        f" ORDER BY bm25(ke_fts) LIMIT ?"
+        # ORDER BY uses the `score` alias; SQLite allows alias references in ORDER BY
+        # within the same SELECT, avoiding bm25() recomputation in the subquery.
+        f" ORDER BY score LIMIT ?"
     )
     return sql, [ke_query, *kind_args]  # limit appended by caller
 
@@ -170,16 +174,21 @@ def _execute_combined(db, arms: list[str], arm_params: list[list], limit: int) -
         flat_params.append(limit)
     flat_params.append(limit)  # outer LIMIT
 
-    # Wrap each arm in SELECT * FROM (arm) so that ORDER BY + LIMIT inside is honoured
+    # Wrap each arm in SELECT * FROM (arm) so that ORDER BY + LIMIT inside is honoured.
+    # Outer ORDER BY: score first, then sessions before knowledge for equal scores
+    # (preserving the old Python stable-merge semantics where sessions were appended
+    # before knowledge and stable sort kept their relative order), then id for a
+    # fully deterministic row ordering.
     wrapped = " UNION ALL ".join(f"SELECT * FROM ({a})" for a in arms)
-    sql = f"SELECT * FROM ({wrapped}) ORDER BY score LIMIT ?"
+    sql = f"SELECT * FROM ({wrapped}) ORDER BY score, CASE type WHEN 'session' THEN 0 ELSE 1 END, id LIMIT ?"
 
     try:
         return [_row_to_result(r) for r in db.execute(sql, flat_params)]
     except sqlite3.OperationalError:
         pass
 
-    # Fallback: run arms independently (pre-optimisation behaviour)
+    # Fallback: run arms independently (pre-optimisation behaviour).
+    # Sort uses the same tie-break key: score, then sessions before knowledge, then id.
     results: list = []
     for arm, ap in zip(arms, arm_params, strict=False):
         try:
@@ -187,7 +196,7 @@ def _execute_combined(db, arms: list[str], arm_params: list[list], limit: int) -
                 results.append(_row_to_result(r))
         except sqlite3.OperationalError:
             pass
-    results.sort(key=lambda x: x["score"])
+    results.sort(key=lambda x: (x["score"], 0 if x["type"] == "session" else 1, x["id"]))
     return results[:limit]
 
 
