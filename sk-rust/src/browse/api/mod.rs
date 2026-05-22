@@ -2,4 +2,5 @@
 
 pub mod compare;
 pub mod live;
+pub mod operator;
 pub mod sessions;
