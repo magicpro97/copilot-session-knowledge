@@ -40,6 +40,7 @@ def get_rules_for_event(event):
     from .recurrence_detector import RecurrenceDetectorRule
     from .session_compiler import SessionCompilerRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
+    from .skill_improvement_advisor import SkillImprovementAdvisorRule
     from .skill_nudge import SkillNudgeRule
     from .skill_usage import SkillUsageRule
     from .subagent_guard import SubagentGitGuardRule
@@ -90,6 +91,7 @@ def get_rules_for_event(event):
         SessionEndRule(),
         RecurrenceDetectorRule(),
         SessionCompilerRule(),  # Issue #395: session compiler (opt-in)
+        SkillImprovementAdvisorRule(),  # Skill improvement queue (sessionEnd)
         # agentStop / subagentStop
         SubagentStopRule(),
         # userPromptSubmitted (WBS-025)

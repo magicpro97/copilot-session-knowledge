@@ -32,6 +32,7 @@ CODEBASE_MAP = TOOLS_DIR / "codebase-map.py"
 ANATOMY_MAP = TOOLS_DIR / "anatomy-map.py"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 MARKER = MARKERS_DIR / "briefing-done"
+SKILL_IMPROVEMENT_QUEUE = MARKERS_DIR / "skill-improvement-pending.json"
 
 # Goal resume breadcrumb (written by session-end when a goal was in-flight).
 _BREADCRUMB_FILENAME = "goal-resume-breadcrumb.json"
@@ -246,7 +247,56 @@ def _try_refresh_anatomy():
         pass
 
 
+def _load_skill_improvement_queue():
+    """Read and format skill improvement suggestions from previous session.
+
+    Returns list of formatted lines, or None if no suggestions.
+    The queue file is written by SkillImprovementAdvisorRule on sessionEnd
+    and auto-deleted by the marker cleanup that runs right after this.
+    """
+    try:
+        if not SKILL_IMPROVEMENT_QUEUE.is_file():
+            return None
+        data = json.loads(SKILL_IMPROVEMENT_QUEUE.read_text(encoding="utf-8"))
+        suggestions = data.get("suggestions", [])
+        if not suggestions:
+            return None
+
+        lines = ["\n  \U0001f6e0\ufe0f SKILL IMPROVEMENT SUGGESTIONS (from previous session):"]
+        for s in suggestions:
+            stype = s.get("type", "")
+            title = s.get("title", s.get("skill", ""))
+            action = s.get("action", "")
+            recurrence = s.get("recurrence", 0)
+
+            if "recurring" in stype or "chronic" in stype:
+                icon = "\U0001f534" if recurrence >= 3 else "\U0001f7e0"
+                lines.append(f"  {icon} [{recurrence}x] {title}")
+            elif "signal" in stype:
+                lines.append(f"  \U0001f4e1 {title}")
+            elif stype == "pattern_cluster":
+                lines.append(f"  \U0001f4ca {s.get('count', '?')} patterns recorded")
+            else:
+                lines.append(f"  \u2022 {title}")
+
+            if action:
+                lines.append(f"    \u2192 {action}")
+
+        lines.append(
+            "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        )
+        return lines
+    except Exception:
+        return None
+
+
 def main():
+    # Read skill improvement queue BEFORE marker cleanup (the cleanup deletes it)
+    skill_improvement_lines = _load_skill_improvement_queue()
+
     # Clean up stale markers from previous sessions (crash recovery)
     if MARKERS_DIR.is_dir():
         for f in MARKERS_DIR.iterdir():
@@ -317,6 +367,11 @@ def main():
         print("  ⏱ Briefing timed out (10s)")
     except Exception:
         pass
+
+    # Display skill improvement suggestions from previous session (if any)
+    if skill_improvement_lines:
+        for line in skill_improvement_lines:
+            print(line)
 
     # Create HMAC-signed marker
     sign_marker(MARKER, "briefing-done")
