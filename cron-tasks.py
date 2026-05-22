@@ -48,6 +48,14 @@ TEMPLATE_DEFINITIONS = {
         "description": "Delete aged sync table rows to prevent unbounded table growth.",
         "default_schedule": {"kind": "daily", "time": "04:00"},
     },
+    "wal-checkpoint": {
+        "description": "Daily WAL checkpoint (TRUNCATE) of knowledge.db.",
+        "default_schedule": {"kind": "daily", "time": "04:00"},
+    },
+    "vacuum": {
+        "description": "Weekly VACUUM of knowledge.db to reclaim freelist pages.",
+        "default_schedule": {"kind": "weekly", "day": "sunday", "time": "04:30"},
+    },
 }
 
 
@@ -227,6 +235,153 @@ def _knowledge_db_size() -> str:
     return f"{db_path.stat().st_size} bytes"
 
 
+def _size_bytes(path: Path) -> int:
+    """Return *path* file size in bytes, or 0 when missing/unreadable."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _db_paths(db_path: Path | None = None) -> tuple[Path, Path, Path]:
+    """Return (db, wal, shm) paths for *db_path* (defaults to knowledge.db)."""
+    if db_path is None:
+        db_path = SESSION_STATE / "knowledge.db"
+    return (
+        db_path,
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+    )
+
+
+def _run_wal_checkpoint(
+    db_path: Path = SESSION_STATE / "knowledge.db",
+    *,
+    timeout: float = 30.0,
+) -> dict:
+    """Run PRAGMA wal_checkpoint(TRUNCATE) and return a result dict.
+
+    Returns ``{ok: False, status: "missing"}`` when *db_path* does not exist.
+    Returns ``{ok: False, status: "busy"}`` on lock/busy OperationalError or
+    when SQLite reports the checkpoint was blocked (busy_flag == 1).
+    Never raises sqlite3.OperationalError.
+    """
+    db, wal, shm = _db_paths(db_path)
+    if not db.exists():
+        return {"ok": False, "status": "missing", "db_path": str(db)}
+
+    before = {"db": _size_bytes(db), "wal": _size_bytes(wal), "shm": _size_bytes(shm)}
+    start = time.monotonic()
+    busy_ms = max(1, int(timeout * 1000))
+
+    try:
+        conn = sqlite3.connect(str(db), isolation_level=None, timeout=timeout)
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {busy_ms}")
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        msg = str(exc).lower()
+        status = "busy" if ("locked" in msg or "busy" in msg) else "error"
+        return {
+            "ok": False,
+            "status": status,
+            "error": str(exc),
+            "elapsed_ms": elapsed_ms,
+            "before": before,
+            "db_path": str(db),
+        }
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    after = {"db": _size_bytes(db), "wal": _size_bytes(wal), "shm": _size_bytes(shm)}
+    busy_flag = row[0] if row else 0
+    log_pages = row[1] if row else 0
+    checkpointed = row[2] if row else 0
+
+    return {
+        "ok": busy_flag == 0,
+        "status": "busy" if busy_flag else "ok",
+        "busy": busy_flag,
+        "log": log_pages,
+        "checkpointed": checkpointed,
+        "before": before,
+        "after": after,
+        "elapsed_ms": elapsed_ms,
+        "db_path": str(db),
+    }
+
+
+def _run_vacuum(
+    db_path: Path = SESSION_STATE / "knowledge.db",
+    *,
+    timeout: float = 30.0,
+) -> dict:
+    """Run VACUUM followed by PRAGMA quick_check and return a result dict.
+
+    Returns ``{ok: False, status: "missing"}`` when *db_path* does not exist.
+    Returns ``{ok: False, status: "busy"}`` on lock/busy OperationalError.
+    Returns ``{ok: False, status: "corrupt"}`` on corruption OperationalError.
+    Other OperationalErrors are re-raised.
+    Scheduling (whether to advance last_run_at) is handled by the caller.
+    """
+    db, wal, shm = _db_paths(db_path)
+    if not db.exists():
+        return {"ok": False, "status": "missing", "db_path": str(db)}
+
+    before = {"db": _size_bytes(db), "wal": _size_bytes(wal), "shm": _size_bytes(shm)}
+    start = time.monotonic()
+    busy_ms = max(1, int(timeout * 1000))
+
+    try:
+        conn = sqlite3.connect(str(db), isolation_level=None, timeout=timeout)
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {busy_ms}")
+            conn.execute("VACUUM")
+            qc_row = conn.execute("PRAGMA quick_check").fetchone()
+            quick_check = qc_row[0] if qc_row else "unknown"
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        msg = str(exc).lower()
+        if "locked" in msg or "busy" in msg:
+            return {
+                "ok": False,
+                "status": "busy",
+                "error": str(exc),
+                "elapsed_ms": elapsed_ms,
+                "before": before,
+                "db_path": str(db),
+            }
+        if "corrupt" in msg or "malformed" in msg:
+            return {
+                "ok": False,
+                "status": "corrupt",
+                "error": str(exc),
+                "elapsed_ms": elapsed_ms,
+                "before": before,
+                "db_path": str(db),
+            }
+        raise
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    after = {"db": _size_bytes(db), "wal": _size_bytes(wal), "shm": _size_bytes(shm)}
+    freed_bytes = max(0, before["db"] - after["db"])
+
+    return {
+        "ok": True,
+        "status": "ok",
+        "freed_bytes": freed_bytes,
+        "quick_check": quick_check,
+        "before": before,
+        "after": after,
+        "elapsed_ms": elapsed_ms,
+        "db_path": str(db),
+    }
+
+
 def _session_dir_count() -> int:
     if not SESSION_STATE.exists():
         return 0
@@ -356,6 +511,88 @@ def _build_sync_pruning_artifact(task: dict, now: datetime, deleted: dict) -> st
     )
 
 
+def _build_wal_checkpoint_artifact(task: dict, now: datetime, result: dict) -> str:
+    status = result.get("status", "unknown")
+    before = result.get("before", {})
+    after = result.get("after", {})
+    lines = [
+        "# WAL Checkpoint Task\n\n",
+        f"Task ID: {task['id']}\n",
+        f"Task Name: {task['name']}\n",
+        f"Executed: {now.isoformat()}\n",
+        f"Status: {status}\n",
+        f"Elapsed: {result.get('elapsed_ms', 'n/a')} ms\n",
+        f"DB path: {result.get('db_path', str(SESSION_STATE / 'knowledge.db'))}\n",
+    ]
+    if status == "missing":
+        lines.append("\nDB was not present; no checkpoint performed.\n")
+    elif status == "busy":
+        if "error" in result:
+            # OperationalError — DB was locked before the checkpoint could run
+            lines.append(f"\nCheckpoint blocked (DB locked): {result['error']}\n")
+        else:
+            # SQLite reported busy_flag=1 — checkpoint ran but some WAL frames
+            # were held by active readers and could not be checkpointed yet.
+            busy_flag = result.get("busy", 1)
+            log_pages = result.get("log", 0)
+            checkpointed = result.get("checkpointed", 0)
+            lines.append(
+                f"\nCheckpoint partially blocked: busy={busy_flag} log_pages={log_pages} checkpointed={checkpointed}\n"
+            )
+            if before and after:
+                lines.append(f"WAL size before: {before.get('wal', 0)} bytes\n")
+                lines.append(f"WAL size after:  {after.get('wal', 0)} bytes\n")
+                lines.append(f"DB size:         {after.get('db', 0)} bytes\n")
+        lines.append("Will retry on next scheduled run.\n")
+    elif status == "error":
+        lines.append(f"\nCould not checkpoint: {result.get('error', 'unknown error')}\n")
+        lines.append("Will retry on next scheduled run.\n")
+    else:
+        busy_flag = result.get("busy", 0)
+        log_pages = result.get("log", 0)
+        checkpointed = result.get("checkpointed", 0)
+        lines.append(f"\nCheckpoint result: busy={busy_flag} log_pages={log_pages} checkpointed={checkpointed}\n")
+        if before and after:
+            lines.append(f"WAL size before: {before.get('wal', 0)} bytes\n")
+            lines.append(f"WAL size after:  {after.get('wal', 0)} bytes\n")
+            lines.append(f"DB size:         {after.get('db', 0)} bytes\n")
+    lines.append(f"\nExecution log: {LOG_PATH}\n")
+    return "".join(lines)
+
+
+def _build_vacuum_artifact(task: dict, now: datetime, result: dict) -> str:
+    status = result.get("status", "unknown")
+    before = result.get("before", {})
+    after = result.get("after", {})
+    lines = [
+        "# VACUUM Maintenance Task\n\n",
+        f"Task ID: {task['id']}\n",
+        f"Task Name: {task['name']}\n",
+        f"Executed: {now.isoformat()}\n",
+        f"Status: {status}\n",
+        f"Elapsed: {result.get('elapsed_ms', 'n/a')} ms\n",
+        f"DB path: {result.get('db_path', str(SESSION_STATE / 'knowledge.db'))}\n",
+    ]
+    if status == "missing":
+        lines.append("\nDB was not present; no VACUUM performed.\n")
+    elif status == "busy":
+        lines.append(f"\nCould not VACUUM (DB busy): {result.get('error', 'locked')}\n")
+        lines.append("Will retry on next scheduled run.\n")
+    elif status == "corrupt":
+        lines.append(f"\nVACUUM detected corruption: {result.get('error', 'unknown')}\n")
+        lines.append("Manual intervention required.\n")
+    else:
+        freed = result.get("freed_bytes", 0)
+        qc = result.get("quick_check", "unknown")
+        lines.append(f"\nFreed bytes:   {freed}\n")
+        lines.append(f"Quick check:   {qc}\n")
+        if before and after:
+            lines.append(f"DB size before: {before.get('db', 0)} bytes\n")
+            lines.append(f"DB size after:  {after.get('db', 0)} bytes\n")
+    lines.append(f"\nExecution log: {LOG_PATH}\n")
+    return "".join(lines)
+
+
 def _write_artifact(task: dict, now: datetime, content: str) -> Path:
     _ensure_session_state()
     stamp = now.strftime("%Y%m%d-%H%M%S")
@@ -373,6 +610,36 @@ def _execute_task(task: dict, now: datetime) -> dict:
         db_path = SESSION_STATE / "knowledge.db"
         deleted = _prune_sync_tables(db_path, now)
         artifact_content = _build_sync_pruning_artifact(task, now, deleted)
+    elif task["template"] == "wal-checkpoint":
+        db_path = SESSION_STATE / "knowledge.db"
+        result = _run_wal_checkpoint(db_path)
+        artifact_content = _build_wal_checkpoint_artifact(task, now, result)
+        artifact_path = _write_artifact(task, now, artifact_content)
+        return {
+            "task_id": task["id"],
+            "task_name": task["name"],
+            "template": task["template"],
+            "executed_at": now.isoformat(),
+            "status": result["status"],
+            "artifact_path": str(artifact_path),
+            "schedule": task["schedule"],
+            "result": result,
+        }
+    elif task["template"] == "vacuum":
+        db_path = SESSION_STATE / "knowledge.db"
+        result = _run_vacuum(db_path)
+        artifact_content = _build_vacuum_artifact(task, now, result)
+        artifact_path = _write_artifact(task, now, artifact_content)
+        return {
+            "task_id": task["id"],
+            "task_name": task["name"],
+            "template": task["template"],
+            "executed_at": now.isoformat(),
+            "status": result["status"],
+            "artifact_path": str(artifact_path),
+            "schedule": task["schedule"],
+            "result": result,
+        }
     else:
         raise ValueError(f"Unknown task template: {task['template']}")
 
@@ -396,7 +663,9 @@ def _run_due_tasks(config: dict, now: datetime | None = None) -> int:
             continue
         log_entry = _execute_task(task, current)
         _append_log(log_entry)
-        task["last_run_at"] = current.isoformat()
+        # Do not advance last_run_at for busy tasks so they retry on the next run.
+        if log_entry.get("status") != "busy":
+            task["last_run_at"] = current.isoformat()
         task["last_status"] = log_entry["status"]
         _save_config(config)
         executed += 1
