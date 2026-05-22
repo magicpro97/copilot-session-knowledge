@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "id": "dashboard",
+    "endpoint": "GET /api/dashboard",
+    "description": "Dashboard KPI stats — all top-level keys present with correct types"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "totals": {
+      "sessions": "__int__",
+      "knowledge_entries": "__int__",
+      "relations": "__int__",
+      "embeddings": "__int__"
+    },
+    "by_category": "__list__",
+    "sessions_per_day": "__list__",
+    "top_wings": "__list__",
+    "red_flags": "__list__",
+    "weekly_mistakes": "__list__",
+    "top_modules": "__list__"
+  }
+}

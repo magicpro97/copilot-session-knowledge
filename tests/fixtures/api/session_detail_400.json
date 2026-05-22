@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "session_detail_400",
+    "endpoint": "GET /api/sessions/bad%21id (URL-encoded invalid ID)",
+    "description": "Session detail with invalid ID format — 400 BAD_SESSION_ID error envelope"
+  },
+  "status": 400,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "BAD_SESSION_ID"
+  }
+}

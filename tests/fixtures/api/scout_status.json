@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "id": "scout_status",
+    "endpoint": "GET /api/scout/status",
+    "description": "Trend Scout diagnostics — config/analysis/grace_window/audit/runtime shapes"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "status": "__str__",
+    "config": {
+      "config_path": "__str__",
+      "script_path": "__str__"
+    },
+    "analysis": {
+      "token_env": "__str__",
+      "token_present": "__bool__"
+    },
+    "grace_window": {
+      "would_skip_without_force": "__bool__"
+    },
+    "audit": {
+      "checks": "__list__"
+    },
+    "runtime": "__dict__",
+    "operator_actions": [
+      {
+        "id": "__str__",
+        "title": "__str__",
+        "description": "__str__",
+        "command": "__str__",
+        "safe": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "knowledge_insights_503",
+    "endpoint": "GET /api/knowledge/insights (script unavailable)",
+    "description": "Knowledge insights when knowledge-health.py is not found — 503 error envelope"
+  },
+  "status": 503,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "INSIGHTS_UNAVAILABLE"
+  }
+}

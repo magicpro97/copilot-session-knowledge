@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "compare_400_invalid_id",
+    "endpoint": "GET /api/compare?a=../bad&b=session-id (invalid a)",
+    "description": "Compare with invalid session ID (path traversal attempt) — 400 BAD_SESSION_ID"
+  },
+  "status": 400,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "BAD_SESSION_ID"
+  }
+}

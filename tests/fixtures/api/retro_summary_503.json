@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "retro_summary_503",
+    "endpoint": "GET /api/retro/summary (script unavailable)",
+    "description": "Retro summary when retro.py is not found — 503 error envelope"
+  },
+  "status": 503,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "RETRO_UNAVAILABLE"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "_meta": {
+    "id": "discovery",
+    "endpoint": "GET /.well-known/browse-host",
+    "description": "Discovery endpoint — minimal capability/auth contract, no auth required"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "schema": "browse-host/1",
+    "status": "ok",
+    "auth": "__str__",
+    "manual_token_required": "__bool__",
+    "capabilities": "__list__",
+    "cors_origins_configured": "__bool__",
+    "pairing_supported": true,
+    "static_mode_active": "__bool__",
+    "demo_mode_badge": "__any__"
+  }
+}

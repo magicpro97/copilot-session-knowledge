@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "id": "research_pack_missing",
+    "endpoint": "GET /api/scout/research-pack (file not found)",
+    "description": "Research pack when the pack file doesn't exist — available=false"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "available": false,
+    "repo_count": 0,
+    "repos": [],
+    "error": null
+  }
+}

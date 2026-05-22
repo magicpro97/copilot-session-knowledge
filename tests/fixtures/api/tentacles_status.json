@@ -1,0 +1,26 @@
+{
+  "_meta": {
+    "id": "tentacles_status",
+    "endpoint": "GET /api/tentacles/status",
+    "description": "Tentacle orchestration diagnostics — marker/audit/runtime/operator_actions shapes"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "status": "__str__",
+    "configured": "__bool__",
+    "active_count": "__int__",
+    "total_count": "__int__",
+    "worktrees_prepared": "__int__",
+    "verification_covered": "__int__",
+    "marker": {
+      "active": "__bool__"
+    },
+    "tentacles": "__list__",
+    "audit": {
+      "summary": "__dict__"
+    },
+    "operator_actions": "__list__",
+    "runtime": "__dict__"
+  }
+}

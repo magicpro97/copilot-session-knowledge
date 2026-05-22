@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "id": "pairing_static_no_slot",
+    "endpoint": "GET /api/operator/pairing/static (no active slot)",
+    "description": "Static pairing slot status when no slot is active — active=false"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "active": false
+  }
+}

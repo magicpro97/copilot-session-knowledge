@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "id": "sessions_list_page",
+    "endpoint": "GET /api/sessions?page=1&page_size=2",
+    "description": "First page of 2 items from a 3-session DB — has_more=true"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "items": "__list__",
+    "total": "__int__",
+    "page": 1,
+    "page_size": 2,
+    "has_more": true
+  }
+}

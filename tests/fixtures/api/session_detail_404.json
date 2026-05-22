@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "session_detail_404",
+    "endpoint": "GET /api/sessions/no-such-session-exists",
+    "description": "Session detail for unknown ID — standard 404 error envelope"
+  },
+  "status": 404,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "SESSION_NOT_FOUND"
+  }
+}

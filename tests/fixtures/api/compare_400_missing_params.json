@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "compare_400_missing_params",
+    "endpoint": "GET /api/compare (no a/b params)",
+    "description": "Compare with missing required params — 400 MISSING_PARAMS error envelope"
+  },
+  "status": 400,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "MISSING_PARAMS"
+  }
+}

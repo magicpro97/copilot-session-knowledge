@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "id": "workflow_health_503",
+    "endpoint": "GET /api/workflow/health (script unavailable)",
+    "description": "Workflow health when workflow-health.py is not found — 503 error envelope"
+  },
+  "status": 503,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "error": "__str__",
+    "code": "WORKFLOW_HEALTH_UNAVAILABLE"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "id": "session_detail",
+    "endpoint": "GET /api/sessions/{id}",
+    "description": "Session detail — meta + timeline shape"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "meta": {
+      "id": "__str__",
+      "path": "__any__",
+      "summary": "__any__",
+      "source": "__any__",
+      "event_count_estimate": "__any__",
+      "fts_indexed_at": "__null_or_str__",
+      "indexed_at_r": "__null_or_str__",
+      "file_mtime": "__null_or_str__",
+      "total_checkpoints": "__any__",
+      "total_research": "__any__",
+      "total_files": "__any__",
+      "has_plan": "__any__",
+      "doc_count": "__any__"
+    },
+    "timeline": [
+      {
+        "seq": "__any__",
+        "title": "__any__",
+        "doc_type": "__any__",
+        "section_name": "__any__",
+        "content": "__any__"
+      }
+    ]
+  }
+}

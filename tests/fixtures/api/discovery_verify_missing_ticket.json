@@ -1,0 +1,14 @@
+{
+  "_meta": {
+    "id": "discovery_verify_missing_ticket",
+    "endpoint": "POST /.well-known/browse-host/verify (no ticket field)",
+    "description": "Ticket verification with missing ticket → always 200, valid=false"
+  },
+  "status": 200,
+  "content_type_prefix": "application/json",
+  "body_shape": {
+    "valid": false,
+    "base_url": "__str__",
+    "error": "__str__"
+  }
+}
