@@ -165,6 +165,11 @@ pub fn app(state: AppState) -> Router {
             "/api/operator/sessions/:id/delete",
             post(crate::browse::api::operator::handle_delete_session_post),
         )
+        // ── Workflow API (issue #453 PR-B) ──────────────────────────────
+        .route(
+            "/api/workflow/health",
+            get(crate::browse::api::workflow::handle_workflow_health),
+        )
         .fallback(serve_static)
         .with_state(state.clone())
         // innermost middleware — auth
