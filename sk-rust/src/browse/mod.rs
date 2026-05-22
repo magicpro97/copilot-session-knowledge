@@ -7,6 +7,8 @@
 #![allow(dead_code)]
 
 #[cfg(feature = "browse-server")]
+pub mod api;
+#[cfg(feature = "browse-server")]
 pub mod auth;
 #[cfg(feature = "browse-server")]
 pub mod cors;
@@ -17,5 +19,7 @@ pub mod db_debug_log;
 pub mod importers;
 #[cfg(feature = "browse-server")]
 pub mod server;
+#[cfg(feature = "browse-server")]
+pub mod sse;
 #[cfg(feature = "browse-server")]
 pub mod static_files;
