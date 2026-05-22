@@ -185,7 +185,7 @@ def _execute_combined(db, arms: list[str], arm_params: list[list], limit: int) -
 
     # Fallback: run arms independently (pre-optimisation behaviour)
     results: list = []
-    for arm, ap in zip(arms, arm_params):
+    for arm, ap in zip(arms, arm_params, strict=False):
         try:
             for r in db.execute(arm, [*ap, limit]):
                 results.append(_row_to_result(r))
