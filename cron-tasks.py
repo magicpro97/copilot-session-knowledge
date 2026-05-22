@@ -15,10 +15,11 @@ import argparse
 import calendar
 import json
 import os
+import sqlite3
 import sys
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from host_manifest import SESSION_STATE
@@ -42,6 +43,10 @@ TEMPLATE_DEFINITIONS = {
     "cleanup": {
         "description": "Generate a weekly cleanup task artifact.",
         "default_schedule": {"kind": "weekly", "day": "sunday", "time": "02:00"},
+    },
+    "sync_pruning": {
+        "description": "Delete aged sync table rows to prevent unbounded table growth.",
+        "default_schedule": {"kind": "daily", "time": "04:00"},
     },
 }
 
@@ -275,6 +280,82 @@ def _build_cleanup_artifact(task: dict, now: datetime) -> str:
     )
 
 
+# Retention windows for sync table pruning (issue #456).
+_SYNC_OPS_RETENTION_DAYS = 30
+_SYNC_TXNS_RETENTION_DAYS = 30
+_SYNC_FAILURES_RETENTION_DAYS = 7
+
+
+def _utc_cutoff_str(now: datetime, days: int) -> str:
+    """Return a UTC RFC3339-Z timestamp string for rows older than *days* from *now*.
+
+    If *now* is tz-aware it is first converted to UTC; naive datetimes are
+    treated as UTC (matching the convention used when storing sync timestamps).
+    """
+    cutoff = now - timedelta(days=days)
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _prune_sync_tables(db_path: Path, now: datetime) -> dict:
+    """Delete aged rows from sync_ops, sync_txns, and sync_failures.
+
+    Returns a dict with deleted row counts per table.  Returns an empty dict
+    immediately (no-op) when *db_path* does not exist — avoids creating a new
+    empty database via sqlite3.connect.  Safe to run on a DB that does not yet
+    have these tables; only ``no such table`` errors are swallowed; unexpected
+    OperationalErrors are re-raised.
+    """
+    if not db_path.exists():
+        return {}
+    cutoffs = {
+        "sync_ops": _utc_cutoff_str(now, _SYNC_OPS_RETENTION_DAYS),
+        "sync_txns": _utc_cutoff_str(now, _SYNC_TXNS_RETENTION_DAYS),
+        "sync_failures": _utc_cutoff_str(now, _SYNC_FAILURES_RETENTION_DAYS),
+    }
+    deleted: dict = {}
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except Exception:
+        return deleted
+    try:
+        for table, cutoff_ts in cutoffs.items():
+            ts_col = "failed_at" if table == "sync_failures" else "created_at"
+            try:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE {ts_col} < ?",  # noqa: S608 — table/col are literals
+                    (cutoff_ts,),
+                )
+                deleted[table] = cursor.rowcount
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc):
+                    # Table may not exist on older DBs; skip silently.
+                    deleted[table] = 0
+                else:
+                    raise
+        conn.commit()
+    finally:
+        conn.close()
+    return deleted
+
+
+def _build_sync_pruning_artifact(task: dict, now: datetime, deleted: dict) -> str:
+    return (
+        "# Sync Pruning Task\n\n"
+        f"Task ID: {task['id']}\n"
+        f"Task Name: {task['name']}\n"
+        f"Executed: {now.isoformat()}\n\n"
+        f"Retention policy:\n"
+        f"  sync_ops older than {_SYNC_OPS_RETENTION_DAYS} day(s) → deleted\n"
+        f"  sync_txns older than {_SYNC_TXNS_RETENTION_DAYS} day(s) → deleted\n"
+        f"  sync_failures older than {_SYNC_FAILURES_RETENTION_DAYS} day(s) → deleted\n\n"
+        f"Rows deleted:\n"
+        + "".join(f"  {tbl}: {cnt}\n" for tbl, cnt in deleted.items())
+        + f"\nExecution log: {LOG_PATH}\n"
+    )
+
+
 def _write_artifact(task: dict, now: datetime, content: str) -> Path:
     _ensure_session_state()
     stamp = now.strftime("%Y%m%d-%H%M%S")
@@ -288,6 +369,10 @@ def _execute_task(task: dict, now: datetime) -> dict:
         artifact_content = _build_reflection_artifact(task, now)
     elif task["template"] == "cleanup":
         artifact_content = _build_cleanup_artifact(task, now)
+    elif task["template"] == "sync_pruning":
+        db_path = SESSION_STATE / "knowledge.db"
+        deleted = _prune_sync_tables(db_path, now)
+        artifact_content = _build_sync_pruning_artifact(task, now, deleted)
     else:
         raise ValueError(f"Unknown task template: {task['template']}")
 
