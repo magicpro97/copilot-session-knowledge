@@ -724,6 +724,28 @@ def main() -> None:
         default=False,
         help=("Remove the debug-log DB and WAL/SHM files on shutdown. Also via BROWSE_DEBUG_LOG_EPHEMERAL=1."),
     )
+    p.add_argument(
+        "--tls-cert",
+        default="",
+        metavar="PATH",
+        help=(
+            "Path to TLS certificate file (PEM). When set together with --tls-key, "
+            "the server binds HTTPS instead of HTTP. If omitted, auto-detects "
+            "~/.copilot/certs/localhost+2.pem (mkcert default)."
+        ),
+    )
+    p.add_argument(
+        "--tls-key",
+        default="",
+        metavar="PATH",
+        help=("Path to TLS private key file (PEM). Required when --tls-cert is set."),
+    )
+    p.add_argument(
+        "--no-tls",
+        action="store_true",
+        default=False,
+        help="Disable TLS auto-detection (force plain HTTP even if certs exist).",
+    )
     args = p.parse_args()
 
     # --install-launcher: one-shot install — exit after writing launcher files.
@@ -964,20 +986,49 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", args.port), HandlerClass)
     host, port = server.server_address
 
+    # --- TLS setup (mkcert auto-detection or explicit --tls-cert/--tls-key) ---
+    tls_enabled = False
+    tls_cert = args.tls_cert
+    tls_key = args.tls_key
+    if not args.no_tls:
+        # Auto-detect mkcert certs if not explicitly provided
+        if not tls_cert:
+            auto_cert = Path.home() / ".copilot" / "certs" / "localhost+2.pem"
+            auto_key = Path.home() / ".copilot" / "certs" / "localhost+2-key.pem"
+            if auto_cert.exists() and auto_key.exists():
+                tls_cert = str(auto_cert)
+                tls_key = str(auto_key)
+                print(f"[tls] Auto-detected mkcert certs at {auto_cert.parent}/", flush=True)
+        if tls_cert and tls_key:
+            import ssl
+
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            try:
+                ctx.load_cert_chain(tls_cert, tls_key)
+                server.socket = ctx.wrap_socket(server.socket, server_side=True)
+                tls_enabled = True
+                print(f"[tls] HTTPS enabled — https://{host}:{port}/", flush=True)
+            except (ssl.SSLError, OSError) as exc:
+                print(f"[tls] Failed to load certs, falling back to HTTP: {exc}", flush=True)
+        elif tls_cert and not tls_key:
+            print("[tls] --tls-cert set but --tls-key missing — falling back to HTTP", flush=True)
+
+    scheme = "https" if tls_enabled else "http"
+
     # Signal to browse.core.auth that we're bound to loopback — auto-enables
     # hosted-shell CORS origins without requiring --hosted-bootstrap.
     os.environ["BROWSE_LOOPBACK_BIND"] = "1"
 
     if token and not token_env_source:
-        local_url = f"http://{host}:{port}/?token={urllib.parse.quote(token)}"
+        local_url = f"{scheme}://{host}:{port}/?token={urllib.parse.quote(token)}"
     else:
-        local_url = f"http://{host}:{port}/"
+        local_url = f"{scheme}://{host}:{port}/"
 
     print(f"Local URL:   {local_url}", flush=True)
-    print(f"Bound:       {host}:{port}", flush=True)
+    print(f"Bound:       {host}:{port} ({scheme.upper()})", flush=True)
 
     if args.hosted_bootstrap:
-        discovery_url = f"http://{host}:{port}/.well-known/browse-host"
+        discovery_url = f"{scheme}://{host}:{port}/.well-known/browse-host"
         print("", flush=True)
         print("[hosted-bootstrap] Startup guidance:", flush=True)
         print(f"  Discovery endpoint: {discovery_url}", flush=True)

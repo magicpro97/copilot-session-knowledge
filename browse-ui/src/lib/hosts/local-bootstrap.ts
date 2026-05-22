@@ -9,8 +9,15 @@
 import { browseHostBootstrapSchema } from "@/lib/api/schemas";
 import type { BrowseHostBootstrapResponse } from "@/lib/api/types";
 
-/** Loopback candidates probed in order — 127.0.0.1 first per issue #49. */
-const LOOPBACK_CANDIDATES = ["http://127.0.0.1:8765", "http://localhost:8765"] as const;
+/** Loopback candidates probed in order — HTTP first (Chrome Enterprise Policy
+ *  `InsecurePrivateNetworkRequestsAllowedForUrls` exempts HTTP→loopback from
+ *  PNA blocking), then HTTPS fallback for mkcert/TLS setups. */
+const LOOPBACK_CANDIDATES = [
+  "http://127.0.0.1:8765",
+  "http://localhost:8765",
+  "https://127.0.0.1:8765",
+  "https://localhost:8765",
+] as const;
 
 const WELL_KNOWN_PATH = "/.well-known/browse-host";
 

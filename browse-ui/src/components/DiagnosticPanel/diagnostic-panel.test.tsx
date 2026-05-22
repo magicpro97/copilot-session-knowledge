@@ -351,7 +351,7 @@ describe("DiagnosticPanel", () => {
     );
   });
 
-  it("falls back to no-host-configured when daemon states are all unknown", () => {
+  it("shows PNA-blocked panel when daemon states are all unknown on hosted origin", () => {
     render(
       <DiagnosticPanel
         compat={null}
@@ -365,7 +365,8 @@ describe("DiagnosticPanel", () => {
       />
     );
     const panel = screen.getByTestId("diagnostic-panel");
-    expect(panel).toHaveTextContent(/No agent host configured/);
+    expect(panel).toHaveTextContent(/Browser blocking local backend connection/);
+    expect(panel).toHaveTextContent(/127\.0\.0\.1:8765/);
   });
 
   it("renders no-host-configured panel for hosted origin with no issues", () => {

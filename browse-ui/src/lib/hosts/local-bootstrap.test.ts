@@ -102,8 +102,8 @@ describe("probeLocalBootstrap", () => {
 
     expect(first).toEqual(expect.objectContaining({ status: "unavailable" }));
     expect(second).toEqual({ status: "cached-negative" });
-    // 2 primary probes (one per candidate) + 2 secondary no-cors probes = 4 total
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // 4 primary probes (one per candidate) + 4 secondary no-cors probes = 8 total
+    expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 
   it("ignores malformed discovery payloads and reports unavailable", async () => {
@@ -113,6 +113,6 @@ describe("probeLocalBootstrap", () => {
     const result = await probeLocalBootstrap();
 
     expect(result).toEqual(expect.objectContaining({ status: "unavailable" }));
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });

@@ -346,6 +346,50 @@ function DaemonNoPnaPanel() {
   );
 }
 
+/**
+ * All loopback probes returned "unknown" daemon state — most likely Chrome PNA
+ * (Private Network Access) is silently blocking the request at the network stack.
+ * Guides the user to the direct localhost URL or tunnel alternative.
+ */
+function PnaBlockedPanel() {
+  return (
+    <div
+      className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-50/50 p-3 dark:bg-amber-950/20"
+      data-testid="diagnostic-panel"
+      role="alert"
+      aria-label="Connectivity diagnostic: browser blocking local connection"
+    >
+      <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+        ⚠ Browser blocking local backend connection
+      </p>
+      <p className="text-muted-foreground text-xs">
+        Chrome&apos;s Private Network Access (PNA) security policy is blocking connections from this
+        hosted page to your local backend. This is a browser-level restriction that cannot be
+        bypassed from the web page.
+      </p>
+      <p className="text-foreground text-xs font-medium">Recommended:</p>
+      <ol className="list-none space-y-1.5">
+        <Step n={1}>
+          Open the local browse UI directly at{" "}
+          <a
+            href="http://127.0.0.1:8765/"
+            className="font-mono text-blue-600 underline underline-offset-2 dark:text-blue-400"
+            target="_blank"
+            rel="noreferrer"
+          >
+            http://127.0.0.1:8765/
+          </a>{" "}
+          — all features work without PNA restrictions.
+        </Step>
+        <Step n={2}>
+          Or use a tunnel: <CodeSnippet copyText="ngrok http 8765">ngrok http 8765</CodeSnippet>,
+          then add the tunnel URL in <strong>Settings → Hosts</strong>.
+        </Step>
+      </ol>
+    </div>
+  );
+}
+
 /** Hosted origin with no remote agent host configured at all. */
 function NoHostConfiguredPanel() {
   return (
@@ -486,6 +530,10 @@ export function DiagnosticPanel({
     if (daemonStates.has("not-running") && !daemonStates.has("unknown")) {
       // All candidates with a daemon state concluded "not running".
       return <DaemonNotRunningPanel />;
+    }
+    // All probes returned "unknown" daemon state — likely PNA blocking at network stack.
+    if (daemonStates.has("unknown") && isHosted) {
+      return <PnaBlockedPanel />;
     }
     // Inconclusive daemon state — fall through to NoHostConfiguredPanel below.
   }
