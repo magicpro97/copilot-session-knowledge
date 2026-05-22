@@ -1,0 +1,75 @@
+{
+  "nodes": [
+    {
+      "id": "e-10",
+      "kind": "entry",
+      "label": "Auth Pattern",
+      "wing": "backend",
+      "room": "auth",
+      "category": "pattern",
+      "color": "#51cf66"
+    },
+    {
+      "id": "e-9",
+      "kind": "entry",
+      "label": "Login Bug",
+      "wing": "backend",
+      "room": "auth",
+      "category": "mistake",
+      "color": "#ff6b6b"
+    },
+    {
+      "id": "e-8",
+      "kind": "entry",
+      "label": "UI Decision",
+      "wing": "frontend",
+      "room": "ui",
+      "category": "decision",
+      "color": "#339af0"
+    },
+    {
+      "id": "e-7",
+      "kind": "entry",
+      "label": "CSS Discovery",
+      "wing": "frontend",
+      "room": "ui",
+      "category": "discovery",
+      "color": "#cc5de8"
+    },
+    {
+      "id": "ent-901dfb611934",
+      "kind": "entity",
+      "label": "External Auth Service",
+      "color": "#868e96"
+    },
+    {
+      "id": "ent-8893f202ccd9",
+      "kind": "entity",
+      "label": "Unknown Tool",
+      "color": "#868e96"
+    }
+  ],
+  "edges": [
+    {
+      "source": "e-10",
+      "target": "e-9",
+      "relation": "leads_to"
+    },
+    {
+      "source": "e-10",
+      "target": "ent-901dfb611934",
+      "relation": "relates_to"
+    },
+    {
+      "source": "ent-901dfb611934",
+      "target": "e-9",
+      "relation": "uses"
+    },
+    {
+      "source": "ent-8893f202ccd9",
+      "target": "e-8",
+      "relation": "uses"
+    }
+  ],
+  "truncated": false
+}
