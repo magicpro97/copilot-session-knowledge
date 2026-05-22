@@ -38,6 +38,22 @@ fn command_update(update_id: i64, user_id: i64, chat_id: i64, text: &str) -> ser
     })
 }
 
+/// Build a `getUpdates` response with a message that has no `from` field.
+fn no_sender_update(update_id: i64, chat_id: i64, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "result": [{
+            "update_id": update_id,
+            "message": {
+                "message_id": 1,
+                "chat": { "id": chat_id },
+                "date": 1700000000,
+                "text": text
+            }
+        }]
+    })
+}
+
 /// Build a successful `sendMessage` response.
 fn send_message_ok(chat_id: i64) -> serde_json::Value {
     serde_json::json!({
@@ -201,6 +217,60 @@ async fn broker_drops_unauthorized_user() {
     broker.run(child).await.expect("broker.run");
 
     // wiremock verifies the expect(0) on sendMessage automatically on drop.
+}
+
+// ── Auth: update with no `from` field is dropped (regression for unwrap_or(0)) ──
+
+#[tokio::test]
+async fn broker_drops_update_with_no_sender() {
+    let server = MockServer::start().await;
+    let chat_id: i64 = 42;
+
+    // Deliver one update that has a `message` but no `from` field.
+    Mock::given(method("POST"))
+        .and(path("/fake_token/getUpdates"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(no_sender_update(1, chat_id, "/help")),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/fake_token/getUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_updates_response()))
+        .mount(&server)
+        .await;
+
+    // sendMessage must NOT be called: no `from` means anonymous sender, which
+    // must be dropped regardless of authorized_user_id (including 0 = disabled).
+    Mock::given(method("POST"))
+        .and(path("/fake_token/sendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(send_message_ok(chat_id)))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let base_url = format!("{}/", server.uri());
+    // authorized_user_id == 0 means "block all"; this also exercises the old
+    // unwrap_or(0) bug where a missing `from` would equal 0 and pass auth.
+    let broker = TelegramBroker::new(
+        "fake_token",
+        0, // disabled / block-all
+        Arc::new(NoopKnowledge),
+        Some(&base_url),
+    )
+    .expect("broker construction");
+
+    let token = CancellationToken::new();
+    let child = token.child_token();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        token.cancel();
+    });
+
+    broker.run(child).await.expect("broker.run");
+    // wiremock asserts expect(0) on drop.
 }
 
 // ── Help command is dispatched correctly ──────────────────────────────────────

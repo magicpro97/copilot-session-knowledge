@@ -397,10 +397,15 @@ impl TelegramBroker {
             None => return,
         };
 
-        let sender_id = message.from.as_ref().map(|u| u.id).unwrap_or(0);
+        // Require an identified sender; anonymous/channel updates are always dropped.
+        let Some(sender_id) = message.from.as_ref().map(|u| u.id) else {
+            debug!("dropping update with no sender");
+            return;
+        };
 
-        // Auth: silently drop updates from non-authorised users.
-        if sender_id != self.authorized_user_id {
+        // Auth: block-all when authorized_user_id == 0 (disabled), or when sender
+        // does not match the configured authorized user.
+        if self.authorized_user_id == 0 || sender_id != self.authorized_user_id {
             debug!(
                 sender_id,
                 authorized = self.authorized_user_id,
