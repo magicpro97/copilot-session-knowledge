@@ -1569,6 +1569,11 @@ fn hooks_run_session_start_native_route_exits_zero() {
     let mut cmd = assert_cmd::Command::cargo_bin("sk").unwrap();
     cmd.args(["hooks", "run", "sessionStart"])
         .env("SK_TOOLS_DIR", &tmp)
+        // Isolate HOME so the dedup marker for `{}` does not collide with the
+        // parallel hooks_session_start_direct_exits_zero test that sends the
+        // same payload within the 500 ms dedup window (would suppress ack).
+        .env("HOME", &tmp)
+        .env("USERPROFILE", &tmp)
         .write_stdin(r#"{}"#);
 
     let output = cmd.assert().success();
@@ -1675,6 +1680,11 @@ fn auto_briefing_passes_session_start_flag() {
     let mut cmd = assert_cmd::Command::cargo_bin("sk").unwrap();
     cmd.args(["hooks", "run", "sessionStart"])
         .env("SK_TOOLS_DIR", &tmp)
+        // Isolate HOME so the dedup marker for `{}` does not collide with
+        // sibling sessionStart tests that send the same payload within the
+        // 500 ms dedup window (would suppress the briefing.py invocation).
+        .env("HOME", &tmp)
+        .env("USERPROFILE", &tmp)
         .write_stdin(r#"{}"#);
 
     let output = cmd.assert().success();
