@@ -147,7 +147,7 @@ jobs:
       # Attestations are signed with the GitHub OIDC token and verifiable via
       # `gh attestation verify <artifact> --repo magicpro97/copilot-session-knowledge`.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             artifacts/sk-linux-x64.tar.gz
