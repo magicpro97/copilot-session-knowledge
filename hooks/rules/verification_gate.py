@@ -24,7 +24,7 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 from . import Rule
-from .common import MARKERS_DIR, bash_writes_source_files, deny
+from .common import MARKERS_DIR, TOOLS_DIR, bash_writes_source_files, deny
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -190,11 +190,22 @@ def _write_ledger(dirty, evidence):
 
 
 def _surfaces_from_path(path):
-    """Return set of surfaces affected by editing path."""
+    """Return set of surfaces affected by editing path.
+
+    Only tracks surfaces for files inside the tools repo (~/.copilot/tools/).
+    Edits to .py files in other repos (e.g., a Django project) are NOT tracked,
+    so the gate will not demand test_security.py / test_fixes.py for unrelated repos.
+    """
     surfaces = set()
     p = str(path)
     norm = p.replace("\\", "/").lower()
     if "/.copilot/session-state/" in norm or "/.copilot/skills/" in norm:
+        return surfaces
+    # Only track edits within the tools repo itself
+    tools_root = str(TOOLS_DIR)
+    tools_root_real = str(TOOLS_DIR.resolve())
+    in_tools_repo = p.startswith(tools_root) or p.startswith(tools_root_real)
+    if not in_tools_repo:
         return surfaces
     suffix = Path(path).suffix.lower()
     if "browse-ui/" in p or p.startswith("browse-ui/"):

@@ -313,7 +313,18 @@ def main():
     # Refresh anatomy annotations — completely silent on failure
     _try_refresh_anatomy()
 
+    # Display skill improvement suggestions EARLY (before briefing) so they
+    # are not buried under lengthy briefing output. Previously these were
+    # gated behind BRIEFING.is_file() and placed after briefing — making
+    # them invisible in practice.
+    if skill_improvement_lines:
+        for line in skill_improvement_lines:
+            print(line)
+
     if not BRIEFING.is_file():
+        # Create HMAC-signed marker even without briefing.py so other hooks
+        # that depend on the briefing marker still function.
+        sign_marker(MARKER, "briefing-done")
         return
 
     project = ""
@@ -367,11 +378,6 @@ def main():
         print("  ⏱ Briefing timed out (10s)")
     except Exception:
         pass
-
-    # Display skill improvement suggestions from previous session (if any)
-    if skill_improvement_lines:
-        for line in skill_improvement_lines:
-            print(line)
 
     # Create HMAC-signed marker
     sign_marker(MARKER, "briefing-done")
