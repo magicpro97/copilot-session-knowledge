@@ -125,19 +125,20 @@ async fn integration_security_headers_on_healthz() {
 
 #[tokio::test]
 async fn integration_auth_bearer_valid_passes() {
+    // /api/noroute is protected; valid Bearer must pass auth and reach the router (404 = no handler).
     let config = secured_config("supersecret");
     let r = app(config)
         .oneshot(
             Request::builder()
-                .uri("/healthz") // healthz is open — use a real protected path
+                .uri("/api/noroute")
                 .header("authorization", "Bearer supersecret")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    // healthz is open regardless
-    assert_eq!(r.status(), StatusCode::OK);
+    // Auth passed → reaches router → unregistered route = 404 (not 401).
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -122,28 +122,37 @@ pub fn check_path_component(uri_path: &str) -> Result<&str, PathSafetyError> {
 /// All security checks are performed before reading.
 async fn resolve_file(root: &Path, uri_path: &str) -> Result<(Vec<u8>, &'static str), StatusCode> {
     // 1. Static path safety.
-    let rel = check_path_component(uri_path).map_err(|_| StatusCode::FORBIDDEN)?;
+    let rel = check_path_component(uri_path).map_err(|e| match e {
+        PathSafetyError::Empty => StatusCode::NOT_FOUND,
+        _ => StatusCode::FORBIDDEN,
+    })?;
 
     let candidate = root.join(rel);
 
     // 2. MIME check (before I/O — fail fast on unknown extensions).
     let mime = get_mime_type(&candidate).ok_or(StatusCode::FORBIDDEN)?;
 
-    // 3. Reject symlinks before canonicalisation.
-    match std::fs::symlink_metadata(&candidate) {
-        Ok(meta) if meta.file_type().is_symlink() => return Err(StatusCode::FORBIDDEN),
-        Err(_) => return Err(StatusCode::NOT_FOUND),
-        Ok(_) => {}
-    }
-
-    // 4. Canonicalise root and candidate; verify containment.
-    let root_canonical = std::fs::canonicalize(root).map_err(|_| StatusCode::NOT_FOUND)?;
+    // 3+4. Move blocking FS checks into spawn_blocking to avoid runtime starvation.
+    let candidate_for_block = candidate.clone();
+    let root_for_block = root.to_path_buf();
     let candidate_canonical =
-        std::fs::canonicalize(&candidate).map_err(|_| StatusCode::NOT_FOUND)?;
-
-    if !candidate_canonical.starts_with(&root_canonical) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+        tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, StatusCode> {
+            match std::fs::symlink_metadata(&candidate_for_block) {
+                Ok(meta) if meta.file_type().is_symlink() => return Err(StatusCode::FORBIDDEN),
+                Err(_) => return Err(StatusCode::NOT_FOUND),
+                Ok(_) => {}
+            }
+            let root_canonical =
+                std::fs::canonicalize(&root_for_block).map_err(|_| StatusCode::NOT_FOUND)?;
+            let candidate_canonical =
+                std::fs::canonicalize(&candidate_for_block).map_err(|_| StatusCode::NOT_FOUND)?;
+            if !candidate_canonical.starts_with(&root_canonical) {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Ok(candidate_canonical)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
     // 5. Read file asynchronously.
     let bytes = tokio::fs::read(&candidate_canonical)
@@ -157,6 +166,12 @@ async fn resolve_file(root: &Path, uri_path: &str) -> Result<(Vec<u8>, &'static 
 
 /// Fallback handler that serves static files from `ServerConfig::static_root`.
 pub async fn serve_static(State(config): State<Arc<ServerConfig>>, request: Request) -> Response {
+    use axum::http::Method;
+
+    if request.method() != Method::GET && request.method() != Method::HEAD {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+
     let uri_path = request.uri().path().to_string();
 
     if config.static_root.as_os_str().is_empty() {

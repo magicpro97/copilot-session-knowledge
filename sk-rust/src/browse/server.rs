@@ -111,13 +111,20 @@ pub fn app(config: Arc<ServerConfig>) -> Router {
         // security headers on all responses
         .layer(middleware::from_fn(security_headers_middleware))
         // outermost — tracing (uses tower-http/trace feature)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                tracing::debug_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                )
+            }),
+        )
 }
 
 /// Bind and run the server, shutting down gracefully on Ctrl-C.
 pub async fn start(config: Arc<ServerConfig>) -> anyhow::Result<()> {
-    let addr = format!("{}:{}", config.host, config.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
     let router = app(config);
 
     axum::serve(listener, router)
@@ -201,7 +208,7 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
 fn generate_nonce() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

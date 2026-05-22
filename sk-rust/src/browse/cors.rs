@@ -157,7 +157,7 @@ fn handle_preflight(
             .header(HeaderName::from_static("vary"), "Origin")
             .header(
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
-                "Authorization, Content-Type",
+                "Authorization, Content-Type, Last-Event-ID, X-Resume-Token",
             )
             .header(header::ACCESS_CONTROL_ALLOW_METHODS, methods)
             .header(header::ACCESS_CONTROL_MAX_AGE, "86400");
