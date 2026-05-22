@@ -95,8 +95,9 @@ def handle_api_knowledge_insights(db, params, token, nonce) -> tuple:
             cwd=str(_TOOLS_DIR),
         )
         if result.returncode != 0:
+            detail = result.stderr.strip()[:500] if result.stderr else "(no stderr)"
             return json_error(
-                f"knowledge-health.py exited with code {result.returncode}",
+                f"knowledge-health.py exited with code {result.returncode}: {detail}",
                 "INSIGHTS_ERROR",
                 503,
             )

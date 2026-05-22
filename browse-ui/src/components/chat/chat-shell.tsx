@@ -138,9 +138,10 @@ export function ChatShell() {
   const session = sessionQuery.data ?? null;
 
   // Load full persisted run history for the active session.
+  // Gate on sessionQuery.isSuccess so a stale/missing session fires only one 404.
   const runsQuery = useOperatorRuns(
     activeSessionId ?? "",
-    Boolean(activeSessionId) && operatorEnabled,
+    Boolean(activeSessionId) && operatorEnabled && sessionQuery.isSuccess,
     activeHost
   );
 
