@@ -939,6 +939,68 @@ impl BrowseDb {
             .collect();
         Ok(rows)
     }
+
+    /// Fetch all knowledge entries for community detection.
+    ///
+    /// Returns `(id, title, category, wing)` ordered by id ASC.
+    /// Returns `Ok(vec![])` if the table is absent.
+    pub fn list_knowledge_entries_for_communities(
+        &self,
+    ) -> anyhow::Result<Vec<(i64, String, String, String)>> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = match conn.prepare(
+            "SELECT id, \
+                    COALESCE(title,''), \
+                    COALESCE(category,''), \
+                    COALESCE(wing,'') \
+             FROM knowledge_entries \
+             ORDER BY id ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Ok(vec![]),
+        };
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Fetch all knowledge relations for community detection.
+    ///
+    /// Returns `(source_id, target_id, relation_type)` ordered by id ASC.
+    /// Returns `Ok(vec![])` if the table is absent.
+    pub fn list_knowledge_relations_for_communities(
+        &self,
+    ) -> anyhow::Result<Vec<(i64, i64, String)>> {
+        let conn = self.read_pool.get()?;
+        let mut stmt = match conn.prepare(
+            "SELECT source_id, target_id, COALESCE(relation_type,'unknown') \
+             FROM knowledge_relations \
+             ORDER BY id ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Ok(vec![]),
+        };
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

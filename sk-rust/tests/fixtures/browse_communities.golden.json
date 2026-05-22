@@ -1,0 +1,39 @@
+{
+  "communities": [
+    {
+      "id": "c-1",
+      "entry_count": 3,
+      "top_categories": [
+        {"name": "decision", "count": 1},
+        {"name": "mistake", "count": 1},
+        {"name": "pattern", "count": 1}
+      ],
+      "wings": ["backend"],
+      "top_relation_types": [
+        {"type": "related", "count": 2},
+        {"type": "similar", "count": 1}
+      ],
+      "representative_entries": [
+        {"id": 1, "title": "Auth Pattern", "category": "pattern"},
+        {"id": 2, "title": "Login Fix", "category": "mistake"},
+        {"id": 3, "title": "Token Decision", "category": "decision"}
+      ]
+    },
+    {
+      "id": "c-4",
+      "entry_count": 2,
+      "top_categories": [
+        {"name": "mistake", "count": 1},
+        {"name": "pattern", "count": 1}
+      ],
+      "wings": ["frontend"],
+      "top_relation_types": [
+        {"type": "related", "count": 1}
+      ],
+      "representative_entries": [
+        {"id": 4, "title": "UI Component", "category": "pattern"},
+        {"id": 5, "title": "CSS Mistake", "category": "mistake"}
+      ]
+    }
+  ]
+}
