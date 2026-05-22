@@ -40,6 +40,7 @@ if str(REPO) not in sys.path:
 # Minimal helper
 # ---------------------------------------------------------------------------
 
+
 def test(name: str, condition: bool, detail: str = "") -> None:
     global PASS, FAIL
     if condition:
@@ -77,8 +78,10 @@ SCRATCH.mkdir(parents=True, exist_ok=True)
 
 print("\n🔑 _content_hash")
 
+
 def _sha256_prefix(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
+
 
 # Known content
 tf = SCRATCH / "hash_test.md"
@@ -281,9 +284,11 @@ test("hp: initial sigs has 3-element entry", len(hp_sigs.get(str(hp_f), [])) == 
 _hash_call_count = []
 _orig_content_hash = _ws._content_hash
 
+
 def _counting_hash(path: Path) -> str:
     _hash_call_count.append(str(path))
     return _orig_content_hash(path)
+
 
 _ws._content_hash = _counting_hash
 
@@ -291,8 +296,7 @@ _ws._content_hash = _counting_hash
 _hash_call_count.clear()
 hp_sigs2 = _ws.check_and_index(hp_sigs, [hp_root])
 called_for_hp = any(str(hp_f) in p for p in _hash_call_count)
-test("hot-path: _content_hash NOT called for stable file", not called_for_hp,
-     f"hash called for: {_hash_call_count}")
+test("hot-path: _content_hash NOT called for stable file", not called_for_hp, f"hash called for: {_hash_call_count}")
 test("hot-path: stored hash preserved", hp_sigs2.get(str(hp_f), [None, None, None])[2] == hp_sigs.get(str(hp_f))[2])
 
 # Write new content; sleep briefly so mtime advances on coarse-grained filesystems.
@@ -314,15 +318,22 @@ _ws.run_indexer = lambda incremental=True: True  # keep no-op
 hp_sigs3 = _ws.check_and_index(hp_sigs, [hp_root])
 called_after_change = any(str(hp_f) in p for p in _hash_call_count)
 if _sig_changed:
-    test("hot-path: _content_hash IS called after mtime changes", called_after_change,
-         f"hash NOT called despite content change")
-    test("hot-path: new hash stored after change",
-         hp_sigs3.get(str(hp_f), [None, None, None])[2] != hp_sigs.get(str(hp_f))[2])
+    test(
+        "hot-path: _content_hash IS called after mtime changes",
+        called_after_change,
+        f"hash NOT called despite content change",
+    )
+    test(
+        "hot-path: new hash stored after change",
+        hp_sigs3.get(str(hp_f), [None, None, None])[2] != hp_sigs.get(str(hp_f))[2],
+    )
 else:
     # Coarse-grained filesystem: signature unchanged → hot-path correctly
     # reused stored hash; just verify the stored value was preserved.
-    test("hot-path: coarse-fs stable sig → stored hash preserved (hot-path no-op)",
-         hp_sigs3.get(str(hp_f), [None, None, None])[2] == hp_sigs.get(str(hp_f))[2])
+    test(
+        "hot-path: coarse-fs stable sig → stored hash preserved (hot-path no-op)",
+        hp_sigs3.get(str(hp_f), [None, None, None])[2] == hp_sigs.get(str(hp_f))[2],
+    )
 
 # Legacy backfill: prev_sigs has 2-element entry (no stored hash) → one hash call expected
 hp_f.write_text("stable content", encoding="utf-8")  # reset to stable
@@ -330,16 +341,22 @@ _hash_call_count.clear()
 legacy_prev = {str(hp_f): list(_ws.get_file_signatures([hp_root]).get(str(hp_f), (0, 0)))}  # 2-elem
 hp_sigs4 = _ws.check_and_index(legacy_prev, [hp_root])
 called_for_backfill = any(str(hp_f) in p for p in _hash_call_count)
-test("hot-path: legacy 2-elem entry triggers one-time backfill hash", called_for_backfill,
-     "expected _content_hash called once for upgrade backfill")
+test(
+    "hot-path: legacy 2-elem entry triggers one-time backfill hash",
+    called_for_backfill,
+    "expected _content_hash called once for upgrade backfill",
+)
 test("hot-path: backfill produces 3-elem entry", len(hp_sigs4.get(str(hp_f), [])) == 3)
 
 # Subsequent poll after backfill: now 3-elem → no hash call
 _hash_call_count.clear()
 _ws.check_and_index(hp_sigs4, [hp_root])
 called_after_backfill = any(str(hp_f) in p for p in _hash_call_count)
-test("hot-path: no hash call on poll after backfill", not called_after_backfill,
-     f"unexpected hash calls: {_hash_call_count}")
+test(
+    "hot-path: no hash call on poll after backfill",
+    not called_after_backfill,
+    f"unexpected hash calls: {_hash_call_count}",
+)
 
 # Restore
 _ws._content_hash = _orig_content_hash
@@ -388,11 +405,12 @@ _ws.LOCK_FILE = orig_lock
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed")
 
 # Cleanup
 import shutil
+
 try:
     shutil.rmtree(SCRATCH, ignore_errors=True)
 except Exception:

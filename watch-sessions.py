@@ -347,7 +347,7 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool 
     """
     global _check_and_index_poll
     _check_and_index_poll += 1
-    force_verify = (_check_and_index_poll % _PERIODIC_VERIFY_INTERVAL == 0)
+    force_verify = _check_and_index_poll % _PERIODIC_VERIFY_INTERVAL == 0
     current_mtime_sigs = get_file_signatures(watch_dirs)
 
     # Files that don't exist in previous state
