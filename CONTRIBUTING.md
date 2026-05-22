@@ -173,7 +173,7 @@ For `browse-ui/` changes, CI runs `pnpm format:check`. Fix formatting locally wi
 
 The browse-ui ESLint baseline promotes strictness by clean zone: repo-wide
 `@typescript-eslint/no-explicit-any` remains advisory (`warn`) while clean,
-low-churn directories such as `src/lib/hosts/**/*.{ts,tsx}` set the same rule to
+low-churn directories such as `src/lib/**/*.{ts,tsx}` set the same rule to
 `error`. Expand this pattern only after a directory has a clean lint baseline.
 
 For `remote-terminal/`, `npm run lint` still reports legacy complexity, size,

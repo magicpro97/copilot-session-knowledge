@@ -1271,7 +1271,7 @@ def test_contributing_md_local_vs_ci():
     )
     test(
         "CONTRIBUTING.md documents browse-ui clean zones",
-        "clean zone" in content and "src/lib/hosts" in content and "no-explicit-any" in content,
+        "clean zone" in content and "src/lib/**/*.{ts,tsx}" in content and "no-explicit-any" in content,
         "CONTRIBUTING.md should document the browse-ui clean-zone lint strategy",
     )
     test(
@@ -1330,7 +1330,7 @@ def test_architecture_md_ruff_surface():
     )
     test(
         "ARCHITECTURE.md documents browse-ui clean zones",
-        "clean zone" in content and "src/lib/hosts" in content and "no-explicit-any" in content,
+        "clean zone" in content and "src/lib/**/*.{ts,tsx}" in content and "no-explicit-any" in content,
         "docs/ARCHITECTURE.md should document the browse-ui clean-zone lint strategy",
     )
     test(
