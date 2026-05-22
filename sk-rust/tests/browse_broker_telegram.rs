@@ -311,6 +311,90 @@ async fn broker_strips_bot_username_suffix() {
     broker.run(child).await.expect("broker.run");
 }
 
+// ── Token-leak regression test ────────────────────────────────────────────────
+
+/// A forced HTTP transport error must not expose the bot token in its Display.
+///
+/// Telegram Bot API URLs contain the token as a path component
+/// (`/bot<TOKEN>/method`).  `reqwest::Error::Display` includes the request URL
+/// by default; `BrokerError::from` must strip it via `without_url()`.
+#[tokio::test]
+async fn http_error_does_not_leak_bot_token() {
+    let server = MockServer::start().await;
+    let token = "SUPER_SECRET_FAKE_TOKEN_ABCXYZ";
+
+    // Respond only after a 30-second delay — far longer than our client
+    // timeout — so reqwest times out and returns an error that normally
+    // embeds the request URL (and thus the token).
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30)))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/bot{}/getUpdates", server.uri(), token);
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .unwrap();
+
+    let raw_err = client
+        .post(&url)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect_err("request must time out before the delayed response");
+
+    // After conversion through BrokerError::from, the token must be absent.
+    // (reqwest::Error::without_url() strips the URL path before we format it.)
+    let broker_err = sk::browse::broker::BrokerError::from(raw_err);
+    let safe_display = format!("{broker_err}");
+    assert!(
+        !safe_display.contains(token),
+        "BrokerError::from must strip the token from the error; got: {safe_display}"
+    );
+    assert!(
+        safe_display.starts_with("HTTP error:"),
+        "should still identify as HTTP error: {safe_display}"
+    );
+}
+
+// ── Non-ASCII chunking regression tests ─────────────────────────────────────
+
+/// chunk_text must not panic when a multi-byte emoji sits on the 4096-byte boundary.
+#[test]
+fn chunk_text_emoji_crossing_byte_boundary_no_panic() {
+    // 😀 is 4 bytes. 1025 repetitions = 4100 bytes (just over Telegram's 4096 limit).
+    // Without floor_char_boundary the old code would try to slice at byte 4096,
+    // which falls in the middle of the 1024th emoji and would panic.
+    let text: String = "😀".repeat(1025);
+    assert_eq!(text.len(), 4100);
+    let chunks = chunk_text(&text, 4096);
+    assert!(!chunks.is_empty(), "must produce at least one chunk");
+    // Chunks must reassemble cleanly.
+    let reassembled: String = chunks.join("");
+    assert_eq!(reassembled, text, "reassembled text must equal original");
+    // Every chunk must be valid UTF-8 (slice alignment correctness).
+    for chunk in &chunks {
+        assert!(
+            std::str::from_utf8(chunk.as_bytes()).is_ok(),
+            "chunk is not valid UTF-8: {chunk:?}"
+        );
+    }
+}
+
+/// Same boundary test with 3-byte CJK characters.
+#[test]
+fn chunk_text_cjk_crossing_byte_boundary_no_panic() {
+    // '中' is 3 bytes. 1366 repetitions = 4098 bytes (just over 4096).
+    let text: String = "中".repeat(1366);
+    assert_eq!(text.len(), 4098);
+    let chunks = chunk_text(&text, 4096);
+    assert!(!chunks.is_empty());
+    let reassembled: String = chunks.join("");
+    assert_eq!(reassembled, text);
+}
+
 // ── Retry on 500 ─────────────────────────────────────────────────────────────
 
 #[tokio::test]

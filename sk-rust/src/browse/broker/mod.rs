@@ -43,7 +43,11 @@ impl Default for BrokerConfig {
 /// Errors that may occur during broker operation.
 #[derive(Debug)]
 pub enum BrokerError {
-    Http(reqwest::Error),
+    /// Transport/HTTP error. The message is pre-sanitized: the request URL
+    /// (which contains the bot token as a path component) is stripped via
+    /// `reqwest::Error::without_url()` before storing, so this variant is safe
+    /// to log or display at any log level without leaking credentials.
+    Http(String),
     Api(String),
     Json(String),
     Shutdown,
@@ -52,7 +56,7 @@ pub enum BrokerError {
 impl std::fmt::Display for BrokerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BrokerError::Http(e) => write!(f, "HTTP error: {e}"),
+            BrokerError::Http(s) => write!(f, "HTTP error: {s}"),
             BrokerError::Api(s) => write!(f, "API error: {s}"),
             BrokerError::Json(s) => write!(f, "JSON parse error: {s}"),
             BrokerError::Shutdown => write!(f, "shutdown requested"),
@@ -60,18 +64,14 @@ impl std::fmt::Display for BrokerError {
     }
 }
 
-impl std::error::Error for BrokerError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            BrokerError::Http(e) => Some(e),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for BrokerError {}
 
 impl From<reqwest::Error> for BrokerError {
     fn from(e: reqwest::Error) -> Self {
-        BrokerError::Http(e)
+        // Strip the request URL before converting to a string. Telegram URLs
+        // have the form `/bot<TOKEN>/method`, so without_url() prevents the
+        // bot token from appearing in any formatted or logged error.
+        BrokerError::Http(e.without_url().to_string())
     }
 }
 
@@ -105,36 +105,81 @@ pub async fn backoff_sleep(consecutive_errors: u32, max_secs: u64) {
 
 // ── Message chunking ──────────────────────────────────────────────────────────
 
-/// Split `text` into chunks of at most `max_chars` characters.
+/// Returns the largest byte index ≤ `index` that lies on a valid UTF-8 char
+/// boundary in `s`.  If `index ≥ s.len()`, returns `s.len()`.
+///
+/// Equivalent to `str::floor_char_boundary` (stable since Rust 1.91); written
+/// here to stay compatible with our MSRV (Rust 1.75).
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let capped = index.min(s.len());
+    let mut i = capped;
+    // Walk backwards until we hit a valid boundary (is_char_boundary is true
+    // at every position that is the start of a Unicode scalar value).
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Split `text` into chunks of at most `max_chars` *bytes*.
 ///
 /// Prefers splitting at `\n\n` (paragraph boundary), falls back to `\n`,
-/// then hard-splits at `max_chars`.  Mirrors Python `_chunk_text` semantics:
-/// trailing whitespace is stripped from each chunk; leading whitespace from
-/// the remainder is stripped.
+/// then hard-splits at or before the byte limit, always on a valid UTF-8
+/// char boundary.  Mirrors Python `_chunk_text` semantics: trailing
+/// whitespace is stripped from each chunk; leading whitespace from the
+/// remainder is stripped.
+///
+/// # Safety
+/// Never panics: all slice indices are validated against UTF-8 char
+/// boundaries using [`str::floor_char_boundary`] (stable since Rust 1.73).
+/// Never produces an infinite loop: each iteration advances by at least
+/// one character.
 pub fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![];
+    }
     if text.len() <= max_chars {
         return vec![text.to_owned()];
     }
 
     let mut chunks = Vec::new();
-    let mut remaining = text.to_owned();
+    let mut remaining = text;
 
     while remaining.len() > max_chars {
-        let window = &remaining[..max_chars];
+        // Find the largest byte index ≤ max_chars that sits on a UTF-8 char
+        // boundary.  This is always safe: floor_char_boundary is guaranteed
+        // to return an index in 0..=remaining.len().
+        let byte_limit = floor_char_boundary(remaining, max_chars);
+
+        // If the first character alone exceeds max_chars bytes (e.g. a 4-byte
+        // emoji when max_chars = 1), advance past it so we never loop forever.
+        let byte_limit = if byte_limit == 0 {
+            remaining.chars().next().map_or(1, char::len_utf8)
+        } else {
+            byte_limit
+        };
+
+        let window = &remaining[..byte_limit];
 
         // Prefer blank-line split, fallback to newline, fallback to hard split.
-        let split_at = window
+        let mut split_at = window
             .rfind("\n\n")
             .or_else(|| window.rfind('\n'))
-            .unwrap_or(max_chars);
+            .unwrap_or(byte_limit);
+
+        // Ensure we always advance (rfind("\n\n") can return 0 when the
+        // window starts with "\n\n").
+        if split_at == 0 {
+            split_at = byte_limit;
+        }
 
         let (chunk, rest) = remaining.split_at(split_at);
         chunks.push(chunk.trim_end().to_owned());
-        remaining = rest.trim_start().to_owned();
+        remaining = rest.trim_start();
     }
 
     if !remaining.is_empty() {
-        chunks.push(remaining);
+        chunks.push(remaining.to_owned());
     }
 
     chunks
@@ -176,6 +221,57 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), 100);
         assert_eq!(chunks[1].len(), 100);
+    }
+
+    #[test]
+    fn broker_error_http_display_never_contains_token() {
+        // BrokerError::Http stores a sanitized string (no URL).
+        // Verify Display does not accidentally embed a token-shaped string.
+        let token = "MY_SECRET_BOT_TOKEN";
+        let err = BrokerError::Http("connection refused".to_owned());
+        let displayed = format!("{err}");
+        assert!(
+            !displayed.contains(token),
+            "Http variant must not contain token: {displayed}"
+        );
+        assert!(
+            displayed.starts_with("HTTP error:"),
+            "Http variant Display should start with 'HTTP error:': {displayed}"
+        );
+    }
+
+    #[test]
+    fn chunk_text_non_ascii_no_panic() {
+        // Each emoji is 4 bytes. 1025 emojis = 4100 bytes, slightly over 4096.
+        // With a hard byte limit of 4096, a naive slice would land mid-emoji
+        // and panic; floor_char_boundary must prevent that.
+        let emoji = "😀";
+        assert_eq!(emoji.len(), 4, "sanity: emoji is 4 bytes");
+        let text: String = emoji.repeat(1025); // 4100 bytes, no newlines
+        let chunks = chunk_text(&text, 4096);
+        // Must produce chunks; no panic
+        assert!(!chunks.is_empty(), "should produce at least one chunk");
+        for chunk in &chunks {
+            assert!(!chunk.is_empty(), "no empty chunks");
+            // Every chunk must be valid UTF-8 (already guaranteed by &str, but
+            // verify boundary slicing didn't corrupt anything).
+            assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());
+        }
+        // Reassembling should give back the original text.
+        let reassembled: String = chunks.join("");
+        assert_eq!(reassembled, text, "chunks must reassemble to original text");
+    }
+
+    #[test]
+    fn chunk_text_cjk_boundary_no_panic() {
+        // CJK characters are 3 bytes each. 1366 CJK chars = 4098 bytes (> 4096).
+        let cjk = "中";
+        assert_eq!(cjk.len(), 3, "sanity: CJK char is 3 bytes");
+        let text: String = cjk.repeat(1366); // 4098 bytes, no newlines
+        let chunks = chunk_text(&text, 4096);
+        assert!(!chunks.is_empty());
+        let reassembled: String = chunks.join("");
+        assert_eq!(reassembled, text);
     }
 
     #[test]

@@ -289,7 +289,7 @@ impl TelegramClient {
             None => self.client.post(&url).json(&json!({})),
         };
 
-        let response = req.send().await.map_err(BrokerError::Http)?;
+        let response = req.send().await.map_err(BrokerError::from)?;
         let status = response.status();
 
         // 429 and 5xx are retriable — surface as Api error for the retry loop.
