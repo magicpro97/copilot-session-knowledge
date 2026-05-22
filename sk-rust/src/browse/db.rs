@@ -74,11 +74,11 @@ impl Drop for CheckpointHandle {
 
 /// Stats collected for `GET /healthz`.
 pub struct HealthzStats {
-    /// Highest migration version in `migration_log`, or `0` when absent.
+    /// Highest migration version in `schema_version`, or `0` when absent.
     pub schema_version: i64,
     /// Count of rows in `sessions`, or `0` when the table is absent.
     pub sessions: i64,
-    /// Count of non-soft-deleted rows in `knowledge_entries`.
+    /// Count of rows in `knowledge_entries`.
     pub knowledge_entries: i64,
     /// `MAX(indexed_at)` from `sessions`, or `None` when the table is absent
     /// or empty.
@@ -577,11 +577,11 @@ impl BrowseDb {
         Ok(rows)
     }
 
-    /// Highest `version` from `migration_log`, or `0` when the table is absent.
+    /// Highest `version` from `schema_version`, or `0` when the table is absent.
     pub fn schema_version(&self) -> anyhow::Result<i64> {
         let conn = self.read_pool.get()?;
         let v = conn
-            .query_row("SELECT MAX(version) FROM migration_log", [], |r| {
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| {
                 r.get::<_, Option<i64>>(0)
             })
             .unwrap_or(None)
@@ -652,20 +652,16 @@ impl BrowseDb {
         let conn = self.read_pool.get()?;
 
         let schema_version = conn
-            .query_row("SELECT MAX(version) FROM migration_log", [], |r| {
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| {
                 r.get::<_, Option<i64>>(0)
             })
             .unwrap_or(None)
             .unwrap_or(0);
 
-        let has_sd = crate::db::fts::has_soft_delete(&conn);
-        let ke_sql = if has_sd {
-            "SELECT COUNT(*) FROM knowledge_entries WHERE deleted_at IS NULL"
-        } else {
-            "SELECT COUNT(*) FROM knowledge_entries"
-        };
         let knowledge_entries = conn
-            .query_row(ke_sql, [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM knowledge_entries", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0);
 
         let sessions = conn
@@ -956,7 +952,7 @@ mod tests {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, name TEXT DEFAULT '');
              CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS knowledge_entries (
                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -973,7 +969,7 @@ mod tests {
                  USING fts5(content, content=knowledge_entries, content_rowid=id);
              CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts
                  USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
-             INSERT INTO migration_log VALUES (1);
+             INSERT INTO schema_version (version, name) VALUES (1, 'test');
              INSERT INTO sessions VALUES ('sess-1');
              INSERT INTO sessions VALUES ('sess-2');
              INSERT INTO knowledge_entries
@@ -1095,8 +1091,8 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);
-             INSERT INTO migration_log VALUES (1);",
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, name TEXT DEFAULT '');
+             INSERT INTO schema_version (version, name) VALUES (1, 'test');",
         )
         .unwrap();
         drop(conn);

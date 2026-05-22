@@ -36,7 +36,7 @@ fn seeded_db(label: &str) -> (std::path::PathBuf, Arc<BrowseDb>) {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, name TEXT DEFAULT '');
              -- Production-faithful sessions schema (base + all migration columns).
              CREATE TABLE IF NOT EXISTS sessions (
                id TEXT PRIMARY KEY,
@@ -79,7 +79,7 @@ fn seeded_db(label: &str) -> (std::path::PathBuf, Arc<BrowseDb>) {
                confidence REAL NOT NULL DEFAULT 0.5,
                deleted_at INTEGER
              );
-             INSERT INTO migration_log VALUES (1);
+             INSERT INTO schema_version (version, name) VALUES (1, 'test');
              INSERT INTO sessions (id, path, fts_indexed_at) VALUES
                ('s-a', '/a', 1717243200.0),
                ('s-b', '/b', 1704103200.0);

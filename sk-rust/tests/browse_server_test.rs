@@ -38,7 +38,7 @@ fn mk_db() -> Arc<BrowseDb> {
                confidence REAL NOT NULL DEFAULT 0.5,\
                deleted_at INTEGER\
              );\
-             CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);",
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, name TEXT DEFAULT '');",
         )
         .unwrap();
     }
