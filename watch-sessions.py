@@ -316,14 +316,15 @@ def run_extractor(changed_files: list | None = None, session_ids: list | None = 
 def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool = False) -> dict:
     """Compare current files with previous state, index if changed.
 
-    Uses hybrid mtime+size fast-path followed by content-hash verification.
-    Files whose mtime/size changed but whose content is identical are skipped
-    (e.g., touch, editor autosave with no edits) so the indexer only runs when
-    content actually differs.
+    Hot-path optimisation: files whose mtime+size are unchanged skip the
+    content-hash read entirely — the stored hash is reused directly.  Only
+    new files and files with a changed mtime or size pay the hash cost.
+    Files whose mtime/size changed but whose content is identical are still
+    skipped from re-indexing (e.g., touch or editor autosave with no edits).
 
     Returns enriched signatures {filepath: [mtime, size, content_hash]}.
     State is backward-compatible: old 2-element entries trigger a one-time
-    hash computation on the first poll after upgrade.
+    hash computation on the first poll after upgrade without re-indexing.
     """
     current_mtime_sigs = get_file_signatures(watch_dirs)
 
@@ -351,19 +352,17 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool 
                 content_changed.add(fp)
             enriched_sigs[fp] = [mtime, size, h]
         else:
-            # mtime/size stable — verify hash to catch same-tick or same-size
-            # content changes that bypass mtime/size detection.  Also handles the
-            # one-time legacy backfill for 2-element entries (no stored hash yet).
+            # mtime/size stable → skip disk read entirely (hot-path cache hit).
+            # The stored hash is still valid: content cannot change without at
+            # least one of mtime or size changing on any mainstream OS/filesystem.
+            # One exception: legacy 2-element entries have no stored hash yet —
+            # backfill with a one-time hash on the first poll after upgrade,
+            # but do NOT mark the file as changed.
             prev = prev_sigs.get(fp, [])
             stored_hash = prev[2] if len(prev) >= 3 else ""
-            current_hash = _content_hash(Path(fp))
             if not stored_hash:
                 # First poll after upgrade: backfill without re-indexing.
-                stored_hash = current_hash
-            elif current_hash != stored_hash:
-                # Content changed despite stable mtime/size (e.g. same-tick write).
-                content_changed.add(fp)
-                stored_hash = current_hash
+                stored_hash = _content_hash(Path(fp))
             enriched_sigs[fp] = [mtime, size, stored_hash]
 
     all_changed = sorted(new_files | content_changed)
