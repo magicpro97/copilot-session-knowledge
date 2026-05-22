@@ -41,6 +41,17 @@ browse-server  = [
     "tokio/fs",
     "tokio/process",
 ]
+# Issue #454 (PR-A): async Telegram (and later Discord/Ably/Slack) broker.
+# Not enabled by default; activate with --features browse-broker.
+browse-broker  = [
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+    "tokio/rt-multi-thread",
+    "tokio/macros",
+    "tokio/signal",
+]
 
 [dependencies]
 clap      = { version = "4",    features = ["derive"] }
@@ -74,6 +85,7 @@ tracing     = { version = "0.1", optional = true }
 r2d2        = { version = "0.8", optional = true }
 r2d2_sqlite = { version = "0.24", optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+tokio-util   = { version = "0.7", optional = true }
 rand        = { version = "0.9", optional = true }
 uuid        = { version = "1", features = ["v4", "serde"], optional = true }
 # dunce avoids \\?\ extended-length prefix leaking into stored paths on Windows.
@@ -88,6 +100,9 @@ tower     = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile  = "3"
 serial_test = "3"
+wiremock  = "0.6"
+tokio     = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest   = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [[bin]]
 name = "sk"
