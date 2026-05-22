@@ -39,6 +39,7 @@ browse-server  = [
     "tokio/signal",
     "tokio/net",
     "tokio/fs",
+    "tokio/process",
 ]
 
 [dependencies]

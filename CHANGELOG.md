@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **chore(quality):** add language-specific `.editorconfig` indent rules and advisory `pnpm lint:all` script (issue #459 PR-A; Rust/Python/global-any tightening deferred behind #450–#453).
 
 ### Added
+- **Rust workflow health proxy endpoint (#453 PR-B):** `GET /api/workflow/health` wired into the
+  Axum browse server. Proxies `workflow-health.py --json` through a new shared
+  `subprocess_proxy` helper. Supports cross-platform Python discovery (`COPILOT_PYTHON`,
+  `py -3`, `python3`, `python`). Error codes: `WORKFLOW_HEALTH_UNAVAILABLE`,
+  `WORKFLOW_HEALTH_ERROR`, `WORKFLOW_HEALTH_TIMEOUT`, `WORKFLOW_HEALTH_PARSE_ERROR`.
+  Deferred: `/api/knowledge/insights`, `/api/retro/summary`.
 - **Cron DB maintenance tasks (#464):** `cron-tasks.py` gains two new scheduled templates:
   `wal-checkpoint` (daily `PRAGMA wal_checkpoint(TRUNCATE)` at 04:00) and `vacuum` (weekly
   `VACUUM` + `PRAGMA quick_check` on Sunday at 04:30).  Both helpers return structured result
