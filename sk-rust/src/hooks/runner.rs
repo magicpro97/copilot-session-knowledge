@@ -228,7 +228,14 @@ pub(crate) fn dispatch_rules(event: &str, data: &Value) {
             if !msg.is_empty() {
                 println!("{msg}");
             }
-            let truncated = &msg[..msg.len().min(100)];
+            // Truncate to at most 100 bytes at a UTF-8 char boundary; info messages
+            // routinely contain multi-byte glyphs (e.g. box-drawing separators) that
+            // would otherwise panic on a raw byte slice.
+            let mut end = msg.len().min(100);
+            while end > 0 && !msg.is_char_boundary(end) {
+                end -= 1;
+            }
+            let truncated = &msg[..end];
             audit_log(event, tool_name, rule.name(), "info", truncated);
         }
     }
