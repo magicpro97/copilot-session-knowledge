@@ -15,19 +15,58 @@ use serde::Serialize;
 
 /// A validated, read-only operator action.
 ///
+/// Fields are private to enforce construction only through [`make_action`],
+/// which guarantees `safe == true` and a non-empty `command`.
 /// JSON output omits optional keys when `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperatorAction {
-    pub id: String,
-    pub title: String,
-    pub description: String,
-    pub command: String,
+    id: String,
+    title: String,
+    description: String,
+    command: String,
     /// Always `true` — enforced by [`make_action`].
-    pub safe: bool,
+    safe: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub requires_configured_gateway: Option<bool>,
+    requires_configured_gateway: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub requires_configured_target: Option<bool>,
+    requires_configured_target: Option<bool>,
+}
+
+impl OperatorAction {
+    /// The action identifier.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Human-readable title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Human-readable description.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// The CLI command to display. Always non-empty.
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Always `true` — operator actions are read-only diagnostics.
+    pub fn safe(&self) -> bool {
+        self.safe
+    }
+
+    /// Whether a configured gateway is required to run this action.
+    pub fn requires_configured_gateway(&self) -> Option<bool> {
+        self.requires_configured_gateway
+    }
+
+    /// Whether a configured target is required to run this action.
+    pub fn requires_configured_target(&self) -> Option<bool> {
+        self.requires_configured_target
+    }
 }
 
 /// Input struct for [`make_action`].
@@ -107,7 +146,7 @@ mod tests {
     #[test]
     fn make_action_minimal_serializes_without_optional_keys() {
         let action = make_action(minimal()).unwrap();
-        assert!(action.safe);
+        assert!(action.safe());
         let json: serde_json::Value = serde_json::to_value(&action).unwrap();
         let obj = json.as_object().unwrap();
         assert_eq!(
