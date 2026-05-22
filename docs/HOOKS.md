@@ -64,6 +64,7 @@ hooks/
 | `error-fix-nudge` | postToolUse | After an `errorOccurred` marker, reminds on bash/edit/create to record the eventual fix with `sk learn`; clears automatically when learn is detected. |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
 | `session-compiler` | sessionEnd | Opt-in (`SK_SESSION_COMPILE_ENABLED=1`) deterministic session-end compiler that consolidates raw knowledge entries into higher-level compiled entries; fail-open. |
+| `skill-improvement-advisor` | sessionEnd | Analyzes session knowledge: mistakes/patterns recorded recently, high-recurrence entries (briefed but recurring), and `improvement_signals` entries (missed_match / wrong_skill / outdated). Writes up to 5 actionable skill-improvement suggestions to `~/.copilot/markers/skill-improvement-pending.json`. The next session's `auto-briefing` (sessionStart) reads, surfaces, and deletes the queue file — suggestions appear once. Data sources: `knowledge.db` entries from the last 4 hours. Fail-open; never blocks session end. |
 | `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs `scripts/check_syntax.py` on **all** staged `.py` files — fail-open when `check_syntax.py` is absent; (4) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (5) runs `scripts/check_complexity.py` as a non-blocking advisory on staged `.py` files; (6) runs Prettier format check on supported staged files under `browse-ui/src/`. Checks (3)–(6) are **fail-open** — they silently skip when the respective tool is not installed. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
@@ -507,7 +508,7 @@ Rule 9 now has a **partial hook enforcement surface** via `verification-gate`. T
 | Claim type | Hook enforcement | Policy enforcement |
 |------------|-----------------|-------------------|
 | "Format / lint clean" | `verification-gate` blocks closeout after dirty `browse-ui` TS/JS edits until `pnpm format:check` and `pnpm lint` succeed | For non-`browse-ui` surfaces, the agent must still run the command and attach output |
-| "Tests pass" | `verification-gate` blocks closeout after dirty Python edits until `test_security.py`, `test_fixes.py`, `pytest`, or equivalent recorded test commands succeed | Agent must still record pass/fail counts in the handoff/comment |
+| "Tests pass" | `verification-gate` blocks closeout after dirty Python edits until `test_security.py` (earns `py_security`) AND `test_fixes.py` (earns `py_fixes`) both succeed and are recorded as separate ledger keys; `pytest`/`run_all_tests.py` earns both keys together | Agent must still record pass/fail counts in the handoff/comment |
 | "CI is green" | None | Agent must supply CI run URL or job output |
 | "Build succeeds" | `verification-gate` blocks closeout after dirty `browse-ui` TS/JS edits until `pnpm build` succeeds; `syntax-gate` still covers Python syntax only | Non-`browse-ui` build claims still need explicit command output |
 | "Tool works" (runtime) | None | Agent must include runtime execution evidence |

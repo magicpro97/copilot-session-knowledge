@@ -114,8 +114,9 @@ pub fn run_hook(event: &str) {
 
     // Mark active before dispatching so any subprocess we spawn inherits the guard.
     // Mirrors Python `os.environ["SK_HOOK_ACTIVE"] = "1"`.
-    // Best-effort: ignore set_var failures (the recursion guard is advisory).
-    let _ = std::env::set_var("SK_HOOK_ACTIVE", "1");
+    // Best-effort: set_var is infallible on supported platforms; the recursion
+    // guard is advisory.
+    std::env::set_var("SK_HOOK_ACTIVE", "1");
 
     // --- Parse stdin (fail-open) ---
     let mut raw = String::new();

@@ -1866,6 +1866,152 @@ test_new_file_advisory_rule()
 test_new_file_advisory_registered()
 test_hooks_md_new_file_advisory_documented()
 
+
+# ── Test 37–39: Instruction parity, Quality Checklist anchor, and ───────────
+#                verification-gate Python evidence split.
+AUDIT_SCRIPT = REPO / "audit-instructions.py"
+AGENT_RULES_MD = REPO / "docs" / "AGENT-RULES.md"
+COPILOT_MD = REPO / ".github" / "copilot-instructions.md"
+AGENTS_MD = REPO / "AGENTS.md"
+
+
+def test_audit_instructions_parity_and_checklist():
+    """`audit-instructions.py --json --fail-on-drift` must succeed on a clean tree
+    and the JSON payload must expose the parity + checklist fields the CI gate
+    relies on."""
+    if not AUDIT_SCRIPT.exists():
+        test("audit-instructions.py exists", False)
+        return
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(AUDIT_SCRIPT), "--json", "--fail-on-drift", "--repo-root", str(REPO)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:
+        test("audit-instructions.py --json runs", False, str(exc))
+        return
+
+    test(
+        "audit-instructions.py --fail-on-drift exits 0 on clean tree",
+        proc.returncode == 0,
+        f"stderr={proc.stderr[:400]} stdout_tail={proc.stdout[-200:]}",
+    )
+
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        test("audit-instructions.py --json is valid JSON", False, str(exc))
+        return
+
+    summary = payload.get("summary", {})
+    test(
+        "audit summary exposes rule_count_parity",
+        summary.get("rule_count_parity") is True,
+        f"summary={summary}",
+    )
+    test(
+        "audit summary exposes title_mismatch_count == 0",
+        summary.get("title_mismatch_count") == 0,
+        f"summary={summary}",
+    )
+    test(
+        "audit summary exposes quality_checklist_missing == []",
+        summary.get("quality_checklist_missing") == [],
+        f"missing={summary.get('quality_checklist_missing')}",
+    )
+    counts = summary.get("parity_counts", {})
+    test(
+        "parity_counts covers AGENT-RULES, copilot, AGENTS surfaces",
+        len(counts) == 3 and all(v > 0 for v in counts.values()),
+        f"counts={counts}",
+    )
+
+
+def test_quality_checklist_anchor_in_all_surfaces():
+    """Each instruction surface MUST contain a '## Quality Checklist' H2 anchor.
+    The runtime mirror, the concise root mirror, and the canonical doc all link
+    to this anchor so missing it silently breaks operator navigation."""
+    pattern = re.compile(r"^##\s+Quality Checklist\s*$", re.IGNORECASE | re.MULTILINE)
+    for label, path in (
+        ("docs/AGENT-RULES.md", AGENT_RULES_MD),
+        (".github/copilot-instructions.md", COPILOT_MD),
+        ("AGENTS.md", AGENTS_MD),
+    ):
+        if not path.exists():
+            test(f"{label} exists", False)
+            continue
+        content = path.read_text(encoding="utf-8")
+        test(
+            f"{label} contains '## Quality Checklist' anchor",
+            pattern.search(content) is not None,
+            f"missing anchor in {path}",
+        )
+
+
+def test_verification_gate_python_requirement_split():
+    """Wave-11 evidence-split: SURFACE_PY must require BOTH py_security AND py_fixes.
+    A regression here means broad runs would no longer be enough to clear the
+    gate, or per-suite runs would silently satisfy SURFACE_PY without the
+    security evidence."""
+    sys_path_added = False
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+        sys_path_added = True
+    try:
+        import importlib
+
+        mod = importlib.import_module("hooks.rules.verification_gate")
+    except Exception as exc:
+        test("hooks.rules.verification_gate import", False, str(exc))
+        if sys_path_added:
+            sys.path.remove(str(REPO))
+        return
+
+    test(
+        "SURFACE_PY constant == 'py'",
+        getattr(mod, "SURFACE_PY", None) == "py",
+    )
+    test(
+        "EV_PY_SECURITY constant == 'py_security'",
+        getattr(mod, "EV_PY_SECURITY", None) == "py_security",
+    )
+    test(
+        "EV_PY_FIXES constant == 'py_fixes'",
+        getattr(mod, "EV_PY_FIXES", None) == "py_fixes",
+    )
+
+    requirements = getattr(mod, "_REQUIREMENTS", {})
+    py_required = requirements.get(getattr(mod, "SURFACE_PY", "py"), set())
+    test(
+        "SURFACE_PY requires py_security AND py_fixes",
+        {"py_security", "py_fixes"}.issubset(py_required),
+        f"_REQUIREMENTS[SURFACE_PY]={sorted(py_required)}",
+    )
+
+    fix_cmds = getattr(mod, "_FIX_COMMANDS", {})
+    test(
+        "_FIX_COMMANDS maps py_security to test_security.py",
+        "test_security.py" in str(fix_cmds.get("py_security", "")),
+        f"fix={fix_cmds.get('py_security')}",
+    )
+    test(
+        "_FIX_COMMANDS maps py_fixes to test_fixes.py",
+        "test_fixes.py" in str(fix_cmds.get("py_fixes", "")),
+        f"fix={fix_cmds.get('py_fixes')}",
+    )
+
+    if sys_path_added:
+        sys.path.remove(str(REPO))
+
+
+test_audit_instructions_parity_and_checklist()
+test_quality_checklist_anchor_in_all_surfaces()
+test_verification_gate_python_requirement_split()
+
+
 print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:

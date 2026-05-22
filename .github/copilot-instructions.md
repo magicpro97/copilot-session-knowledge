@@ -39,9 +39,12 @@ This surfaces past mistakes, proven patterns, and relevant decisions. Skip only 
 After modifying any Python file, run the relevant tests:
 
 ```bash
-python3 test_security.py    # If touching: embed.py, sync-knowledge.py, watch-sessions.py, learn.py
-python3 test_fixes.py       # If touching: any script
+python3 test_security.py AND python3 test_fixes.py
+# test_security.py: required when touching embed.py, sync-knowledge.py, watch-sessions.py, learn.py
+# test_fixes.py:    required when touching any script
 ```
+
+**Both suites are required for closeout.** The verification-gate ledger tracks `py_security` and `py_fixes` as separate evidence keys; both must succeed before `task_complete`, `DONE` handoff, or issue close is permitted.
 
 Do NOT mark a task complete until the relevant tests pass. If you encounter a baseline failure, separate pre-existing breakage from regressions you introduced before proceeding.
 
@@ -168,12 +171,32 @@ Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation 
 
 > Full hook inventory: **[docs/AGENT-RULES.md](../docs/AGENT-RULES.md)** · **[docs/HOOKS.md](../docs/HOOKS.md)**
 
+## Quality Checklist
+
+> Concise runtime checklist. Canonical full version: **[docs/AGENT-RULES.md — Quality Checklist](../docs/AGENT-RULES.md#quality-checklist)**.
+
+**Preflight:** `sk briefing --auto --compact` → read target files → state dirty surfaces → dispatch reviewer for high-risk changes.
+
+**Edit:** minimal footprint · no SQL interpolation · no pickle · Windows UTF-8 guard on new scripts · justify new files · decompose functions >50 lines.
+
+**Verification by surface:**
+
+| Surface | Required evidence |
+|---------|-------------------|
+| Python | `python3 test_security.py AND python3 test_fixes.py` (both; `run_all_tests.py` covers both) |
+| Hooks/docs/skills | `python3 tests/test_quality_gates.py` |
+| browse-ui | `pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build` |
+| Rust | `cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test` |
+| remote-terminal | `npm test && npm run lint && npm run lint:clean` |
+
+**Closeout:** attach command output (not just assertions) · `sk learn` before `task_complete` · subagents handoff with `--status DONE --changed-file <file> --learn`.
+
 ## Testing
 
 ```bash
 python3 test_security.py    # 11 security tests (SQL injection, pickle, locks, paths)
 python3 test_fixes.py       # 137 tests (noise filter, sub-agent, launchd, DB health)
-# sk has no shortcut for project-local test scripts — use python3 directly
+# Both required for closeout. sk has no shortcut for project-local test scripts — use python3 directly
 ```
 
 Python validation runs through `run_all_tests.py`, but individual files use a mix of the custom `test()` helper and `unittest`/`test_*` style. For `browse-ui/` or CI changes, also run the relevant `pnpm` gates (`typecheck`, `lint`, `format:check`, `test`, `build`, and `test:e2e` when intentionally validating that surface). Keep GitHub Actions CI green.

@@ -16,7 +16,7 @@
 
 1. **Investigate before acting** — read target files with `grep`/`glob`/`view` before any edit; never modify without reading first.
 2. **Briefing before complex tasks** — run `sk briefing "<task>"` for tasks touching >1 file. (fallback: `python3 ~/.copilot/tools/briefing.py "<task>"`)
-3. **Test after every change** — run `python3 test_security.py` and/or `python3 test_fixes.py` after Python edits; do not mark complete until tests pass.
+3. **Test after every change** — run `python3 test_security.py AND python3 test_fixes.py` after Python edits (both required for closeout); do not mark complete until tests pass.
 4. **Verify before committing** — AST-parse every modified `.py` file; run both test suites; `git diff --stat` before commit.
 5. **Sub-agent model selection** — use `claude-sonnet-4.6` for code generation; `claude-opus-4.6` for security audits; never dispatch sub-agents with the default (haiku) model for code changes.
 6. **No guessing** — verify table names, function signatures, and file paths from source; never assume.
@@ -83,6 +83,26 @@ For `browse-ui/` changes: `cd browse-ui && pnpm typecheck && pnpm lint && pnpm f
 - NEVER add a new file without a documented responsibility, existing-home search, and lint/test/docs/CI surface decision
 - ALWAYS use `O_CREAT | O_EXCL` for process locks (no TOCTOU races)
 - ALWAYS run `sk briefing` before starting work on unfamiliar code (fallback: `python3 ~/.copilot/tools/briefing.py`)
+
+## Quality Checklist
+
+> Concise runtime checklist. Canonical full version: **[docs/AGENT-RULES.md — Quality Checklist](docs/AGENT-RULES.md#quality-checklist)**.
+
+**Preflight:** `sk briefing --auto --compact` → read target files → state dirty surfaces → dispatch reviewer for high-risk changes.
+
+**Edit:** minimal footprint · no SQL interpolation · no pickle · Windows UTF-8 guard on new scripts · justify new files · decompose functions >50 lines.
+
+**Verification by surface:**
+
+| Surface | Required evidence |
+|---------|-------------------|
+| Python | `python3 test_security.py AND python3 test_fixes.py` (both; `run_all_tests.py` covers both) |
+| Hooks/docs/skills | `python3 tests/test_quality_gates.py` |
+| browse-ui | `pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build` |
+| Rust | `cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test` |
+| remote-terminal | `npm test && npm run lint && npm run lint:clean` |
+
+**Closeout:** attach command output (not just assertions) · `sk learn` before `task_complete` · subagents handoff with `--status DONE --changed-file <file> --learn`.
 
 ## Hook Enforcement (Principle)
 

@@ -1031,7 +1031,10 @@ print("\n🔬 Section 7: VerificationGateRule")
 
 import rules.verification_gate as _vg_mod
 from rules.verification_gate import (
+    EV_PY_FIXES,
+    EV_PY_SECURITY,
     EV_PY_TESTS,
+    EV_PY_TESTS_BROAD,
     EV_UI_BUILD,
     EV_UI_FORMAT,
     EV_UI_LINT,
@@ -1074,10 +1077,39 @@ test("Markdown → empty", _surfaces_from_path("README.md") == set())
 
 # ── 7c. _evidence_from_command ────────────────────────────────────────
 
-test("test_security.py → py_tests", EV_PY_TESTS in _evidence_from_command("python3 test_security.py"))
-test("test_fixes.py → py_tests", EV_PY_TESTS in _evidence_from_command("python3 test_fixes.py"))
-test("run_all_tests.py → py_tests", EV_PY_TESTS in _evidence_from_command("python3 run_all_tests.py"))
-test("pytest → py_tests", EV_PY_TESTS in _evidence_from_command("pytest tests/"))
+# Per-suite split (wave 11): per-file commands earn per-suite keys only;
+# broad runs (`run_all_tests.py`, `pytest`) earn the full superset.
+test(
+    "test_security.py → {py_security} only",
+    _evidence_from_command("python3 test_security.py") == {EV_PY_SECURITY},
+)
+test(
+    "test_fixes.py → {py_fixes} only",
+    _evidence_from_command("python3 test_fixes.py") == {EV_PY_FIXES},
+)
+test(
+    "test_security.py && test_fixes.py → {py_security, py_fixes}",
+    _evidence_from_command("python3 test_security.py && python3 test_fixes.py")
+    == {EV_PY_SECURITY, EV_PY_FIXES},
+)
+test(
+    "run_all_tests.py → superset {py_security, py_fixes, py_tests}",
+    _evidence_from_command("python3 run_all_tests.py")
+    == {EV_PY_SECURITY, EV_PY_FIXES, EV_PY_TESTS_BROAD},
+)
+test(
+    "pytest → superset {py_security, py_fixes, py_tests}",
+    _evidence_from_command("pytest tests/")
+    == {EV_PY_SECURITY, EV_PY_FIXES, EV_PY_TESTS_BROAD},
+)
+test(
+    "generic test_random.py → {py_tests} only (broad alias)",
+    _evidence_from_command("python3 test_random.py") == {EV_PY_TESTS_BROAD},
+)
+test(
+    "EV_PY_TESTS alias is EV_PY_TESTS_BROAD",
+    EV_PY_TESTS is EV_PY_TESTS_BROAD and EV_PY_TESTS == "py_tests",
+)
 test("pnpm lint → ui_lint", EV_UI_LINT in _evidence_from_command("cd browse-ui && pnpm lint"))
 test("pnpm typecheck → ui_typecheck", EV_UI_TYPECHECK in _evidence_from_command("pnpm typecheck"))
 test("pnpm build → ui_build", EV_UI_BUILD in _evidence_from_command("cd browse-ui && pnpm build"))
@@ -1160,10 +1192,13 @@ try:
     test("Written evidence survives round-trip", EV_PY_TESTS in ledger["evidence"])
 
     with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
-        _write_ledger({SURFACE_PY, SURFACE_UI}, {EV_PY_TESTS, EV_UI_LINT})
+        _write_ledger({SURFACE_PY, SURFACE_UI}, {EV_PY_SECURITY, EV_PY_FIXES, EV_UI_LINT})
         ledger = _read_ledger()
     test("Multiple surfaces stored", {SURFACE_PY, SURFACE_UI} == ledger["dirty"])
-    test("Multiple evidence keys stored", {EV_PY_TESTS, EV_UI_LINT} == ledger["evidence"])
+    test(
+        "Multiple evidence keys stored",
+        {EV_PY_SECURITY, EV_PY_FIXES, EV_UI_LINT} == ledger["evidence"],
+    )
 
 finally:
     pass  # keep temp dir for following tests
@@ -1256,7 +1291,10 @@ try:
         )
         ledger = _read_ledger()
     test("postToolUse test run → returns None", result is None)
-    test("postToolUse test run → py_tests evidence recorded", EV_PY_TESTS in ledger["evidence"])
+    test(
+        "postToolUse test run → py_security + py_fixes evidence recorded",
+        {EV_PY_SECURITY, EV_PY_FIXES} <= ledger["evidence"],
+    )
 
     _fake_ledger.unlink(missing_ok=True)
     with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
@@ -1290,7 +1328,10 @@ try:
             },
         )
         ledger = _read_ledger()
-    test("postToolUse failed test → no evidence recorded", EV_PY_TESTS not in ledger["evidence"])
+    test(
+        "postToolUse failed test → no evidence recorded",
+        EV_PY_FIXES not in ledger["evidence"] and EV_PY_TESTS_BROAD not in ledger["evidence"],
+    )
 
     _fake_ledger.unlink(missing_ok=True)
     with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
@@ -1938,6 +1979,84 @@ try:
             },
         )
     test("Test run bash (not closeout) not gated", result is None)
+
+    # ── 7j-split. wave 11 evidence split acceptance cases ──────────────
+    # Closeout DENY when only one per-suite key is present.
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_SECURITY})
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test(
+        "Split: dirty=py, evidence={py_security} → deny",
+        result is not None and result.get("permissionDecision") == "deny",
+    )
+    reason = (result or {}).get("permissionDecisionReason", "")
+    test(
+        "Split deny reason mentions test_security.py AND test_fixes.py",
+        "test_security.py" in reason and "test_fixes.py" in reason,
+    )
+
+    # Same shape when py_fixes is the only one present.
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_FIXES})
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    reason = (result or {}).get("permissionDecisionReason", "")
+    test(
+        "Split: dirty=py, evidence={py_fixes} → deny (security still missing)",
+        result is not None and result.get("permissionDecision") == "deny",
+    )
+    test(
+        "Split deny message stable AND-joined for missing security",
+        "python3 test_security.py && python3 test_fixes.py" in reason,
+    )
+
+    # Closeout ALLOW when both per-suite keys are present (no broad key).
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_SECURITY, EV_PY_FIXES})
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test(
+        "Split: dirty=py, evidence={py_security, py_fixes} → allow",
+        result is None,
+    )
+
+    # Legacy upgrade: ledger from old code has only "py_tests" → still allowed.
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_TESTS_BROAD})
+        ledger_after_read = _read_ledger()
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test(
+        "Legacy upgrade: lone py_tests expands to include security+fixes on read",
+        {EV_PY_SECURITY, EV_PY_FIXES, EV_PY_TESTS_BROAD} <= ledger_after_read["evidence"],
+    )
+    test(
+        "Legacy upgrade: lone py_tests in ledger → closeout allowed",
+        result is None,
+    )
+
+    # Stale clear: ledger with all three Python keys then *.py edit clears all of them.
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_SECURITY, EV_PY_FIXES, EV_PY_TESTS_BROAD})
+        _ = rule.evaluate(
+            "preToolUse",
+            {"toolName": "edit", "toolArgs": {"path": "hooks/rules/another.py"}},
+        )
+        ledger_after_edit = _read_ledger()
+    test(
+        "Stale clear: .py edit removes py_security",
+        EV_PY_SECURITY not in ledger_after_edit["evidence"],
+    )
+    test(
+        "Stale clear: .py edit removes py_fixes",
+        EV_PY_FIXES not in ledger_after_edit["evidence"],
+    )
+    test(
+        "Stale clear: .py edit removes py_tests broad",
+        EV_PY_TESTS_BROAD not in ledger_after_edit["evidence"],
+    )
 
 finally:
     shutil.rmtree(_tmp_vg, ignore_errors=True)

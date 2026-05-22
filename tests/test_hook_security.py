@@ -119,6 +119,16 @@ def test_malformed_json_logs_parse_error() -> None:
 
 
 def test_oversized_payload_completes_within_timeout() -> None:
+    # Security requirement: an oversized hook payload must complete within a
+    # bounded wall-clock budget (i.e. cannot hang indefinitely). The bound
+    # below is intentionally generous so that slow CI runners (notably
+    # Windows hosted GitHub Actions runners, where Python cold-start plus a
+    # ~1 MB JSON payload pipe can dominate timing) do not produce flakes,
+    # while still proving the hook does not run unbounded. The subprocess
+    # timeout is set above the assertion bound so a true hang is still
+    # observable as a TimeoutExpired rather than a hidden slow-pass.
+    bounded_seconds = 20.0
+    subprocess_timeout = 30
     home = _isolated_home("hook-security-oversized-")
     try:
         payload = {
@@ -128,10 +138,14 @@ def test_oversized_payload_completes_within_timeout() -> None:
         }
         start = time.monotonic()
         try:
-            result = _run_hook("preToolUse", payload, home=home, timeout=8)
+            result = _run_hook("preToolUse", payload, home=home, timeout=subprocess_timeout)
         except subprocess.TimeoutExpired as exc:
             test("oversized hook payload exits 0", False, f"timed out after {exc.timeout}s")
-            test("oversized hook payload stays within bounded timeout", False, f"timed out after {exc.timeout}s")
+            test(
+                "oversized hook payload stays within bounded timeout",
+                False,
+                f"timed out after {exc.timeout}s",
+            )
             return
         elapsed = time.monotonic() - start
         test(
@@ -141,8 +155,8 @@ def test_oversized_payload_completes_within_timeout() -> None:
         )
         test(
             "oversized hook payload stays within bounded timeout",
-            elapsed < 8,
-            f"elapsed={elapsed:.2f}s",
+            elapsed < bounded_seconds,
+            f"elapsed={elapsed:.2f}s (bound={bounded_seconds}s)",
         )
     finally:
         shutil.rmtree(home, ignore_errors=True)

@@ -13,10 +13,12 @@ Usage:
     python audit-instructions.py --repo-root /path/to/repo
     python audit-instructions.py --db-path /path/to/knowledge.db
     python audit-instructions.py --top 10
+    python audit-instructions.py --fail-on-drift   # opt-in CI gate
 
 Exit codes:
-0 - report produced successfully
-1 - required instruction files missing or no numbered rules found
+0 - report produced successfully (default; preserved unless --fail-on-drift)
+1 - required instruction files missing, no numbered rules found, OR
+    (with --fail-on-drift) parity / Quality Checklist anchor drift detected
 2 - bad arguments
 """
 
@@ -40,6 +42,8 @@ DEFAULT_TOP = 10
 COPILOT_INSTRUCTIONS = Path(".github") / "copilot-instructions.md"
 AGENT_RULES = Path("docs") / "AGENT-RULES.md"
 AGENTS_SUMMARY = Path("AGENTS.md")
+
+QUALITY_CHECKLIST_ANCHOR = "quality checklist"
 
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _HEADING_RE = re.compile(r"^(#{2,6})\s+(.*)$")
@@ -409,6 +413,73 @@ def _audit_copilot_rules(rules: list[dict], knowledge_entries: list[dict]) -> li
     return audited
 
 
+def _has_quality_checklist_anchor(path: Path) -> bool:
+    """Return True iff the file contains a '## Quality Checklist' (any case) heading."""
+    if not path.exists():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    in_code = False
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        m = _HEADING_RE.match(line)
+        if not m:
+            continue
+        if _normalize_title(m.group(2)) == QUALITY_CHECKLIST_ANCHOR:
+            return True
+    return False
+
+
+def _detect_parity(rule_sets: dict[str, list[dict]]) -> dict:
+    """Compute rule-count + title parity across the three instruction surfaces.
+
+    Returns a dict suitable for embedding in the JSON report and for rendering
+    in the text report.  Surfaces with zero parsed rules are reported as
+    `missing_rules` so consumers can surface them in CI without blowing up the
+    drift counts.
+    """
+    counts = {name: len(rules) for name, rules in rule_sets.items()}
+    unique_counts = {count for count in counts.values() if count > 0}
+    rule_count_matches = len(unique_counts) <= 1 and all(count > 0 for count in counts.values())
+
+    # Title parity uses AGENT_RULES as the canonical baseline.
+    baseline_name = str(AGENT_RULES)
+    baseline = {rule["number"]: rule for rule in rule_sets.get(baseline_name, [])}
+    title_mismatches: list[dict] = []
+    for name, rules in rule_sets.items():
+        if name == baseline_name:
+            continue
+        other = {rule["number"]: rule for rule in rules}
+        for number in sorted(set(baseline) | set(other)):
+            if number not in baseline or number not in other:
+                # Already surfaced via drift / mirror findings; skip here.
+                continue
+            if _normalize_title(baseline[number]["title"]) != _normalize_title(other[number]["title"]):
+                title_mismatches.append(
+                    {
+                        "rule_number": number,
+                        "baseline": baseline_name,
+                        "baseline_title": baseline[number]["title"],
+                        "surface": name,
+                        "surface_title": other[number]["title"],
+                    }
+                )
+
+    return {
+        "counts": counts,
+        "rule_count_matches": rule_count_matches,
+        "title_mismatches": title_mismatches,
+    }
+
+
 def _detect_rule_drift(
     primary_rules: list[dict], mirror_rules: list[dict], *, primary_name: str, mirror_name: str
 ) -> list[dict]:
@@ -510,6 +581,43 @@ def _build_report(repo_root: Path, db_path: Path) -> dict | None:
         "db_available": db_available,
     }
 
+    # Parity across the three instruction surfaces (rule count + title).
+    parity = _detect_parity(
+        {
+            str(AGENT_RULES): agent_rules,
+            str(COPILOT_INSTRUCTIONS): copilot_rules,
+            str(AGENTS_SUMMARY): agents_rules,
+        }
+    )
+    summary["parity_counts"] = parity["counts"]
+    summary["rule_count_parity"] = parity["rule_count_matches"]
+    summary["title_mismatch_count"] = len(parity["title_mismatches"])
+
+    # Required '## Quality Checklist' anchor in every surface.
+    quality_checklist = {
+        str(AGENT_RULES): _has_quality_checklist_anchor(agent_rules_path),
+        str(COPILOT_INSTRUCTIONS): _has_quality_checklist_anchor(copilot_path),
+        str(AGENTS_SUMMARY): _has_quality_checklist_anchor(agents_path),
+    }
+    checklist_missing = [name for name, present in quality_checklist.items() if not present]
+    summary["quality_checklist_present"] = quality_checklist
+    summary["quality_checklist_missing"] = checklist_missing
+
+    for entry in checklist_missing:
+        recommendations.append(
+            f"Add '## Quality Checklist' anchor to {entry} so the runtime mirror and canonical doc stay in sync."
+        )
+    if not parity["rule_count_matches"]:
+        recommendations.append(
+            "Rule-count parity broken across instruction surfaces: "
+            + ", ".join(f"{name}={count}" for name, count in parity["counts"].items())
+        )
+    for mismatch in parity["title_mismatches"]:
+        recommendations.append(
+            f"Rule {mismatch['rule_number']} title differs between {mismatch['baseline']} "
+            f"('{mismatch['baseline_title']}') and {mismatch['surface']} ('{mismatch['surface_title']}')."
+        )
+
     return {
         "summary": summary,
         "repo_root": str(repo_root),
@@ -518,6 +626,8 @@ def _build_report(repo_root: Path, db_path: Path) -> dict | None:
         "ineffective_rules": ineffective,
         "drift_findings": drift,
         "mirror_findings": mirror_gaps,
+        "parity": parity,
+        "quality_checklist": quality_checklist,
         "recommendations": recommendations,
     }
 
@@ -538,6 +648,16 @@ def _render_text(report: dict, top_n: int) -> None:
     print(f"  Candidate condense  : {summary['candidate_for_condense_count']}")
     print(f"  Drift findings      : {summary['drift_count']}")
     print(f"  AGENTS mirror gaps  : {summary['mirror_gap_count']}")
+    parity_label = "yes" if summary.get("rule_count_parity") else "no"
+    print(f"  Rule-count parity   : {parity_label}")
+    counts_str = ", ".join(f"{name}={count}" for name, count in summary.get("parity_counts", {}).items())
+    if counts_str:
+        print(f"  Parity counts       : {counts_str}")
+    print(f"  Title mismatches    : {summary.get('title_mismatch_count', 0)}")
+    checklist_present = summary.get("quality_checklist_present", {})
+    if checklist_present:
+        checklist_str = ", ".join(f"{name}={'yes' if present else 'NO'}" for name, present in checklist_present.items())
+        print(f"  Quality checklist   : {checklist_str}")
     db_label = "yes" if summary["db_available"] else "no"
     print(f"  Learn DB available  : {db_label}")
     print(f"  Knowledge scanned   : {summary['knowledge_entries_scanned']}")
@@ -640,6 +760,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="N",
         help="Limit ineffective-rule and recommendation output to top N items (default 10)",
     )
+    parser.add_argument(
+        "--fail-on-drift",
+        action="store_true",
+        dest="fail_on_drift",
+        help=(
+            "Exit non-zero when rule-count / title parity is broken across the three "
+            "instruction surfaces or when any surface is missing the '## Quality Checklist' "
+            "anchor. Existing CLI default remains exit 0 on a successful audit."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -661,6 +791,17 @@ def main(argv: list[str] | None = None) -> int:
         _render_json(report, args.top)
     else:
         _render_text(report, args.top)
+
+    if args.fail_on_drift:
+        summary = report.get("summary", {})
+        if (
+            not summary.get("rule_count_parity", True)
+            or summary.get("title_mismatch_count", 0) > 0
+            or summary.get("quality_checklist_missing")
+            or summary.get("drift_count", 0) > 0
+            or summary.get("mirror_gap_count", 0) > 0
+        ):
+            return 1
     return 0
 
 

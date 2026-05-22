@@ -198,8 +198,8 @@ mod tests {
 
     #[test]
     fn sync_status_module_exists() {
-        // Compile-time check: ensure the module is wired correctly.
-        assert!(true);
+        // Compile-time check: ensure the module is wired correctly. No-op
+        // at runtime — reaching this line means the module compiled cleanly.
     }
 
     #[test]

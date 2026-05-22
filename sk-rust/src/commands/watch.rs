@@ -59,9 +59,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{resolve_copilot_dir, resolve_home_dir, resolve_tools_dir};
-use crate::daemon::{
-    install_shutdown_handler, run_daemon_loop, run_daemon_loop_with_wake, DaemonLock, LoopConfig,
-};
+#[cfg(feature = "native-watch")]
+use crate::daemon::run_daemon_loop_with_wake;
+use crate::daemon::{install_shutdown_handler, run_daemon_loop, DaemonLock, LoopConfig};
 use crate::index::claude as native_claude;
 use crate::index::session as native_index;
 

@@ -4,6 +4,8 @@
 
 ## Evidence Checklist
 
+> See [docs/AGENT-RULES.md — Quality Checklist](../docs/AGENT-RULES.md#quality-checklist) for the full surface-by-surface verification guide.
+
 Mark each item with command output or `N/A - <reason>`.
 
 - [ ] Security tests: `python test_security.py`
