@@ -155,17 +155,42 @@ async fn test_subprocess_proxy_timeout() {
     }
 }
 
+#[tokio::test]
+async fn test_subprocess_proxy_stdin_is_devnull() {
+    // The fixture reads stdin; if stdin is /dev/null it gets EOF immediately and
+    // outputs {"stdin_was_closed": true}.  Without cmd.stdin(Stdio::null()), this
+    // test would hang waiting for input from the calling process.
+    let py = resolve_python().await;
+    if py.is_none() {
+        eprintln!("skipping test_subprocess_proxy_stdin_is_devnull: no Python interpreter found");
+        return;
+    }
+
+    let script = fixture("reads_stdin.py");
+    // Short timeout — if stdin is NOT closed, script blocks and we'd get Timeout.
+    let result = run_python_script(&script, &[], None, Duration::from_secs(5)).await;
+    let output = result.expect("reads_stdin.py should succeed when stdin is /dev/null");
+    assert_eq!(
+        output
+            .data
+            .get("stdin_was_closed")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "stdin must be /dev/null (Stdio::null), not inherited from the test process"
+    );
+}
+
 // ── Workflow route tests ──────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial(env_copilot_tools_dir)]
 async fn test_workflow_health_route_returns_503_when_script_missing() {
     // Point COPILOT_TOOLS_DIR at a directory that exists but has no workflow-health.py.
     let tmp = std::env::temp_dir();
     let mut config = ServerConfig::default();
-    // Override tools dir via env for this test invocation.
-    // Since the handler reads COPILOT_TOOLS_DIR at call time, we set it here.
-    // Note: env var mutations in tests can race; use a unique var name to be safe.
-    // The handler reads COPILOT_TOOLS_DIR, so we set it to tmp (no script there).
+
+    // Save and restore COPILOT_TOOLS_DIR so sibling serial tests see a consistent value.
+    let prev = std::env::var("COPILOT_TOOLS_DIR").ok();
     std::env::set_var("COPILOT_TOOLS_DIR", tmp.to_str().unwrap());
     config.server_token = String::new(); // disable auth
 
@@ -180,6 +205,12 @@ async fn test_workflow_health_route_returns_503_when_script_missing() {
         .await
         .unwrap();
 
+    // Restore before any assert (so we don't leak on panic).
+    match prev {
+        Some(v) => std::env::set_var("COPILOT_TOOLS_DIR", v),
+        None => std::env::remove_var("COPILOT_TOOLS_DIR"),
+    }
+
     // script not found in tmp → 503
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
@@ -189,6 +220,7 @@ async fn test_workflow_health_route_returns_503_when_script_missing() {
 }
 
 #[tokio::test]
+#[serial_test::serial(env_copilot_tools_dir)]
 async fn test_workflow_health_live_parity() {
     // Locate tools dir: prefer COPILOT_TOOLS_DIR env, then ~/.copilot/tools via dirs.
     let tools_dir = if let Ok(d) = std::env::var("COPILOT_TOOLS_DIR") {

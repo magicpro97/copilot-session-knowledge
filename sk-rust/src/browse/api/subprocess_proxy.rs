@@ -170,9 +170,11 @@ pub async fn run_python_script(
         cmd.current_dir(dir);
     }
     cmd.kill_on_drop(true);
+    // Fix: close stdin so scripts that read stdin don't hang waiting for input.
+    cmd.stdin(std::process::Stdio::null());
 
     // Spawn.
-    let child = cmd.spawn().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             SubprocessError::Unavailable(format!("interpreter not found: {}", interp.exe))
         } else {
@@ -180,30 +182,57 @@ pub async fn run_python_script(
         }
     })?;
 
-    // Drive to completion with a timeout.
-    let handle = tokio::spawn(async move { child.wait_with_output().await });
+    // Take pipe handles before the timeout so `child` remains accessible for
+    // explicit cleanup on timeout (not moved into the timed future).
+    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
 
-    let output = tokio::select! {
-        result = handle => {
-            result
-                .map_err(|e| SubprocessError::SpawnError(e.to_string()))?
-                .map_err(|e| SubprocessError::SpawnError(e.to_string()))?
-        }
-        _ = tokio::time::sleep(timeout_dur) => {
+    // Drive I/O to completion with a timeout.  Only the pipe handles are moved
+    // into the async block; `child` stays in the calling task.
+    let io_result = tokio::time::timeout(timeout_dur, async {
+        use tokio::io::AsyncReadExt;
+        let (r_out, r_err) = tokio::join!(
+            async {
+                let mut buf = Vec::new();
+                stdout_pipe.read_to_end(&mut buf).await.map(|_| buf)
+            },
+            async {
+                let mut buf = Vec::new();
+                stderr_pipe.read_to_end(&mut buf).await.map(|_| buf)
+            },
+        );
+        r_out.and_then(|out| r_err.map(|err| (out, err)))
+    })
+    .await;
+
+    let (stdout_bytes, stderr_bytes) = match io_result {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return Err(SubprocessError::SpawnError(e.to_string())),
+        Err(_elapsed) => {
+            // Pipes were dropped; explicitly kill the child and wait for it to
+            // exit so no zombie or leaked process remains.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             return Err(SubprocessError::Timeout);
         }
     };
 
+    // Reap the child (pipes already fully drained above).
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| SubprocessError::SpawnError(e.to_string()))?;
+
     // Non-zero exit.
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
-        let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !status.success() {
+        let code = status.code().unwrap_or(-1);
+        let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
         let stderr_tail = stderr_tail_str(&stderr_str, 512);
         return Err(SubprocessError::NonZeroExit { code, stderr_tail });
     }
 
     // Parse stdout as JSON.
-    let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let parsed: Value = serde_json::from_str(stdout_str.trim())
         .map_err(|e| SubprocessError::InvalidJson(format!("invalid JSON from script: {e}")))?;
 
@@ -237,7 +266,7 @@ pub fn subprocess_error_response(
             .into_response(),
 
         SubprocessError::NonZeroExit { code, stderr_tail } => (
-            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "error": format!("script exited with code {code}"),
                 "code": error_code,
@@ -247,25 +276,25 @@ pub fn subprocess_error_response(
             .into_response(),
 
         SubprocessError::Timeout => (
-            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "script timed out", "code": timeout_code })),
         )
             .into_response(),
 
         SubprocessError::InvalidJson(msg) => (
-            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": msg, "code": parse_code })),
         )
             .into_response(),
 
         SubprocessError::NotObject(msg) => (
-            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": msg, "code": parse_code })),
         )
             .into_response(),
 
         SubprocessError::SpawnError(msg) => (
-            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": msg, "code": error_code })),
         )
             .into_response(),
@@ -329,5 +358,49 @@ mod tests {
     #[test]
     fn test_stderr_tail_empty() {
         assert_eq!(stderr_tail_str("", 512), "");
+    }
+
+    // ── subprocess_error_response status code tests ───────────────────────────
+
+    fn assert_503(err: SubprocessError) {
+        let resp = subprocess_error_response(err, "UNAVAIL", "ERR", "TIMEOUT", "PARSE");
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "expected 503 SERVICE_UNAVAILABLE"
+        );
+    }
+
+    #[test]
+    fn test_error_response_unavailable_is_503() {
+        assert_503(SubprocessError::Unavailable("missing".into()));
+    }
+
+    #[test]
+    fn test_error_response_nonzero_exit_is_503() {
+        assert_503(SubprocessError::NonZeroExit {
+            code: 1,
+            stderr_tail: "oops".into(),
+        });
+    }
+
+    #[test]
+    fn test_error_response_timeout_is_503() {
+        assert_503(SubprocessError::Timeout);
+    }
+
+    #[test]
+    fn test_error_response_invalid_json_is_503() {
+        assert_503(SubprocessError::InvalidJson("bad json".into()));
+    }
+
+    #[test]
+    fn test_error_response_not_object_is_503() {
+        assert_503(SubprocessError::NotObject("not obj".into()));
+    }
+
+    #[test]
+    fn test_error_response_spawn_error_is_503() {
+        assert_503(SubprocessError::SpawnError("spawn fail".into()));
     }
 }
