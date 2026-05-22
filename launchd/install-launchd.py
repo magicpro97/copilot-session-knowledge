@@ -16,7 +16,7 @@ if os.name == "nt":
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 LAUNCHD_DIR = TOOLS_DIR / "launchd"
 TARGET_DIR = Path.home() / "Library" / "LaunchAgents"
-AGENTS = ("com.copilot.watch-sessions", "com.copilot.auto-update")
+AGENTS = ("com.copilot.watch-sessions", "com.copilot.auto-update", "com.copilot.browse-backend")
 HEALER_AGENT = "com.copilot.cli-healer"
 
 

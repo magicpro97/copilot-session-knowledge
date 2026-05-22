@@ -695,6 +695,10 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         if changes.get("py_scripts"):
             restart_processes()
 
+        # 6b. Browse backend changed → restart browse-backend service
+        if changes.get("browse"):
+            restart_browse_backend()
+
         # 7. Embedding logic changed → trigger rebuild (async, non-blocking)
         if changes.get("embed"):
             trigger_embedding_rebuild()
@@ -1388,6 +1392,8 @@ def write_manifest(sha: str, changes: dict):
         actions.append("deploy-skills")
     if changes.get("py_scripts"):
         actions.append("restart-services")
+    if changes.get("browse"):
+        actions.append("restart-browse-backend")
     if changes.get("embed"):
         actions.append("rebuild-embeddings")
     actions.append("post-merge-hook")
@@ -1843,6 +1849,101 @@ def restart_processes():
 
     # Fallback: find and restart manually
     _restart_manual()
+
+
+def restart_browse_backend():
+    """Restart the browse backend service after browse/ files change.
+
+    On macOS uses launchctl kickstart -k for the managed LaunchAgent.
+    Falls back to killing the old process and spawning a new one.
+    """
+    system = platform.system()
+
+    if system == "Darwin":
+        plist = HOME / "Library" / "LaunchAgents" / "com.copilot.browse-backend.plist"
+        if plist.exists():
+            uid = os.getuid() if hasattr(os, "getuid") else 0
+            label = "com.copilot.browse-backend"
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+                capture_output=True,
+            )
+            ok("browse-backend restarted (launchd)")
+            return
+
+    # Fallback: kill existing browse processes on port 8765 and start new one
+    _restart_browse_manual()
+
+
+def _restart_browse_manual():
+    """Kill existing browse backend and start a fresh one."""
+    system = platform.system()
+    python_bin = shutil.which("python3") or sys.executable
+
+    if system == "Darwin" or system == "Linux":
+        # Find and kill browse processes
+        r = subprocess.run(
+            ["pgrep", "-f", "from browse import main"],
+            capture_output=True,
+            text=True,
+        )
+        for line in r.stdout.strip().splitlines():
+            pid = line.strip()
+            if pid.isdigit():
+                try:
+                    os.kill(int(pid), 15)  # SIGTERM
+                    log(f"Killed old browse backend (PID {pid})")
+                except ProcessLookupError:
+                    pass
+
+        time.sleep(1)
+
+        # Start new browse backend
+        browse_cmd = (
+            "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']\n"
+            "from browse import main; main()\n"
+        )
+        subprocess.Popen(
+            [python_bin, "-c", browse_cmd],
+            cwd=str(TOOLS_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        ok("browse-backend restarted (manual)")
+
+    elif system == "Windows":
+        r = subprocess.run(
+            [
+                "powershell",
+                "-Command",
+                "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*from browse import main*' } | Select-Object ProcessId",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        for line in r.stdout.splitlines():
+            pid = line.strip()
+            if pid.isdigit():
+                try:
+                    os.kill(int(pid), 15)
+                except (ProcessLookupError, OSError):
+                    pass
+
+        time.sleep(1)
+        browse_cmd = (
+            "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']\n"
+            "from browse import main; main()\n"
+        )
+        subprocess.Popen(
+            [python_bin, "-c", browse_cmd],
+            cwd=str(TOOLS_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0),
+        )
+        ok("browse-backend restarted (manual, Windows)")
 
 
 def _restart_manual():
