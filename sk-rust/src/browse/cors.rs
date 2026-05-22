@@ -19,10 +19,10 @@
 //!
 //! ## Allowed methods per path
 //!
-//! | Path pattern            | Allowed methods                   |
-//! |-------------------------|-----------------------------------|
-//! | `/api/**`               | `GET, POST, DELETE, PATCH, OPTIONS` |
-//! | `/healthz`, `/.well-known/**` | `GET, OPTIONS`             |
+//! | Path pattern                  | Allowed methods                   |
+//! |-------------------------------|-----------------------------------|
+//! | `/api/operator/**`            | `GET, POST, DELETE, PATCH, OPTIONS` |
+//! | `/api/**` (other), `/healthz`, `/.well-known/**` | `GET, OPTIONS` |
 
 use std::sync::Arc;
 
@@ -66,9 +66,11 @@ pub fn is_cors_eligible_path(path: &str) -> bool {
 
 /// Return `true` for paths that support the full operator method set.
 ///
-/// All `/api/…` paths are treated as operator paths.
+/// Only `/api/operator/…` paths receive the full method set
+/// (`GET, POST, DELETE, PATCH, OPTIONS`).  All other `/api/…` paths receive
+/// `GET, OPTIONS` only, matching Python server behaviour.
 pub fn is_operator_path(path: &str) -> bool {
-    path == "/api" || path.starts_with("/api/")
+    path.starts_with("/api/operator/")
 }
 
 fn allowed_methods_for(path: &str) -> &'static str {
@@ -345,13 +347,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preflight_api_allows_full_methods() {
+    async fn preflight_api_operator_allows_full_methods() {
         let app = cors_app(&["https://example.com"]);
         let r = app
             .oneshot(
                 Request::builder()
                     .method("OPTIONS")
-                    .uri("/api/items")
+                    .uri("/api/operator/pairing")
                     .header("origin", "https://example.com")
                     .header("access-control-request-method", "DELETE")
                     .body(Body::empty())
@@ -372,6 +374,49 @@ mod tests {
             "operator paths must allow DELETE"
         );
         assert!(methods.contains("PATCH"), "operator paths must allow PATCH");
+    }
+
+    #[tokio::test]
+    async fn preflight_api_sessions_get_only() {
+        // Non-operator /api paths must advertise only GET, OPTIONS — matching
+        // Python server behaviour.
+        let app = cors_app(&["https://example.com"]);
+        let r = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/sessions")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let methods = r
+            .headers()
+            .get("access-control-allow-methods")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            !methods.contains("POST"),
+            "/api/sessions must not advertise POST"
+        );
+        assert!(
+            !methods.contains("DELETE"),
+            "/api/sessions must not advertise DELETE"
+        );
+        assert!(
+            !methods.contains("PATCH"),
+            "/api/sessions must not advertise PATCH"
+        );
+        assert!(methods.contains("GET"), "/api/sessions must advertise GET");
+        assert!(
+            methods.contains("OPTIONS"),
+            "/api/sessions must advertise OPTIONS"
+        );
     }
 
     #[tokio::test]

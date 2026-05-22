@@ -101,14 +101,16 @@ pub fn extract_token(
     if let Some(val) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = val.to_str() {
             if let Some(raw) = s.strip_prefix("Bearer ") {
+                // Always return a Bearer result — even for an empty/whitespace
+                // token.  The middleware validates the token with constant_time_eq
+                // and returns 401 on mismatch.  An empty bearer must NOT fall
+                // through to query/cookie auth (matches Python behaviour).
                 let token = raw.trim().to_string();
-                if !token.is_empty() {
-                    return Some((token, TokenSource::Bearer));
-                }
+                return Some((token, TokenSource::Bearer));
             }
         }
-        // Authorization header present but not recognisable Bearer format;
-        // fall through to query/cookie (not "Bearer failure").
+        // Authorization header present but not Bearer format (e.g. "Basic …");
+        // fall through to query/cookie.
     }
 
     // 2. Query token — `?token=<value>` (skipped on debug routes)
@@ -415,6 +417,31 @@ mod tests {
         assert_eq!(extract_token(&HeaderMap::new(), None, false), None);
     }
 
+    #[test]
+    fn bearer_empty_token_is_bearer_not_fallthrough() {
+        // "Authorization: Bearer " (empty after prefix) must return a Bearer
+        // result with an empty token, never fall through to query/cookie.
+        let h = bearer_headers(""); // "Authorization: Bearer "
+        let result = extract_token(&h, Some("token=querytoken"), false);
+        assert_eq!(
+            result,
+            Some(("".to_string(), TokenSource::Bearer)),
+            "empty bearer must yield Bearer source, not fall through to query"
+        );
+    }
+
+    #[test]
+    fn bearer_whitespace_only_is_bearer_not_fallthrough() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer    "),
+        );
+        let result = extract_token(&h, Some("token=querytoken"), false);
+        // trim() gives empty string → still a Bearer result
+        assert_eq!(result, Some(("".to_string(), TokenSource::Bearer)));
+    }
+
     // ── build_set_cookie ─────────────────────────────────────────────────────
 
     #[test]
@@ -621,5 +648,27 @@ mod tests {
             .unwrap();
         // Query token on debug route must be ignored → no valid token → 401
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bearer_empty_with_valid_query_token_returns_401() {
+        // Python returns failure immediately for any Bearer header with empty
+        // token; the query token must NOT be consulted as a fallback.
+        let app = protected_app("mysecret");
+        let r = app
+            .oneshot(
+                Request::builder()
+                    .uri("/secret?token=mysecret")
+                    .header("authorization", "Bearer ")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::UNAUTHORIZED,
+            "empty Bearer must not fall through to valid query token"
+        );
     }
 }

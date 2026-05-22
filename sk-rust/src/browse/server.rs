@@ -6,9 +6,7 @@
 //! Nothing is wired to `Commands::Browse` yet; the Python fallback remains.
 //! DB fields in `/healthz` are `null` pending issue #449.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue};
@@ -195,28 +193,16 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
 
 // ── Nonce generation ──────────────────────────────────────────────────────────
 
-static NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Generate a 32-character hex nonce for CSP.
+/// Generate a 32-character hex nonce for CSP using a CSPRNG.
 ///
-/// Uses a monotonic counter mixed with sub-second timestamp entropy.
-/// Not cryptographically secure, but unique per request in normal operation.
+/// Generates 16 cryptographically random bytes via [`rand::thread_rng`] and
+/// hex-encodes them, yielding a 32-character lowercase hex string.  Each call
+/// produces an unpredictable, independent nonce.
 fn generate_nonce() -> String {
-    let count = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-
-    // Mix counter and timestamp with distinct multipliers.
-    let a = ts
-        .wrapping_mul(0x9e3779b97f4a7c15_u64)
-        .wrapping_add(count.wrapping_mul(0x6c62272e07bb0142_u64));
-    let b = count
-        .wrapping_mul(0xbf58476d1ce4e5b9_u64)
-        .wrapping_add(ts.wrapping_add(0xb63c1c3b1d47c9a5_u64));
-
-    format!("{a:016x}{b:016x}")
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -350,7 +336,7 @@ mod tests {
     #[test]
     fn test_generate_nonce_length() {
         let n = generate_nonce();
-        assert_eq!(n.len(), 32, "nonce must be 32 hex chars");
+        assert_eq!(n.len(), 32, "nonce must be 32 hex chars (16 random bytes)");
         assert!(
             n.chars().all(|c| c.is_ascii_hexdigit()),
             "nonce must be hex"
@@ -359,6 +345,9 @@ mod tests {
 
     #[test]
     fn test_generate_nonce_unique() {
+        // CSPRNG nonces must be statistically distinct across calls.
+        // Testing two consecutive calls is a basic sanity check; the guarantee
+        // comes from OS-level entropy via rand::thread_rng, not a counter.
         let a = generate_nonce();
         let b = generate_nonce();
         assert_ne!(a, b, "consecutive nonces must differ");

@@ -29,6 +29,7 @@ browse-server  = [
     "dep:r2d2",
     "dep:r2d2_sqlite",
     "dep:tokio",
+    "dep:rand",
     "tokio/rt-multi-thread",
     "tokio/macros",
     "tokio/signal",
@@ -66,6 +67,7 @@ axum        = { version = "0.7", optional = true }
 tower-http  = { version = "0.6", features = ["cors", "trace"], optional = true }
 r2d2        = { version = "0.8", optional = true }
 r2d2_sqlite = { version = "0.24", optional = true }
+rand        = { version = "0.8", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
