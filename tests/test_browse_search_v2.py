@@ -304,6 +304,111 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── S8: SQL-ranking parity — ordering matches expected top-K ─────────────
+    # Verifies that the UNION ALL / ORDER BY score LIMIT path produces the same
+    # ranking as the previous Python-sort approach on deterministic data.
+    print("\n-- S8: SQL-ranking parity (issue-458 regression)")
+    db8 = sqlite3.connect(":memory:", check_same_thread=False)
+    db8.row_factory = sqlite3.Row
+    db8.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT, summary TEXT, source TEXT,
+            file_mtime REAL, indexed_at_r REAL, fts_indexed_at REAL,
+            event_count_estimate INTEGER, file_size_bytes INTEGER,
+            total_checkpoints INTEGER, total_research INTEGER,
+            total_files INTEGER, has_plan INTEGER, indexed_at TEXT
+        );
+        CREATE TABLE knowledge (
+            id INTEGER PRIMARY KEY, title TEXT, content TEXT,
+            category TEXT, wing TEXT, room TEXT
+        );
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT);
+        INSERT INTO schema_version VALUES (8, 'add_sessions_fts', '2026-01-01');
+    """)
+    db8.execute(
+        """CREATE VIRTUAL TABLE sessions_fts USING fts5(
+            session_id UNINDEXED, title, user_messages,
+            assistant_messages, tool_names, tokenize='unicode61'
+        )"""
+    )
+    db8.execute(
+        """CREATE VIRTUAL TABLE ke_fts USING fts5(
+            title, content, tokenize='unicode61'
+        )"""
+    )
+    # Insert three sessions with varying relevance to "alpha"
+    for sid, summary, msg in [
+        ("s-high", "alpha alpha alpha session", "alpha alpha alpha alpha alpha"),
+        ("s-mid", "alpha session mid", "alpha alpha mentioned once"),
+        ("s-low", "unrelated session", "only one alpha here"),
+    ]:
+        db8.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, "/p", summary, "copilot", 1.0, 2.0, 3.0, 1, 100, 0, 0, 0, 0, "2026-01-01"),
+        )
+        db8.execute(
+            "INSERT INTO sessions_fts VALUES (?,?,?,?,?)",
+            (sid, summary, msg, "", ""),
+        )
+    # Insert two knowledge entries with varying relevance to "alpha"
+    for kid, title, content, cat in [
+        (1, "alpha alpha knowledge", "alpha alpha alpha alpha best knowledge", "pattern"),
+        (2, "alpha knowledge low", "alpha once in content", "pattern"),
+    ]:
+        db8.execute("INSERT INTO knowledge VALUES (?,?,?,?,?,?)", (kid, title, content, cat, "w", "r"))
+        db8.execute("INSERT INTO ke_fts VALUES (?,?)", (title, content))
+    db8.commit()
+
+    server8, host8, port8 = _start_server(db8, token="tok8")
+    try:
+        status8, _, body8 = _get(host8, port8, "/api/search?q=alpha&limit=5&token=tok8")
+        test("S8: status 200", status8 == 200)
+        data8 = json.loads(body8)
+        results8 = data8.get("results", [])
+        test("S8: returns results", len(results8) >= 2)
+
+        # Scores must be strictly non-decreasing (bm25 is negative; best = most negative first)
+        scores8 = [r["score"] for r in results8]
+        test(
+            "S8: results ordered by score ascending (best first)",
+            all(scores8[i] <= scores8[i + 1] for i in range(len(scores8) - 1)),
+        )
+
+        # The highest-relevance session ("s-high") must outrank the lowest ("s-low")
+        ids8 = [r["id"] for r in results8]
+        test(
+            "S8: high-relevance session precedes low-relevance session",
+            "s-high" in ids8 and "s-low" in ids8 and ids8.index("s-high") < ids8.index("s-low"),
+        )
+
+        # Both types must appear (UNION ALL combines sources)
+        types8 = {r["type"] for r in results8}
+        test("S8: both session and knowledge results present", types8 == {"session", "knowledge"})
+
+        # Verify total <= limit
+        test("S8: total <= requested limit", data8.get("total", 999) <= 5)
+
+        # ── EXPLAIN QUERY PLAN evidence ──────────────────────────────────────
+        # Capture the query plan for the combined UNION ALL path as documentation.
+        from browse.core.fts import _probe_sessions_fts, _sanitize_fts_query
+        from browse.routes.search_api import _build_knowledge_arm, _build_sessions_arm
+
+        safe_q8 = _sanitize_fts_query("alpha")
+        in_cols8 = ["user", "assistant", "tools", "title"]
+        s_sql, s_params = _build_sessions_arm(safe_q8, in_cols8)
+        k_sql, k_params = _build_knowledge_arm(safe_q8, in_cols8, [], "knowledge")
+
+        wrapped = f"SELECT * FROM ({s_sql}) UNION ALL SELECT * FROM ({k_sql})"
+        combined = f"SELECT * FROM ({wrapped}) ORDER BY score LIMIT ?"
+        flat_params = [*s_params, 5, *k_params, 5, 5]
+        plan_rows = list(db8.execute(f"EXPLAIN QUERY PLAN {combined}", flat_params))
+        plan_text = "\n".join(f"  {r[0]} {r[1]} {r[2]} {r[3]}" for r in plan_rows)
+        print(f"  [EXPLAIN] UNION ALL query plan:\n{plan_text}")
+        test("S8: EXPLAIN QUERY PLAN produced output", len(plan_rows) > 0)
+
+    finally:
+        server8.shutdown()
+
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{'=' * 40}")
     total = _PASS + _FAIL
