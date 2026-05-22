@@ -12,13 +12,23 @@
 //! # Heartbeat comment semantics
 //!
 //! [`sse_response`] configures [`axum::response::sse::KeepAlive`] with
-//! `.text("ping")`.  This emits SSE *comment* lines (`: ping\n\n`) on the
-//! wire every [`HEARTBEAT_SECS`] seconds.  SSE comments (lines starting with
-//! `:`) are valid per the specification and pass through HTTP/2 proxies and
-//! load balancers, but the browser `EventSource` API silently ignores them.
-//! They keep the TCP connection alive through idle-connection timeouts without
-//! triggering `onmessage` on the client.
+//! `.text("heartbeat")`.  This emits SSE *comment* lines (`: heartbeat\n\n`)
+//! on the wire every [`HEARTBEAT_SECS`] seconds, matching the Python
+//! implementation's `: heartbeat\n\n` keep-alive text.  SSE comments (lines
+//! starting with `:`) are valid per the specification and pass through HTTP/2
+//! proxies and load balancers, but the browser `EventSource` API silently
+//! ignores them.  They keep the TCP connection alive through idle-connection
+//! timeouts without triggering `onmessage` on the client.
+//!
+//! # Proxy buffering
+//!
+//! [`sse_response`] adds `X-Accel-Buffering: no` to every SSE response,
+//! matching the Python server's `yield_sse_headers()` behaviour.  This header
+//! instructs nginx (and nginx-compatible proxies) to disable response
+//! buffering for SSE streams so events are forwarded to the client immediately
+//! rather than being held in the proxy buffer.
 
+use axum::http::{HeaderName, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -35,20 +45,34 @@ pub const HEARTBEAT_SECS: u64 = 15;
 pub const MAX_CONNECTION_SECS: u64 = 600;
 
 /// Wrap a [`ReceiverStream`] in an [`axum::response::sse::Sse`] response with
-/// a periodic keep-alive comment (`: ping`) every [`HEARTBEAT_SECS`] seconds.
+/// a periodic keep-alive comment (`: heartbeat`) every [`HEARTBEAT_SECS`]
+/// seconds, and adds `X-Accel-Buffering: no` to disable nginx proxy buffering.
+///
+/// The heartbeat text matches the Python server's `: heartbeat\n\n` keep-alive
+/// line for SSE parity (issue #448).
+///
+/// The `X-Accel-Buffering: no` header instructs nginx-compatible proxies to
+/// stream events to the client immediately rather than holding them in a buffer,
+/// matching the Python server's `yield_sse_headers()` behaviour.
 ///
 /// `E` must satisfy `Into<Box<dyn Error + Send + Sync>>` so axum can convert
 /// stream errors into HTTP error responses.
 pub fn sse_response<E>(
     stream: ReceiverStream<Result<Event, E>>,
-) -> Sse<ReceiverStream<Result<Event, E>>>
+) -> impl axum::response::IntoResponse
 where
     E: Into<axum::BoxError> + Send + 'static,
 {
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(HEARTBEAT_SECS))
-            .text("ping"),
+    (
+        [(
+            HeaderName::from_static("x-accel-buffering"),
+            HeaderValue::from_static("no"),
+        )],
+        Sse::new(stream).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(HEARTBEAT_SECS))
+                .text("heartbeat"),
+        ),
     )
 }
 
@@ -108,10 +132,10 @@ mod tests {
 
     #[test]
     fn heartbeat_interval_compiles() {
-        // Verify KeepAlive uses HEARTBEAT_SECS constant correctly.
+        // Verify KeepAlive uses HEARTBEAT_SECS constant and heartbeat text.
         let _ka = KeepAlive::new()
             .interval(Duration::from_secs(HEARTBEAT_SECS))
-            .text("ping");
+            .text("heartbeat");
     }
 
     #[tokio::test]
