@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+pub mod algo;
 #[cfg(feature = "browse-server")]
 pub mod api;
 #[cfg(feature = "browse-server")]
