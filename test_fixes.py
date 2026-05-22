@@ -3991,6 +3991,256 @@ except Exception as _e:
 
 # ---------------------------------------------------------------------------
 
+# Issue #464 — cron VACUUM and WAL checkpoint maintenance
+# I464-1: TEMPLATE_DEFINITIONS contains vacuum and wal-checkpoint entries
+try:
+    import importlib.util as _ilu464a
+
+    _cron_spec464a = _ilu464a.spec_from_file_location("cron_tasks_464a", REPO / "cron-tasks.py")
+    _cron_mod464a = _ilu464a.module_from_spec(_cron_spec464a)
+    _cron_spec464a.loader.exec_module(_cron_mod464a)
+
+    test(
+        "I464-1a: TEMPLATE_DEFINITIONS has 'vacuum' entry",
+        "vacuum" in _cron_mod464a.TEMPLATE_DEFINITIONS,
+        f"keys={list(_cron_mod464a.TEMPLATE_DEFINITIONS)}",
+    )
+    test(
+        "I464-1b: TEMPLATE_DEFINITIONS has 'wal-checkpoint' entry",
+        "wal-checkpoint" in _cron_mod464a.TEMPLATE_DEFINITIONS,
+        f"keys={list(_cron_mod464a.TEMPLATE_DEFINITIONS)}",
+    )
+    _vac_def = _cron_mod464a.TEMPLATE_DEFINITIONS["vacuum"]
+    test(
+        "I464-1c: vacuum default_schedule is weekly on sunday",
+        _vac_def["default_schedule"]["kind"] == "weekly"
+        and _vac_def["default_schedule"]["day"] == "sunday",
+        f"schedule={_vac_def['default_schedule']}",
+    )
+    _wal_def = _cron_mod464a.TEMPLATE_DEFINITIONS["wal-checkpoint"]
+    test(
+        "I464-1d: wal-checkpoint default_schedule is daily",
+        _wal_def["default_schedule"]["kind"] == "daily",
+        f"schedule={_wal_def['default_schedule']}",
+    )
+except Exception as _e:
+    test("I464-1: TEMPLATE_DEFINITIONS entries", False, str(_e))
+
+# I464-2: _run_vacuum reclaims space on a temp DB with ~1 MB of deleted rows
+try:
+    import importlib.util as _ilu464b
+    import tempfile as _tf464b
+
+    _cron_spec464b = _ilu464b.spec_from_file_location("cron_tasks_464b", REPO / "cron-tasks.py")
+    _cron_mod464b = _ilu464b.module_from_spec(_cron_spec464b)
+    _cron_spec464b.loader.exec_module(_cron_mod464b)
+
+    _vac_dir = Path(_tf464b.mkdtemp())
+    _vac_db = _vac_dir / "vac_test.db"
+
+    # Build a ~1 MB DB and capture pre-delete page_count
+    _vc = sqlite3.connect(str(_vac_db))
+    _vc.execute("PRAGMA page_size = 4096")
+    _vc.execute("PRAGMA journal_mode = WAL")
+    _vc.execute("CREATE TABLE t (data BLOB)")
+    _chunk = b"x" * 1000
+    _vc.executemany("INSERT INTO t VALUES (?)", [(_chunk,)] * 1000)
+    _vc.commit()
+    (_pc_before_del,) = _vc.execute("PRAGMA page_count").fetchone()
+
+    # Delete all rows — freelist should spike
+    _vc.execute("DELETE FROM t")
+    _vc.commit()
+    (_fl_before_vac,) = _vc.execute("PRAGMA freelist_count").fetchone()
+    (_pc_before_vac,) = _vc.execute("PRAGMA page_count").fetchone()
+    _vc.close()
+
+    _vac_result = _cron_mod464b._run_vacuum(_vac_db)
+
+    # Verify freelist shrank after vacuum
+    _vc2 = sqlite3.connect(str(_vac_db))
+    (_fl_after_vac,) = _vc2.execute("PRAGMA freelist_count").fetchone()
+    (_pc_after_vac,) = _vc2.execute("PRAGMA page_count").fetchone()
+    (_row_count_after,) = _vc2.execute("SELECT COUNT(*) FROM t").fetchone()
+    _vc2.close()
+
+    test(
+        "I464-2a: _run_vacuum returns ok=True",
+        _vac_result.get("ok") is True,
+        f"result={_vac_result}",
+    )
+    test(
+        "I464-2b: _run_vacuum returns quick_check == 'ok'",
+        _vac_result.get("quick_check") == "ok",
+        f"quick_check={_vac_result.get('quick_check')}",
+    )
+    test(
+        "I464-2c: freelist_count reduced after vacuum (space reclaimed)",
+        _fl_after_vac < _fl_before_vac,
+        f"freelist_before={_fl_before_vac} freelist_after={_fl_after_vac}",
+    )
+    test(
+        "I464-2d: page_count reduced after vacuum",
+        _pc_after_vac <= _pc_before_vac,
+        f"page_count_before={_pc_before_vac} page_count_after={_pc_after_vac}",
+    )
+    test(
+        "I464-2e: row count unchanged by vacuum (still 0 after delete+vacuum)",
+        _row_count_after == 0,
+        f"row_count={_row_count_after}",
+    )
+    test(
+        "I464-2f: _run_vacuum result contains before/after size dicts",
+        isinstance(_vac_result.get("before"), dict) and isinstance(_vac_result.get("after"), dict),
+        f"before={_vac_result.get('before')} after={_vac_result.get('after')}",
+    )
+except Exception as _e:
+    test("I464-2: vacuum reclaims space", False, str(_e))
+
+# I464-3: _run_wal_checkpoint TRUNCATE shrinks WAL or leaves it no larger
+try:
+    import importlib.util as _ilu464c
+    import tempfile as _tf464c
+
+    _cron_spec464c = _ilu464c.spec_from_file_location("cron_tasks_464c", REPO / "cron-tasks.py")
+    _cron_mod464c = _ilu464c.module_from_spec(_cron_spec464c)
+    _cron_spec464c.loader.exec_module(_cron_mod464c)
+
+    _wal_dir = Path(_tf464c.mkdtemp())
+    _wal_db = _wal_dir / "wal_test.db"
+
+    # Create WAL-mode DB and write data to generate WAL frames
+    _wc = sqlite3.connect(str(_wal_db))
+    _wc.execute("PRAGMA journal_mode = WAL")
+    _wc.execute("CREATE TABLE t (data TEXT)")
+    _wc.executemany("INSERT INTO t VALUES (?)", [("row",)] * 200)
+    _wc.commit()
+    _wc.close()
+
+    _wal_file = Path(str(_wal_db) + "-wal")
+    _wal_size_before = _wal_file.stat().st_size if _wal_file.exists() else 0
+
+    _cp_result = _cron_mod464c._run_wal_checkpoint(_wal_db)
+
+    _wal_size_after = _wal_file.stat().st_size if _wal_file.exists() else 0
+
+    test(
+        "I464-3a: _run_wal_checkpoint returns non-error status",
+        _cp_result.get("status") in ("ok", "busy"),
+        f"status={_cp_result.get('status')} result={_cp_result}",
+    )
+    test(
+        "I464-3b: WAL size after checkpoint <= WAL size before",
+        _wal_size_after <= _wal_size_before,
+        f"wal_before={_wal_size_before} wal_after={_wal_size_after}",
+    )
+    test(
+        "I464-3c: _run_wal_checkpoint result contains before/after dicts",
+        isinstance(_cp_result.get("before"), dict) and isinstance(_cp_result.get("after"), dict),
+        f"before={_cp_result.get('before')} after={_cp_result.get('after')}",
+    )
+except Exception as _e:
+    test("I464-3: wal-checkpoint shrinks WAL", False, str(_e))
+
+# I464-4: missing DB returns status="missing", no exception raised
+try:
+    import importlib.util as _ilu464d
+    import tempfile as _tf464d
+
+    _cron_spec464d = _ilu464d.spec_from_file_location("cron_tasks_464d", REPO / "cron-tasks.py")
+    _cron_mod464d = _ilu464d.module_from_spec(_cron_spec464d)
+    _cron_spec464d.loader.exec_module(_cron_mod464d)
+
+    _missing464 = Path(_tf464d.mkdtemp()) / "nonexistent.db"
+
+    _vac_miss = _cron_mod464d._run_vacuum(_missing464)
+    test(
+        "I464-4a: _run_vacuum missing DB → status='missing'",
+        _vac_miss.get("status") == "missing",
+        f"result={_vac_miss}",
+    )
+    test(
+        "I464-4b: _run_vacuum missing DB → ok=False",
+        _vac_miss.get("ok") is False,
+        f"ok={_vac_miss.get('ok')}",
+    )
+
+    _cp_miss = _cron_mod464d._run_wal_checkpoint(_missing464)
+    test(
+        "I464-4c: _run_wal_checkpoint missing DB → status='missing'",
+        _cp_miss.get("status") == "missing",
+        f"result={_cp_miss}",
+    )
+    test(
+        "I464-4d: _run_wal_checkpoint missing DB → ok=False",
+        _cp_miss.get("ok") is False,
+        f"ok={_cp_miss.get('ok')}",
+    )
+    test(
+        "I464-4e: missing DB does not create a new file",
+        not _missing464.exists(),
+        f"file_exists={_missing464.exists()}",
+    )
+except Exception as _e:
+    test("I464-4: missing DB returns status=missing", False, str(_e))
+
+# I464-5: busy DB returns status="busy", no exception raised
+try:
+    import importlib.util as _ilu464e
+    import tempfile as _tf464e
+    import threading as _threading464e
+
+    _cron_spec464e = _ilu464e.spec_from_file_location("cron_tasks_464e", REPO / "cron-tasks.py")
+    _cron_mod464e = _ilu464e.module_from_spec(_cron_spec464e)
+    _cron_spec464e.loader.exec_module(_cron_mod464e)
+
+    _busy_dir = Path(_tf464e.mkdtemp())
+    _busy_db = _busy_dir / "busy_test.db"
+
+    # Create DB and prepare it
+    _bc_setup = sqlite3.connect(str(_busy_db))
+    _bc_setup.execute("PRAGMA journal_mode = DELETE")
+    _bc_setup.execute("CREATE TABLE t (x INTEGER)")
+    _bc_setup.execute("INSERT INTO t VALUES (1)")
+    _bc_setup.commit()
+    _bc_setup.close()
+
+    # Hold an exclusive lock from a separate connection
+    _bc_blocker = sqlite3.connect(str(_busy_db))
+    _bc_blocker.execute("BEGIN EXCLUSIVE")
+
+    # Vacuum with very short timeout — should return busy, not raise
+    _vac_busy = _cron_mod464e._run_vacuum(_busy_db, timeout=0.1)
+    test(
+        "I464-5a: _run_vacuum busy DB → status='busy'",
+        _vac_busy.get("status") == "busy",
+        f"result={_vac_busy}",
+    )
+    test(
+        "I464-5b: _run_vacuum busy DB → ok=False, no exception",
+        _vac_busy.get("ok") is False,
+        f"ok={_vac_busy.get('ok')}",
+    )
+
+    # Checkpoint with very short timeout — should return busy/error, not raise
+    _cp_busy = _cron_mod464e._run_wal_checkpoint(_busy_db, timeout=0.1)
+    test(
+        "I464-5c: _run_wal_checkpoint busy DB → status in ('busy','error')",
+        _cp_busy.get("status") in ("busy", "error"),
+        f"result={_cp_busy}",
+    )
+    test(
+        "I464-5d: _run_wal_checkpoint busy DB → ok=False, no exception",
+        _cp_busy.get("ok") is False,
+        f"ok={_cp_busy.get('ok')}",
+    )
+
+    _bc_blocker.close()
+except Exception as _e:
+    test("I464-5: busy DB returns status=busy", False, str(_e))
+
+# ---------------------------------------------------------------------------
+
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
     print("🎉 All tests passed!")

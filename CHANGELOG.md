@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Cron DB maintenance tasks (#464):** `cron-tasks.py` gains two new scheduled templates:
+  `wal-checkpoint` (daily `PRAGMA wal_checkpoint(TRUNCATE)` at 04:00) and `vacuum` (weekly
+  `VACUUM` + `PRAGMA quick_check` on Sunday at 04:30).  Both helpers return structured result
+  dicts with before/after sizes and elapsed time; busy/missing states are returned as status
+  strings without raising exceptions; `last_run_at` is not advanced on busy so the task retries
+  on the next scheduled run.  See `docs/OPERATOR-PLAYBOOK.md` for the `sk cron add` commands.
 - **Debug-log read API and registry-driven debug auth gate (WBS-104, #429):**
   - `browse/api/operator.py`: new `GET /api/operator/sessions/{session_id}/runs/{run_id}/debug`
     endpoint (registered with `debug=True`).  Returns a paginated, redacted `DebugLogResponse`

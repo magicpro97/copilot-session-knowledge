@@ -44,6 +44,8 @@ sk tentacle goal status --format json  # Machine-readable (pipe/parse)
 # fallback: python3 ~/.copilot/tools/tentacle.py goal status [--format json]
 ```
 
+**VACUUM and WAL checkpoint safety:** `VACUUM` is crash-safe — SQLite uses an internal rollback journal during the operation; if the process is interrupted, `knowledge.db` is left in its pre-vacuum state with no data loss.  `PRAGMA wal_checkpoint(TRUNCATE)` is also safe to interrupt; the WAL file is simply not truncated.  If either task finds the DB locked or busy, it returns `status=busy` without raising and does not advance `last_run_at`; the task retries automatically on the next scheduled run with no manual intervention needed.
+
 ---
 
 ## 2. Compaction / State-Loss Recovery

@@ -102,6 +102,47 @@ Current schema: **v15** (v8 introduced `sessions_fts` contentless FTS5 + BM25; v
 
 ---
 
+## DB Maintenance (VACUUM and WAL Checkpoint)
+
+Two optional cron templates keep `knowledge.db` compact and WAL files small:
+
+| Template | Default schedule | What it does |
+|---|---|---|
+| `wal-checkpoint` | Daily 04:00 | `PRAGMA wal_checkpoint(TRUNCATE)` — flushes WAL frames back to the main DB file and truncates the WAL |
+| `vacuum` | Weekly Sunday 04:30 | `VACUUM` + `PRAGMA quick_check` — reclaims freelist pages and verifies integrity |
+
+**Set up** (run once; adjust `--at` / `--day` as needed):
+
+```bash
+sk cron add wal-checkpoint
+# fallback: python3 ~/.copilot/tools/cron-tasks.py add wal-checkpoint
+
+sk cron add vacuum
+# fallback: python3 ~/.copilot/tools/cron-tasks.py add vacuum
+```
+
+**Custom schedule examples:**
+
+```bash
+sk cron add wal-checkpoint --at 02:00
+sk cron add vacuum --day saturday --at 03:00
+```
+
+**Verify** after the next run:
+
+```bash
+sk cron list
+# Inspect the most recent entry in SESSION_STATE/cron-executions.jsonl
+# Result fields: status, freed_bytes (vacuum), before/after sizes, elapsed_ms
+```
+
+**Behavior notes:**
+- If `knowledge.db` is missing, both tasks return `status=missing` and write no artifact (no-op, safe).
+- If the DB is locked by another process, tasks return `status=busy` and do **not** advance `last_run_at`, so they retry on the next scheduled run.
+- VACUUM acquires an exclusive lock; avoid scheduling it at peak indexing times.
+
+---
+
 ## Watcher Management
 
 ```bash
