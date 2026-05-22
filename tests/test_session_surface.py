@@ -1398,7 +1398,7 @@ def test_hybrid_change_detection():
         test("_content_hash returns '' for missing file",
              ws._content_hash(missing) == "", "expected empty string")
 
-        # ── get_file_signatures still returns (mtime, size) 2-tuples ─────
+        # ── get_file_signatures still returns (mtime_ns, size) 2-tuples ───
         watch_root = tmp_dir / "watchroot"
         watch_root.mkdir()
         sess = watch_root / "session-xyz"
@@ -1410,8 +1410,8 @@ def test_hybrid_change_detection():
              f"found {len(sigs)} files")
         if sigs:
             val = list(sigs.values())[0]
-            test("get_file_signatures value has 2 elements (mtime, size)",
-                 len(val) == 2 and isinstance(val[0], float), f"got {val!r}")
+            test("get_file_signatures value has 2 elements (mtime_ns, size)",
+                 len(val) == 2 and isinstance(val[0], int), f"got {val!r}")
 
         # ── check_and_index returns enriched 3-element sigs ──────────────
         # Patch run_indexer and run_extractor to no-ops for isolation
@@ -1442,7 +1442,7 @@ def test_hybrid_change_detection():
             import time as _time
             _time.sleep(0.02)  # ensure OS mtime resolution ticks
             (sess / "note.md").write_text("initial content", encoding="utf-8")
-            fresh_mtime = (sess / "note.md").stat().st_mtime
+            fresh_mtime = (sess / "note.md").stat().st_mtime_ns
             mtime_moved = fresh_mtime != enriched2[fp][0]
             if mtime_moved:
                 indexer_calls.clear()
@@ -1456,9 +1456,12 @@ def test_hybrid_change_detection():
                 test("Touch with same content skips re-index (hash match)",
                      True, "(skipped — fs mtime resolution too coarse)")
 
-            # Pass 4: genuinely changed content → must re-index
+            # Pass 4: genuinely changed content/size → must re-index
             indexer_calls.clear()
-            (sess / "note.md").write_text("CHANGED content", encoding="utf-8")
+            (sess / "note.md").write_text(
+                "CHANGED content with extra bytes",
+                encoding="utf-8",
+            )
             enriched4 = ws.check_and_index(enriched3, [watch_root])
             test("Content change triggers re-index", len(indexer_calls) == 1,
                  f"indexer called {len(indexer_calls)} times after content change")
@@ -1476,7 +1479,7 @@ def test_hybrid_change_detection():
             legacy_file.write_text("legacy content", encoding="utf-8")
             legacy_st = legacy_file.stat()
             legacy_key = str(legacy_file)
-            legacy_2elem = {legacy_key: [legacy_st.st_mtime, legacy_st.st_size]}
+            legacy_2elem = {legacy_key: [legacy_st.st_mtime_ns, legacy_st.st_size]}
 
             # Poll 1 with legacy state — mtime/size unchanged → else branch
             indexer_calls.clear()
@@ -1494,7 +1497,7 @@ def test_hybrid_change_detection():
             import time as _time2
             _time2.sleep(0.02)
             legacy_file.write_text("legacy content", encoding="utf-8")
-            fresh_legacy_mtime = legacy_file.stat().st_mtime
+            fresh_legacy_mtime = legacy_file.stat().st_mtime_ns
             legacy_mtime_moved = fresh_legacy_mtime != enriched_legacy1[legacy_key][0]
             if legacy_mtime_moved:
                 indexer_calls.clear()
