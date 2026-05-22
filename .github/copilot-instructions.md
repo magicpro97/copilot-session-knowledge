@@ -189,6 +189,8 @@ Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation 
 | Rust | `cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test` |
 | remote-terminal | `npm test && npm run lint && npm run lint:clean` |
 
+`pnpm lint:all` is an advisory wider-scope variant covering `e2e/` and `scripts/` in addition to `src/`; it is not wired into CI.
+
 **Closeout:** attach command output (not just assertions) · `sk learn` before `task_complete` · subagents handoff with `--status DONE --changed-file <file> --learn`.
 
 ## Testing
