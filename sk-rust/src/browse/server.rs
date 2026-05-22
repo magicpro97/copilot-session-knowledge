@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Request, State};
+use axum::extract::{FromRef, Request, State};
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
@@ -19,6 +19,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::browse::auth::auth_middleware;
 use crate::browse::cors::cors_middleware;
+use crate::browse::db::BrowseDb;
 use crate::browse::static_files::serve_static;
 
 // ── Configuration ─────────────────────────────────────────────────────────────
@@ -80,9 +81,43 @@ impl ServerConfig {
     }
 }
 
+// ── AppState ──────────────────────────────────────────────────────────────────
+
+/// Combined router state holding both server configuration and the DB pool.
+///
+/// [`axum::extract::FromRef`] is implemented for both [`Arc<ServerConfig>`] and
+/// [`Arc<BrowseDb>`] so existing handlers that extract `State<Arc<ServerConfig>>`
+/// continue to compile without modification.
+#[derive(Clone)]
+pub struct AppState {
+    /// Server configuration (CORS origins, token, static root, …).
+    pub config: Arc<ServerConfig>,
+    /// Shared DB connection pools.
+    pub db: Arc<BrowseDb>,
+}
+
+impl AppState {
+    /// Construct a new [`AppState`].
+    pub fn new(config: Arc<ServerConfig>, db: Arc<BrowseDb>) -> Self {
+        Self { config, db }
+    }
+}
+
+impl FromRef<AppState> for Arc<ServerConfig> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.config)
+    }
+}
+
+impl FromRef<AppState> for Arc<BrowseDb> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.db)
+    }
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
-/// Build the Axum router for the given server configuration.
+/// Build the Axum router for the given application state.
 ///
 /// Layer ordering (outermost → innermost):
 /// 1. `TraceLayer` — request/response tracing
@@ -90,22 +125,23 @@ impl ServerConfig {
 /// 3. `cors_middleware` — CORS headers + OPTIONS preflight short-circuit
 /// 4. `auth_middleware` — Bearer / query-token / cookie authentication
 /// 5. route handlers
-pub fn app(config: Arc<ServerConfig>) -> Router {
+pub fn app(state: AppState) -> Router {
     use axum::middleware;
 
     Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/.well-known/browse-host", get(discovery_handler))
+        .route("/api/live", get(crate::browse::api::live::handler))
         .fallback(serve_static)
-        .with_state(Arc::clone(&config))
+        .with_state(state.clone())
         // innermost middleware — auth
         .layer(middleware::from_fn_with_state(
-            Arc::clone(&config),
+            state.clone(),
             auth_middleware,
         ))
         // CORS (short-circuits OPTIONS before auth runs)
         .layer(middleware::from_fn_with_state(
-            Arc::clone(&config),
+            state.clone(),
             cors_middleware,
         ))
         // security headers on all responses
@@ -123,9 +159,10 @@ pub fn app(config: Arc<ServerConfig>) -> Router {
 }
 
 /// Bind and run the server, shutting down gracefully on Ctrl-C.
-pub async fn start(config: Arc<ServerConfig>) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
-    let router = app(config);
+pub async fn start(state: AppState) -> anyhow::Result<()> {
+    let listener =
+        tokio::net::TcpListener::bind((state.config.host.as_str(), state.config.port)).await?;
+    let router = app(state);
 
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
@@ -222,20 +259,49 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn test_config() -> Arc<ServerConfig> {
-        Arc::new(ServerConfig {
-            port: 0,
-            host: "127.0.0.1".to_string(),
-            server_token: String::new(),
-            static_root: std::path::PathBuf::new(),
-            cors_origins: Vec::new(),
-            trusted_proxy: false,
-        })
+    use crate::browse::db::{BrowseDb, BrowseDbConfig};
+
+    /// Create a minimal [`AppState`] for unit tests — no seeded data needed.
+    fn test_state() -> AppState {
+        AppState::new(Arc::new(ServerConfig::default()), Arc::new(empty_db()))
+    }
+
+    /// Open a temporary, empty DB (no WAL checkpoint) for tests.
+    fn empty_db() -> BrowseDb {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let n = CTR.fetch_add(1, Ordering::SeqCst);
+        let path =
+            std::env::temp_dir().join(format!("sk_srv_unit_{}_{}.db", std::process::id(), n));
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;\
+                 CREATE TABLE IF NOT EXISTS knowledge_entries (\
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                   category TEXT NOT NULL DEFAULT '',\
+                   title TEXT NOT NULL DEFAULT '',\
+                   content TEXT NOT NULL DEFAULT '',\
+                   tags TEXT NOT NULL DEFAULT '',\
+                   wing TEXT, room TEXT,\
+                   confidence REAL NOT NULL DEFAULT 0.5,\
+                   deleted_at INTEGER\
+                 );\
+                 CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);",
+            )
+            .unwrap();
+        }
+        let cfg = BrowseDbConfig {
+            path,
+            checkpoint_interval: None,
+            ..Default::default()
+        };
+        BrowseDb::new_without_checkpoint(cfg).unwrap()
     }
 
     #[tokio::test]
     async fn test_healthz_status_ok() {
-        let response = app(test_config())
+        let response = app(test_state())
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
@@ -249,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_healthz_json_shape() {
-        let response = app(test_config())
+        let response = app(test_state())
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
@@ -294,7 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_security_headers_present() {
-        let response = app(test_config())
+        let response = app(test_state())
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
@@ -321,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_csp_contains_nonce() {
-        let response = app(test_config())
+        let response = app(test_state())
             .oneshot(
                 Request::builder()
                     .uri("/healthz")

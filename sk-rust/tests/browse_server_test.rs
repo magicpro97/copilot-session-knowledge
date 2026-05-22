@@ -12,7 +12,43 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use sk::browse::server::{app, ServerConfig};
+use sk::browse::db::{BrowseDb, BrowseDbConfig};
+use sk::browse::server::{app, AppState, ServerConfig};
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+/// Create a temporary empty [`BrowseDb`] for tests that only need the DB pool
+/// initialised (no data required).
+fn mk_db() -> Arc<BrowseDb> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let n = CTR.fetch_add(1, Ordering::SeqCst);
+    let path = std::env::temp_dir().join(format!("sk_srv_int_{}_{}.db", std::process::id(), n));
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;\
+             CREATE TABLE IF NOT EXISTS knowledge_entries (\
+               id INTEGER PRIMARY KEY AUTOINCREMENT,\
+               category TEXT NOT NULL DEFAULT '',\
+               title TEXT NOT NULL DEFAULT '',\
+               content TEXT NOT NULL DEFAULT '',\
+               tags TEXT NOT NULL DEFAULT '',\
+               wing TEXT, room TEXT,\
+               confidence REAL NOT NULL DEFAULT 0.5,\
+               deleted_at INTEGER\
+             );\
+             CREATE TABLE IF NOT EXISTS migration_log (version INTEGER NOT NULL);",
+        )
+        .unwrap();
+    }
+    let cfg = BrowseDbConfig {
+        path,
+        checkpoint_interval: None,
+        ..Default::default()
+    };
+    Arc::new(BrowseDb::new_without_checkpoint(cfg).unwrap())
+}
 
 fn open_config() -> Arc<ServerConfig> {
     Arc::new(ServerConfig {
@@ -33,11 +69,19 @@ fn secured_config(token: &str) -> Arc<ServerConfig> {
     })
 }
 
+fn open_state() -> AppState {
+    AppState::new(open_config(), mk_db())
+}
+
+fn secured_state(token: &str) -> AppState {
+    AppState::new(secured_config(token), mk_db())
+}
+
 // ── /healthz ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn integration_healthz_200_open() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -51,7 +95,7 @@ async fn integration_healthz_200_open() {
 
 #[tokio::test]
 async fn integration_healthz_json_exact_keys() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -84,7 +128,7 @@ async fn integration_healthz_json_exact_keys() {
 
 #[tokio::test]
 async fn integration_healthz_open_even_with_auth() {
-    let r = app(secured_config("mysecret"))
+    let r = app(secured_state("mysecret"))
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -100,7 +144,7 @@ async fn integration_healthz_open_even_with_auth() {
 
 #[tokio::test]
 async fn integration_security_headers_on_healthz() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -126,8 +170,7 @@ async fn integration_security_headers_on_healthz() {
 #[tokio::test]
 async fn integration_auth_bearer_valid_passes() {
     // /api/noroute is protected; valid Bearer must pass auth and reach the router (404 = no handler).
-    let config = secured_config("supersecret");
-    let r = app(config)
+    let r = app(secured_state("supersecret"))
         .oneshot(
             Request::builder()
                 .uri("/api/noroute")
@@ -145,8 +188,7 @@ async fn integration_auth_bearer_valid_passes() {
 async fn integration_auth_missing_token_401() {
     // /api/data is not a registered route but goes through auth middleware.
     // With server_token set and no credentials: 401.
-    let config = secured_config("tok");
-    let r = app(config)
+    let r = app(secured_state("tok"))
         .oneshot(
             Request::builder()
                 .uri("/api/noroute")
@@ -163,7 +205,7 @@ async fn integration_auth_missing_token_401() {
 
 #[tokio::test]
 async fn integration_cors_preflight_allowed_origin() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .method("OPTIONS")
@@ -188,7 +230,7 @@ async fn integration_cors_preflight_allowed_origin() {
 
 #[tokio::test]
 async fn integration_cors_preflight_blocked_origin() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .method("OPTIONS")
@@ -205,7 +247,7 @@ async fn integration_cors_preflight_blocked_origin() {
 
 #[tokio::test]
 async fn integration_cors_static_path_options_405() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .method("OPTIONS")
@@ -223,7 +265,7 @@ async fn integration_cors_static_path_options_405() {
 
 #[tokio::test]
 async fn integration_static_empty_root_404() {
-    let r = app(open_config())
+    let r = app(open_state())
         .oneshot(
             Request::builder()
                 .uri("/index.html")
@@ -247,7 +289,7 @@ async fn integration_static_serves_known_extension() {
         static_root: dir.path().to_path_buf(),
         ..ServerConfig::default()
     });
-    let r = app(config)
+    let r = app(AppState::new(config, mk_db()))
         .oneshot(
             Request::builder()
                 .uri("/app.js")
@@ -270,7 +312,7 @@ async fn integration_static_unknown_extension_403() {
         static_root: dir.path().to_path_buf(),
         ..ServerConfig::default()
     });
-    let r = app(config)
+    let r = app(AppState::new(config, mk_db()))
         .oneshot(
             Request::builder()
                 .uri("/data.bin")
@@ -289,7 +331,7 @@ async fn integration_static_dotdot_403() {
         static_root: dir.path().to_path_buf(),
         ..ServerConfig::default()
     });
-    let r = app(config)
+    let r = app(AppState::new(config, mk_db()))
         .oneshot(
             Request::builder()
                 .uri("/../etc/passwd")

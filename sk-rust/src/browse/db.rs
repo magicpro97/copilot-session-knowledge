@@ -421,6 +421,63 @@ impl BrowseDb {
         let conn = self.read_pool.get()?;
         Ok(search_by_wing_room(&conn, wing, room, category, limit))
     }
+
+    // ── SSE live-stream helper ─────────────────────────────────────────────────
+
+    /// Up to `limit` entries with `id > after_id`, returning the JSON shape
+    /// required by `/api/live`: `{id, category, title, wing, room, created_at}`.
+    ///
+    /// `created_at` is `null` when the column is absent from the schema
+    /// (older databases without the migration that adds it).
+    pub fn entries_after_live(
+        &self,
+        after_id: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let conn = self.read_pool.get()?;
+        let has_sd = crate::db::fts::has_soft_delete(&conn);
+        let sd = if has_sd {
+            " AND deleted_at IS NULL"
+        } else {
+            ""
+        };
+        // Probe whether the created_at column exists on knowledge_entries.
+        let has_ca = conn
+            .prepare("SELECT created_at FROM knowledge_entries LIMIT 0")
+            .is_ok();
+        let ca_col = if has_ca { "created_at" } else { "NULL" };
+        let sql = format!(
+            "SELECT id, category, title, \
+                    COALESCE(wing,'') AS wing, COALESCE(room,'') AS room, \
+                    {ca_col} AS created_at \
+             FROM knowledge_entries WHERE id > ?{sd} \
+             ORDER BY id ASC LIMIT ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params![after_id, limit as i64], |r| {
+                let id: i64 = r.get(0)?;
+                let category: String = r.get(1)?;
+                let title: String = r.get(2)?;
+                let wing: String = r.get(3)?;
+                let room: String = r.get(4)?;
+                let created_at: Option<String> = r.get(5).ok().flatten();
+                Ok((id, category, title, wing, room, created_at))
+            })?
+            .filter_map(|r| r.ok())
+            .map(|(id, category, title, wing, room, created_at)| {
+                serde_json::json!({
+                    "id": id,
+                    "category": category,
+                    "title": title,
+                    "wing": wing,
+                    "room": room,
+                    "created_at": created_at,
+                })
+            })
+            .collect();
+        Ok(rows)
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
