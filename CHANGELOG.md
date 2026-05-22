@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **chore(quality):** add language-specific `.editorconfig` indent rules and advisory `pnpm lint:all` script (issue #459 PR-A; Rust/Python/global-any tightening deferred behind #450–#453).
+
 ### Added
 - **Cron DB maintenance tasks (#464):** `cron-tasks.py` gains two new scheduled templates:
   `wal-checkpoint` (daily `PRAGMA wal_checkpoint(TRUNCATE)` at 04:00) and `vacuum` (weekly
