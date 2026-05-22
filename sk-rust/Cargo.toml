@@ -34,6 +34,7 @@ browse-server  = [
     "dep:rand",
     "dep:uuid",
     "dep:dunce",
+    "dep:md-5",
     "tokio/rt-multi-thread",
     "tokio/macros",
     "tokio/signal",
@@ -90,6 +91,8 @@ rand        = { version = "0.9", optional = true }
 uuid        = { version = "1", features = ["v4", "serde"], optional = true }
 # dunce avoids \\?\ extended-length prefix leaking into stored paths on Windows.
 dunce       = { version = "1", optional = true }
+# md-5 is only used by the graph handler (browse-server feature).
+md-5        = { version = "0.10", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

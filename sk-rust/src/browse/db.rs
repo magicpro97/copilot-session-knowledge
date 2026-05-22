@@ -940,6 +940,109 @@ impl BrowseDb {
         Ok(rows)
     }
 
+    /// Fetch knowledge entries for the legacy graph API (`GET /api/graph`).
+    ///
+    /// Returns `(id, category, title, wing, room)` ordered `id DESC`, up to
+    /// `limit_plus_one` rows (caller passes `limit + 1` to detect truncation).
+    /// Optional `wings`, `rooms`, `kinds` slices produce `IN (?)` filters when
+    /// non-empty; empty slices are skipped (no filter applied for that column).
+    #[allow(clippy::type_complexity)]
+    pub fn list_knowledge_entries_for_graph(
+        &self,
+        wings: &[String],
+        rooms: &[String],
+        kinds: &[String],
+        limit_plus_one: i64,
+    ) -> anyhow::Result<Vec<(i64, String, String, String, String)>> {
+        let conn = self.read_pool.get()?;
+
+        let mut conditions: Vec<String> = Vec::new();
+        let mut str_params: Vec<String> = Vec::new();
+
+        if !wings.is_empty() {
+            let placeholders = wings.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("wing IN ({placeholders})"));
+            str_params.extend(wings.iter().cloned());
+        }
+        if !rooms.is_empty() {
+            let placeholders = rooms.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("room IN ({placeholders})"));
+            str_params.extend(rooms.iter().cloned());
+        }
+        if !kinds.is_empty() {
+            let placeholders = kinds.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            conditions.push(format!("category IN ({placeholders})"));
+            str_params.extend(kinds.iter().cloned());
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            "SELECT id, \
+                     COALESCE(category,''), \
+                     COALESCE(title,''), \
+                     COALESCE(wing,''), \
+                     COALESCE(room,'') \
+             FROM knowledge_entries \
+             {where_clause} \
+             ORDER BY id DESC LIMIT ?"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let dyn_params: Vec<&dyn rusqlite::ToSql> = str_params
+            .iter()
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .chain(std::iter::once(&limit_plus_one as &dyn rusqlite::ToSql))
+            .collect();
+
+        let rows = stmt
+            .query_map(dyn_params.as_slice(), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Fetch entity relations for the legacy graph API (`GET /api/graph`).
+    ///
+    /// Executes the exact Python SQL:
+    /// `SELECT subject, predicate, object FROM entity_relations LIMIT ?`
+    /// (no `ORDER BY`).  Returns an empty vec when the table is missing.
+    pub fn list_entity_relations_for_graph(
+        &self,
+        limit_times_two: i64,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        let conn = self.read_pool.get()?;
+        let mut stmt =
+            match conn.prepare("SELECT subject, predicate, object FROM entity_relations LIMIT ?") {
+                Ok(s) => s,
+                Err(_) => return Ok(vec![]), // table absent
+            };
+        let rows = stmt
+            .query_map(rusqlite::params![limit_times_two], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Fetch all knowledge entries for community detection.
     ///
     /// Returns `(id, title, category, wing)` ordered by id ASC.
@@ -1002,8 +1105,6 @@ impl BrowseDb {
         Ok(rows)
     }
 }
-
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
