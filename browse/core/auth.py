@@ -12,17 +12,35 @@ if os.name == "nt":
 
 
 def get_cors_allowlist() -> list:
-    """Return the env-configured list of allowed cross-origins for operator endpoints.
+    """Return the list of allowed cross-origins for operator endpoints.
 
-    Set BROWSE_CORS_ORIGINS to a comma-separated list of origins, e.g.:
-      BROWSE_CORS_ORIGINS=https://agents.linhngo.dev,https://other.example.com
+    Sources (merged, deduplicated):
+      1. ``BROWSE_CORS_ORIGINS`` env var (comma-separated exact origins).
+      2. When bound to loopback (``BROWSE_LOOPBACK_BIND=1``, set automatically
+         by ``browse/__init__.py`` on startup), the canonical hosted-shell
+         origins are **always** included so ``--hosted-bootstrap`` is no longer
+         required for basic connectivity.
 
     Wildcard ('*') is never accepted; only exact origins are matched.
     """
     raw = os.environ.get("BROWSE_CORS_ORIGINS", "").strip()
-    if not raw:
-        return []
-    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()] if raw else []
+
+    # Auto-include hosted origins when server is bound to loopback —
+    # eliminates the need for --hosted-bootstrap for CORS/PNA to work.
+    if os.environ.get("BROWSE_LOOPBACK_BIND") == "1":
+        try:
+            from browse import HOSTED_BOOTSTRAP_ORIGINS  # noqa: PLC0415
+        except ImportError:
+            HOSTED_BOOTSTRAP_ORIGINS = (
+                "https://agents.linhngo.dev",
+                "https://agents-linhngo-dev.web.app",
+            )
+        for ho in HOSTED_BOOTSTRAP_ORIGINS:
+            if ho not in origins:
+                origins.append(ho)
+
+    return origins
 
 
 def check_cors_origin(request_headers: object) -> tuple:

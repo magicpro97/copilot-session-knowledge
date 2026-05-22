@@ -962,6 +962,10 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", args.port), HandlerClass)
     host, port = server.server_address
 
+    # Signal to browse.core.auth that we're bound to loopback — auto-enables
+    # hosted-shell CORS origins without requiring --hosted-bootstrap.
+    os.environ["BROWSE_LOOPBACK_BIND"] = "1"
+
     if token and not token_env_source:
         local_url = f"http://{host}:{port}/?token={urllib.parse.quote(token)}"
     else:

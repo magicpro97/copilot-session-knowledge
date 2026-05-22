@@ -221,9 +221,10 @@ def test_check_token_query_param_still_works_without_bearer():
 # ── get_cors_allowlist ────────────────────────────────────────────────────────
 
 def test_get_cors_allowlist_empty():
-    """Returns empty list when env var is not set."""
+    """Returns empty list when env var is not set and not on loopback."""
     import os as _os
     _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+    _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
     result = get_cors_allowlist()
     test("cors_allowlist_empty: returns list", isinstance(result, list))
     test("cors_allowlist_empty: empty", len(result) == 0)
@@ -233,6 +234,7 @@ def test_get_cors_allowlist_single():
     """Parses a single origin correctly."""
     import os as _os
     _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev"
+    _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
     try:
         result = get_cors_allowlist()
         test("cors_allowlist_single: length 1", len(result) == 1)
@@ -245,6 +247,7 @@ def test_get_cors_allowlist_multiple():
     """Parses comma-separated origins correctly."""
     import os as _os
     _os.environ["BROWSE_CORS_ORIGINS"] = "https://a.example.com, https://b.example.com , "
+    _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
     try:
         result = get_cors_allowlist()
         test("cors_allowlist_multi: length 2", len(result) == 2)
@@ -258,11 +261,42 @@ def test_get_cors_allowlist_strips_trailing_slash():
     """Trailing slashes are stripped from allowlist entries."""
     import os as _os
     _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev/"
+    _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
     try:
         result = get_cors_allowlist()
         test("cors_allowlist_strip: no trailing slash", result[0] == "https://agents.linhngo.dev")
     finally:
         _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+
+
+def test_get_cors_allowlist_loopback_bind():
+    """BROWSE_LOOPBACK_BIND=1 auto-includes hosted origins."""
+    import os as _os
+    _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+    _os.environ["BROWSE_LOOPBACK_BIND"] = "1"
+    try:
+        result = get_cors_allowlist()
+        test("cors_loopback: includes hosted", "https://agents.linhngo.dev" in result)
+        test("cors_loopback: includes firebase", "https://agents-linhngo-dev.web.app" in result)
+        test("cors_loopback: exactly 2", len(result) == 2)
+    finally:
+        _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
+
+
+def test_get_cors_allowlist_loopback_no_duplicates():
+    """BROWSE_LOOPBACK_BIND merges without duplicating existing origins."""
+    import os as _os
+    _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev,https://custom.example.com"
+    _os.environ["BROWSE_LOOPBACK_BIND"] = "1"
+    try:
+        result = get_cors_allowlist()
+        test("cors_loopback_merge: no duplicate", result.count("https://agents.linhngo.dev") == 1)
+        test("cors_loopback_merge: custom preserved", "https://custom.example.com" in result)
+        test("cors_loopback_merge: firebase added", "https://agents-linhngo-dev.web.app" in result)
+        test("cors_loopback_merge: length 3", len(result) == 3)
+    finally:
+        _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+        _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
 
 
 # ── check_cors_origin ─────────────────────────────────────────────────────────
@@ -313,9 +347,10 @@ def test_check_cors_origin_not_in_allowlist():
 
 
 def test_check_cors_origin_empty_allowlist():
-    """When no allowlist is configured, all origins are rejected."""
+    """When no allowlist is configured and not on loopback, all origins are rejected."""
     import os as _os
     _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+    _os.environ.pop("BROWSE_LOOPBACK_BIND", None)
     class FakeH:
         def get(self, key, default=""):
             return "https://agents.linhngo.dev" if key == "Origin" else default
@@ -366,6 +401,8 @@ if __name__ == "__main__":
     test_get_cors_allowlist_single()
     test_get_cors_allowlist_multiple()
     test_get_cors_allowlist_strips_trailing_slash()
+    test_get_cors_allowlist_loopback_bind()
+    test_get_cors_allowlist_loopback_no_duplicates()
     # check_cors_origin
     test_check_cors_origin_no_origin_header()
     test_check_cors_origin_allowlisted()

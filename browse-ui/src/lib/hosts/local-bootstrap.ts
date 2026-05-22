@@ -17,8 +17,9 @@ const WELL_KNOWN_PATH = "/.well-known/browse-host";
 /** Probe timeout in ms — fast enough to not block UI rendering. */
 const PROBE_TIMEOUT_MS = 3000;
 
-/** Negative cache duration in ms (5 minutes). Prevents probe storms. */
-const NEGATIVE_CACHE_DURATION_MS = 5 * 60 * 1000;
+/** Negative cache duration in ms (30 seconds). Short enough to retry quickly
+ * when the backend starts after page load, long enough to avoid probe storms. */
+const NEGATIVE_CACHE_DURATION_MS = 30 * 1000;
 
 /** In-memory negative cache expiry. 0 = no active negative cache. */
 let negativeCacheUntil = 0;
@@ -82,8 +83,8 @@ export type LocalBootstrapResult =
  * Returns the first successful result, or `"unavailable"` / `"cached-negative"`.
  * On total failure a 5-minute negative cache is applied.
  *
- * Safe to call from a hosted (HTTPS) origin — requires the backend to be
- * started with `--hosted-bootstrap` so CORS/PNA headers are set correctly.
+ * Safe to call from a hosted (HTTPS) origin — the backend automatically
+ * enables CORS/PNA headers when bound to loopback (no flags required).
  * Browsers that do not support Private Network Access (PNA) will silently
  * reject the request; the result will be `"unavailable"`.
  */
@@ -139,8 +140,8 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
 
       if (reason === "network-error") {
         // Secondary no-cors probe to distinguish "daemon not running" (connection refused)
-        // from "daemon running without --hosted-bootstrap" (CORS/PNA preflight rejected).
-        // In Chrome 126+ / LNA the secondary may also be blocked, yielding "unknown".
+        // from "daemon running but CORS/PNA preflight rejected" (e.g. old version without
+        // auto-CORS). In Chrome 126+ / LNA the secondary may also be blocked, yielding "unknown".
         let daemonState: DaemonState = "unknown";
         try {
           await fetch(`${baseUrl}/`, {

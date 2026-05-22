@@ -16,7 +16,7 @@
  * local backend is activated ephemerally without overriding any explicit
  * remote-host selection. A detected profile is held in memory so route changes
  * do not reset the app back to the same-origin placeholder. The probe runs at
- * most once per component lifecycle (backed by a 5-minute negative cache in
+ * most once per component lifecycle (backed by a 30-second negative cache in
  * local-bootstrap.ts).
  */
 

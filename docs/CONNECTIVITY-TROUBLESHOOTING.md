@@ -97,8 +97,11 @@ curl -I https://api.telegram.org
 | Chrome 145+ | Finer-grained split: `loopback-network` (localhost) vs `local-network` (LAN) | Stricter per-type enforcement |
 
 **What changed in browse-ui:** As of the Chrome 138 LNA patch, `local-bootstrap.ts` sends
-`targetAddressSpace: "local"` on every probe fetch. This explicit annotation tells Chrome to
-apply the LNA permission flow cleanly instead of silently pending the request.
+`targetAddressSpace: "loopback"` on every probe fetch. This explicit annotation tells Chrome
+to apply the LNA permission flow cleanly instead of silently pending the request.
+Chrome distinguishes `"loopback"` (127.0.0.0/8, ::1) from `"local"` (192.168.x, 10.x) —
+using the wrong value causes a silent block with the error *"target IP address space of
+local yet the resource is in address space loopback"*.
 
 **What the user will see on Chrome 142+:** On the first auto-detect probe from the hosted UI, Chrome
 shows a permission dialog. The user must click **Allow** to let the site reach
