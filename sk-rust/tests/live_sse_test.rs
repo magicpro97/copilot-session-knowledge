@@ -149,6 +149,33 @@ async fn read_until_sse_contains(conn: &mut tokio::net::TcpStream, expect: &[&st
 // ── Header tests (oneshot) ────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn live_emits_x_accel_buffering_no() {
+    let path = unique_db_path("xab");
+    let db = mk_db_at(&path);
+    let r = app(open_state_with_db(db))
+        .oneshot(
+            Request::builder()
+                .uri("/api/live")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(r.status(), StatusCode::OK);
+    let val = r
+        .headers()
+        .get("x-accel-buffering")
+        .expect("x-accel-buffering header required for nginx proxy parity")
+        .to_str()
+        .unwrap();
+    assert_eq!(
+        val, "no",
+        "x-accel-buffering must be 'no' to disable nginx proxy buffering, got {val}"
+    );
+}
+
+#[tokio::test]
 async fn live_returns_text_event_stream_content_type() {
     let path = unique_db_path("ct");
     let db = mk_db_at(&path);
