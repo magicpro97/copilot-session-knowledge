@@ -8,6 +8,8 @@
 
 #[cfg(feature = "browse-server")]
 pub mod db;
+#[cfg(feature = "browse-server")]
+pub mod db_debug_log;
 pub mod importers;
 #[cfg(feature = "browse-server")]
 pub mod server;
