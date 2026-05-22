@@ -455,16 +455,19 @@ impl BrowseDb {
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
-            .query_map(rusqlite::params![after_id, limit as i64], |r| {
+            .query_map(rusqlite::params![after_id, limit as i64], move |r| {
                 let id: i64 = r.get(0)?;
                 let category: String = r.get(1)?;
                 let title: String = r.get(2)?;
                 let wing: String = r.get(3)?;
                 let room: String = r.get(4)?;
-                let created_at: Option<String> = r.get(5).ok().flatten();
+                // When the column exists, propagate real conversion errors via `?`.
+                // When it was projected as NULL (older schema), skip the call entirely.
+                let created_at: Option<String> = if has_ca { r.get(5)? } else { None };
                 Ok((id, category, title, wing, room, created_at))
             })?
-            .filter_map(|r| r.ok())
+            .collect::<Result<Vec<_>, rusqlite::Error>>()?
+            .into_iter()
             .map(|(id, category, title, wing, room, created_at)| {
                 serde_json::json!({
                     "id": id,

@@ -82,6 +82,70 @@ fn seed_two_entries(path: &std::path::Path) {
     .unwrap();
 }
 
+/// Read from `conn` accumulating bytes until the HTTP header separator
+/// `\r\n\r\n` is found, the 5-second deadline expires, or the connection
+/// closes.  Prevents packet-splitting flakes caused by a single fixed-size
+/// read.
+async fn read_http_headers(conn: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut buf: Vec<u8> = Vec::with_capacity(2048);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut chunk = vec![0u8; 512];
+        match tokio::time::timeout(remaining, conn.read(&mut chunk)).await {
+            Ok(Ok(0)) | Err(_) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Read SSE body chunks from `conn`, accumulating until *all* strings in
+/// `expect` are present in the buffer or a 6-second wall-clock deadline
+/// passes.  Avoids chunk/timing flakes caused by a single read after a fixed
+/// sleep.
+async fn read_until_sse_contains(conn: &mut tokio::net::TcpStream, expect: &[&str]) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut accumulated = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        if expect.iter().all(|e| accumulated.contains(e)) {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut chunk = vec![0u8; 4096];
+        match tokio::time::timeout(
+            remaining.min(Duration::from_millis(500)),
+            conn.read(&mut chunk),
+        )
+        .await
+        {
+            Ok(Ok(0)) | Err(_) => {
+                // Either connection closed or this poll window expired; loop
+                // back to check the deadline and expected-string conditions.
+            }
+            Ok(Ok(n)) => {
+                accumulated.push_str(&String::from_utf8_lossy(&chunk[..n]));
+            }
+            Ok(Err(_)) => break,
+        }
+    }
+    accumulated
+}
+
 // ── Header tests (oneshot) ────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -172,7 +236,7 @@ async fn live_returns_401_without_token_when_auth_required() {
 /// with `id:` fields and JSON with the required shape keys.
 #[tokio::test]
 async fn live_seeded_two_events_appear_in_stream() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     let db_path = unique_db_path("seed");
     let db = mk_db_at(&db_path);
@@ -207,14 +271,9 @@ async fn live_seeded_two_events_appear_in_stream() {
     .await
     .unwrap();
 
-    // Read until we get a 200 response header (the SSE body starts after the
-    // blank line).  Collect the initial bytes to verify the header.
-    let mut header_buf = vec![0u8; 1024];
-    let n = tokio::time::timeout(Duration::from_secs(3), conn.read(&mut header_buf))
-        .await
-        .expect("timed out reading HTTP response headers")
-        .unwrap();
-    let header_str = std::str::from_utf8(&header_buf[..n]).unwrap_or("");
+    // Read until the HTTP header separator to verify the 200 / content-type.
+    // Using a loop-until-\r\n\r\n helper prevents packet-splitting flakes.
+    let header_str = read_http_headers(&mut conn).await;
     assert!(
         header_str.contains("200"),
         "expected 200 response, got: {header_str}"
@@ -227,17 +286,13 @@ async fn live_seeded_two_events_appear_in_stream() {
     // Seed two entries AFTER the connection is established (cursor = 0 on empty DB).
     seed_two_entries(&db_path);
 
-    // The poll task fires every 2 seconds; wait 3 s for it to pick up the entries.
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Read whatever the server has sent (may span multiple TCP segments).
-    let mut event_buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut event_buf))
-        .await
-        .unwrap_or(Ok(0))
-        .unwrap_or(0);
-
-    let event_str = std::str::from_utf8(&event_buf[..n]).unwrap_or("");
+    // Read SSE body chunks until both expected fields appear or the 6-second
+    // deadline passes.  Avoids a fixed sleep + single-read timing fragility.
+    let event_str = read_until_sse_contains(
+        &mut conn,
+        &["\"category\"", "\"title\"", "\"wing\"", "\"room\""],
+    )
+    .await;
 
     // In HTTP/1.1 chunked encoding the SSE text is embedded inside chunk
     // boundaries.  We search the raw bytes for the SSE fields we expect.

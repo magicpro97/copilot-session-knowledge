@@ -6,6 +6,12 @@
 //! `id > cursor`.  Each row is sent as a JSON-framed SSE event with an `id:`
 //! field so clients can resume with `Last-Event-ID` on reconnect.
 //!
+//! On reconnect, a client may supply a `Last-Event-ID` header with the last
+//! event id it received.  When the value is a valid positive integer the
+//! handler uses it as the starting cursor so no events are missed during the
+//! reconnect window.  An invalid or absent header falls back to the latest
+//! snapshot without panicking.
+//!
 //! The poll task exits when:
 //! - the client disconnects (the [`tokio::sync::mpsc::Sender`] reports closed),
 //! - the connection reaches [`MAX_CONNECTION_SECS`], or
@@ -15,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -26,14 +33,38 @@ use crate::browse::sse::{json_event_with_id, sse_response, MAX_CONNECTION_SECS};
 /// Extracts [`Arc<BrowseDb>`] from the router state via
 /// [`axum::extract::FromRef`] and opens an SSE stream of new
 /// `knowledge_entries` rows.
-pub async fn handler(State(db): State<Arc<BrowseDb>>) -> impl IntoResponse {
-    // Snapshot current max id as the cursor so we only stream NEW entries.
-    let cursor: i64 = match db.latest_entry_id() {
-        Ok(Some(id)) => id,
-        Ok(None) => 0,
-        Err(e) => {
-            tracing::warn!("live handler: failed to snapshot latest_entry_id: {e}");
-            0
+///
+/// Honors the `Last-Event-ID` request header for reconnecting clients: a valid
+/// positive integer value is used directly as the starting cursor so that
+/// events emitted between the disconnect and the reconnect are not lost.
+/// Invalid or missing values fall back to a fresh `MAX(id)` snapshot.
+pub async fn handler(headers: HeaderMap, State(db): State<Arc<BrowseDb>>) -> impl IntoResponse {
+    // Honor Last-Event-ID for reconnecting clients (SSE spec §9.2).
+    // A valid positive integer resumes from that id; anything else falls back
+    // to the latest snapshot so new connections only receive future events.
+    let resume_id: Option<i64> = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&id| id > 0);
+
+    let cursor: i64 = if let Some(id) = resume_id {
+        id
+    } else {
+        // Snapshot current max id on a blocking thread to avoid stalling the
+        // Tokio executor with a synchronous SQLite/r2d2 call.
+        let db2 = Arc::clone(&db);
+        match tokio::task::spawn_blocking(move || db2.latest_entry_id()).await {
+            Ok(Ok(Some(id))) => id,
+            Ok(Ok(None)) => 0,
+            Ok(Err(e)) => {
+                tracing::warn!("live handler: failed to snapshot latest_entry_id: {e}");
+                0
+            }
+            Err(e) => {
+                tracing::warn!("live handler: spawn_blocking join error: {e}");
+                0
+            }
         }
     };
 
