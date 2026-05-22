@@ -3896,6 +3896,99 @@ try:
 except Exception as _e:
     test("I456-5: sync_pruning template declaration", False, str(_e))
 
+# I456-6: _prune_sync_tables is a no-op when DB file does not exist (no file created)
+try:
+    import importlib.util as _ilu456e
+    import tempfile as _tempfile456e
+
+    _cron_spec6 = _ilu456e.spec_from_file_location("cron_tasks_456e", REPO / "cron-tasks.py")
+    _cron_mod6 = _ilu456e.module_from_spec(_cron_spec6)
+    _cron_spec6.loader.exec_module(_cron_mod6)
+
+    _missing_db = Path(_tempfile456e.mkdtemp()) / "nonexistent.db"
+    from datetime import datetime as _dt456f
+    from datetime import timezone as _tz456f
+
+    _deleted6 = _cron_mod6._prune_sync_tables(_missing_db, _dt456f(2025, 6, 1, 12, 0, 0, tzinfo=_tz456f.utc))
+    test(
+        "I456-6a: _prune_sync_tables returns {} for missing DB",
+        _deleted6 == {},
+        f"deleted={_deleted6}",
+    )
+    test(
+        "I456-6b: _prune_sync_tables does not create a file for missing DB",
+        not _missing_db.exists(),
+        f"file_created={_missing_db.exists()}",
+    )
+except Exception as _e:
+    test("I456-6: missing DB no-op", False, str(_e))
+
+# I456-7: _utc_cutoff_str generates UTC Z-suffix timestamps
+try:
+    import importlib.util as _ilu456g
+
+    _cron_spec7 = _ilu456g.spec_from_file_location("cron_tasks_456g", REPO / "cron-tasks.py")
+    _cron_mod7 = _ilu456g.module_from_spec(_cron_spec7)
+    _cron_spec7.loader.exec_module(_cron_mod7)
+
+    from datetime import datetime as _dt456h
+    from datetime import timezone as _tz456h
+
+    _now7 = _dt456h(2025, 6, 1, 12, 0, 0, tzinfo=_tz456h.utc)
+    _cutoff7 = _cron_mod7._utc_cutoff_str(_now7, 30)
+    test(
+        "I456-7a: _utc_cutoff_str result ends with Z",
+        _cutoff7.endswith("Z"),
+        f"cutoff={_cutoff7!r}",
+    )
+    test(
+        "I456-7b: _utc_cutoff_str result is correct UTC date",
+        _cutoff7 == "2025-05-02T12:00:00Z",
+        f"cutoff={_cutoff7!r}",
+    )
+    # Naive datetime should also produce Z suffix (treated as UTC)
+    _now7n = _dt456h(2025, 6, 1, 12, 0, 0)
+    _cutoff7n = _cron_mod7._utc_cutoff_str(_now7n, 30)
+    test(
+        "I456-7c: _utc_cutoff_str naive datetime yields Z suffix",
+        _cutoff7n.endswith("Z"),
+        f"cutoff={_cutoff7n!r}",
+    )
+except Exception as _e:
+    test("I456-7: UTC Z cutoff format", False, str(_e))
+
+# I456-8: unexpected OperationalError is re-raised (not swallowed as missing table)
+try:
+    import importlib.util as _ilu456i
+    import tempfile as _tempfile456i
+
+    _cron_spec8 = _ilu456i.spec_from_file_location("cron_tasks_456i", REPO / "cron-tasks.py")
+    _cron_mod8 = _ilu456i.module_from_spec(_cron_spec8)
+    _cron_spec8.loader.exec_module(_cron_mod8)
+
+    # Create a DB with sync_ops missing the expected column → triggers "no such column"
+    _bad_db_path = Path(_tempfile456i.mkdtemp()) / "bad.db"
+    _bconn = sqlite3.connect(str(_bad_db_path))
+    _bconn.execute("CREATE TABLE sync_ops (bad_col TEXT)")
+    _bconn.commit()
+    _bconn.close()
+
+    from datetime import datetime as _dt456j
+    from datetime import timezone as _tz456j
+
+    _raised8 = False
+    try:
+        _cron_mod8._prune_sync_tables(_bad_db_path, _dt456j(2025, 6, 1, 12, 0, 0, tzinfo=_tz456j.utc))
+    except sqlite3.OperationalError:
+        _raised8 = True
+    test(
+        "I456-8: unexpected OperationalError is re-raised",
+        _raised8,
+        "expected re-raise of OperationalError for wrong column",
+    )
+except Exception as _e:
+    test("I456-8: unexpected OperationalError re-raised", False, str(_e))
+
 # ---------------------------------------------------------------------------
 
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")

@@ -19,7 +19,7 @@ import sqlite3
 import sys
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from host_manifest import SESSION_STATE
@@ -286,16 +286,33 @@ _SYNC_TXNS_RETENTION_DAYS = 30
 _SYNC_FAILURES_RETENTION_DAYS = 7
 
 
+def _utc_cutoff_str(now: datetime, days: int) -> str:
+    """Return a UTC RFC3339-Z timestamp string for rows older than *days* from *now*.
+
+    If *now* is tz-aware it is first converted to UTC; naive datetimes are
+    treated as UTC (matching the convention used when storing sync timestamps).
+    """
+    cutoff = now - timedelta(days=days)
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _prune_sync_tables(db_path: Path, now: datetime) -> dict:
     """Delete aged rows from sync_ops, sync_txns, and sync_failures.
 
-    Returns a dict with deleted row counts per table.  Safe to run on a DB
-    that does not yet have these tables; missing-table errors are swallowed.
+    Returns a dict with deleted row counts per table.  Returns an empty dict
+    immediately (no-op) when *db_path* does not exist — avoids creating a new
+    empty database via sqlite3.connect.  Safe to run on a DB that does not yet
+    have these tables; only ``no such table`` errors are swallowed; unexpected
+    OperationalErrors are re-raised.
     """
+    if not db_path.exists():
+        return {}
     cutoffs = {
-        "sync_ops": (now - timedelta(days=_SYNC_OPS_RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%S"),
-        "sync_txns": (now - timedelta(days=_SYNC_TXNS_RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%S"),
-        "sync_failures": (now - timedelta(days=_SYNC_FAILURES_RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%S"),
+        "sync_ops": _utc_cutoff_str(now, _SYNC_OPS_RETENTION_DAYS),
+        "sync_txns": _utc_cutoff_str(now, _SYNC_TXNS_RETENTION_DAYS),
+        "sync_failures": _utc_cutoff_str(now, _SYNC_FAILURES_RETENTION_DAYS),
     }
     deleted: dict = {}
     try:
@@ -311,9 +328,12 @@ def _prune_sync_tables(db_path: Path, now: datetime) -> dict:
                     (cutoff_ts,),
                 )
                 deleted[table] = cursor.rowcount
-            except sqlite3.OperationalError:
-                # Table may not exist on older DBs; skip silently.
-                deleted[table] = 0
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc):
+                    # Table may not exist on older DBs; skip silently.
+                    deleted[table] = 0
+                else:
+                    raise
         conn.commit()
     finally:
         conn.close()
