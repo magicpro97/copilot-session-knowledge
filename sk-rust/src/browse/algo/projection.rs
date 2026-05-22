@@ -1,8 +1,18 @@
 //! Pure-Rust port of `browse/core/projection.py` — PCA-to-2D projection.
 //!
-//! No I/O, no cache, no DB, no RNG dependency.  The only difference from
-//! Python is that `pca_2d` uses a *deterministic* fixed init for power
-//! iteration rather than `random.gauss`; eigenvectors may differ by sign.
+//! No I/O, no cache, no DB, no RNG dependency.
+//!
+//! ## Known parity differences from Python
+//!
+//! 1. **Power-iteration init**: Rust uses a deterministic fixed init vector
+//!    (all-ones normalised, then second standard basis for the deflated pass)
+//!    instead of Python's `random.gauss`-seeded vector.  Eigenvectors may
+//!    therefore differ by sign.
+//!
+//! 2. **PCA sample selection**: when `n > PCA_SAMPLE`, Rust takes the *first*
+//!    `PCA_SAMPLE` centered rows; Python uses
+//!    `random.Random(99).sample(range(n), PCA_SAMPLE)`.  Projection
+//!    coordinates may differ numerically for large datasets.
 
 /// Number of rows sampled from the full data to compute eigenvectors.
 pub const PCA_SAMPLE: usize = 500;

@@ -79,8 +79,9 @@ pub fn fingerprint_rows(rows: &[Row]) -> String {
 
 /// Build the top-`max_neighbors` neighbors for `src` from `rows`.
 ///
-/// Ordering: higher cosine score first; ties (within EPS) broken by smaller
-/// `entry_id`.  Scores are rounded to 6 decimal places.
+/// Ordering: higher cosine score first; ties broken by smaller `entry_id`
+/// (using exact f64 equality, not an epsilon band).
+/// Scores are rounded to 6 decimal places.
 /// Returns `(neighbors, pair_count)`.
 pub fn build_top_neighbors(
     src: &Row,
