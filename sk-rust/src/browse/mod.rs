@@ -11,6 +11,8 @@ pub mod algo;
 pub mod api;
 #[cfg(feature = "browse-server")]
 pub mod auth;
+#[cfg(feature = "browse-broker")]
+pub mod broker;
 #[cfg(feature = "browse-server")]
 pub mod cors;
 #[cfg(feature = "browse-server")]
