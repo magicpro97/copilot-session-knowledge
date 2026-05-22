@@ -714,3 +714,108 @@ fn test_array_in_attrs_value_rejected() {
     );
     assert!(redacted_flag(&out));
 }
+
+// ── 20. Non-string route rejected (matches Python _redact_attrs isinstance check) ──
+
+#[test]
+fn test_route_integer_rejected() {
+    let entry = json!({
+        "idx": 20,
+        "kind": "generic",
+        "level": "info",
+        "source": "cli",
+        "attrs": { "route": 42 }
+    });
+    let out = redact_entry(&entry);
+    assert!(
+        out["attrs"].get("route").is_none(),
+        "Integer route should be dropped"
+    );
+    assert!(redacted_flag(&out), "redacted flag must be true");
+}
+
+#[test]
+fn test_route_bool_rejected() {
+    let entry = json!({
+        "idx": 20,
+        "kind": "generic",
+        "level": "info",
+        "source": "cli",
+        "attrs": { "route": true }
+    });
+    let out = redact_entry(&entry);
+    assert!(
+        out["attrs"].get("route").is_none(),
+        "Bool route should be dropped"
+    );
+    assert!(redacted_flag(&out), "redacted flag must be true");
+}
+
+#[test]
+fn test_route_null_rejected() {
+    let entry = json!({
+        "idx": 20,
+        "kind": "generic",
+        "level": "info",
+        "source": "cli",
+        "attrs": { "route": null }
+    });
+    let out = redact_entry(&entry);
+    assert!(
+        out["attrs"].get("route").is_none(),
+        "Null route should be dropped"
+    );
+    assert!(redacted_flag(&out), "redacted flag must be true");
+}
+
+#[test]
+fn test_session_uuid_integer_rejected() {
+    let entry = json!({
+        "idx": 20,
+        "kind": "generic",
+        "level": "info",
+        "source": "cli",
+        "attrs": { "session_uuid": 123 }
+    });
+    let out = redact_entry(&entry);
+    assert!(
+        out["attrs"].get("session_uuid").is_none(),
+        "Integer session_uuid should be dropped"
+    );
+    assert!(redacted_flag(&out), "redacted flag must be true");
+}
+
+#[test]
+fn test_session_uuid_null_rejected() {
+    let entry = json!({
+        "idx": 20,
+        "kind": "generic",
+        "level": "info",
+        "source": "cli",
+        "attrs": { "session_uuid": null }
+    });
+    let out = redact_entry(&entry);
+    assert!(
+        out["attrs"].get("session_uuid").is_none(),
+        "Null session_uuid should be dropped"
+    );
+    assert!(redacted_flag(&out), "redacted flag must be true");
+}
+
+// Negative control: valid string route and UUID pass through unchanged.
+#[test]
+fn test_valid_string_route_passes() {
+    let entry = json!({
+        "idx": 20,
+        "kind": "generic",
+        "level": "info",
+        "source": "cli",
+        "attrs": { "route": "/api/sessions" }
+    });
+    let out = redact_entry(&entry);
+    assert_eq!(
+        out["attrs"]["route"], "/api/sessions",
+        "Valid string route should pass through"
+    );
+    assert!(!redacted_flag(&out));
+}

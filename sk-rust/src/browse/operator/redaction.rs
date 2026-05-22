@@ -258,6 +258,13 @@ fn redact_attrs(raw_attrs: Option<&Value>) -> (Map<String, Value>, bool) {
                         }
                     }
                     Value::Number(_) | Value::Bool(_) | Value::Null => {
+                        // route and session_uuid must be strings; non-string scalars
+                        // are rejected to match Python `_redact_attrs` where
+                        // `not isinstance(v, str)` rejects both keys.
+                        if k == "route" || k == "session_uuid" {
+                            redacted = true;
+                            continue;
+                        }
                         out.insert(k.clone(), v.clone());
                     }
                     _ => {
