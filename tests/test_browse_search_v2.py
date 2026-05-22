@@ -339,8 +339,8 @@ def run_all_tests() -> int:
     # Insert three sessions with varying relevance to "alpha"
     for sid, summary, msg in [
         ("s-high", "alpha alpha alpha session", "alpha alpha alpha alpha alpha"),
-        ("s-mid",  "alpha session mid",          "alpha alpha mentioned once"),
-        ("s-low",  "unrelated session",           "only one alpha here"),
+        ("s-mid", "alpha session mid", "alpha alpha mentioned once"),
+        ("s-low", "unrelated session", "only one alpha here"),
     ]:
         db8.execute(
             "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -353,7 +353,7 @@ def run_all_tests() -> int:
     # Insert two knowledge entries with varying relevance to "alpha"
     for kid, title, content, cat in [
         (1, "alpha alpha knowledge", "alpha alpha alpha alpha best knowledge", "pattern"),
-        (2, "alpha knowledge low",   "alpha once in content", "pattern"),
+        (2, "alpha knowledge low", "alpha once in content", "pattern"),
     ]:
         db8.execute("INSERT INTO knowledge VALUES (?,?,?,?,?,?)", (kid, title, content, cat, "w", "r"))
         db8.execute("INSERT INTO ke_fts VALUES (?,?)", (title, content))
@@ -378,9 +378,7 @@ def run_all_tests() -> int:
         ids8 = [r["id"] for r in results8]
         test(
             "S8: high-relevance session precedes low-relevance session",
-            "s-high" in ids8
-            and "s-low" in ids8
-            and ids8.index("s-high") < ids8.index("s-low"),
+            "s-high" in ids8 and "s-low" in ids8 and ids8.index("s-high") < ids8.index("s-low"),
         )
 
         # Both types must appear (UNION ALL combines sources)
@@ -392,19 +390,15 @@ def run_all_tests() -> int:
 
         # ── EXPLAIN QUERY PLAN evidence ──────────────────────────────────────
         # Capture the query plan for the combined UNION ALL path as documentation.
-        from browse.core.fts import _sanitize_fts_query, _probe_sessions_fts
-        from browse.routes.search_api import _build_sessions_arm, _build_knowledge_arm
+        from browse.core.fts import _probe_sessions_fts, _sanitize_fts_query
+        from browse.routes.search_api import _build_knowledge_arm, _build_sessions_arm
 
         safe_q8 = _sanitize_fts_query("alpha")
         in_cols8 = ["user", "assistant", "tools", "title"]
         s_sql, s_params = _build_sessions_arm(safe_q8, in_cols8)
         k_sql, k_params = _build_knowledge_arm(safe_q8, in_cols8, [], "knowledge")
 
-        wrapped = (
-            f"SELECT * FROM ({s_sql})"
-            f" UNION ALL"
-            f" SELECT * FROM ({k_sql})"
-        )
+        wrapped = f"SELECT * FROM ({s_sql}) UNION ALL SELECT * FROM ({k_sql})"
         combined = f"SELECT * FROM ({wrapped}) ORDER BY score LIMIT ?"
         flat_params = [*s_params, 5, *k_params, 5, 5]
         plan_rows = list(db8.execute(f"EXPLAIN QUERY PLAN {combined}", flat_params))

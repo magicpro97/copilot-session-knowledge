@@ -133,11 +133,7 @@ def _build_knowledge_arm(safe_q: str, in_cols: list, kind_list: list, ktable: st
     ktable must be one of the two safe values returned by _knowledge_table().
     kind_list items are inserted via ? placeholders (never interpolated).
     """
-    ke_query = (
-        _build_column_scoped_query(safe_q, ["title"])
-        if ("title" in in_cols and len(in_cols) == 1)
-        else safe_q
-    )
+    ke_query = _build_column_scoped_query(safe_q, ["title"]) if ("title" in in_cols and len(in_cols) == 1) else safe_q
 
     kind_args: list = []
     kind_clause = ""
