@@ -242,12 +242,23 @@ fn lenient_canonicalize(path: &Path) -> Option<PathBuf> {
 
 // ── Error types ────────────────────────────────────────────────────────────────
 
+/// Error codes returned by `create_session`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CreateError {
+    /// `workspace` or an `add_dir` path is not confined to `~/`.
+    PathViolation(String),
+    /// A filesystem operation failed (creating the sessions dir or writing JSON).
+    Io(String),
+}
+
 /// Error codes returned by `update_session`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UpdateError {
     NotFound,
     BadMode,
     ActiveRun,
+    /// A filesystem operation failed (creating the sessions dir or writing JSON).
+    Io(String),
 }
 
 // ── Session CRUD ───────────────────────────────────────────────────────────────
@@ -264,15 +275,21 @@ pub struct CreateSessionParams {
 
 /// Create and persist a new operator session.
 ///
-/// Returns `Err(message)` if `workspace` or any `add_dir` is outside `~/`.
-pub fn create_session(params: CreateSessionParams) -> Result<Session, String> {
+/// Returns `Err(CreateError::PathViolation)` if `workspace` or any `add_dir`
+/// is outside `~/`, and `Err(CreateError::Io)` if persistence fails.
+pub fn create_session(params: CreateSessionParams) -> Result<Session, CreateError> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
 
     let ws_path = if !params.workspace.trim().is_empty() {
         confine_path(&params.workspace)
             .map(|p| p.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("workspace path '{}' is not under ~/", params.workspace))?
+            .ok_or_else(|| {
+                CreateError::PathViolation(format!(
+                    "workspace path '{}' is not under ~/",
+                    params.workspace
+                ))
+            })?
     } else {
         String::new()
     };
@@ -283,7 +300,9 @@ pub fn create_session(params: CreateSessionParams) -> Result<Session, String> {
         if d.is_empty() {
             continue;
         }
-        let p = confine_path(d).ok_or_else(|| format!("add_dir path '{d}' is not under ~/"))?;
+        let p = confine_path(d).ok_or_else(|| {
+            CreateError::PathViolation(format!("add_dir path '{d}' is not under ~/"))
+        })?;
         validated_dirs.push(p.to_string_lossy().into_owned());
     }
 
@@ -301,8 +320,9 @@ pub fn create_session(params: CreateSessionParams) -> Result<Session, String> {
         resume_ready: false,
     };
 
-    let dir = sessions_dir().map_err(|e| e.to_string())?;
-    write_json_atomic(&dir.join(format!("{id}.json")), &session).map_err(|e| e.to_string())?;
+    let dir = sessions_dir().map_err(|e| CreateError::Io(e.to_string()))?;
+    write_json_atomic(&dir.join(format!("{id}.json")), &session)
+        .map_err(|e| CreateError::Io(e.to_string()))?;
 
     Ok(session)
 }
@@ -355,6 +375,10 @@ pub fn get_session(session_id: &str) -> Option<Session> {
 }
 
 /// Delete a session file.  Returns `true` if the file existed and was removed.
+///
+/// Intentionally mirrors Python `browse/core/operator_console.py::delete_session`:
+/// `OSError` maps to `False`, so the route surfaces 404 `SESSION_NOT_FOUND`.
+/// Changing this contract requires coordinated Python/Rust contract work.
 pub fn delete_session(session_id: &str) -> bool {
     if !is_valid_uuid4(session_id) {
         return false;
@@ -415,9 +439,9 @@ pub fn update_session(
     }
     session.updated_at = now;
 
-    let dir = sessions_dir().map_err(|_| UpdateError::NotFound)?;
+    let dir = sessions_dir().map_err(|e| UpdateError::Io(e.to_string()))?;
     write_json_atomic(&dir.join(format!("{session_id}.json")), &session)
-        .map_err(|_| UpdateError::NotFound)?;
+        .map_err(|e| UpdateError::Io(e.to_string()))?;
 
     Ok(session)
 }

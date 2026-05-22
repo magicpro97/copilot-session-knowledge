@@ -21,7 +21,7 @@ use axum::Json;
 use serde_json::{json, Value};
 
 use crate::browse::operator::console::{
-    create_session, delete_session, get_session, list_sessions, update_session,
+    create_session, delete_session, get_session, list_sessions, update_session, CreateError,
     CreateSessionParams, UpdateError,
 };
 
@@ -124,7 +124,12 @@ pub async fn handle_create_session(body: Bytes) -> Response {
 
     match tokio::task::spawn_blocking(|| create_session(params)).await {
         Ok(Ok(session)) => json_ok_val(serde_json::to_value(session).unwrap_or(Value::Null)),
-        Ok(Err(msg)) => json_err(&msg, "PATH_VIOLATION", StatusCode::FORBIDDEN),
+        Ok(Err(CreateError::PathViolation(msg))) => {
+            json_err(&msg, "PATH_VIOLATION", StatusCode::FORBIDDEN)
+        }
+        Ok(Err(CreateError::Io(msg))) => {
+            json_err(&msg, "INTERNAL", StatusCode::INTERNAL_SERVER_ERROR)
+        }
         Err(e) => json_err(
             &format!("internal error: {e}"),
             "INTERNAL",
@@ -178,6 +183,8 @@ pub async fn handle_delete_session(Path(session_id): Path<String>) -> Response {
     let id_clone = session_id.clone();
     match tokio::task::spawn_blocking(move || delete_session(&id_clone)).await {
         Ok(true) => json_ok_val(json!({ "deleted": true, "session_id": session_id })),
+        // false: invalid UUID, file missing, or I/O failure — mirrors Python delete_session
+        // returning False on OSError; changing this requires coordinated Python/Rust work.
         Ok(false) => json_err(&msg, "SESSION_NOT_FOUND", StatusCode::NOT_FOUND),
         Err(e) => json_err(
             &format!("internal error: {e}"),
@@ -193,6 +200,8 @@ pub async fn handle_delete_session_post(Path(session_id): Path<String>) -> Respo
     let id_clone = session_id.clone();
     match tokio::task::spawn_blocking(move || delete_session(&id_clone)).await {
         Ok(true) => json_ok_val(json!({ "deleted": true, "session_id": session_id })),
+        // false: invalid UUID, file missing, or I/O failure — mirrors Python delete_session
+        // returning False on OSError; changing this requires coordinated Python/Rust work.
         Ok(false) => json_err(&msg, "SESSION_NOT_FOUND", StatusCode::NOT_FOUND),
         Err(e) => json_err(
             &format!("internal error: {e}"),
@@ -280,6 +289,9 @@ pub async fn handle_update_session(Path(session_id): Path<String>, body: Bytes) 
         ),
         Ok(Err(UpdateError::ActiveRun)) => {
             json_err(&active_run_msg, "SESSION_ACTIVE_RUN", StatusCode::CONFLICT)
+        }
+        Ok(Err(UpdateError::Io(msg))) => {
+            json_err(&msg, "INTERNAL", StatusCode::INTERNAL_SERVER_ERROR)
         }
         Err(e) => json_err(
             &format!("internal error: {e}"),

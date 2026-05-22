@@ -16,6 +16,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serial_test::serial;
+use tempfile::NamedTempFile;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -867,4 +868,79 @@ fn test_active_run_conflict_409_placeholder() {
     // update_session returns UpdateError::ActiveRun, and that the HTTP handler
     // returns 409 SESSION_ACTIVE_RUN.
     unimplemented!("wire active-run registry in PR-B");
+}
+
+/// API: POST /api/operator/sessions returns 500 INTERNAL when the sessions dir
+/// cannot be created (COPILOT_OPERATOR_STATE points to a regular file).
+#[tokio::test]
+#[serial]
+async fn test_http_create_session_io_failure_500() {
+    // A regular file at the state path means `sessions_dir()` / `create_dir_all`
+    // cannot create `{state}/sessions/` — deterministic I/O failure on all platforms.
+    let blocking_file = NamedTempFile::new().unwrap();
+    std::env::set_var("COPILOT_OPERATOR_STATE", blocking_file.path());
+
+    let state = AppState::new(
+        Arc::new(ServerConfig {
+            port: 0,
+            server_token: String::new(),
+            ..ServerConfig::default()
+        }),
+        mk_db(),
+    );
+
+    let r = app(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/operator/sessions")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"io-fail"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let v = body_json(r).await;
+    assert_eq!(v["code"], "INTERNAL");
+}
+
+/// API: PATCH /api/operator/sessions/:id returns 500 INTERNAL when the atomic
+/// write fails.  A directory placed at the `.tmp` path blocks `fs::write`
+/// deterministically on all platforms.
+#[tokio::test]
+#[serial]
+async fn test_http_update_session_io_failure_500() {
+    let dir = TempDir::new().unwrap();
+    setup_state(&dir);
+
+    // Create a real session so get_session succeeds inside update_session.
+    let session = create_session(make_create_params("io_update")).unwrap();
+
+    // Block the atomic write: place a directory where write_json_atomic writes its .tmp file.
+    let sessions_path = dir.path().join("sessions");
+    let tmp_block = sessions_path.join(format!("{}.tmp", session.id));
+    std::fs::create_dir_all(&tmp_block).unwrap();
+
+    let state = open_state_for_http(&dir);
+
+    let r = app(state)
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/operator/sessions/{}", session.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"blocked"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Clean up the blocking directory.
+    let _ = std::fs::remove_dir(&tmp_block);
+
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let v = body_json(r).await;
+    assert_eq!(v["code"], "INTERNAL");
 }
