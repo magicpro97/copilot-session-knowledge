@@ -511,6 +511,122 @@ A performance test (`tests/test_browse_debug_log_api.py::DB26`) verifies that
 
 ---
 
+## WBS-106 Importer Contract
+
+### Overview
+
+Two read-only Python importers normalise external source formats into the
+`BrowseDebugEntry` shape defined above, apply `redact_entry`, and return
+`(entries, summary)` without writing to the debug-log DB.
+
+| Module | Source tag | `BrowseDebugEntry.source` | CLI |
+|---|---|---|---|
+| `browse.importers.vscode_agent_debug_log` | `vscode-agent-debug-log` | `vscode` | `python -m browse.importers.vscode_agent_debug_log --path ... --dry-run --json-summary` |
+| `browse.importers.otel_file` | `vscode-otel-file` | `vscode` | `python -m browse.importers.otel_file --path ... --dry-run --json-summary` |
+
+### Path safety (both importers)
+
+- Paths with raw `..` components are rejected with `PathTraversalError` **before** the file is opened.
+- `Path.resolve(strict=True)` enforces existence check.
+- When `safe_base` is provided, the resolved target must be under the resolved `safe_base` after full symlink expansion; symlink escape raises `SymlinkEscapeError`.
+
+### Max line size
+
+Default: 1 MiB per line. Override: `BROWSE_DEBUG_LOG_MAX_LINE_BYTES` env variable.
+Oversized lines are reported as malformed and skipped; they do not crash the import.
+
+### Import summary fields
+
+| Field | Type | Description |
+|---|---|---|
+| `source` | `string` | Importer source tag |
+| `schema_version` | `integer` | Always `1` |
+| `total_lines` | `integer` | Non-blank lines processed |
+| `ok_count` | `integer` | Successfully parsed and deduped entries |
+| `malformed_count` | `integer` | Lines reported as malformed |
+| `deduped_count` | `integer` | Lines skipped as duplicates |
+| `malformed_reports` | `array` | `[{line_number, reason}]` |
+| `file_hash` | `string` | `"sha256:<hex>"` of the file |
+| `file_name` | `string` | Filename only - **no absolute path with username** |
+
+### VS Code `IDebugLogEntry` importer
+
+**Required fields:** `ts` (epoch ms), `dur` (ms), `sid`, `type`, `name`, `spanId`, `status`, `attrs`.
+**Optional:** `v` (must be `1` if present; `v != 1` is a malformed line), `rIdx`, `parentSpanId`.
+
+**Required-field malformed rules:**
+
+| Field | Required presence | Required base type | Carve-out |
+|---|---|---|---|
+| `spanId` | yes -> else malformed | string -> else malformed | Present non-16-hex string -> synthetic; not malformed |
+| `status` | yes -> else malformed | string **or** null -> else malformed | `null` or unrecognised string -> output `status` omitted (None) |
+| `attrs` | yes -> else malformed | dict -> else malformed | - |
+
+- Directory input reads `main.jsonl` only; companion files (`models.json`,
+  `system_prompt_*.json`, `tools_*.json`, `title-*.jsonl`, etc.) raise
+  `UnsupportedFormatError` when passed directly.
+- `dur = 0` -> `duration_ms = null` (never use 0 as sentinel).
+- Non-16-hex `spanId` -> `synthetic_span_id("vscode", idx, seq=1)`.
+- Attrs pre-filter: `inputTokens` -> `tokens_in`, `outputTokens` -> `tokens_out`,
+  `latency` -> `latency_ms`; dangerous fields (`args`, `result`, `content`, etc.) are
+  dropped before `redact_entry`.
+- Dedup key: `vscode-agent-debug-log:{sid}:{type}:{spanId}:{ts}:{sha256(obj)[:16]}`.
+
+**FIFO synthetic pairing for `tool_call` / `tool_result`:**
+
+When a `tool_call` or `tool_result` row has **no valid native spanId** (non-16-hex
+string), the importer applies FIFO synthetic pairing rather than generating a
+unique synthetic span per row:
+
+- Pair key: `(sid, name, normalized_parent_span_id)` where `normalized_parent_span_id`
+  is the importer-normalised output value (`None` when `parentSpanId` is absent or
+  not a valid 16-hex string). `rIdx` is ignored by the importer, does not appear
+  in output entries, and is omitted from the pair key.
+- For a `tool_call` start with no valid native `spanId`: compute a synthetic span_id,
+  enqueue it in the FIFO for the key, and use it as the entry's `span_id`.
+- For a `tool_result` with no valid native `spanId`: pop the earliest enqueued
+  span_id for the key (if any) and reuse it; if the queue is empty (orphan
+  `tool_result`), compute and use a new synthetic span_id.
+- Native path (valid 16-hex `spanId`) is **unchanged** - pairing logic is not applied.
+
+**Format detection (`_detect_format`):**
+
+Scans forward through the file, skipping oversized and unparseable leading lines
+(these are not format evidence). The first parseable JSON value must be a dict with
+VS Code fingerprint (`ts` as positive numeric and `sid` as string); a fingerprint
+mismatch raises `UnsupportedFormatError` immediately. EOF without finding any
+parseable fingerprint also raises `UnsupportedFormatError`.
+
+**Type -> kind mapping:**
+
+| VS Code `type` | `kind` |
+|---|---|
+| `session_start`, `turn_start`, `llm_request`, `tool_call`, `agent_response`, `subagent`, `hook`, `error` | Same |
+| `tool_result` | `tool_call` (paired completion) |
+| `discovery`, `user_message`, `child_session_ref`, `turn_end` | `generic` |
+| Unknown string | `generic` |
+
+### OTel `ReadableSpan` importer
+
+Supports **ConsoleSpanExporter** output and compatible variants:
+
+| Source variant | Field |
+|---|---|
+| Span ID | `id`, `spanId`, or `spanContext.spanId` |
+| Trace ID | `traceId` or `spanContext.traceId` |
+| Parent | `parentSpanId` or `parentSpanContext.spanId` |
+| Timestamp | `timestamp` (microseconds), `startTime` (HrTime `[sec,nanos]` or ISO string), `timeUnixNano`/`startTimeUnixNano` (ns) |
+| Duration | `duration` (microseconds -> ms) |
+| Attrs | `attributes` dict -> pre-filtered to allowlist |
+| Status | `status.code`: `0` -> null, `1` -> ok, `2` -> error + level error |
+
+- `kind` is always `generic` (OTel spans carry no lifecycle type).
+- `source` is `vscode` (allowlisted in `_SOURCE_ENUM`); `vscode-otel-file` is the summary `source` tag only.
+- Dedup key: `vscode-otel-file:{traceId}:{span_id}:{sha256(obj)[:16]}`.
+- VS Code `IDebugLogEntry` files (have `ts` + `sid`) are detected and rejected with `UnsupportedFormatError`.
+
+---
+
 ## WBS-105 Operator Debug Event Capture
 
 ### Overview

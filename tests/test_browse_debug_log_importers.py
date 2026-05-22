@@ -405,6 +405,420 @@ def test_vscode_oversized_only_file_raises_unsupported():
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# VS Code required-field enforcement tests (PR #445 review hardening)
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def _write_vsc_temp(td: str, lines: "list[str]") -> "Path":
+    """Write VS Code fixture lines to a temp main.jsonl, return its Path."""
+    p = Path(td) / "main.jsonl"
+    p.write_text("".join(lines), encoding="utf-8")
+    return p
+
+
+# Base valid line used as fingerprint anchor in tempfile tests
+_VSC_BASE = (
+    '{"ts": 1700000000000, "dur": 50, "sid": "sx", "type": "session_start",'
+    ' "name": "s", "spanId": "a000000000000001", "status": "ok", "attrs": {}}\n'
+)
+
+
+def test_vscode_missing_spanid_malformed():
+    """Missing spanId field → malformed; reason mentions 'spanId'."""
+    with tempfile.TemporaryDirectory() as td:
+        bad = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "status": "ok", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, bad])
+        _, summary = _vsc.import_file(p)
+        reports = summary["malformed_reports"]
+        test(
+            "vsc_req: missing spanId reported as malformed",
+            any("spanId" in r["reason"] for r in reports),
+        )
+
+
+def test_vscode_invalid_spanid_type_malformed():
+    """Non-string spanId (e.g. integer) → malformed; reason mentions 'spanId'."""
+    with tempfile.TemporaryDirectory() as td:
+        bad = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": 12345, "status": "ok", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, bad])
+        _, summary = _vsc.import_file(p)
+        reports = summary["malformed_reports"]
+        test(
+            "vsc_req: non-string spanId reported as malformed",
+            any("spanId" in r["reason"] for r in reports),
+        )
+
+
+def test_vscode_missing_status_malformed():
+    """Missing status field → malformed; reason mentions 'status'."""
+    with tempfile.TemporaryDirectory() as td:
+        bad = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "b000000000000002", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, bad])
+        _, summary = _vsc.import_file(p)
+        reports = summary["malformed_reports"]
+        test(
+            "vsc_req: missing status reported as malformed",
+            any("status" in r["reason"] for r in reports),
+        )
+
+
+def test_vscode_status_null_accepted():
+    """status: null is accepted; output entry has no 'status' key."""
+    with tempfile.TemporaryDirectory() as td:
+        line = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "b000000000000002", "status": null, "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, line])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_req: status null accepted (ok_count >= 2)", summary["ok_count"] >= 2)
+        null_entry = next((e for e in entries if e.get("idx") == 1), None)
+        test(
+            "vsc_req: status null entry has no 'status' key",
+            null_entry is not None and "status" not in null_entry,
+        )
+
+
+def test_vscode_unrecognized_status_accepted():
+    """Unrecognized status string (e.g. 'started') accepted; output has no 'status' key."""
+    with tempfile.TemporaryDirectory() as td:
+        line = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "b000000000000002", "status": "started", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, line])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_req: unrecognized status accepted (ok_count >= 2)", summary["ok_count"] >= 2)
+        unrecog_entry = next((e for e in entries if e.get("idx") == 1), None)
+        test(
+            "vsc_req: unrecognized status entry has no 'status' key",
+            unrecog_entry is not None and "status" not in unrecog_entry,
+        )
+
+
+def test_vscode_invalid_status_type_malformed():
+    """Non-string, non-null status (e.g. integer) → malformed; reason mentions 'status'."""
+    with tempfile.TemporaryDirectory() as td:
+        bad = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "b000000000000002", "status": 1, "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, bad])
+        _, summary = _vsc.import_file(p)
+        reports = summary["malformed_reports"]
+        test(
+            "vsc_req: non-string non-null status reported as malformed",
+            any("status" in r["reason"] for r in reports),
+        )
+
+
+def test_vscode_missing_attrs_malformed():
+    """Missing attrs field → malformed; reason mentions 'attrs'."""
+    with tempfile.TemporaryDirectory() as td:
+        bad = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "b000000000000002", "status": "ok"}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, bad])
+        _, summary = _vsc.import_file(p)
+        reports = summary["malformed_reports"]
+        test(
+            "vsc_req: missing attrs reported as malformed",
+            any("attrs" in r["reason"] for r in reports),
+        )
+
+
+def test_vscode_non_dict_attrs_malformed():
+    """Non-dict attrs (e.g. list) → malformed; reason mentions 'attrs'."""
+    with tempfile.TemporaryDirectory() as td:
+        bad = (
+            '{"ts": 1700000001000, "dur": 10, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "b000000000000002", "status": "ok", "attrs": []}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, bad])
+        _, summary = _vsc.import_file(p)
+        reports = summary["malformed_reports"]
+        test(
+            "vsc_req: non-dict attrs reported as malformed",
+            any("attrs" in r["reason"] for r in reports),
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# VS Code synthetic pairing tests (PR #445 review hardening)
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def test_vscode_synthetic_pairing_tool_call_result():
+    """tool_call + tool_result with no valid native spanId share the start's synthetic span_id."""
+    with tempfile.TemporaryDirectory() as td:
+        start_line = (
+            '{"ts": 1700000001000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "bad!!", "status": null, "attrs": {}}\n'
+        )
+        result_line = (
+            '{"ts": 1700000001500, "dur": 500, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "also_bad!!", "status": "ok", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, start_line, result_line])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_pair: ok_count == 3", summary["ok_count"] == 3)
+        tool_entries = [e for e in entries if e.get("kind") == "tool_call"]
+        test("vsc_pair: two tool_call entries", len(tool_entries) == 2)
+        if len(tool_entries) == 2:
+            test(
+                "vsc_pair: start and result share span_id",
+                tool_entries[0].get("span_id") == tool_entries[1].get("span_id"),
+            )
+
+
+def test_vscode_synthetic_pairing_fifo_order():
+    """Two starts then two results with same key pair in FIFO order."""
+    with tempfile.TemporaryDirectory() as td:
+        # Both tool_calls have same (sid, name, parent_span_id=None) key
+        start1 = (
+            '{"ts": 1700000001000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "bad!!", "status": null, "attrs": {}}\n'
+        )
+        start2 = (
+            '{"ts": 1700000002000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "alsobad!!", "status": null, "attrs": {}}\n'
+        )
+        result1 = (
+            '{"ts": 1700000003000, "dur": 2000, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "badspa1!!", "status": "ok", "attrs": {}}\n'
+        )
+        result2 = (
+            '{"ts": 1700000004000, "dur": 2000, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "badspa2!!", "status": "ok", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, start1, start2, result1, result2])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_fifo: ok_count == 5", summary["ok_count"] == 5)
+        tool_entries = [e for e in entries if e.get("kind") == "tool_call"]
+        test("vsc_fifo: four tool_call entries", len(tool_entries) == 4)
+        if len(tool_entries) == 4:
+            # FIFO: result1 pairs with start1's span, result2 pairs with start2's span
+            span_start1 = tool_entries[0].get("span_id")  # start1
+            span_start2 = tool_entries[1].get("span_id")  # start2
+            span_result1 = tool_entries[2].get("span_id")  # result1
+            span_result2 = tool_entries[3].get("span_id")  # result2
+            test("vsc_fifo: result1 paired with start1", span_result1 == span_start1)
+            test("vsc_fifo: result2 paired with start2", span_result2 == span_start2)
+
+
+def test_vscode_orphan_tool_result_keeps_own_span():
+    """tool_result with no paired start keeps its own synthetic span_id."""
+    with tempfile.TemporaryDirectory() as td:
+        orphan = (
+            '{"ts": 1700000001000, "dur": 100, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "bad!!", "status": "ok", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, orphan])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_orphan: ok_count == 2", summary["ok_count"] == 2)
+        orphan_entry = next((e for e in entries if e.get("idx") == 1), None)
+        test(
+            "vsc_orphan: orphan has own valid synthetic span_id",
+            orphan_entry is not None and orphan_entry.get("span_id") is not None and len(orphan_entry["span_id"]) == 16,
+        )
+
+
+def test_vscode_no_cross_pair_different_parent():
+    """tool_call/result rows with different valid parent_span_ids do not cross-pair."""
+    with tempfile.TemporaryDirectory() as td:
+        # start A has parent "1111aaaa11111111" (valid 16-hex)
+        start_a = (
+            '{"ts": 1700000001000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "bad!!", "status": null, "attrs": {},'
+            ' "parentSpanId": "1111aaaa11111111"}\n'
+        )
+        # result B has a different parent "2222bbbb22222222" — no matching start for B
+        result_b = (
+            '{"ts": 1700000002000, "dur": 100, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "alsobad!!", "status": "ok", "attrs": {},'
+            ' "parentSpanId": "2222bbbb22222222"}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, start_a, result_b])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_nocross: ok_count == 3", summary["ok_count"] == 3)
+        tool_entries = [e for e in entries if e.get("kind") == "tool_call"]
+        if len(tool_entries) == 2:
+            # Different parent → different queue → no cross-pairing
+            test(
+                "vsc_nocross: start_a and result_b have different span_ids",
+                tool_entries[0].get("span_id") != tool_entries[1].get("span_id"),
+            )
+
+
+def test_vscode_malformed_parent_normalizes_none_pairing():
+    """Invalid parentSpanId normalizes to None in pair key; tool_call and result pair."""
+    with tempfile.TemporaryDirectory() as td:
+        # Both have invalid (non-16-hex) parentSpanId → normalized to None → same key
+        start = (
+            '{"ts": 1700000001000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "bad!!", "status": null, "attrs": {},'
+            ' "parentSpanId": "bad-parent-1"}\n'
+        )
+        result = (
+            '{"ts": 1700000002000, "dur": 100, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "alsobad!!", "status": "ok", "attrs": {},'
+            ' "parentSpanId": "bad-parent-2"}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, start, result])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_badparent: ok_count == 3", summary["ok_count"] == 3)
+        tool_entries = [e for e in entries if e.get("kind") == "tool_call"]
+        if len(tool_entries) == 2:
+            test(
+                "vsc_badparent: start and result share span_id (both parents normalize to None)",
+                tool_entries[0].get("span_id") == tool_entries[1].get("span_id"),
+            )
+
+
+def test_vscode_ridx_ignored_in_pairing():
+    """Different rIdx values (or absent rIdx) do not affect FIFO synthetic pairing."""
+    with tempfile.TemporaryDirectory() as td:
+        # start has rIdx: 5; result has rIdx: 10 — should still pair
+        start = (
+            '{"ts": 1700000001000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "bad!!", "status": null, "attrs": {}, "rIdx": 5}\n'
+        )
+        result = (
+            '{"ts": 1700000002000, "dur": 100, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "alsobad!!", "status": "ok", "attrs": {}, "rIdx": 10}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, start, result])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_ridx: ok_count == 3", summary["ok_count"] == 3)
+        tool_entries = [e for e in entries if e.get("kind") == "tool_call"]
+        if len(tool_entries) == 2:
+            test(
+                "vsc_ridx: start and result share span_id despite different rIdx",
+                tool_entries[0].get("span_id") == tool_entries[1].get("span_id"),
+            )
+
+
+def test_vscode_duplicate_tool_call_does_not_enqueue_pairing():
+    """Deduped tool_call rows must not leave orphan synthetic spans in the FIFO queue."""
+    with tempfile.TemporaryDirectory() as td:
+        duplicate_start = (
+            '{"ts": 1700000001000, "dur": 0, "sid": "sx", "type": "tool_call",'
+            ' "name": "bash", "spanId": "bad!!", "status": null, "attrs": {}}\n'
+        )
+        agent_response = (
+            '{"ts": 1700000002000, "dur": 0, "sid": "sx", "type": "agent_response",'
+            ' "name": "assistant", "spanId": "also_bad!!", "status": null, "attrs": {}}\n'
+        )
+        result1 = (
+            '{"ts": 1700000003000, "dur": 100, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "result_bad_1!!", "status": "ok", "attrs": {}}\n'
+        )
+        result2 = (
+            '{"ts": 1700000004000, "dur": 100, "sid": "sx", "type": "tool_result",'
+            ' "name": "bash", "spanId": "result_bad_2!!", "status": "ok", "attrs": {}}\n'
+        )
+        p = _write_vsc_temp(td, [_VSC_BASE, duplicate_start, duplicate_start, agent_response, result1, result2])
+        entries, summary = _vsc.import_file(p)
+        test("vsc_dedup_pair: ok_count == 5", summary["ok_count"] == 5)
+        test("vsc_dedup_pair: deduped_count == 1", summary["deduped_count"] == 1)
+        span_ids = [e.get("span_id") for e in entries if e.get("span_id")]
+        agent_span = next(e["span_id"] for e in entries if e.get("kind") == "agent_response")
+        test("vsc_dedup_pair: agent_response synthetic span is unique", span_ids.count(agent_span) == 1)
+        tool_entries = [e for e in entries if e.get("kind") == "tool_call"]
+        test(
+            "vsc_dedup_pair: second result does not reuse deduped start span",
+            len(tool_entries) == 3 and tool_entries[2].get("span_id") != agent_span,
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# VS Code _detect_format scan-forward hardening tests (PR #445 review)
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def test_vscode_all_oversized_raises_unsupported():
+    """All-oversized or empty file raises UnsupportedFormatError (no fingerprint found)."""
+    cap = 1024
+    payload_size = cap * 1024
+    old_cap = os.environ.get("BROWSE_DEBUG_LOG_MAX_LINE_BYTES")
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "all_oversized.jsonl"
+        path.write_bytes(b'{"x":"' + (b"y" * payload_size) + b'"}\n')
+        os.environ["BROWSE_DEBUG_LOG_MAX_LINE_BYTES"] = str(cap)
+        raised = False
+        try:
+            _vsc.import_file(path)
+        except UnsupportedFormatError:
+            raised = True
+        finally:
+            if old_cap is None:
+                os.environ.pop("BROWSE_DEBUG_LOG_MAX_LINE_BYTES", None)
+            else:
+                os.environ["BROWSE_DEBUG_LOG_MAX_LINE_BYTES"] = old_cap
+    test("vsc_cap: all-oversized file raises UnsupportedFormatError", raised)
+
+
+def test_vscode_oversized_first_then_valid_imports():
+    """Oversized first line is skipped; valid VS Code line after it allows import."""
+    cap = 1024
+    payload_size = cap * 1024
+    old_cap = os.environ.get("BROWSE_DEBUG_LOG_MAX_LINE_BYTES")
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "oversized_then_valid.jsonl"
+        oversized = b'{"x":"' + (b"y" * payload_size) + b'"}\n'
+        valid = (
+            b'{"ts": 1700000000000, "dur": 50, "sid": "sx", "type": "session_start",'
+            b' "name": "s", "spanId": "a000000000000001", "status": "ok", "attrs": {}}\n'
+        )
+        path.write_bytes(oversized + valid)
+        os.environ["BROWSE_DEBUG_LOG_MAX_LINE_BYTES"] = str(cap)
+        try:
+            entries, summary = _vsc.import_file(path)
+        finally:
+            if old_cap is None:
+                os.environ.pop("BROWSE_DEBUG_LOG_MAX_LINE_BYTES", None)
+            else:
+                os.environ["BROWSE_DEBUG_LOG_MAX_LINE_BYTES"] = old_cap
+    test("vsc_oversized_then_valid: one valid entry", summary["ok_count"] == 1)
+    test("vsc_oversized_then_valid: one entry returned", len(entries) == 1)
+    test("vsc_oversized_then_valid: first line malformed", summary["malformed_count"] == 1)
+
+
+def test_vscode_oversized_first_then_non_vscode_raises():
+    """Oversized leading content + non-VS-Code parseable line raises UnsupportedFormatError."""
+    cap = 1024
+    payload_size = cap * 1024
+    old_cap = os.environ.get("BROWSE_DEBUG_LOG_MAX_LINE_BYTES")
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "oversized_then_non_vsc.jsonl"
+        oversized = b'{"x":"' + (b"y" * payload_size) + b'"}\n'
+        non_vsc = b'{"name": "otel-like-span", "id": "aa00000000000001"}\n'
+        path.write_bytes(oversized + non_vsc)
+        os.environ["BROWSE_DEBUG_LOG_MAX_LINE_BYTES"] = str(cap)
+        raised = False
+        try:
+            _vsc.import_file(path)
+        except UnsupportedFormatError:
+            raised = True
+        finally:
+            if old_cap is None:
+                os.environ.pop("BROWSE_DEBUG_LOG_MAX_LINE_BYTES", None)
+            else:
+                os.environ["BROWSE_DEBUG_LOG_MAX_LINE_BYTES"] = old_cap
+    test("vsc_oversized_then_non_vsc: raises UnsupportedFormatError", raised)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # OTel importer tests
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -923,6 +1337,30 @@ if __name__ == "__main__":
     test_vscode_error_level_inferred()
     test_vscode_empty_file_raises_unsupported()
     test_vscode_oversized_only_file_raises_unsupported()
+
+    print("\n-- VS Code: required-field enforcement")
+    test_vscode_missing_spanid_malformed()
+    test_vscode_invalid_spanid_type_malformed()
+    test_vscode_missing_status_malformed()
+    test_vscode_status_null_accepted()
+    test_vscode_unrecognized_status_accepted()
+    test_vscode_invalid_status_type_malformed()
+    test_vscode_missing_attrs_malformed()
+    test_vscode_non_dict_attrs_malformed()
+
+    print("\n-- VS Code: synthetic FIFO pairing")
+    test_vscode_synthetic_pairing_tool_call_result()
+    test_vscode_synthetic_pairing_fifo_order()
+    test_vscode_orphan_tool_result_keeps_own_span()
+    test_vscode_no_cross_pair_different_parent()
+    test_vscode_malformed_parent_normalizes_none_pairing()
+    test_vscode_ridx_ignored_in_pairing()
+    test_vscode_duplicate_tool_call_does_not_enqueue_pairing()
+
+    print("\n-- VS Code: detect_format scan-forward hardening")
+    test_vscode_all_oversized_raises_unsupported()
+    test_vscode_oversized_first_then_valid_imports()
+    test_vscode_oversized_first_then_non_vscode_raises()
 
     print("\n-- OTel: happy path")
     test_otel_happy_path()

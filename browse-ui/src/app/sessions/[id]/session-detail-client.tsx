@@ -82,7 +82,15 @@ export function SessionDetailClient() {
   const [exportError, setExportError] = useState<string | null>(null);
 
   const detailQuery = useSessionDetail(sessionId, sessionsEnabled && Boolean(sessionId), host);
-  const runsQuery = useOperatorRuns(sessionId, sessionsEnabled && Boolean(sessionId), host);
+  // Only fetch operator runs when the debug-log tab is active: the endpoint targets operator
+  // sessions (JSON-backed), not knowledge sessions (SQLite-backed). Eagerly querying it for
+  // every knowledge session produces a 404 and triggers the runtime-error guard in e2e tests.
+  const runsQuery = useOperatorRuns(
+    sessionId,
+    sessionsEnabled && Boolean(sessionId) && activeTab === "debug-log",
+    host
+  );
+  const runsLoading = activeTab === "debug-log" && runsQuery.isLoading;
   // Use the latest run ID (last item in runs list). Gracefully null when no runs.
   const latestRunId = runsQuery.data?.runs[runsQuery.data.runs.length - 1]?.id ?? null;
   const shortId = formatSessionIdBadgeText(sessionId);
@@ -319,7 +327,12 @@ export function SessionDetailClient() {
           <CheckpointsTab sessionId={sessionId} host={host} />
         </TabsContent>
         <TabsContent value="debug-log">
-          <DebugLogTab sessionId={sessionId} runId={latestRunId} host={host} />
+          <DebugLogTab
+            sessionId={sessionId}
+            runId={latestRunId}
+            runsLoading={runsLoading}
+            host={host}
+          />
         </TabsContent>
       </Tabs>
 

@@ -69,13 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `status.code` 0/1/2→null/ok/error; attrs pre-filter to allowlist with OTel
     semantic convention renames.  Detects and rejects VS Code files.
     CLI: `python -m browse.importers.otel_file --path … --dry-run --json-summary`.
-  - `tests/test_browse_debug_log_importers.py`: 178 assertions covering: happy path,
+  - `tests/test_browse_debug_log_importers.py`: 214 assertions covering: happy path,
     BrowseDebugEntry shape, kind mapping, timestamp, duration, attr renames,
     dangerous attr drop, tool_name, synthetic span ID, privacy (no username in
     summary), directory mode, companion skip, malformed lines, dedup, unsupported
     format, path traversal, symlink escape, dry-run, OTel status/level, HrTime,
     ISO/no-TZ startTime, timeUnixNano, bounded line-size cap, missing-span dedup,
-    and redaction scrubbing.
+    redaction scrubbing, required-field enforcement (spanId/status/attrs missing or
+    wrong type), status null/unrecognized mapping, FIFO synthetic pairing
+    (tool_call+result, FIFO order, orphan, cross-pair isolation, malformed parent
+    normalisation, rIdx ignored), and VS Code scan-forward detection hardening
+    (all-oversized, oversized-then-valid, oversized-then-non-VS-Code).
   - `tests/fixtures/debug-log/vscode-agent/debug-logs/0000fixture-session-aaaa/`:
     12-entry happy-path fixture with companion files (models.json,
     system_prompt_abc.json, tools_fixture.json) for skip tests.
@@ -92,6 +96,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `docs/DEBUG-LOG-CONTRACT.md`: WBS-106 importer contract section added.
   - Oversized-line test cases are generated dynamically in temp; no >1 MiB fixture
     files are committed.
+
+- **VS Code importer review hardening (PR #445, WBS-106):**
+  - `browse/importers/vscode_agent_debug_log.py`: enforce required presence + string
+    type for `spanId`, `status`, and `attrs` in `_parse_line`; status `null` or
+    unrecognised string maps to `None`/omitted; non-string/non-null status, non-dict
+    attrs, or missing any of the three → malformed+skip.  FIFO synthetic span-id
+    pairing for `tool_call`/`tool_result` rows lacking a valid native `spanId`:
+    key = `(sid, name, normalized_parent_span_id)` with `rIdx` omitted; deduped
+    `tool_call` rows do not enqueue orphan synthetic spans.  `_detect_format` now
+    mirrors OTel scan-forward hardening: skips oversized and unparseable leading
+    lines, requires VS Code fingerprint on first parseable JSON object, and raises
+    `UnsupportedFormatError` at EOF if no fingerprint is found.
 
 - **Bounded redacted operator debug-event sidecar (WBS-105, #430):**
   - `browse/core/operator_console.py`:

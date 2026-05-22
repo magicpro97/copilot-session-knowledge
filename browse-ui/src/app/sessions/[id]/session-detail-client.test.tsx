@@ -35,7 +35,7 @@ vi.mock("@/lib/api/hooks", () => ({
   })),
 }));
 
-import { useSessionDetail } from "@/lib/api/hooks";
+import { useOperatorRuns, useSessionDetail } from "@/lib/api/hooks";
 
 let hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: true };
 vi.mock("@/providers/host-provider", () => ({
@@ -75,7 +75,11 @@ vi.mock("./checkpoints-tab", () => ({
   CheckpointsTab: () => <div data-testid="checkpoints-tab">Checkpoints content</div>,
 }));
 vi.mock("./debug-log-tab", () => ({
-  DebugLogTab: () => <div data-testid="debug-log-tab">DebugLog content</div>,
+  DebugLogTab: ({ runsLoading }: { runsLoading?: boolean }) => (
+    <div data-testid="debug-log-tab" data-runs-loading={String(Boolean(runsLoading))}>
+      DebugLog content
+    </div>
+  ),
 }));
 
 // ── compare sheet ────────────────────────────────────────────────────────────
@@ -118,6 +122,11 @@ describe("SessionDetailClient – layout/nav", () => {
     hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
     sessionsSupported = true;
     (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
+    (useOperatorRuns as Mock).mockImplementation(() => ({
+      data: { runs: [], count: 0 },
+      error: null,
+      isLoading: false,
+    }));
     // Reset hash
     Object.defineProperty(window, "location", {
       writable: true,
@@ -195,6 +204,36 @@ describe("SessionDetailClient – layout/nav", () => {
     render(<SessionDetailClient />);
     fireEvent.click(screen.getByRole("tab", { name: /checkpoints/i }));
     expect(screen.getByTestId("checkpoints-tab")).toBeVisible();
+  });
+
+  it("only enables operator run lookup on the Debug Log tab", () => {
+    render(<SessionDetailClient />);
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
+      LOCAL_HOST,
+    ]);
+
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      true,
+      LOCAL_HOST,
+    ]);
+  });
+
+  it("passes operator run loading state to the Debug Log tab", () => {
+    (useOperatorRuns as Mock).mockImplementation(() => ({
+      data: undefined,
+      error: null,
+      isLoading: true,
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    expect(screen.getByTestId("debug-log-tab")).toHaveAttribute("data-runs-loading", "true");
   });
 
   it("updates URL hash when tab changes", () => {
