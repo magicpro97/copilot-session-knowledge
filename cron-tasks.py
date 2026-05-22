@@ -324,7 +324,7 @@ def _run_vacuum(
     Returns ``{ok: False, status: "busy"}`` on lock/busy OperationalError.
     Returns ``{ok: False, status: "corrupt"}`` on corruption OperationalError.
     Other OperationalErrors are re-raised.
-    Never advances last_run_at when status is "busy".
+    Scheduling (whether to advance last_run_at) is handled by the caller.
     """
     db, wal, shm = _db_paths(db_path)
     if not db.exists():
@@ -526,8 +526,26 @@ def _build_wal_checkpoint_artifact(task: dict, now: datetime, result: dict) -> s
     ]
     if status == "missing":
         lines.append("\nDB was not present; no checkpoint performed.\n")
-    elif status in ("busy", "error"):
-        lines.append(f"\nCould not checkpoint: {result.get('error', status)}\n")
+    elif status == "busy":
+        if "error" in result:
+            # OperationalError — DB was locked before the checkpoint could run
+            lines.append(f"\nCheckpoint blocked (DB locked): {result['error']}\n")
+        else:
+            # SQLite reported busy_flag=1 — checkpoint ran but some WAL frames
+            # were held by active readers and could not be checkpointed yet.
+            busy_flag = result.get("busy", 1)
+            log_pages = result.get("log", 0)
+            checkpointed = result.get("checkpointed", 0)
+            lines.append(
+                f"\nCheckpoint partially blocked: busy={busy_flag} log_pages={log_pages} checkpointed={checkpointed}\n"
+            )
+            if before and after:
+                lines.append(f"WAL size before: {before.get('wal', 0)} bytes\n")
+                lines.append(f"WAL size after:  {after.get('wal', 0)} bytes\n")
+                lines.append(f"DB size:         {after.get('db', 0)} bytes\n")
+        lines.append("Will retry on next scheduled run.\n")
+    elif status == "error":
+        lines.append(f"\nCould not checkpoint: {result.get('error', 'unknown error')}\n")
         lines.append("Will retry on next scheduled run.\n")
     else:
         busy_flag = result.get("busy", 0)

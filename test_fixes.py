@@ -4045,7 +4045,6 @@ try:
     _chunk = b"x" * 1000
     _vc.executemany("INSERT INTO t VALUES (?)", [(_chunk,)] * 1000)
     _vc.commit()
-    (_pc_before_del,) = _vc.execute("PRAGMA page_count").fetchone()
 
     # Delete all rows — freelist should spike
     _vc.execute("DELETE FROM t")
@@ -4187,7 +4186,6 @@ except Exception as _e:
 try:
     import importlib.util as _ilu464e
     import tempfile as _tf464e
-    import threading as _threading464e
 
     _cron_spec464e = _ilu464e.spec_from_file_location("cron_tasks_464e", REPO / "cron-tasks.py")
     _cron_mod464e = _ilu464e.module_from_spec(_cron_spec464e)

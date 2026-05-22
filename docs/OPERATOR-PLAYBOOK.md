@@ -137,7 +137,7 @@ sk cron list
 ```
 
 **Behavior notes:**
-- If `knowledge.db` is missing, both tasks return `status=missing` and write no artifact (no-op, safe).
+- If `knowledge.db` is missing, both tasks return `status=missing` and write a standard artifact noting the DB was absent (no VACUUM or checkpoint is performed, safe to retry).
 - If the DB is locked by another process, tasks return `status=busy` and do **not** advance `last_run_at`, so they retry on the next scheduled run.
 - VACUUM acquires an exclusive lock; avoid scheduling it at peak indexing times.
 
