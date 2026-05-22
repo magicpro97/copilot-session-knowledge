@@ -16,11 +16,16 @@
 
 **Facts (verified from source files):**
 
-- Python registry (`hooks/rules/__init__.py`) defines **35 unique rules** across 7 event types.
+- Python registry (`hooks/rules/__init__.py`) defines **35 unique rules** across **8 distinct event types** — 7 managed (`sessionStart`, `sessionEnd`, `preToolUse`, `postToolUse`, `agentStop`, `subagentStop`, `errorOccurred`) registered in `hooks/hooks.json`, plus `userPromptSubmitted` which is defined in the platform but absent from `hooks.json`.
 - Rust registry (`sk-rust/src/hooks/rules/mod.rs → all_rules()`) registers **27 rules**, of which
   26 correspond to Python rules and 1 (`SessionStartRule`) is a Rust-only informational stub.
-- **10 Python rules have no Rust counterpart** and remain reachable only via `hook_runner.py`
-  (Python shim path and non-binary installs).
+- **10 Python rules have no Rust counterpart**: 9 of them (`confidence-gate`, `constitution-gate`,
+  `read-tracker`, `skill-nudge`, `token-tracker`, `episode-batcher`, `error-fix-nudge`,
+  `session-compiler`, `skill-improvement-advisor`) remain reachable via `hook_runner.py` (Python
+  shim path and non-binary installs) because their events are registered in `hooks.json`. The 10th,
+  `user-prompt-audit`, is **not reachable via any installed path** — `userPromptSubmitted` is absent
+  from `hooks.json`, so the platform never fires the hook and neither the Rust nor the Python path
+  is invoked.
 - All 7 managed event types (`sessionStart`, `sessionEnd`, `preToolUse`, `postToolUse`,
   `agentStop`, `subagentStop`, `errorOccurred`) are now routed natively for **Rust-binary installs**
   (final managed flip: wave13 for `preToolUse`).
@@ -72,7 +77,7 @@ deny-capable flag, porting status, and current test coverage.
 | 23 | `tentacle-suggest` | `tentacle.py` | `TentacleSuggestRule` | postToolUse | No | ✅ Ported (wave8 direct; wave10 managed) | `tentacle.rs` |
 | 24 | `nextjs-typecheck-reminder` | `nextjs_typecheck.py` | `NextjsTypecheckReminderRule` | postToolUse | No | ✅ Ported (wave7 direct; wave10 managed) | `edit_track.rs` |
 | 25 | `skill-nudge` | `skill_nudge.py` | *(none)* | postToolUse | No | ❌ **Gap** | *(none)* |
-| 26 | `skill-usage` | `skill_usage.py` | `SkillUsageRule` | postToolUse | No | ✅ Ported (wave10) | `session.rs` |
+| 26 | `skill-usage` | `skill_usage.py` | `SkillUsageRule` | postToolUse | No | ✅ Ported (wave28; issue #119) | `session.rs` |
 | 27 | `token-tracker` | `token_tracker.py` | *(none)* | postToolUse | No | ❌ **Gap** | *(none)* |
 | 28 | `episode-batcher` | `episode_batcher.py` | *(none)* | postToolUse | No | ❌ **Gap** (opt-in) | *(none)* |
 | 29 | `verification-gate` (post) | `verification_gate.py` | `VerificationGatePostRule` | postToolUse | No | ✅ Ported (wave7 direct; wave10 managed) | `verification.rs` |
@@ -130,9 +135,12 @@ sk hooks run preToolUse     → native Rust  (wave13)
 sk hooks run <any event>    → hook_runner.py  (all events, behavior unchanged)
 ```
 
-**Implication for gaps:** Rules #8, #9, #18, #25, #27, #28, #30, #34, #35 are silently absent
-on all native Rust paths. They remain active only via `hook_runner.py` (Python shim and
-non-binary installs).
+**Implication for gaps:** Rules #8, #9, #18, #25, #27, #28, #30, #34, #35 (9 rules) are silently
+absent on all native Rust paths; they remain active only via `hook_runner.py` (Python shim and
+non-binary installs) because their events are registered in `hooks.json`. Rule #37
+(`user-prompt-audit`) is **not included** in these 9 native-managed-path gaps: its event
+(`userPromptSubmitted`) is absent from `hooks.json`, so the hook is never invoked on any path —
+neither native Rust nor Python shim. It is deferred until `hooks.json` registers the event.
 
 ---
 
