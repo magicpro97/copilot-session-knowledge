@@ -256,6 +256,10 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Lint (full scope, advisory - issue #459)
+        continue-on-error: true
+        run: pnpm lint:all
+
       - name: Format check
         run: pnpm format:check
 
