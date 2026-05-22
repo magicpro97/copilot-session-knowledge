@@ -34,9 +34,26 @@ pub struct ListParams {
     /// Optional full-text search query.
     pub q: Option<String>,
     /// 1-based page number (default 1).
-    pub page: Option<i64>,
+    pub page: Option<String>,
     /// Rows per page: 1–200, default 50.
-    pub page_size: Option<i64>,
+    pub page_size: Option<String>,
+}
+
+fn parse_int_param(value: Option<&str>, default: i64, min: i64, max: i64) -> i64 {
+    let parsed = value
+        .and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                trimmed
+                    .parse::<i128>()
+                    .ok()
+                    .map(|n| n.clamp(min as i128, max as i128) as i64)
+            }
+        })
+        .unwrap_or(default);
+    parsed.clamp(min, max)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -51,8 +68,8 @@ pub async fn list_handler(
     State(db): State<Arc<BrowseDb>>,
     Query(params): Query<ListParams>,
 ) -> Response {
-    let page = params.page.unwrap_or(1).max(1);
-    let page_size = params.page_size.unwrap_or(50).clamp(1, 200);
+    let page = parse_int_param(params.page.as_deref(), 1, 1, 10_000);
+    let page_size = parse_int_param(params.page_size.as_deref(), 50, 1, 200);
     let q = params.q.map(|s| s.trim().to_string());
     let q_ref: Option<String> = q;
 
@@ -64,8 +81,8 @@ pub async fn list_handler(
     .await
     {
         Ok(Ok((items, total))) => {
-            let offset = (page - 1) * page_size;
-            let has_more = (offset + items.len() as i64) < total;
+            let offset = page.saturating_sub(1).saturating_mul(page_size);
+            let has_more = offset.saturating_add(items.len() as i64) < total;
             (
                 StatusCode::OK,
                 Json(json!({

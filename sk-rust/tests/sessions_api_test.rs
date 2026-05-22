@@ -77,7 +77,7 @@ fn seeded_db(label: &str) -> (std::path::PathBuf, Arc<BrowseDb>) {
                                    fts_indexed_at)
              VALUES
                ('sess-1', '/p1', 'Summary one',   '2024-01-01T10:00:00', 2, 5, 1704103200.0),
-               ('sess-2', '/p2', 'Summary two',   '2024-06-01T12:00:00', 1, 3, 1717243200.0),
+               ('sess-2', '/p2', 'Summary two',   '2024-06-01T12:00:00', 1, 3, 1717243200.123456),
                ('sess-3', '/p3', 'Summary three', '2023-12-01T08:00:00', 0, 1, 1701417600.0);
              INSERT INTO documents (session_id, doc_type, seq, title, file_path)
              VALUES
@@ -219,6 +219,10 @@ async fn sessions_list_meta_fields_shape() {
         "must have total_checkpoints"
     );
     assert!(first.get("doc_count").is_some(), "must have doc_count");
+    assert_eq!(
+        first["fts_indexed_at"], "2024-06-01T12:00:00.123456Z",
+        "fractional REAL timestamps must preserve microseconds"
+    );
     // branch / created_at / updated_at must NOT be present.
     assert!(first.get("branch").is_none(), "must NOT have branch");
     assert!(
@@ -277,6 +281,47 @@ async fn sessions_list_page_size_capped_at_200() {
     let body = r.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["page_size"], 200);
+    cleanup(&path);
+}
+
+#[tokio::test]
+async fn sessions_list_bad_pagination_params_fall_back_to_defaults() {
+    let (path, db) = seeded_db("badparams");
+    let r = app(open_state(db))
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions?page=abc&page_size=bad")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body = r.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["page"], 1);
+    assert_eq!(v["page_size"], 50);
+    cleanup(&path);
+}
+
+#[tokio::test]
+async fn sessions_list_page_capped_at_10000() {
+    let (path, db) = seeded_db("pagecap");
+    let r = app(open_state(db))
+        .oneshot(
+            Request::builder()
+                .uri("/api/sessions?page=999999&page_size=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body = r.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["page"], 10000);
+    assert_eq!(v["page_size"], 1);
+    assert_eq!(v["items"].as_array().unwrap().len(), 0);
     cleanup(&path);
 }
 

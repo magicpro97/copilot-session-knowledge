@@ -8,7 +8,7 @@
 //! This module does NOT depend on `browse::server`.
 
 use anyhow::Context as _;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OpenFlags;
@@ -98,9 +98,24 @@ pub struct HealthzStats {
 /// Values ≥ 1e11 in absolute value are treated as milliseconds.
 fn normalize_ts_real(ts: f64) -> String {
     let secs = if ts.abs() >= 1e11 { ts / 1000.0 } else { ts };
-    match DateTime::from_timestamp(secs as i64, 0) {
-        Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    let whole_secs = secs.floor();
+    let mut micros = ((secs - whole_secs) * 1_000_000.0).round() as u32;
+    let mut whole_secs = whole_secs as i64;
+    if micros >= 1_000_000 {
+        whole_secs = whole_secs.saturating_add(1);
+        micros = 0;
+    }
+    match DateTime::from_timestamp(whole_secs, micros * 1_000) {
+        Some(dt) => format_utc_timestamp(dt),
         None => secs.to_string(),
+    }
+}
+
+fn format_utc_timestamp(dt: DateTime<Utc>) -> String {
+    if dt.timestamp_subsec_micros() == 0 {
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    } else {
+        dt.to_rfc3339_opts(SecondsFormat::Micros, true)
     }
 }
 
@@ -113,15 +128,11 @@ fn normalize_ts_str(s: &str) -> Option<String> {
     // Replace trailing Z with +00:00 so parse_from_rfc3339 handles it.
     let s_utc = s.replace('Z', "+00:00");
     if let Ok(dt) = DateTime::parse_from_rfc3339(&s_utc) {
-        return Some(
-            dt.with_timezone(&Utc)
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string(),
-        );
+        return Some(format_utc_timestamp(dt.with_timezone(&Utc)));
     }
     // Fallback: naive datetime (no timezone) → assume UTC.
-    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return Some(ndt.and_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(format_utc_timestamp(ndt.and_utc()));
     }
     // Last resort: return as-is.
     Some(s.to_string())
@@ -646,8 +657,8 @@ impl BrowseDb {
 
     /// Collect all fields needed by `GET /healthz` in a single DB connection.
     ///
-    /// Returns `None` for fields whose backing table does not exist in the
-    /// current schema so older databases are handled gracefully.
+    /// Returns `0` for missing count tables and `None` for missing
+    /// `last_indexed_at` so older databases are handled gracefully.
     pub fn healthz_stats(&self) -> anyhow::Result<HealthzStats> {
         let conn = self.read_pool.get()?;
 
@@ -699,9 +710,9 @@ impl BrowseDb {
         page_size: i64,
     ) -> anyhow::Result<(Vec<serde_json::Value>, i64)> {
         let conn = self.read_pool.get()?;
-        let page = page.max(1);
+        let page = page.clamp(1, 10_000);
         let page_size = page_size.clamp(1, 200);
-        let offset = (page - 1) * page_size;
+        let offset = page.saturating_sub(1).saturating_mul(page_size);
 
         let select_cols = "SELECT s.id,
                     COALESCE(s.path,'') AS path,
@@ -1001,6 +1012,22 @@ mod tests {
     }
 
     // ── Helper method tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_ts_real_preserves_microseconds() {
+        assert_eq!(
+            normalize_ts_real(1_717_243_200.123456),
+            "2024-06-01T12:00:00.123456Z"
+        );
+    }
+
+    #[test]
+    fn normalize_ts_str_preserves_naive_fractional_seconds() {
+        assert_eq!(
+            normalize_ts_str("2024-01-01T10:00:00.123").as_deref(),
+            Some("2024-01-01T10:00:00.123000Z")
+        );
+    }
 
     #[test]
     fn count_entries_returns_three() {
