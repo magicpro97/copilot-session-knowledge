@@ -140,6 +140,11 @@ pub fn app(state: AppState) -> Router {
             get(crate::browse::api::sessions::detail_handler),
         )
         .route("/api/compare", get(crate::browse::api::compare::handler))
+        // ── Graph API (issue #452 PR-B) ──────────────────────────────────
+        .route(
+            "/api/graph/communities",
+            get(crate::browse::api::graph::communities_handler),
+        )
         // ── Operator API (issue #451 PR-A) ──────────────────────────────
         .route(
             "/api/operator/capabilities",
