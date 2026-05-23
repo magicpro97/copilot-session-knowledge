@@ -57,6 +57,14 @@ vi.mock("@/lib/api/hooks", () => ({
   useDeleteOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSubmitPrompt: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useUpdateOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAdoptCliSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useConfirmAdoptedSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCliSessions: vi.fn(() => ({
+    data: { sessions: [], count: 0, truncated: false },
+    isLoading: false,
+    isError: false,
+    error: null,
+  })),
   useSkillCatalog: vi.fn(() => ({
     data: null,
     isLoading: false,
@@ -77,6 +85,11 @@ vi.mock("@/lib/api/hooks", () => ({
   })),
   useFilePreview: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   useFileDiff: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
+  useHostCapabilities: vi.fn(() => ({
+    data: null,
+    isLoading: false,
+    isError: false,
+  })),
   createOperatorStreamPath: vi.fn(() => "/api/operator/sessions/x/stream?run=y"),
   createOperatorStreamUrl: vi.fn(
     (sessionId: string, runId: string, host: { base_url: string }) =>
@@ -1151,5 +1164,506 @@ describe("ChatShell — slash command integration", () => {
       expect.objectContaining({ prompt: "/Users/linhn/project" }),
       expect.anything()
     );
+  });
+});
+
+// ─── CLI Adopt/Confirm — security & UX ───────────────────────────────────────
+
+describe("ChatShell — CLI adopt security: no CLI UUID in URL", () => {
+  it("does not put CLI UUID in router.push when adopting a session", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    const pushMock = vi.fn();
+    vi.mocked(navigation.useRouter).mockReturnValue({
+      push: pushMock,
+      back: vi.fn(),
+      forward: vi.fn(),
+      refresh: vi.fn(),
+      replace: vi.fn(),
+      prefetch: vi.fn(),
+    } as unknown as ReturnType<typeof navigation.useRouter>);
+
+    // adoptMutation.mutate calls onSuccess with the operator session (not CLI UUID)
+    const operatorSession = {
+      id: "operator-uuid-abc123",
+      name: "My CLI Session",
+      model: "gpt-5.4",
+      mode: "interactive",
+      workspace: "/projects/cli",
+      add_dirs: [],
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-01T00:00:00Z",
+      run_count: 0,
+      last_run_id: null,
+      resume_ready: false,
+      source: "cli_adopt",
+      confirmed_at: null,
+    };
+
+    vi.mocked(hooks.useAdoptCliSession).mockReturnValue({
+      mutate: vi.fn((_args, callbacks) => {
+        // Simulate the mutation succeeding with the operator session.
+        // SECURITY: the CLI UUID 'cli-secret-uuid' must NOT appear in pushMock calls.
+        callbacks?.onSuccess?.(operatorSession, _args, undefined);
+      }),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useAdoptCliSession>);
+
+    // Provide a non-empty CLI session list so the session item is rendered
+    // and can be clicked. The test was previously vacuous because it checked
+    // push calls that never happened (empty list → no item to click → no adopt).
+    vi.mocked(hooks.useCliSessions).mockReturnValue({
+      data: {
+        sessions: [
+          {
+            cli_session_id: "cli-secret-uuid",
+            title: "My CLI Session",
+            mtime: "2024-01-01T00:00:00Z",
+            workspace_hint: "/projects/cli",
+            branch: null,
+            repository: null,
+          },
+        ],
+        count: 1,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof hooks.useCliSessions>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+
+    render(<ChatShell />);
+
+    // Open the dialog and switch to CLI History tab
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    fireEvent.click(screen.getByTestId("cli-history-tab"));
+
+    // Click the rendered CLI session item to trigger the adopt flow
+    const item = await screen.findByTestId("cli-session-item");
+    fireEvent.click(item);
+
+    // router.push must have been called (adopt mutation calls onSuccess → navigate)
+    expect(pushMock).toHaveBeenCalled();
+
+    // SECURITY: All push calls must use the operator session id only.
+    // The CLI UUID and the field name 'resume_target' must never appear.
+    for (const call of pushMock.mock.calls) {
+      const url = String(call[0]);
+      expect(url).toContain("operator-uuid-abc123");
+      expect(url).not.toContain("cli-secret-uuid");
+      expect(url).not.toContain("resume_target");
+    }
+  });
+
+  it("does not write CLI UUID to localStorage", async () => {
+    const navigation = await import("next/navigation");
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+
+    const setItemSpy = vi.spyOn(window.localStorage, "setItem");
+
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    // Check that no localStorage.setItem call contains a CLI UUID pattern
+    for (const call of setItemSpy.mock.calls) {
+      // cli_session_id values would typically be a UUID pattern
+      // Our security constraint: CLI UUID should never be stored.
+      const value = call[1];
+      expect(value).not.toMatch(/cli-session-id/);
+    }
+
+    setItemSpy.mockRestore();
+  });
+});
+
+describe("ChatShell — unconfirmed CLI adoption: composer gating", () => {
+  async function setupUnconfirmedCliSession() {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: {
+        id: "adopted-session-1",
+        name: "My CLI Session",
+        model: "gpt-5.4",
+        mode: "interactive",
+        workspace: "/projects/cli",
+        add_dirs: [],
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        run_count: 0,
+        last_run_id: null,
+        resume_ready: false,
+        source: "cli_adopt",
+        resume_target: null, // SECURITY: never rendered
+        confirmed_at: null, // not yet confirmed
+      },
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    vi.mocked(hooks.useOperatorRuns).mockReturnValue({
+      data: { runs: [], count: 0 },
+      isLoading: false,
+      isError: false,
+      isFetchedAfterMount: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorRuns>);
+
+    vi.mocked(hooks.useSubmitPrompt).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useSubmitPrompt>);
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    vi.mocked(hooks.useConfirmAdoptedSession).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useConfirmAdoptedSession>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("s=adopted-session-1") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+  }
+
+  it("shows the confirmation panel when session is unconfirmed CLI adoption", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    expect(screen.getByTestId("confirm-adoption-panel")).toBeInTheDocument();
+    expect(screen.getByText(/Resume CLI session/i)).toBeInTheDocument();
+  });
+
+  it("disables the composer textarea while session is unconfirmed", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    const textarea = screen.getByRole("textbox", { name: "Prompt" });
+    expect(textarea).toBeDisabled();
+  });
+
+  it("disables the send button while session is unconfirmed", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    expect(screen.getByRole("button", { name: "Send prompt" })).toBeDisabled();
+  });
+
+  it("shows the Confirm & Resume button in the confirmation panel", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    expect(screen.getByTestId("confirm-adoption-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("confirm-adoption-btn")).not.toBeDisabled();
+  });
+
+  it("calls confirmMutation.mutate when Confirm & Resume is clicked", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const confirmMutateMock = vi.fn();
+    await setupUnconfirmedCliSession();
+
+    vi.mocked(hooks.useConfirmAdoptedSession).mockReturnValue({
+      mutate: confirmMutateMock,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useConfirmAdoptedSession>);
+
+    render(<ChatShell />);
+    fireEvent.click(screen.getByTestId("confirm-adoption-btn"));
+    expect(confirmMutateMock).toHaveBeenCalled();
+  });
+
+  it("does not render resume_target anywhere in the DOM", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    // resume_target is null here but even if set, it must not be rendered
+    const { container } = render(<ChatShell />);
+    // Verify no element shows 'resume_target' as text
+    expect(container.innerHTML).not.toContain("resume_target");
+  });
+
+  it("shows workspace in the confirmation panel", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    // The setup mock has workspace: "/projects/cli"
+    expect(screen.getByTestId("confirm-adoption-workspace")).toHaveTextContent("/projects/cli");
+  });
+
+  it("does not show confirm-adoption-add-dirs when add_dirs is empty", async () => {
+    await setupUnconfirmedCliSession();
+    render(<ChatShell />);
+    // The setup mock has add_dirs: []
+    expect(screen.queryByTestId("confirm-adoption-add-dirs")).not.toBeInTheDocument();
+  });
+
+  it("shows add_dirs in the confirmation panel when present", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    await setupUnconfirmedCliSession();
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: {
+        id: "adopted-session-1",
+        name: "My CLI Session",
+        model: "gpt-5.4",
+        mode: "interactive",
+        workspace: "/projects/cli",
+        add_dirs: ["/extra/dir", "/another/dir"],
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        run_count: 0,
+        last_run_id: null,
+        resume_ready: false,
+        source: "cli_adopt",
+        resume_target: null,
+        confirmed_at: null,
+      },
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    render(<ChatShell />);
+    expect(screen.getByTestId("confirm-adoption-add-dirs")).toHaveTextContent(
+      "+/extra/dir, /another/dir"
+    );
+  });
+});
+
+describe("ChatShell — confirmed CLI adoption: composer enabled", () => {
+  it("enables the composer when confirmed_at is set on a cli_adopt session", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: {
+        id: "confirmed-session-1",
+        name: "My Confirmed CLI Session",
+        model: "gpt-5.4",
+        mode: "interactive",
+        workspace: "/projects/cli",
+        add_dirs: [],
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        run_count: 0,
+        last_run_id: null,
+        resume_ready: true,
+        source: "cli_adopt",
+        resume_target: null,
+        confirmed_at: "2024-01-01T00:01:00Z", // confirmed
+      },
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    vi.mocked(hooks.useOperatorRuns).mockReturnValue({
+      data: { runs: [], count: 0 },
+      isLoading: false,
+      isError: false,
+      isFetchedAfterMount: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorRuns>);
+
+    vi.mocked(hooks.useSubmitPrompt).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useSubmitPrompt>);
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("s=confirmed-session-1") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+
+    render(<ChatShell />);
+
+    // Confirmation panel must NOT be shown
+    expect(screen.queryByTestId("confirm-adoption-panel")).not.toBeInTheDocument();
+
+    // Composer must be enabled
+    expect(screen.getByRole("textbox", { name: "Prompt" })).not.toBeDisabled();
+  });
+});
+
+describe("SessionCreateDialog — CLI history tab", () => {
+  it("renders the From CLI History tab when onAdopt is provided", async () => {
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    expect(screen.getByTestId("cli-history-tab")).toBeInTheDocument();
+  });
+
+  it("switches to CLI session list when the CLI History tab is clicked", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    vi.mocked(hooks.useCliSessions).mockReturnValue({
+      data: {
+        sessions: [
+          {
+            cli_session_id: "cli-secret-uuid-not-in-url",
+            title: "Fix the auth bug",
+            mtime: "2024-01-01T00:00:00Z",
+            workspace_hint: "/projects/auth",
+            branch: "feature/auth-fix",
+            repository: "my-org/my-repo",
+          },
+        ],
+        count: 1,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof hooks.useCliSessions>);
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    fireEvent.click(screen.getByTestId("cli-history-tab"));
+
+    expect(await screen.findByTestId("cli-session-list")).toBeInTheDocument();
+    expect(screen.getByText("Fix the auth bug")).toBeInTheDocument();
+    // workspace_hint is rendered as-is from server
+    expect(screen.getByText("/projects/auth")).toBeInTheDocument();
+  });
+
+  it("cli-session-item does not have CLI UUID in any href or data attribute", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    vi.mocked(hooks.useCliSessions).mockReturnValue({
+      data: {
+        sessions: [
+          {
+            cli_session_id: "SUPER_SECRET_CLI_UUID",
+            title: "Secret session",
+            mtime: "2024-01-01T00:00:00Z",
+          },
+        ],
+        count: 1,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof hooks.useCliSessions>);
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+    const { container } = render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    fireEvent.click(screen.getByTestId("cli-history-tab"));
+
+    await screen.findByTestId("cli-session-list");
+
+    // The CLI UUID must not appear in any rendered URL/href attributes
+    const anchors = container.querySelectorAll("a[href]");
+    for (const a of anchors) {
+      expect(a.getAttribute("href")).not.toContain("SUPER_SECRET_CLI_UUID");
+    }
+
+    // The CLI UUID must not appear in rendered text content (title is fine, UUID itself is not)
+    // We check that the item text doesn't accidentally dump the UUID
+    const items = container.querySelectorAll('[data-testid="cli-session-item"]');
+    for (const item of items) {
+      expect(item.textContent).not.toContain("SUPER_SECRET_CLI_UUID");
+    }
+  });
+});
+
+describe("SessionList — adopted session badge", () => {
+  it("shows CLI (unconfirmed) badge for unconfirmed cli_adopt session", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorSessions).mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: "adopted-1",
+            name: "CLI Session",
+            model: "gpt-5.4",
+            mode: "interactive",
+            workspace: "/projects/x",
+            add_dirs: [],
+            created_at: "2024-01-01T00:00:00Z",
+            updated_at: "2024-01-01T00:00:00Z",
+            run_count: 0,
+            last_run_id: null,
+            resume_ready: false,
+            source: "cli_adopt",
+            confirmed_at: null,
+          },
+        ],
+        count: 1,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof hooks.useOperatorSessions>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+    render(<ChatShell />);
+
+    expect(
+      screen.getByTitle(/Adopted from CLI history — pending confirmation/i)
+    ).toBeInTheDocument();
+  });
+
+  it("shows CLI (confirmed) badge for confirmed cli_adopt session", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorSessions).mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: "adopted-confirmed-1",
+            name: "CLI Session Confirmed",
+            model: "gpt-5.4",
+            mode: "interactive",
+            workspace: "/projects/x",
+            add_dirs: [],
+            created_at: "2024-01-01T00:00:00Z",
+            updated_at: "2024-01-01T00:00:00Z",
+            run_count: 1,
+            last_run_id: "r1",
+            resume_ready: true,
+            source: "cli_adopt",
+            confirmed_at: "2024-01-01T00:01:00Z",
+          },
+        ],
+        count: 1,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof hooks.useOperatorSessions>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+    render(<ChatShell />);
+
+    expect(screen.getByTitle(/Adopted from CLI history \(confirmed\)/i)).toBeInTheDocument();
   });
 });

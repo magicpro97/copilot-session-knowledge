@@ -947,11 +947,49 @@ export interface OperatorSession {
   run_count: number;
   last_run_id: string | null;
   resume_ready: boolean;
+  /** Set to 'cli_adopt' when this session was adopted from a CLI history entry. */
+  source?: string;
+  /**
+   * Internal CLI UUID used during adopt flow. Present only on cli_adopt sessions.
+   * SECURITY: Must never appear in router URLs, localStorage, or sessionStorage.
+   * For internal use only — do not render user-facing.
+   */
+  resume_target?: string | null;
+  /**
+   * ISO timestamp set when the user confirms the adoption.
+   * Null/absent means the session is pending confirmation.
+   */
+  confirmed_at?: string | null;
 }
 
 export interface OperatorSessionListResponse {
   sessions: OperatorSession[];
   count: number;
+}
+
+/** A single CLI history session returned by `GET /api/operator/cli-sessions`. */
+export interface CliSession {
+  cli_session_id: string;
+  title: string;
+  mtime: string;
+  workspace_hint?: string | null;
+  branch?: string | null;
+  repository?: string | null;
+}
+
+export interface CliSessionListResponse {
+  sessions: CliSession[];
+  count: number;
+  truncated: boolean;
+}
+
+/** Request body for `POST /api/operator/sessions/adopt`. CLI UUID in JSON body only. */
+export interface AdoptCliSessionRequest {
+  /** SECURITY: This CLI UUID must only travel in POST JSON body, never in URLs or storage. */
+  cli_session_id: string;
+  workspace?: string;
+  add_dirs?: string[];
+  name?: string;
 }
 
 /** Request body for `POST /api/operator/sessions`. */

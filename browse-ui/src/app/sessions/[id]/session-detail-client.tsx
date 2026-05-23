@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams, usePathname } from "next/navigation";
-import { Download, GitCompare, Loader2, ServerCog } from "lucide-react";
+import { useParams, usePathname, useRouter } from "next/navigation";
+import { Download, GitCompare, Loader2, ServerCog, Terminal } from "lucide-react";
 
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { CompareSheet } from "@/components/data/compare-sheet";
@@ -18,9 +18,15 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { hostRequest } from "@/lib/api/client";
-import { useSessionDetail, useOperatorRuns } from "@/lib/api/hooks";
+import {
+  useSessionDetail,
+  useOperatorRuns,
+  useCliSession,
+  useAdoptCliSession,
+} from "@/lib/api/hooks";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
 import { useHostFeature } from "@/lib/hosts";
+import { LOCAL_HOST_ID } from "@/lib/host-profiles";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHostState } from "@/providers/host-provider";
 
@@ -67,6 +73,7 @@ function sessionIdFromHref(href: string | null): string {
 export function SessionDetailClient() {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
+  const router = useRouter();
   const { host, diagnosticsEnabled } = useHostState();
   const { supported: sessionsSupported, loading: sessionsCapabilityLoading } = useHostFeature(
     host,
@@ -80,6 +87,39 @@ export function SessionDetailClient() {
   const [compareOpen, setCompareOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [adoptError, setAdoptError] = useState<string | null>(null);
+
+  // CLI adopt feature — only probe if sessions capability is available.
+  const { supported: cliAdoptSupported } = useHostFeature(host, "cli_adopt", sessionsEnabled);
+  // Fetch single CLI session to check adoptability.
+  // SECURITY: cli_session_id from this query must only ever be used in POST body.
+  const cliSessionQuery = useCliSession(sessionId, host, cliAdoptSupported && Boolean(sessionId));
+  const adoptMutation = useAdoptCliSession(host);
+  const isAdoptable = cliAdoptSupported && Boolean(cliSessionQuery.data);
+
+  const handleAdoptFromDetail = useCallback(() => {
+    const cliData = cliSessionQuery.data;
+    if (!cliData || adoptMutation.isPending) return;
+    setAdoptError(null);
+    // SECURITY: cli_session_id goes into POST JSON body only; never into the URL.
+    adoptMutation.mutate(
+      { payload: { cli_session_id: cliData.cli_session_id }, host },
+      {
+        onSuccess: (operatorSession) => {
+          // Navigate using operator session id only — CLI UUID is not in the URL.
+          const params = new URLSearchParams();
+          params.set("s", operatorSession.id);
+          if (host.id !== LOCAL_HOST_ID) {
+            params.set("h", host.id);
+          }
+          router.push(`/chat?${params.toString()}`);
+        },
+        onError: (err) => {
+          setAdoptError(err instanceof Error ? err.message : "Adopt failed");
+        },
+      }
+    );
+  }, [cliSessionQuery.data, adoptMutation, host, router]);
 
   const detailQuery = useSessionDetail(sessionId, sessionsEnabled && Boolean(sessionId), host);
   // Only fetch operator runs when (a) Debug Log tab is active AND (b) the
@@ -264,6 +304,7 @@ export function SessionDetailClient() {
       {exportError ? (
         <Banner tone="danger" title="Export failed" description={exportError} />
       ) : null}
+      {adoptError ? <Banner tone="danger" title="Adopt failed" description={adoptError} /> : null}
 
       <Card>
         <CardHeader className="space-y-2">
@@ -279,6 +320,22 @@ export function SessionDetailClient() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {isAdoptable ? (
+                <Button
+                  variant="outline"
+                  onClick={handleAdoptFromDetail}
+                  disabled={adoptMutation.isPending}
+                  data-testid="adopt-in-chat-btn"
+                  title="Adopt this CLI session in Chat"
+                >
+                  {adoptMutation.isPending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Terminal className="size-4" />
+                  )}
+                  Adopt in Chat
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
                 onClick={() => {

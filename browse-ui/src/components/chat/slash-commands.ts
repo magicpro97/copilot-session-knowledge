@@ -60,6 +60,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     scope: "web",
     usage: "/mode <interactive|plan|autopilot>",
   },
+  {
+    name: "history",
+    description: "Open the CLI history picker to resume a Copilot CLI session",
+    scope: "web",
+    usage: "/history",
+  },
   // ── CLI reference only ───────────────────────────────────────────────────────
   {
     name: "model",

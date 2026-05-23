@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import type { OperatorSession } from "@/lib/api/types";
+import { CliAdoptedBadge } from "./cli-session-picker";
 
 type SessionListProps = {
   sessions: OperatorSession[];
@@ -54,6 +55,8 @@ export function SessionList({
         const updatedAt = formatDistanceToNow(new Date(session.updated_at), {
           addSuffix: true,
         });
+        const isCliAdopted = session.source === "cli_adopt";
+        const isConfirmed = Boolean(session.confirmed_at);
 
         return (
           <li key={session.id}>
@@ -84,6 +87,7 @@ export function SessionList({
                 <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
                   <span className="bg-muted rounded px-1">{session.model}</span>
                   <span className="bg-muted rounded px-1">{session.mode}</span>
+                  {isCliAdopted ? <CliAdoptedBadge confirmed={isConfirmed} /> : null}
                   <span className="ml-auto opacity-60">{updatedAt}</span>
                 </div>
               </div>

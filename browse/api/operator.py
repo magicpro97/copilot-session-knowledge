@@ -175,7 +175,7 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
         "supported_modes":   ["interactive", "plan", "autopilot"],
         "supported_features": [
           "chat", "sessions", "search", "graph", "insights", "diagnostics",
-          "models", "suggest", "preview", "diff"
+          "models", "suggest", "preview", "diff", "cli_adopt"
         ]
       }
 
@@ -208,6 +208,7 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "suggest",
                 "preview",
                 "diff",
+                "cli_adopt",
             ],
         }
     )

@@ -923,11 +923,48 @@ export const operatorSessionSchema = z.object({
   run_count: z.number().int().nonnegative(),
   last_run_id: z.string().nullable(),
   resume_ready: z.boolean(),
+  /** Set to 'cli_adopt' when this session was adopted from a CLI history entry. */
+  source: z.string().optional(),
+  /**
+   * Internal CLI UUID used during adopt flow. Present only on cli_adopt sessions.
+   * SECURITY: Must never appear in router URLs, localStorage, or sessionStorage.
+   * For internal use only — do not render user-facing.
+   */
+  resume_target: z.string().nullable().optional(),
+  /**
+   * ISO timestamp set when the user confirms the adoption.
+   * Null/absent means the session is pending confirmation.
+   */
+  confirmed_at: z.string().nullable().optional(),
 });
 
 export const operatorSessionListResponseSchema = z.object({
   sessions: z.array(operatorSessionSchema),
   count: z.number().int().nonnegative(),
+});
+
+/** A single CLI history session returned by the discovery endpoint. */
+export const cliSessionSchema = z.object({
+  cli_session_id: z.string(),
+  title: z.string(),
+  mtime: z.string(),
+  workspace_hint: z.string().nullable().optional(),
+  branch: z.string().nullable().optional(),
+  repository: z.string().nullable().optional(),
+});
+
+export const cliSessionListResponseSchema = z.object({
+  sessions: z.array(cliSessionSchema),
+  count: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+
+/** Request body for `POST /api/operator/sessions/adopt`. CLI UUID in JSON body only. */
+export const adoptCliSessionRequestSchema = z.object({
+  cli_session_id: z.string(),
+  workspace: z.string().optional(),
+  add_dirs: z.array(z.string()).optional(),
+  name: z.string().optional(),
 });
 
 /** Request body for `POST /api/operator/sessions`. */

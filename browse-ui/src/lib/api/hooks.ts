@@ -45,6 +45,9 @@ import {
   updateOperatorSessionRequestSchema,
   operatorModelCatalogResponseSchema,
   debugLogResponseSchema,
+  cliSessionListResponseSchema,
+  cliSessionSchema,
+  adoptCliSessionRequestSchema,
 } from "@/lib/api/schemas";
 import type {
   CompareResponse,
@@ -89,6 +92,9 @@ import type {
   OperatorModelCatalogResponse,
   DebugLogResponse,
   DebugLogParams,
+  CliSession,
+  CliSessionListResponse,
+  AdoptCliSessionRequest,
 } from "@/lib/api/types";
 
 export type SessionsQueryParams = {
@@ -170,6 +176,8 @@ export const queryKeys = {
     ["operator-diff", hostId, pathA, pathB] as const,
   operatorModels: (hostId = LOCAL_HOST_ID) => ["operator-models", hostId] as const,
   operatorCapabilities: (hostId = LOCAL_HOST_ID) => ["operator-capabilities", hostId] as const,
+  cliSessions: (hostId = LOCAL_HOST_ID) => ["cli-sessions", hostId] as const,
+  cliSession: (id: string, hostId = LOCAL_HOST_ID) => ["cli-session", hostId, id] as const,
   debugLog: (
     sessionId: string,
     runId: string,
@@ -1124,6 +1132,132 @@ export function useDebugLog(
       );
       const data = await hostFetch<DebugLogResponse>(path, host);
       return debugLogResponseSchema.parse(data);
+    },
+  });
+}
+
+// ── CLI Session Discovery & Adopt/Confirm ──────────────────────────────────
+
+/**
+ * Fetches CLI history sessions from `GET /api/operator/cli-sessions`.
+ *
+ * 404 responses (older backends that don't support cli_adopt) are surfaced as
+ * errors rather than silently returning an empty list. The `retry` config
+ * already disables retries for 404, so the error is surfaced once and the
+ * dialog shows the "unavailable" state via `cliUnavailable`.
+ */
+export function useCliSessions(host: HostProfile = LOCAL_HOST, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.cliSessions(host.id),
+    staleTime: STALE_TIMES.sessions,
+    gcTime: CACHE_TIMES.sessions,
+    enabled,
+    retry: (failureCount, error) => {
+      // Don't retry 404 — older backends simply don't have this endpoint.
+      if (error instanceof Error && error.message.includes("404")) return false;
+      return failureCount < 3;
+    },
+    queryFn: async (): Promise<CliSessionListResponse> => {
+      const data = await hostFetch<CliSessionListResponse>(
+        withLeadingSlash("/api/operator/cli-sessions"),
+        host
+      );
+      return cliSessionListResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * Fetches a single CLI history session from `GET /api/operator/cli-sessions/{cli_session_id}`.
+ */
+export function useCliSession(id: string, host: HostProfile = LOCAL_HOST, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.cliSession(id, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(id),
+    retry: (failureCount, error) => {
+      if (error instanceof Error && error.message.includes("404")) return false;
+      return failureCount < 3;
+    },
+    queryFn: async (): Promise<CliSession> => {
+      const data = await hostFetch<CliSession>(
+        withLeadingSlash(`/api/operator/cli-sessions/${encodeURIComponent(id)}`),
+        host
+      );
+      return cliSessionSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * Mutation hook that adopts a CLI session via `POST /api/operator/sessions/adopt`.
+ *
+ * SECURITY CONTRACT: The CLI UUID (`cli_session_id`) lives only in the POST
+ * JSON body. The returned `OperatorSession.id` (the operator UUID) is the only
+ * ID that may appear in router navigation, query params, or storage.
+ */
+export function useAdoptCliSession(host: HostProfile = LOCAL_HOST) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      payload,
+      host: overrideHost,
+    }: {
+      payload: AdoptCliSessionRequest;
+      host?: HostProfile;
+    }): Promise<OperatorSession> => {
+      const targetHost = overrideHost ?? host;
+      // Validate payload — ensures cli_session_id is present before sending.
+      const validated = adoptCliSessionRequestSchema.parse(payload);
+      const data = await hostFetch<OperatorSession>(
+        withLeadingSlash("/api/operator/sessions/adopt"),
+        targetHost,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(validated),
+        }
+      );
+      return operatorSessionSchema.parse(data);
+    },
+    onSuccess: (_data, variables) => {
+      const targetHost = variables.host ?? host;
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(targetHost.id) });
+    },
+  });
+}
+
+/**
+ * Mutation hook that confirms an adopted CLI session via
+ * `POST /api/operator/sessions/{operator_id}/confirm`.
+ *
+ * After confirmation `confirmed_at` is set and `resume_ready` becomes `true`.
+ * The composer is unblocked once `confirmed_at` is truthy.
+ *
+ * SECURITY: Only the operator session id (`sessionId`) appears here — the
+ * CLI UUID must never be used in this path.
+ */
+export function useConfirmAdoptedSession(sessionId: string, host: HostProfile = LOCAL_HOST) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (): Promise<OperatorSession> => {
+      const data = await hostFetch<OperatorSession>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/confirm`),
+        host,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      );
+      return operatorSessionSchema.parse(data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
     },
   });
 }

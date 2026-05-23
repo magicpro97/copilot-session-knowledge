@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Mock } from "vitest";
@@ -8,9 +8,11 @@ import type { HostState } from "@/providers/host-provider";
 import { SessionDetailClient } from "./session-detail-client";
 
 // ── next/navigation ─────────────────────────────────────────────────────────
+const mockRouterPush = vi.fn();
 vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({ id: "test-session-123" })),
   usePathname: vi.fn(() => "/sessions/test-session-123"),
+  useRouter: vi.fn(() => ({ push: mockRouterPush })),
 }));
 
 // ── api hooks ────────────────────────────────────────────────────────────────
@@ -33,9 +35,24 @@ vi.mock("@/lib/api/hooks", () => ({
     error: null,
     isLoading: false,
   })),
+  useCliSession: vi.fn(() => ({
+    data: null,
+    isLoading: false,
+    isError: false,
+  })),
+  useAdoptCliSession: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  })),
 }));
 
-import { useOperatorRuns, useSessionDetail } from "@/lib/api/hooks";
+import {
+  useOperatorRuns,
+  useSessionDetail,
+  useCliSession,
+  useAdoptCliSession,
+} from "@/lib/api/hooks";
 
 let hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: true };
 vi.mock("@/providers/host-provider", () => ({
@@ -43,8 +60,13 @@ vi.mock("@/providers/host-provider", () => ({
 }));
 
 let sessionsSupported = true;
+let cliAdoptSupported = false; // default: CTA hidden unless test opts-in
 vi.mock("@/lib/hosts", () => ({
-  useHostFeature: vi.fn(() => ({ supported: sessionsSupported, loading: false })),
+  useHostFeature: vi.fn((host: unknown, feature: string) => {
+    if (feature === "sessions") return { supported: sessionsSupported, loading: false };
+    if (feature === "cli_adopt") return { supported: cliAdoptSupported, loading: false };
+    return { supported: true, loading: false };
+  }),
 }));
 
 const defaultSessionDetail = {
@@ -100,6 +122,7 @@ vi.mock("lucide-react", () => ({
   GitCompare: () => <span data-testid="icon-compare" />,
   Loader2: () => <span data-testid="icon-loader" />,
   ServerCog: () => <span data-testid="icon-server-cog" />,
+  Terminal: () => <span data-testid="icon-terminal" />,
 }));
 
 // ── breadcrumbs / banner ─────────────────────────────────────────────────────
@@ -120,13 +143,24 @@ const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation
 describe("SessionDetailClient – layout/nav", () => {
   beforeEach(() => {
     replaceState.mockClear();
+    mockRouterPush.mockClear();
     hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
     sessionsSupported = true;
+    cliAdoptSupported = false;
     (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
     (useOperatorRuns as Mock).mockImplementation(() => ({
       data: { runs: [], count: 0 },
       error: null,
       isLoading: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: null,
+      isLoading: false,
+      isError: false,
+    }));
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: vi.fn(),
+      isPending: false,
     }));
     // Reset hash
     Object.defineProperty(window, "location", {
@@ -357,5 +391,219 @@ describe("SessionDetailClient – layout/nav", () => {
       false,
       remoteHost,
     ]);
+  });
+});
+
+// ── CTA: Adopt in Chat (issue #530 Gap 1) ────────────────────────────────────
+
+describe("SessionDetailClient — Adopt in Chat CTA", () => {
+  beforeEach(() => {
+    replaceState.mockClear();
+    mockRouterPush.mockClear();
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    sessionsSupported = true;
+    cliAdoptSupported = true;
+    (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
+    (useOperatorRuns as Mock).mockImplementation(() => ({
+      data: { runs: [], count: 0 },
+      error: null,
+      isLoading: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: null,
+      isLoading: false,
+      isError: false,
+    }));
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: vi.fn(),
+      isPending: false,
+    }));
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...window.location, hash: "", href: "http://localhost/sessions/test-session-123" },
+    });
+  });
+
+  it("does not show Adopt in Chat button when useCliSession returns no data", () => {
+    render(<SessionDetailClient />);
+    expect(screen.queryByTestId("adopt-in-chat-btn")).not.toBeInTheDocument();
+  });
+
+  it("shows Adopt in Chat button when useCliSession returns a session", () => {
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: {
+        cli_session_id: "cli-uuid-secret",
+        title: "My CLI session",
+        mtime: "2024-01-01T00:00:00Z",
+      },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    expect(screen.getByTestId("adopt-in-chat-btn")).toBeInTheDocument();
+  });
+
+  it("hides Adopt in Chat button when cli_adopt is not supported", () => {
+    cliAdoptSupported = false;
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: {
+        cli_session_id: "cli-uuid-secret",
+        title: "My CLI session",
+        mtime: "2024-01-01T00:00:00Z",
+      },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    // Even if useCliSession returns data, if cli_adopt unsupported it won't be called
+    // and the button should not appear.
+    expect(screen.queryByTestId("adopt-in-chat-btn")).not.toBeInTheDocument();
+  });
+
+  it("clicking Adopt calls adoptMutation with cli_session_id in payload body, not URL", async () => {
+    const mockMutate = vi.fn(
+      (
+        args: { payload: { cli_session_id: string }; host: unknown },
+        opts: { onSuccess: (s: { id: string }) => void; onError: () => void }
+      ) => {
+        // Simulate success immediately
+        opts.onSuccess({ id: "operator-session-456" });
+      }
+    );
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: mockMutate,
+      isPending: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: {
+        cli_session_id: "cli-uuid-secret-789",
+        title: "My CLI session",
+        mtime: "2024-01-01T00:00:00Z",
+      },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    const btn = screen.getByTestId("adopt-in-chat-btn");
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(mockMutate).toHaveBeenCalledOnce();
+      const [callArgs] = mockMutate.mock.calls[0];
+      // CLI UUID is in the payload body only
+      expect(callArgs.payload.cli_session_id).toBe("cli-uuid-secret-789");
+    });
+  });
+
+  it("navigates to /chat?s=<operator_id> after successful adopt — CLI UUID not in URL", async () => {
+    const mockMutate = vi.fn(
+      (args: unknown, opts: { onSuccess: (s: { id: string }) => void; onError: () => void }) => {
+        opts.onSuccess({ id: "operator-session-456" });
+      }
+    );
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: mockMutate,
+      isPending: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: {
+        cli_session_id: "cli-uuid-must-not-appear",
+        title: "My CLI session",
+        mtime: "2024-01-01T00:00:00Z",
+      },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByTestId("adopt-in-chat-btn"));
+
+    await waitFor(() => {
+      expect(mockRouterPush).toHaveBeenCalledOnce();
+      const [navigatedUrl] = mockRouterPush.mock.calls[0] as [string];
+      // Operator session id is in URL
+      expect(navigatedUrl).toContain("s=operator-session-456");
+      // CLI UUID must NEVER appear in the navigated URL
+      expect(navigatedUrl).not.toContain("cli-uuid-must-not-appear");
+      // No resume_target param
+      expect(navigatedUrl).not.toContain("resume_target");
+      // Starts with /chat
+      expect(navigatedUrl.startsWith("/chat")).toBe(true);
+    });
+  });
+
+  it("appends h=<host.id> for non-local hosts after adopt", async () => {
+    const remoteHost = {
+      id: "remote-host-99",
+      label: "Remote",
+      base_url: "https://agent.example.test",
+      token: "secret",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+    hostStateMock = { host: remoteHost, diagnosticsEnabled: true };
+
+    const mockMutate = vi.fn(
+      (args: unknown, opts: { onSuccess: (s: { id: string }) => void; onError: () => void }) => {
+        opts.onSuccess({ id: "op-remote-789" });
+      }
+    );
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: mockMutate,
+      isPending: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: {
+        cli_session_id: "cli-remote-uuid",
+        title: "Remote CLI session",
+        mtime: "2024-01-01T00:00:00Z",
+      },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByTestId("adopt-in-chat-btn"));
+
+    await waitFor(() => {
+      const [navigatedUrl] = mockRouterPush.mock.calls[0] as [string];
+      expect(navigatedUrl).toContain("s=op-remote-789");
+      expect(navigatedUrl).toContain("h=remote-host-99");
+      // CLI UUID not in URL
+      expect(navigatedUrl).not.toContain("cli-remote-uuid");
+    });
+  });
+
+  it("does not add h= param for local host after adopt", async () => {
+    const mockMutate = vi.fn(
+      (args: unknown, opts: { onSuccess: (s: { id: string }) => void; onError: () => void }) => {
+        opts.onSuccess({ id: "op-local-111" });
+      }
+    );
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: mockMutate,
+      isPending: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: {
+        cli_session_id: "cli-local-uuid",
+        title: "Local CLI session",
+        mtime: "2024-01-01T00:00:00Z",
+      },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByTestId("adopt-in-chat-btn"));
+
+    await waitFor(() => {
+      const [navigatedUrl] = mockRouterPush.mock.calls[0] as [string];
+      expect(navigatedUrl).toContain("s=op-local-111");
+      expect(navigatedUrl).not.toContain("h=");
+    });
   });
 });

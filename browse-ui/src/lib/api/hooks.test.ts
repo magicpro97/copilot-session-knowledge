@@ -15,6 +15,9 @@ import {
   useCreateOperatorSession,
   useUpdateOperatorSession,
   useSkillCatalog,
+  useCliSession,
+  useAdoptCliSession,
+  useConfirmAdoptedSession,
 } from "@/lib/api/hooks";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 
@@ -545,5 +548,272 @@ describe("useSkillCatalog", () => {
     expect(result.current.isFetching).toBe(false);
     expect(result.current.data).toBeUndefined();
     expect(vi.mocked(hostFetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── useCliSession ────────────────────────────────────────────────────────────
+
+describe("useCliSession", () => {
+  const CLI_SESSION = {
+    cli_session_id: "cli-uuid-abc123",
+    title: "My project session",
+    mtime: "2024-06-01T10:00:00Z",
+    workspace_hint: "~/projects/myapp",
+    branch: "main",
+  };
+
+  it("fetches a single CLI session by id", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(CLI_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useCliSession("cli-uuid-abc123", LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(result.current.data?.cli_session_id).toBe("cli-uuid-abc123");
+    expect(result.current.data?.title).toBe("My project session");
+  });
+
+  it("uses the cliSession query key scoped to host and id", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(CLI_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useCliSession("cli-uuid-abc123", REMOTE_HOST), { wrapper });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const cache = queryClient.getQueryCache().getAll();
+    const found = cache.some(
+      (q) =>
+        Array.isArray(q.queryKey) &&
+        q.queryKey[0] === "cli-session" &&
+        q.queryKey[1] === REMOTE_HOST.id &&
+        q.queryKey[2] === "cli-uuid-abc123"
+    );
+    expect(found).toBe(true);
+  });
+
+  it("fetches from the correct endpoint path", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(CLI_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useCliSession("cli-uuid-abc123", LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const [calledPath] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledPath).toContain("/api/operator/cli-sessions/cli-uuid-abc123");
+    // Path must not contain token or other params
+    expect(calledPath).not.toContain("token=");
+  });
+
+  it("does not fetch when enabled=false", () => {
+    vi.mocked(hostFetch).mockClear();
+    vi.mocked(hostFetch).mockResolvedValue(CLI_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useCliSession("cli-uuid-abc123", LOCAL_HOST, false), {
+      wrapper,
+    });
+
+    expect(result.current.isFetching).toBe(false);
+    expect(vi.mocked(hostFetch)).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch when id is empty", () => {
+    vi.mocked(hostFetch).mockClear();
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useCliSession("", LOCAL_HOST, true), { wrapper });
+
+    expect(result.current.isFetching).toBe(false);
+    expect(vi.mocked(hostFetch)).not.toHaveBeenCalled();
+  });
+
+  it("does not retry 404 responses", async () => {
+    vi.mocked(hostFetch).mockClear();
+    vi.mocked(hostFetch).mockRejectedValue(new Error("HTTP 404"));
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: 3, retryDelay: 1 } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useCliSession("missing-cli-session", LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(vi.mocked(hostFetch)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── useAdoptCliSession ───────────────────────────────────────────────────────
+
+describe("useAdoptCliSession", () => {
+  const ADOPTED_SESSION = {
+    id: "operator-session-xyz",
+    name: "Adopted Session",
+    model: "gpt-5.4",
+    mode: "interactive",
+    workspace: "~/projects/myapp",
+    add_dirs: [],
+    created_at: "2024-01-01T00:00:00Z",
+    updated_at: "2024-01-01T00:00:00Z",
+    run_count: 0,
+    last_run_id: null,
+    resume_ready: false,
+    source: "cli_adopt",
+  };
+
+  it("sends cli_session_id in POST JSON body (not as URL param)", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(ADOPTED_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useAdoptCliSession(LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        payload: { cli_session_id: "cli-secret-uuid" },
+      });
+    });
+
+    const [calledPath, , calledInit] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+
+    // Path uses the adopt endpoint — CLI UUID is NOT in the URL
+    expect(calledPath).toBe("/api/operator/sessions/adopt");
+    expect(calledPath).not.toContain("cli-secret-uuid");
+
+    // CLI UUID is in the POST body
+    const body = JSON.parse((calledInit as RequestInit | undefined)?.body as string) as {
+      cli_session_id: string;
+    };
+    expect(body.cli_session_id).toBe("cli-secret-uuid");
+    expect((calledInit as RequestInit | undefined)?.method).toBe("POST");
+  });
+
+  it("returns the operator session id (not CLI UUID) on success", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(ADOPTED_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useAdoptCliSession(LOCAL_HOST), { wrapper });
+
+    let returned: { id: string } | undefined;
+    await act(async () => {
+      returned = await result.current.mutateAsync({
+        payload: { cli_session_id: "cli-secret-uuid" },
+      });
+    });
+
+    // The returned id is the operator session id
+    expect(returned?.id).toBe("operator-session-xyz");
+    // Confirm the returned id is NOT the CLI UUID
+    expect(returned?.id).not.toBe("cli-secret-uuid");
+  });
+
+  it("uses a per-call host override for the adopt POST", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(ADOPTED_SESSION);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useAdoptCliSession(LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        payload: { cli_session_id: "cli-secret-uuid" },
+        host: REMOTE_HOST,
+      });
+    });
+
+    const [, calledHost] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledHost).toMatchObject({ id: REMOTE_HOST.id, base_url: REMOTE_HOST.base_url });
+  });
+
+  it("confirm path uses operator session id, not CLI UUID", async () => {
+    // Adopt then confirm — confirm must only reference the operator session id
+    vi.mocked(hostFetch)
+      .mockResolvedValueOnce(ADOPTED_SESSION)
+      .mockResolvedValueOnce({
+        ...ADOPTED_SESSION,
+        confirmed_at: "2024-01-01T00:00:01Z",
+        resume_ready: true,
+      });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useAdoptCliSession(LOCAL_HOST), { wrapper });
+
+    let returned: { id: string } | undefined;
+    await act(async () => {
+      returned = await result.current.mutateAsync({
+        payload: { cli_session_id: "cli-secret-uuid" },
+      });
+    });
+
+    // The operator session id from the adopt response
+    const operatorId = returned?.id ?? "";
+    expect(operatorId).toBe("operator-session-xyz");
+
+    const confirm = renderHook(() => useConfirmAdoptedSession(operatorId, LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await confirm.result.current.mutateAsync();
+    });
+
+    const [calledPath, , calledInit] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledPath).toBe("/api/operator/sessions/operator-session-xyz/confirm");
+    expect(calledPath).not.toContain("cli-secret-uuid");
+    expect((calledInit as RequestInit | undefined)?.method).toBe("POST");
   });
 });

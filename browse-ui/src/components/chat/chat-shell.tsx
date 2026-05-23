@@ -27,6 +27,8 @@ import {
   useSubmitPrompt,
   useUpdateOperatorSession,
   useSkillCatalog,
+  useAdoptCliSession,
+  useConfirmAdoptedSession,
 } from "@/lib/api/hooks";
 import {
   getAllHostProfiles,
@@ -42,6 +44,7 @@ import { SessionCreateDialog } from "./session-create-dialog";
 import { MetadataBar } from "./metadata-bar";
 import { Transcript } from "./transcript";
 import { Composer } from "./composer";
+import { ConfirmAdoptionPanel } from "./cli-session-picker";
 import { COPILOT_MODES } from "./session-create-dialog";
 import { SLASH_COMMANDS } from "./slash-commands";
 import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
@@ -54,7 +57,7 @@ import type {
   UpdateOperatorSessionRequest,
   MutableOperatorSessionMode,
 } from "@/lib/api/types";
-import type { CreateSessionPayload } from "./session-create-dialog";
+import type { CreateSessionPayload, AdoptSessionPayload } from "./session-create-dialog";
 
 const SESSION_PARAM = "s";
 /** Stores the host profile id for the active session's agent host. */
@@ -99,6 +102,13 @@ export function ChatShell() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
+  /**
+   * Controlled open signal for SessionCreateDialog.
+   * Incrementing this value (and setting dialogInitialTab) causes the dialog to
+   * open on the requested tab without any DOM querying or timers.
+   */
+  const [dialogOpenSignal, setDialogOpenSignal] = useState(0);
+  const [dialogInitialTab, setDialogInitialTab] = useState<"new" | "cli">("new");
 
   const activeSessionId = searchParams.get(SESSION_PARAM) ?? null;
   const hParam = searchParams.get(HOST_PARAM);
@@ -149,6 +159,8 @@ export function ChatShell() {
   const deleteMutation = useDeleteOperatorSession(activeHost);
   const promptMutation = useSubmitPrompt(activeSessionId ?? "", activeHost);
   const updateMutation = useUpdateOperatorSession(activeSessionId ?? "", activeHost);
+  const adoptMutation = useAdoptCliSession(activeHost);
+  const confirmMutation = useConfirmAdoptedSession(activeSessionId ?? "", activeHost);
 
   // Lazy-loaded skill catalog — only fetched when the /skills overlay is open.
   const skillCatalogQuery = useSkillCatalog(activeHost, skillsOpen && operatorEnabled);
@@ -178,6 +190,30 @@ export function ChatShell() {
     [router, pathname, searchParams]
   );
 
+  // Navigate to an adopted session — uses operator session id only.
+  // SECURITY: CLI UUID must not appear in this function or in the URL.
+  const navigateToOperatorSession = useCallback(
+    (operatorId: string, host: HostProfile) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set(SESSION_PARAM, operatorId);
+      if (host.id !== LOCAL_HOST_ID) {
+        params.set(HOST_PARAM, host.id);
+        setSelectedHostId(host.id);
+      } else {
+        params.delete(HOST_PARAM);
+        setSelectedHostId(LOCAL_HOST_ID);
+      }
+      router.push(`${pathname}?${params.toString()}`);
+      setActiveRun(null);
+      setSuppressedRecoveryRunId(null);
+      setMetadataEditorOpen(false);
+      setCommandBanner(null);
+      setSubmitError(null);
+      setMobileSidebarOpen(false);
+    },
+    [router, pathname, searchParams]
+  );
+
   // Create a new session — strip the non-API `host` field before sending to the backend
   const handleCreateSession = useCallback(
     (payload: CreateSessionPayload) => {
@@ -186,28 +222,43 @@ export function ChatShell() {
         { payload: apiPayload, host },
         {
           onSuccess: (newSession: OperatorSession) => {
-            const params = new URLSearchParams(searchParams.toString());
-            params.set(SESSION_PARAM, newSession.id);
-            if (host.id !== LOCAL_HOST_ID) {
-              params.set(HOST_PARAM, host.id);
-              setSelectedHostId(host.id);
-            } else {
-              params.delete(HOST_PARAM);
-              setSelectedHostId(LOCAL_HOST_ID);
-            }
-            router.push(`${pathname}?${params.toString()}`);
-            setActiveRun(null);
-            setSuppressedRecoveryRunId(null);
-            setMetadataEditorOpen(false);
-            setCommandBanner(null);
-            setSubmitError(null);
-            setMobileSidebarOpen(false);
+            navigateToOperatorSession(newSession.id, host);
           },
         }
       );
     },
-    [createMutation, router, pathname, searchParams]
+    [createMutation, navigateToOperatorSession]
   );
+
+  // Adopt a CLI session.
+  // SECURITY: cli_session_id goes only in the POST JSON body via adoptMutation.
+  // The returned operator session id is used for navigation — never the CLI UUID.
+  const handleAdoptSession = useCallback(
+    (payload: AdoptSessionPayload) => {
+      const { host, ...adoptPayload } = payload;
+      adoptMutation.mutate(
+        { payload: adoptPayload, host },
+        {
+          onSuccess: (newSession: OperatorSession) => {
+            // Navigate using operator id only — CLI UUID is gone from here.
+            navigateToOperatorSession(newSession.id, host);
+          },
+        }
+      );
+    },
+    [adoptMutation, navigateToOperatorSession]
+  );
+
+  // Confirm an adopted CLI session (POST /confirm with empty JSON body).
+  const handleConfirmAdoption = useCallback(() => {
+    if (!activeSessionId) return;
+    confirmMutation.mutate(undefined, {
+      onSuccess: () => {
+        // Session cache is invalidated by the hook; session detail refetch picks up confirmed_at.
+        void sessionQuery.refetch();
+      },
+    });
+  }, [activeSessionId, confirmMutation, sessionQuery]);
 
   // Delete a session
   const handleDeleteSession = useCallback(
@@ -329,6 +380,14 @@ export function ChatShell() {
         case "skills":
           setSkillsOpen(true);
           break;
+        case "history": {
+          // Open the New Chat dialog on the CLI History tab.
+          // Use the openSignal/initialTab controlled props instead of DOM
+          // queries + timers, which are racy with the dialog's own tab reset.
+          setDialogInitialTab("cli");
+          setDialogOpenSignal((s) => s + 1);
+          break;
+        }
         case "session":
           if (!activeSessionId) {
             break;
@@ -353,9 +412,10 @@ export function ChatShell() {
           }
           break;
         case "new": {
-          // Reuse the existing "New chat session" button already rendered in the sidebar.
-          const btn = document.querySelector<HTMLButtonElement>('[aria-label="New chat session"]');
-          btn?.click();
+          // Open the New Chat dialog on the New Session tab via the controlled
+          // signal. Avoids DOM querying.
+          setDialogInitialTab("new");
+          setDialogOpenSignal((s) => s + 1);
           break;
         }
         case "clear":
@@ -396,7 +456,14 @@ export function ChatShell() {
     [activeSessionId, isRunning, updateMutation]
   );
 
-  const composerDisabled = !activeSessionId || updateMutation.isPending;
+  // Determine if the active session is an unconfirmed CLI adoption.
+  const isUnconfirmedAdoption = session?.source === "cli_adopt" && !session?.confirmed_at;
+
+  // Composer disabled: no session, settings updating, or unconfirmed CLI adoption.
+  const composerDisabled = !activeSessionId || updateMutation.isPending || isUnconfirmedAdoption;
+
+  // Whether adopt/create operations are pending (for dialog loading state).
+  const sessionCreating = createMutation.isPending || adoptMutation.isPending;
 
   return (
     <div className="flex h-full overflow-hidden" data-testid="chat-shell">
@@ -530,8 +597,11 @@ export function ChatShell() {
         <div className="border-b p-2">
           <SessionCreateDialog
             onSubmit={handleCreateSession}
+            onAdopt={handleAdoptSession}
             initialHost={activeHost}
-            loading={createMutation.isPending}
+            loading={sessionCreating}
+            openSignal={dialogOpenSignal}
+            initialTab={dialogInitialTab}
           />
         </div>
         <div className="flex-1 overflow-y-auto">
@@ -558,8 +628,11 @@ export function ChatShell() {
           <div className="border-b p-2">
             <SessionCreateDialog
               onSubmit={handleCreateSession}
+              onAdopt={handleAdoptSession}
               initialHost={activeHost}
-              loading={createMutation.isPending}
+              loading={sessionCreating}
+              openSignal={dialogOpenSignal}
+              initialTab={dialogInitialTab}
             />
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -638,6 +711,17 @@ export function ChatShell() {
             onUpdate={handleUpdateSession}
             openEditor={metadataEditorOpen}
             onEditorClose={() => setMetadataEditorOpen(false)}
+          />
+        ) : null}
+
+        {/* CLI adoption confirmation panel */}
+        {isUnconfirmedAdoption && session ? (
+          <ConfirmAdoptionPanel
+            sessionName={session.name}
+            workspace={session.workspace}
+            addDirs={session.add_dirs}
+            onConfirm={handleConfirmAdoption}
+            isConfirming={confirmMutation.isPending}
           />
         ) : null}
 
