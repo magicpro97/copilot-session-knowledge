@@ -68,20 +68,46 @@ Playwright specs live in `e2e/`:
 | `shortcuts.spec.ts` | Global keyboard shortcuts and navigation chords |
 | `chat.spec.ts` | `/chat` operator console shell, history, file preview, and inline diff review |
 | `visual.spec.ts` | Screenshot comparisons for stable visual surfaces |
-| `hosted-proof.spec.ts` | Hosted-origin regression proof against `agents.linhngo.dev` (gate: `HOSTED_PROOF=1`) |
+| `hosted-regression.spec.ts` | Hosted-origin regression proof with source-based console classification and scrubbed artifacts (gate: `HOSTED_PROOF=1`) |
 
 Typical local runs:
 
 ```bash
 pnpm test:e2e --project behavioral
 pnpm test:e2e --project visual
-# Hosted-origin regression proof (requires local backend on 8765 and network access):
-HOSTED_PROOF=1 pnpm exec playwright test hosted-proof --project hosted-proof
 ```
 
 `playwright.config.ts` builds the static export, creates the fixture DB, and boots the Python browse server automatically for the suite. The `behavioral` project is the stable day-to-day smoke surface; `visual` remains manual-dispatch CI only.
 
-> **Chrome Local Network Access (LNA) permission — hosted proof only:** Modern Chromium (M123+) requires a `local-network-access` Web permission before a hosted HTTPS page (`https://agents.linhngo.dev`) may probe a loopback address, even when the backend supplies correct `Access-Control-Allow-Private-Network: true` headers. In a real browser the user sees a one-time permission prompt. The hosted proof grants this permission programmatically via `context.grantPermissions(['local-network-access'], { origin })`, scoped strictly to `HOSTED_ORIGIN`. No unsafe browser flags (`--disable-web-security`, `--disable-features`) are used.
+
+### Hosted regression proof (#519)
+
+Requires `HOSTED_PROOF=1`. Does **not** start the local webServer. Targets `https://agents.linhngo.dev` (or `HOSTED_URL` override). No route stubs are registered; real network behavior is captured as JSON artifacts.
+
+```bash
+cd browse-ui
+
+# Dry-run / list tests (no real session needed)
+HOSTED_PROOF=1 HOSTED_URL=https://agents.linhngo.dev CLI_SESSION_ID=dummy \
+  pnpm exec playwright test --project hosted-regression --list
+
+# Full run with real session
+pnpm exec playwright install chromium
+HOSTED_PROOF=1 \
+  HOSTED_URL=https://agents.linhngo.dev \
+  CLI_SESSION_ID=<real-session-id> \
+  pnpm exec playwright test --project hosted-regression --reporter=line,html --trace on
+
+# Strict mode: assert empty artifacts after fixes land
+HOSTED_PROOF=1 HOSTED_PROOF_STRICT=1 \
+  HOSTED_URL=https://agents.linhngo.dev \
+  CLI_SESSION_ID=<real-session-id> \
+  pnpm exec playwright test --project hosted-regression
+```
+
+Artifacts written per test: `loopback-hits.json`, `runs-404.json`, `app-console-errors.json`, `extension-noise.json`, `browser-internal.json`, and `console-raw.json`.
+
+> **Chrome Local Network Access (LNA) permission — hosted proof only:** Modern Chromium (M123+) requires a `local-network-access` Web permission before a hosted HTTPS page may probe a loopback address, even when the backend supplies correct `Access-Control-Allow-Private-Network: true` headers. The hosted regression proof grants this permission programmatically via `context.grantPermissions(["local-network-access"], { origin })`, scoped strictly to the `HOSTED_URL` origin. No unsafe browser flags (`--disable-web-security`, `--disable-features`) are used.
 
 ## Build output
 
