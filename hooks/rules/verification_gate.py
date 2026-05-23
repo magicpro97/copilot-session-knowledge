@@ -204,7 +204,17 @@ def _surfaces_from_path(path):
     # Only track edits within the tools repo itself
     tools_root = str(TOOLS_DIR)
     tools_root_real = str(TOOLS_DIR.resolve())
-    in_tools_repo = p.startswith(tools_root) or p.startswith(tools_root_real)
+    # Also consider this script's source tree (handles dev/CI where CWD = checkout)
+    _script_repo = str(Path(__file__).resolve().parent.parent.parent)
+    # Resolve relative paths against CWD for comparison
+    abs_p = str(Path(p).resolve()) if not os.path.isabs(p) else p
+    in_tools_repo = (
+        abs_p.startswith(tools_root)
+        or abs_p.startswith(tools_root_real)
+        or abs_p.startswith(_script_repo)
+        or p.startswith(tools_root)
+        or p.startswith(tools_root_real)
+    )
     if not in_tools_repo:
         return surfaces
     suffix = Path(path).suffix.lower()
