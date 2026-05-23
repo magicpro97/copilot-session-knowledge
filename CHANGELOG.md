@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **ci(#459):** run pnpm lint:all (src + e2e + scripts) as advisory CI step in browse-ui job.
 
 ### Added
+- **CLI session adoption / two-ID model docs (#532):** `docs/ARCHITECTURE.md` documents the
+  operator-session-ID vs CLI-UUID (`resume_target`) model, lifecycle (discover -> adopt ->
+  confirm -> prompt/resume), and guardrails (UUID4 validation, confirmation gate, read-only CLI
+  tree, env allowlist, stale/missing recovery, duplicate 409 handling).
+  `docs/OPERATOR-PLAYBOOK.md` adds the operator-facing Chat Resume / CLI Session Adoption
+  runbook.  `browse-ui/README.md` adds `CliSessionPicker`, `CliAdoptedBadge`,
+  `ConfirmAdoptionPanel` component docs, two-ID model summary, and Phase 13 history entry.
+  `tests/README.md` adds `test_browse_chat_resume.py` (CR1-CR14) to the test group table.
+  `.github/agents/python-browse-backend.agent.md` adds `operator_console.py` and
+  `test_browse_chat_resume.py` to required context.
+  Landed on: #529 (`33fc40f`), #530 (`d1ef19c`, `1fdd5de`), #531 (`27641a3`, `42ffec0`).
 - **Rust workflow health proxy endpoint (#453 PR-B):** `GET /api/workflow/health` wired into the
   Axum browse server. Proxies `workflow-health.py --json` through a new shared
   `subprocess_proxy` helper. Supports cross-platform Python discovery (`COPILOT_PYTHON`,

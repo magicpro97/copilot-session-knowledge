@@ -149,7 +149,8 @@ The browse UI exposes a browser-managed Copilot CLI execution console at `/chat`
 | `browse/core/operator_console.py` | Secure execution/persistence adapter. Starts Copilot CLI runs, normalizes event streams, and persists operator state under `~/.copilot/session-state/operator-console/`. |
 | `browse/api/operator.py` | Authenticated REST + SSE surface for session CRUD, prompt submission, run status/history, path suggestions, previews, and diffs. |
 | `browse-ui/src/app/chat/` | Next.js route wrapper for the `/chat` operator console. |
-| `browse-ui/src/components/chat/` | `ChatShell`, `Transcript`, `Composer`, `SessionCreateDialog`, `MetadataBar`, and file review components. |
+| `browse-ui/src/components/chat/` | `ChatShell`, `Transcript`, `Composer`, `SessionCreateDialog`, `MetadataBar`, file review components, and CLI session adoption UX (`CliSessionPicker`, `CliAdoptedBadge`, `ConfirmAdoptionPanel`). |
+| `browse-ui/src/components/chat/cli-session-picker.tsx` | Lists real CLI sessions and drives the adopt/confirm flow; composer is disabled until `confirmed_at` is set. |
 | `browse-ui/src/lib/api/{types,schemas,hooks}.ts` | Stable frontend contract layer for `/api/operator/*`. |
 
 ### Browse-wide host state
@@ -197,6 +198,71 @@ GET  /api/operator/cli-sessions/{id}         → single CLI session by UUID (Bea
 - **Path cap:** oversized path inputs are rejected before filesystem access.
 - **Separate persistence:** operator run history is stored under `~/.copilot/session-state/operator-console/` and replayed from disk on reload.
 - **Same Copilot policy surface:** operator-console runs still inherit the installed Copilot CLI's hooks, custom instructions, and permission system. Browser mediation does not bypass briefing, tentacle, or other active policy gates.
+
+### CLI Session Adoption / Two-ID Model
+
+The operator console supports resuming an existing Copilot CLI session from the browser via the
+**From CLI history** picker.  Two distinct identifiers are always in play and must never be
+aliased:
+
+| ID | Where it lives | Purpose |
+|----|---------------|---------|
+| **Operator session ID** | Browse/backend route segment; `operator-console/<id>/` on disk | Identifies the operator-side session; used in every `/api/operator/sessions/<id>/*` URL |
+| **CLI session UUID** | Backend field `resume_target` (UUID4); never surfaced as a route key | Identifies the real Copilot CLI session; passed to `copilot` as `--resume=<cli_uuid>` |
+
+#### Lifecycle: discover -> adopt -> confirm -> prompt/resume
+
+1. **discover** — `GET /api/operator/cli-sessions` reads real CLI session artifacts under
+   `~/.copilot/session-state/` (read-only, path-confined, Bearer/cookie auth, `debug=True`).
+2. **adopt** — `POST /api/operator/sessions/adopt` creates an operator session with
+   `source="cli_adopt"`, stores the CLI UUID in `resume_target`, and returns
+   `confirmed_at=None`.  The returned `id` is the new **operator** session ID.
+3. **confirm** — `POST /api/operator/sessions/<operator_id>/confirm` sets `confirmed_at` and
+   `resume_ready=True`.  Prompts are blocked until this step completes.
+4. **prompt/resume** — `POST /api/operator/sessions/<operator_id>/prompt` launches the CLI
+   subprocess with `--resume=<cli_uuid>` (from `resume_target`).  `--name` is never passed for
+   adopted sessions.  The operator session ID never appears in the CLI argv.
+
+#### Guardrails specific to adoption
+
+- `resume_target` is validated as UUID4 at adopt time; malformed values are rejected.
+- The confirmation gate in `operator_console.py · start_run()` returns `None` for any session
+  where `confirmed_at` is not set; the UI disables the composer until confirmation.
+- CLI tree discovery is read-only and path-confined; file hashes and `workspace.yaml` mtime are
+  unchanged after discovery (`tests/test_browse_chat_resume.py CR9`).
+- Child subprocess env is filtered by `_ENV_ALLOWLIST`; test state env vars do not leak
+  (`CR8`).
+
+#### Stale / missing CLI session recovery
+
+If the CLI session referenced by `resume_target` no longer exists on disk:
+- The `GET /api/operator/cli-sessions/{uuid}` probe returns 404.
+- `CliSessionPicker` (browse-ui) shows a warning badge on stale entries.
+- `POST /api/operator/sessions/{id}/confirm` calls `get_cli_session_by_id` and returns
+  `CLI_SESSION_NOT_FOUND` / 404 when the CLI UUID is absent; there is no supported
+  confirm-with-replacement-workspace fallback.  Delete the unconfirmed operator session
+  and adopt a different CLI session or start a fresh operator chat.
+- Deleting an operator session never touches the CLI session tree.
+
+#### Duplicate adoption
+
+`POST /api/operator/sessions/adopt` for a CLI UUID that has already been adopted returns one of
+two responses depending on confirmation state:
+
+- **HTTP 200** — duplicate exists but is still unconfirmed; response body includes the existing
+  operator session object (idempotent re-adopt).
+- **HTTP 409** (`ALREADY_ADOPTED`) — duplicate is already confirmed; response is error-only with
+  no session object.  To find the existing session, use `GET /api/operator/sessions`.
+
+#### Components added by CLI adoption UX
+
+| Component | Role |
+|-----------|------|
+| `browse-ui/src/components/chat/cli-session-picker.tsx` | Picker that lists real CLI sessions from `/api/operator/cli-sessions` and triggers the adopt flow |
+| `CliAdoptedBadge` (in `cli-session-picker.tsx`) | Badge shown when a session was adopted from CLI history |
+| `ConfirmAdoptionPanel` (in `cli-session-picker.tsx` / `chat-shell.tsx`) | Workspace/add_dirs confirmation step before the composer is enabled |
+
+> Operator runbook for the adopt/confirm flow: **[docs/OPERATOR-PLAYBOOK.md — Chat Resume / CLI Session Adoption](OPERATOR-PLAYBOOK.md#chat-resume--cli-session-adoption)**
 
 ### Compatibility with watch-sessions and auto-update
 

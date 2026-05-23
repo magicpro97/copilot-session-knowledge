@@ -23,12 +23,14 @@ Read the relevant source before editing:
 - `install.py`
 - `browse/core/server.py`
 - `browse/core/auth.py`
+- `browse/core/operator_console.py` (required context for all operator adopt/confirm/resume routes)
 - Route files under `browse/routes/`
 - API files under `browse/api/`
 - `.github/hooks/hooks.json` and `hooks/` if commands, protected files, or hook-visible behavior change
 - `skills/*/SKILL.md` if operator or agent workflows change
 - Relevant docs under `docs/`
 - Existing backend tests in `test_security.py`, `test_fixes.py`, and any route-specific tests
+- `tests/test_browse_chat_resume.py` — CR1-CR14 mock-Copilot proof for adopt/confirm/prompt/stream, argv/env isolation, and CLI tree immutability
 
 ## Backend Rules
 

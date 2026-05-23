@@ -40,6 +40,7 @@ Tests are grouped by subsystem:
 | Group | Files (prefix) | Covers |
 |-------|---------------|--------|
 | Browse legacy routes | `test_browse*.py` | Python browse server routes, API, graph, dashboard, timeline, etc. |
+| Chat resume / CLI adoption | `test_browse_chat_resume.py` | Mock-Copilot discover/adopt/confirm/prompt/stream proof (CR1-CR14); covers argv/env isolation, confirmation gate, CLI tree immutability, and two-ID model correctness. |
 | Browse UI primitives | `test_ui_components.py`, `test_ui_foundation.py` | `browse.components.primitives` rendering helpers, token/layout layer |
 | Visual snapshots | `test_visual_snapshot.py` | SHA-256 snapshot tests for stable browse routes |
 | Session export | `test_session_export.py` | `GET /session/{id}.md` export route |

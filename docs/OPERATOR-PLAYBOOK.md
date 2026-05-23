@@ -400,7 +400,70 @@ The console launches a fresh Copilot CLI process per prompt so hooks, permission
 |-----------|-----------------|---------------|
 | **Final answer text** | AssistantBubble body | Promoted from user-facing `assistant.message`, `session.task_complete` summary, or `task_complete` tool result; procedural completion summaries such as "Acknowledging the greeting and closing the turn." are suppressed even when the CLI emits them as assistant text. |
 | **Elapsed duration** | AssistantBubble footer (e.g. `41s`, `2m 5s`) | Wall-clock time from `started_at` to `finished_at`; shown only after the run finishes. |
-| **Context badge** | MetadataBar (session header) | `context ready` (green) when `resume_ready: true`; `new context` otherwise. Reflects whether the active host offered a resumable context window. |
+| **Context badge** | MetadataBar (session header) | `context ready` (green) when `resume_ready: true`; `new context` otherwise. Reflects whether the active host offered a resumable context window. This badge is independent of CLI session adoption — a fresh operator session also shows `context ready` once the CLI warms up its context window. |
+| **Adopted badge** | MetadataBar / session list | Shown when `source = "cli_adopt"`. Indicates the operator session is backed by an existing CLI session UUID stored in `resume_target`. |
+| **Confirmation pending** | Composer / header | Composer is disabled and a confirmation prompt is shown until `confirmed_at` is set on an adopted session. |
+
+### Chat Resume / CLI Session Adoption
+
+The **From CLI history** flow lets an operator resume an existing Copilot CLI session from the
+browser without knowing the CLI UUID or session path.
+
+> Architecture details, two-ID model, and guardrail inventory:
+> **[docs/ARCHITECTURE.md — CLI Session Adoption / Two-ID Model](ARCHITECTURE.md#cli-session-adoption--two-id-model)**
+
+#### Operator flow
+
+1. Open `/chat`.
+2. Click **From CLI history** (in the New Chat dialog or the session header).
+   `CliSessionPicker` loads the list from `GET /api/operator/cli-sessions`.
+3. Select a CLI session.  The picker calls `POST /api/operator/sessions/adopt`.
+   - Backend creates an operator session with `source="cli_adopt"` and stores the CLI UUID in
+     `resume_target`.  The operator session gets a new ID separate from the CLI UUID.
+   - HTTP 200 with a session body means the CLI session was previously adopted but is not yet
+     confirmed (idempotent re-adopt); the response includes the existing operator session.
+   - HTTP 409 means the CLI session was already adopted and confirmed (error-only body; no
+     session object is returned).  Locate the existing operator session from the session list
+     and navigate to it instead of creating a duplicate.
+4. The `ConfirmAdoptionPanel` appears.  Review or set the workspace directory and any
+   `add_dirs`.  Click **Confirm**.
+   - Backend sets `confirmed_at` and `resume_ready=True`.
+   - The composer is enabled.
+5. Submit a prompt normally.  The backend invokes `copilot -p <prompt> --resume=<cli_uuid>`
+   (plus `--add-dir <path>` for each configured add_dirs entry) with no `--workspace` or
+   `--name` argument.
+6. The transcript streams live; run history is persisted under `operator-console/<operator_id>/`.
+
+#### Recovery procedures
+
+**Stale / missing CLI session (session was deleted after adoption):**
+- `CliSessionPicker` shows a warning badge on entries whose CLI UUID no longer appears in
+  `GET /api/operator/cli-sessions`.
+- `GET /api/operator/cli-sessions/{uuid}` returns 404 for missing sessions.
+- Option A: delete the operator session (`POST /api/operator/sessions/{id}/delete`) and
+  re-adopt from a fresh CLI session.
+- Option B: there is no supported re-confirm flow when the CLI session is missing.
+  `POST /api/operator/sessions/{id}/confirm` calls `get_cli_session_by_id` and returns
+  `CLI_SESSION_NOT_FOUND` / 404 when the CLI UUID is absent; it will not fall back to a
+  new context.  Delete the unconfirmed operator session and adopt a different CLI session.
+
+**Duplicate adoption:**
+`POST /api/operator/sessions/adopt` returns one of two responses:
+
+- **HTTP 200** — duplicate exists but is still unconfirmed; response body includes the existing
+  operator session (idempotent re-adopt).  Continue from the `ConfirmAdoptionPanel`.
+- **HTTP 409** (`ALREADY_ADOPTED`) — duplicate is already confirmed; response is error-only with
+  no session object.  To locate the existing session, open the operator session list and navigate
+  to it in `/chat`.
+
+**Context badge `context ready` vs CLI adoption confirmation:**
+`context ready` reflects `resume_ready: true` on the active host's context probe.  It is
+unrelated to the CLI adoption confirmation step.  An adopted session may show `context ready`
+once the first successful run completes.
+
+**Deleting an operator session:**
+`POST /api/operator/sessions/{id}/delete` removes operator-side state only.  The CLI session
+tree under `~/.copilot/session-state/` is never modified.
 
 ### Compatibility
 

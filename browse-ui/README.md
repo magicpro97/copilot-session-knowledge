@@ -193,6 +193,7 @@ When the browser is not on `localhost` / `127.0.0.1`, the **Hosts & connections*
 - `pnpm vitest run src/app/settings/page.test.tsx` — Settings page + HostManagement rendering
 - `pnpm vitest run src/app/chat/chat-shell.test.tsx` — ChatShell SessionCreateDialog pre-population
 - `pnpm exec playwright test e2e/chat.spec.ts --grep "header host switcher"` — header dropdown E2E
+- `python3 tests/test_browse_chat_resume.py` — CR1-CR14 mock-Copilot adopt/confirm/prompt/stream proof (Python-side)
 - `pnpm typecheck` — TypeScript across the full browse-ui surface
 
 > Full gates (lint, build, full E2E suite, deploy, hosted smoke) are orchestrator-owned and have not been run by this docs lane.
@@ -246,6 +247,35 @@ to avoid storms. Explicit remote-host selections are never overridden.
 permission prompt. Safari/Firefox behavior depends on CORS/browser policy. If direct loopback is
 blocked, use an HTTPS tunnel (Cloudflare Tunnel / ngrok); do not assume universal browser support.
 
+## CLI Session Adoption UX
+
+The `/chat` operator console supports resuming an existing Copilot CLI session from the browser
+via the **From CLI history** flow.  See
+[docs/OPERATOR-PLAYBOOK.md — Chat Resume / CLI Session Adoption](../docs/OPERATOR-PLAYBOOK.md#chat-resume--cli-session-adoption)
+for the full operator runbook.
+
+### Components
+
+| Component | File | Role |
+|-----------|------|------|
+| `CliSessionPicker` | `src/components/chat/cli-session-picker.tsx` | Lists real CLI sessions from `/api/operator/cli-sessions`; drives the adopt API call |
+| `CliAdoptedBadge` | `src/components/chat/cli-session-picker.tsx` | Badge rendered on sessions adopted from CLI history (`source = "cli_adopt"`) |
+| `ConfirmAdoptionPanel` | `src/components/chat/cli-session-picker.tsx` / `chat-shell.tsx` | Workspace/add_dirs confirmation step; composer is disabled until `confirmed_at` is set |
+
+### Two-ID model
+
+- **Operator session ID** — the route key used in all `/api/operator/sessions/<id>/*` calls and
+  `navigation.push`.  Never the CLI UUID.
+- **CLI UUID** — stored backend-side in `resume_target`; passed to `copilot` as
+  `--resume=<cli_uuid>`.  Never rendered as a route segment in the UI.
+
+`chat-shell.tsx` navigates using the operator session ID only.
+
+### Composer gate
+
+The Composer component remains disabled (`disabled={!session.confirmed_at}`) until
+`confirmed_at` is set by `POST /api/operator/sessions/{id}/confirm`.
+
 ## Phases
 
 - **Phase 6**: Shipped scaffold — stub routes, providers, API client, and build pipeline
@@ -257,6 +287,9 @@ blocked, use an HTTPS tunnel (Cloudflare Tunnel / ngrok); do not assume universa
 - **Phase 12**: Unified root-served browse app — the Python browse server and Firebase-hosted
   build now share the same root-relative routes (`/*`); `/v2/*` compatibility redirects remain for
   old deep links.
+- **Phase 13**: CLI Session Adoption UX — `CliSessionPicker`, `CliAdoptedBadge`,
+  `ConfirmAdoptionPanel`; two-ID model (operator ID vs CLI UUID in `resume_target`); mock-Copilot
+  E2E proof (CR1-CR14, `tests/test_browse_chat_resume.py`).
 
 ## Firebase Hosting topology
 
