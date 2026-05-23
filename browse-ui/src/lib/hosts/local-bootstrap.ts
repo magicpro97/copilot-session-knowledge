@@ -9,15 +9,27 @@
 import { browseHostBootstrapSchema } from "@/lib/api/schemas";
 import type { BrowseHostBootstrapResponse } from "@/lib/api/types";
 
-/** Loopback candidates probed in order — HTTP first (Chrome Enterprise Policy
- *  `InsecurePrivateNetworkRequestsAllowedForUrls` exempts HTTP→loopback from
- *  PNA blocking), then HTTPS fallback for mkcert/TLS setups. */
-const LOOPBACK_CANDIDATES = [
-  "http://127.0.0.1:8765",
-  "http://localhost:8765",
-  "https://127.0.0.1:8765",
-  "https://localhost:8765",
-] as const;
+/** Loopback candidates ordered by origin protocol:
+ *  - From HTTPS origins (e.g. agents.linhngo.dev): HTTPS first — avoids
+ *    Chrome PNA blocking HTTP→loopback from HTTPS pages.
+ *  - From HTTP/file origins: HTTP first — Chrome Enterprise Policy
+ *    `InsecurePrivateNetworkRequestsAllowedForUrls` exempts HTTP→loopback. */
+function getLoopbackCandidates(): readonly string[] {
+  const isSecureOrigin = typeof window !== "undefined" && window.location.protocol === "https:";
+  return isSecureOrigin
+    ? [
+        "https://127.0.0.1:8765",
+        "https://localhost:8765",
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
+      ]
+    : [
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
+        "https://127.0.0.1:8765",
+        "https://localhost:8765",
+      ];
+}
 
 const WELL_KNOWN_PATH = "/.well-known/browse-host";
 
@@ -102,7 +114,7 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
 
   const reasons: ProbeAttempt[] = [];
 
-  for (const baseUrl of LOOPBACK_CANDIDATES) {
+  for (const baseUrl of getLoopbackCandidates()) {
     try {
       const url = `${baseUrl}${WELL_KNOWN_PATH}`;
       const response = await fetch(url, {

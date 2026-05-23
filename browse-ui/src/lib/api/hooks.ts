@@ -779,12 +779,28 @@ export function useOperatorRuns(sessionId: string, enabled = true, host: HostPro
     gcTime: CACHE_TIMES.sessionDetail,
     refetchOnMount: "always",
     enabled: enabled && Boolean(sessionId),
+    // Knowledge sessions (SQLite-backed CLI sessions) are not in the operator
+    // store, so this endpoint returns 404 for them. Don't retry on 404 — it
+    // won't resolve itself.
+    retry: (failureCount, error) => {
+      if (error instanceof Error && error.message.includes("404")) return false;
+      return failureCount < 3;
+    },
     queryFn: async (): Promise<OperatorRunsResponse> => {
-      const data = await hostFetch<OperatorRunsResponse>(
-        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/runs`),
-        host
-      );
-      return operatorRunsResponseSchema.parse(data);
+      try {
+        const data = await hostFetch<OperatorRunsResponse>(
+          withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/runs`),
+          host
+        );
+        return operatorRunsResponseSchema.parse(data);
+      } catch (err) {
+        // Knowledge sessions return 404 — treat as empty runs list so the
+        // debug-log tab shows an empty state rather than an error.
+        if (err instanceof Error && err.message.includes("404")) {
+          return { runs: [], count: 0 };
+        }
+        throw err;
+      }
     },
   });
 }
