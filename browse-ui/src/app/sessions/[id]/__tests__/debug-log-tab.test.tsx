@@ -29,6 +29,8 @@ vi.mock("lucide-react", async (importOriginal) => {
     Copy: () => <span data-testid="icon-copy" />,
     Check: () => <span data-testid="icon-check" />,
     Filter: () => <span data-testid="icon-filter" />,
+    Loader2: () => <span data-testid="icon-loader2" />,
+    Terminal: () => <span data-testid="icon-terminal" />,
   };
 });
 
@@ -395,6 +397,123 @@ describe("DebugLogTab – pagination", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     expect(screen.queryByRole("button", { name: /next/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /previous/i })).not.toBeInTheDocument();
+  });
+});
+
+// ── CLI-adoptable empty state (issue #xxx Debug Log UX) ───────────────────────
+
+describe("DebugLogTab – CLI-adoptable empty state", () => {
+  it("shows CLI-adoptable message when noRunEmptyState=cli-adoptable and runId is null", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="cli-adoptable" />
+    );
+    expect(screen.getByText(/no debug log entries yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/copilot cli/i)).toBeInTheDocument();
+  });
+
+  it("shows Adopt in Chat button in CLI-adoptable empty state", () => {
+    const onAdoptInChat = vi.fn();
+    render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId={null}
+        host={HOST}
+        noRunEmptyState="cli-adoptable"
+        onAdoptInChat={onAdoptInChat}
+      />
+    );
+    expect(screen.getByTestId("debug-log-adopt-btn")).toBeInTheDocument();
+  });
+
+  it("clicking Adopt in Chat button calls onAdoptInChat handler", () => {
+    const onAdoptInChat = vi.fn();
+    render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId={null}
+        host={HOST}
+        noRunEmptyState="cli-adoptable"
+        onAdoptInChat={onAdoptInChat}
+      />
+    );
+    fireEvent.click(screen.getByTestId("debug-log-adopt-btn"));
+    expect(onAdoptInChat).toHaveBeenCalledOnce();
+  });
+
+  it("Adopt in Chat button is disabled when adoptPending=true", () => {
+    render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId={null}
+        host={HOST}
+        noRunEmptyState="cli-adoptable"
+        onAdoptInChat={vi.fn()}
+        adoptPending
+      />
+    );
+    const btn = screen.getByTestId("debug-log-adopt-btn");
+    expect(btn).toBeDisabled();
+  });
+
+  it("shows loader icon when adoptPending=true", () => {
+    render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId={null}
+        host={HOST}
+        noRunEmptyState="cli-adoptable"
+        onAdoptInChat={vi.fn()}
+        adoptPending
+      />
+    );
+    expect(screen.getByTestId("icon-loader2")).toBeInTheDocument();
+  });
+
+  it("does not show generic 'No run available' in CLI-adoptable state", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="cli-adoptable" />
+    );
+    expect(screen.queryByText(/no run available/i)).not.toBeInTheDocument();
+  });
+});
+
+// ── Knowledge-only empty state ────────────────────────────────────────────────
+
+describe("DebugLogTab – knowledge-only empty state", () => {
+  it("shows knowledge-only message when noRunEmptyState=knowledge-only and runId is null", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="knowledge-only" />
+    );
+    expect(screen.getByText(/no debug log entries/i)).toBeInTheDocument();
+    expect(screen.getByText(/no operator runs/i)).toBeInTheDocument();
+  });
+
+  it("does not show Adopt in Chat button in knowledge-only state", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="knowledge-only" />
+    );
+    expect(screen.queryByTestId("debug-log-adopt-btn")).not.toBeInTheDocument();
+  });
+
+  it("does not show generic 'No run available' in knowledge-only state", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="knowledge-only" />
+    );
+    expect(screen.queryByText(/no run available/i)).not.toBeInTheDocument();
+  });
+});
+
+// ── Generic fallback (noRunEmptyState=null) ────────────────────────────────────
+
+describe("DebugLogTab – generic no-run fallback (noRunEmptyState=null)", () => {
+  it("still shows generic 'No run available' when noRunEmptyState is not provided", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.getByText(/no run available/i)).toBeInTheDocument();
+  });
+
+  it("still shows generic 'No run available' when noRunEmptyState=null explicitly", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState={null} />);
+    expect(screen.getByText(/no run available/i)).toBeInTheDocument();
   });
 });
 

@@ -98,8 +98,18 @@ vi.mock("./checkpoints-tab", () => ({
   CheckpointsTab: () => <div data-testid="checkpoints-tab">Checkpoints content</div>,
 }));
 vi.mock("./debug-log-tab", () => ({
-  DebugLogTab: ({ runsLoading }: { runsLoading?: boolean }) => (
-    <div data-testid="debug-log-tab" data-runs-loading={String(Boolean(runsLoading))}>
+  DebugLogTab: ({
+    runsLoading,
+    noRunEmptyState,
+  }: {
+    runsLoading?: boolean;
+    noRunEmptyState?: string | null;
+  }) => (
+    <div
+      data-testid="debug-log-tab"
+      data-runs-loading={String(Boolean(runsLoading))}
+      data-no-run-empty-state={noRunEmptyState ?? "null"}
+    >
       DebugLog content
     </div>
   ),
@@ -605,5 +615,91 @@ describe("SessionDetailClient — Adopt in Chat CTA", () => {
       expect(navigatedUrl).toContain("s=op-local-111");
       expect(navigatedUrl).not.toContain("h=");
     });
+  });
+});
+
+// ── DebugLogTab noRunEmptyState wiring (issue #518 + Debug Log UX) ────────────
+
+describe("SessionDetailClient — DebugLogTab noRunEmptyState wiring", () => {
+  beforeEach(() => {
+    replaceState.mockClear();
+    mockRouterPush.mockClear();
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    sessionsSupported = true;
+    cliAdoptSupported = true;
+    (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
+    (useOperatorRuns as Mock).mockImplementation(() => ({
+      data: { runs: [], count: 0 },
+      error: null,
+      isLoading: false,
+    }));
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: null,
+      isLoading: false,
+      isError: false,
+    }));
+    (useAdoptCliSession as Mock).mockImplementation(() => ({
+      mutate: vi.fn(),
+      isPending: false,
+    }));
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...window.location, hash: "", href: "http://localhost/sessions/test-session-123" },
+    });
+  });
+
+  it("passes noRunEmptyState=cli-adoptable when has_operator_runs=false and session is adoptable", () => {
+    cliAdoptSupported = true;
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: { cli_session_id: "cli-uuid-abc", title: "CLI session", mtime: "2024-01-01T00:00:00Z" },
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    const tab = screen.getByTestId("debug-log-tab");
+    expect(tab).toHaveAttribute("data-no-run-empty-state", "cli-adoptable");
+  });
+
+  it("passes noRunEmptyState=knowledge-only when has_operator_runs=false and session is not adoptable", () => {
+    cliAdoptSupported = false;
+    (useCliSession as Mock).mockImplementation(() => ({
+      data: null,
+      isLoading: false,
+      isError: false,
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    const tab = screen.getByTestId("debug-log-tab");
+    expect(tab).toHaveAttribute("data-no-run-empty-state", "knowledge-only");
+  });
+
+  it("passes noRunEmptyState=null when has_operator_runs=true", () => {
+    (useSessionDetail as Mock).mockImplementation(() => ({
+      ...defaultSessionDetail,
+      data: { ...defaultSessionDetail.data, has_operator_runs: true },
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    const tab = screen.getByTestId("debug-log-tab");
+    expect(tab).toHaveAttribute("data-no-run-empty-state", "null");
+  });
+
+  it("issue #518 guard: useOperatorRuns stays disabled on Debug Log for knowledge sessions (has_operator_runs=false)", () => {
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    // Must be called with enabled=false even on Debug Log tab.
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
+      LOCAL_HOST,
+    ]);
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Copy, Check, Filter } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, Filter, Loader2, Terminal } from "lucide-react";
 
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
@@ -42,6 +42,20 @@ const PAGE_SIZE = 100;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * Controls the empty state shown in the Debug Log tab when there is no
+ * operator run available for this session.
+ *
+ * - `"cli-adoptable"`: Session was started directly by Copilot CLI and can be
+ *   adopted into Chat to start an operator run. Shows an explanatory message
+ *   and an "Adopt in Chat" CTA.
+ * - `"knowledge-only"`: Session was imported / is knowledge-only with no
+ *   operator runs. Shows an explanatory message with no action.
+ * - `null`: Fall through to the generic "No run available" message (operator
+ *   session where the run hasn't been resolved yet, or other unknown state).
+ */
+export type DebugLogNoRunEmptyState = "cli-adoptable" | "knowledge-only" | null;
+
 export type DebugLogTabProps = {
   sessionId: string;
   /** Run ID to show debug log for. null/empty = show unavailable state. */
@@ -49,6 +63,15 @@ export type DebugLogTabProps = {
   /** True while the parent is resolving the latest operator run for this session. */
   runsLoading?: boolean;
   host: HostProfile;
+  /**
+   * Controls the contextual empty state when there is no operator run.
+   * See `DebugLogNoRunEmptyState` for the meaning of each value.
+   */
+  noRunEmptyState?: DebugLogNoRunEmptyState;
+  /** Called when the user clicks "Adopt in Chat" in the CLI-adoptable empty state. */
+  onAdoptInChat?: () => void;
+  /** True while an adopt mutation is in flight — disables the adopt button. */
+  adoptPending?: boolean;
 };
 
 type FilterState = {
@@ -614,7 +637,15 @@ function SpanTreeView({ entries, selectedEntry, onSelect }: SpanTreeViewProps) {
  *
  * When runId is null or empty the tab shows an informational empty state.
  */
-export function DebugLogTab({ sessionId, runId, runsLoading = false, host }: DebugLogTabProps) {
+export function DebugLogTab({
+  sessionId,
+  runId,
+  runsLoading = false,
+  host,
+  noRunEmptyState = null,
+  onAdoptInChat,
+  adoptPending = false,
+}: DebugLogTabProps) {
   const [filters, setFilters] = useState<FilterState>({
     text: "",
     kind: "",
@@ -662,6 +693,46 @@ export function DebugLogTab({ sessionId, runId, runsLoading = false, host }: Deb
 
   // ── No run available ───────────────────────────────────────────────────────
   if (!runId) {
+    // CLI-adoptable: session was started by Copilot CLI, no operator run exists yet.
+    if (noRunEmptyState === "cli-adoptable") {
+      return (
+        <EmptyState
+          icon={<Terminal className="size-5" />}
+          title="No debug log entries yet"
+          description="Debug logs are recorded per operator run. This session was started directly by Copilot CLI and has no operator run yet. Adopt it in Chat to start an operator run and capture future debug events."
+          actionNode={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onAdoptInChat}
+              disabled={adoptPending}
+              data-testid="debug-log-adopt-btn"
+            >
+              {adoptPending ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Terminal className="size-4" aria-hidden />
+              )}
+              Adopt in Chat
+            </Button>
+          }
+        />
+      );
+    }
+
+    // Knowledge-only: imported/knowledge session with no operator runs.
+    if (noRunEmptyState === "knowledge-only") {
+      return (
+        <EmptyState
+          title="No debug log entries"
+          description="Debug logs are recorded per operator run. This session has no operator runs and no debug events."
+        />
+      );
+    }
+
+    // Generic fallback (operator session where the run hasn't resolved yet,
+    // or any other edge case where noRunEmptyState is null).
     return (
       <EmptyState
         title="No run available"

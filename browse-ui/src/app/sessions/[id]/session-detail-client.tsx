@@ -136,6 +136,15 @@ export function SessionDetailClient() {
   const runsLoading = activeTab === "debug-log" && runsQuery.isLoading;
   // Use the latest run ID (last item in runs list). Gracefully null when no runs.
   const latestRunId = runsQuery.data?.runs[runsQuery.data.runs.length - 1]?.id ?? null;
+
+  // Determine the contextual empty state for the Debug Log tab when there is no
+  // operator run. Only relevant when has_operator_runs is false (knowledge/CLI sessions).
+  // When has_operator_runs is true, latestRunId will be populated once runsQuery loads.
+  const debugLogEmptyState = !hasOperatorRuns
+    ? isAdoptable
+      ? ("cli-adoptable" as const)
+      : ("knowledge-only" as const)
+    : null;
   const shortId = formatSessionIdBadgeText(sessionId);
   const exportFileName = `${sessionId || "session"}.md`;
 
@@ -392,6 +401,9 @@ export function SessionDetailClient() {
             runId={latestRunId}
             runsLoading={runsLoading}
             host={host}
+            noRunEmptyState={debugLogEmptyState}
+            onAdoptInChat={handleAdoptFromDetail}
+            adoptPending={adoptMutation.isPending}
           />
         </TabsContent>
       </Tabs>
