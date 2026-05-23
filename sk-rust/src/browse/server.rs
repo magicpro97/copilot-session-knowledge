@@ -38,6 +38,10 @@ pub struct ServerConfig {
     pub cors_origins: Vec<String>,
     /// Whether to trust `X-Forwarded-*` / `X-Forwarded-Ssl` proxy headers.
     pub trusted_proxy: bool,
+    /// Override path for the similarity cache JSON file.
+    /// `None` → falls back to `BROWSE_SIMILARITY_CACHE_PATH` env var or
+    /// `~/.copilot/session-state/embeddings_similarity_cache.json`.
+    pub similarity_cache_path: Option<std::path::PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -49,6 +53,7 @@ impl Default for ServerConfig {
             static_root: std::path::PathBuf::new(),
             cors_origins: Vec::new(),
             trusted_proxy: false,
+            similarity_cache_path: None,
         }
     }
 }
@@ -76,6 +81,9 @@ impl ServerConfig {
                 .unwrap_or_default(),
             cors_origins,
             trusted_proxy,
+            similarity_cache_path: std::env::var("BROWSE_SIMILARITY_CACHE_PATH")
+                .ok()
+                .map(std::path::PathBuf::from),
         }
     }
 }
@@ -145,6 +153,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/graph/communities",
             get(crate::browse::api::graph::communities_handler),
+        )
+        .route(
+            "/api/graph/similarity",
+            get(crate::browse::api::similarity::handler),
         )
         .route(
             "/api/graph/evidence",

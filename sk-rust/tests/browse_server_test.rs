@@ -58,6 +58,7 @@ fn open_config() -> Arc<ServerConfig> {
         static_root: std::path::PathBuf::new(),
         cors_origins: vec!["https://allowed.example".to_string()],
         trusted_proxy: false,
+        similarity_cache_path: None,
     })
 }
 

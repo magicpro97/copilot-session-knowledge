@@ -184,6 +184,27 @@ pub fn compute_neighbors(
     (neighbors_map, skipped_ids, computed_pairs)
 }
 
+/// Decode a little-endian f32 BLOB to `Vec<f64>`.
+///
+/// Returns an empty vec when `blob.len() / 4 < dims`, matching Python's
+/// `_decode_vector`: `if n < n_dims: return []`.
+pub fn decode_vector_le_f32(blob: &[u8], dims: usize) -> Vec<f64> {
+    if blob.len() / 4 < dims {
+        return vec![];
+    }
+    (0..dims)
+        .map(|i| {
+            let b = [
+                blob[i * 4],
+                blob[i * 4 + 1],
+                blob[i * 4 + 2],
+                blob[i * 4 + 3],
+            ];
+            f32::from_le_bytes(b) as f64
+        })
+        .collect()
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -359,5 +380,34 @@ mod tests {
         let (map, skipped, _) = compute_neighbors(&rows, &source_ids, 5, 100_000);
         assert!(map.is_empty());
         assert!(skipped.is_empty());
+    }
+
+    // ── decode_vector_le_f32 ───────────────────────────────────────────────────
+
+    #[test]
+    fn decode_vector_le_f32_basic() {
+        // 1.0f32 LE = [0x00,0x00,0x80,0x3f], 2.0f32 LE = [0x00,0x00,0x00,0x40]
+        let blob: Vec<u8> = [1.0f32, 2.0f32]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let v = decode_vector_le_f32(&blob, 2);
+        assert!((v[0] - 1.0).abs() < 1e-6);
+        assert!((v[1] - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decode_vector_le_f32_too_short_returns_empty() {
+        let blob = [0u8; 4]; // only 1 float
+        let v = decode_vector_le_f32(&blob, 2); // asks for 2 floats
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn decode_vector_le_f32_exact_length() {
+        let blob: Vec<u8> = [0.5f32].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let v = decode_vector_le_f32(&blob, 1);
+        assert_eq!(v.len(), 1);
+        assert!((v[0] - 0.5).abs() < 1e-6);
     }
 }
