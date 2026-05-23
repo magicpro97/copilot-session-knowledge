@@ -29,7 +29,7 @@
 //   # or via the package script:
 //   pnpm test:e2e:hosted
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
@@ -110,6 +110,27 @@ interface AppConsoleError {
   kind: "console" | "pageerror";
   message: string;
   timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Grant the Chrome Local Network Access (LNA) Web permission for a single
+ * origin.
+ *
+ * Modern Chromium (M123+) requires the `local-network-access` permission in
+ * addition to CORS `Access-Control-Allow-Private-Network: true` before a
+ * hosted HTTPS page may probe a loopback address.  In a real browser the user
+ * sees a one-time prompt; Playwright pre-grants it programmatically so the
+ * proof is not blocked by the permission denial.
+ *
+ * Scope: granted only for `origin` — never globally.  This helper intentionally
+ * lives only in hosted-proof.spec.ts so no other test project is affected.
+ */
+async function grantChromeLocalNetworkAccess(page: Page, origin: string): Promise<void> {
+  await page.context().grantPermissions(["local-network-access"], { origin });
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +238,15 @@ test.describe("Hosted-UI regression proof", () => {
     // -----------------------------------------------------------------------
     // Navigation
     // -----------------------------------------------------------------------
+
+    // Grant Chrome Local Network Access permission for the hosted origin
+    // before any navigation.  Without this, Chromium M123+ denies loopback
+    // probes from https://agents.linhngo.dev with:
+    //   "Permission was denied for this request to access the `loopback`
+    //    address space."
+    // This simulates the user accepting the one-time browser permission prompt.
+    // Scoped to HOSTED_ORIGIN only — does not affect other test projects.
+    await grantChromeLocalNetworkAccess(page, HOSTED_ORIGIN);
 
     await page.addInitScript((baseUrl) => {
       const profile = {
