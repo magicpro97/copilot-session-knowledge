@@ -1,7 +1,8 @@
 //! Integration tests for `GET /api/graph/similarity` (issue #452).
 //!
-//! All tests set `BROWSE_SIMILARITY_CACHE_PATH` to a tempfile path to avoid
-//! touching the real `~/.copilot/session-state/` directory.
+//! All tests inject `ServerConfig.similarity_cache_path` with a unique tempfile
+//! path to avoid touching the real `~/.copilot/session-state/` directory and to
+//! prevent env-var races between parallel test threads.
 
 #![cfg(feature = "browse-server")]
 
@@ -543,26 +544,15 @@ async fn python_parity_golden_scores() {
     );
 }
 
-/// Degraded mode: pair budget exceeded → `degraded=true`, `skipped_entry_ids` non-empty.
+/// Non-degraded meta shape with a small DB (pair budget far from exceeded).
 ///
-/// With 4 rows, pairs_per_source = 3. max_pairs = 3 allows only 1 source.
-/// Requesting 2 sources: 1 computed, 1 skipped → degraded=true.
+/// The `degraded=true` path requires exceeding `MAX_COMPUTE_PAIRS` (250 000), which
+/// cannot be forced from integration tests because the constant is not injectable.
+/// That path is covered by the algo unit tests in `browse_algo_test.rs`.
+/// This test verifies the non-degraded response shape: `degraded=false`,
+/// `skipped_entry_ids` is an empty array, and `computed_pairs` is a non-negative integer.
 #[tokio::test]
-async fn degraded_over_pair_budget() {
-    // 4 rows → pairs_per_source = 3
-    // MAX_COMPUTE_PAIRS would be too large; we bypass it by seeding exactly enough rows
-    // for the Python math: max_pairs=3 → allowed=max(1,3/3)=1.
-    // We cannot set max_pairs from the handler directly, but we can construct a case
-    // where the default 250_000 pairs budget is exceeded by having enough rows.
-    // Instead, test the algo layer: inject 250_001 fake rows to force degraded.
-    // But that's too many. Use a different approach:
-    // The handler uses MAX_COMPUTE_PAIRS=250_000 with pairs_per_source=(N-1).
-    // To force degraded we need N * requested_sources > 250_000.
-    // With N=251 rows and 2 requested sources: pairs_per_source=250, 250_000/250=1000 allowed.
-    // That won't work. Let's verify the algo is tested separately (it is in browse_algo_test.rs).
-    // For the integration test, just verify the meta fields are present and correct when not degraded.
-    // The degraded=true path requires manipulating MAX_COMPUTE_PAIRS which is a const.
-    // We verify non-degraded shape here; the algo unit test covers the degraded budget logic.
+async fn non_degraded_meta_shape_small_db() {
     let entries = vec![(1, "e1", "pattern"), (2, "e2", "mistake")];
     let embeds = vec![
         (1, 1i64, 2i64, vec![1.0f32, 0.0f32]),
