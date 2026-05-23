@@ -107,6 +107,10 @@ const baseTentacleData: TentacleStatusResponse = {
 beforeEach(() => {
   // Simulate local browse so diagnostics are enabled for existing tests
   window.history.pushState({}, "", "/v2/settings");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => new Promise(() => {}))
+  );
   localStorage.clear();
   hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
   diagnosticsSupported = true;
@@ -115,6 +119,10 @@ beforeEach(() => {
   mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
   mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
   mockedUseSkillMetrics.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSkillMetrics>);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 // Dynamic import to avoid issues with "use client" directive in test environment
@@ -385,7 +393,6 @@ describe("SettingsPage — Hosts & connections card", () => {
     await waitFor(() => {
       expect(screen.getByText("My Laptop")).toBeInTheDocument();
     });
-    vi.unstubAllGlobals();
   });
 
   it("shows Restore local button when a remote host is active", async () => {
@@ -401,7 +408,6 @@ describe("SettingsPage — Hosts & connections card", () => {
     await waitFor(() => {
       expect(screen.getByTestId("restore-local-btn")).toBeInTheDocument();
     });
-    vi.unstubAllGlobals();
   });
 });
 
@@ -445,7 +451,6 @@ describe("SettingsPage — mixed-content loopback guard", () => {
     // pna-note shown first (synchronous), then validation-error from probe failure
     await waitFor(() => expect(screen.getByTestId("pna-note")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
-    vi.unstubAllGlobals();
   });
 
   it("shows 'Save anyway' for a loopback URL after probe failure (pna-required is compatible: true)", async () => {
@@ -465,7 +470,6 @@ describe("SettingsPage — mixed-content loopback guard", () => {
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
     // pna-required is compatible: true, so probe fires and fails → "Save anyway" is shown
     expect(screen.getByTestId("skip-validation-btn")).toBeInTheDocument();
-    vi.unstubAllGlobals();
   });
 
   it("shows 'Open the local browse app directly' for the local host row on hosted pages", () => {
