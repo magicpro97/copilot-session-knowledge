@@ -1,6 +1,7 @@
 //! API route handlers for the browse HTTP server.
 
 pub mod compare;
+pub mod embeddings;
 pub mod graph;
 pub mod insights;
 pub mod live;

@@ -59,6 +59,7 @@ fn open_config() -> Arc<ServerConfig> {
         cors_origins: vec!["https://allowed.example".to_string()],
         trusted_proxy: false,
         similarity_cache_path: None,
+        embeddings_cache_path: None,
     })
 }
 

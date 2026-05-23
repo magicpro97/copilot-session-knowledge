@@ -42,6 +42,10 @@ pub struct ServerConfig {
     /// `None` → falls back to `BROWSE_SIMILARITY_CACHE_PATH` env var or
     /// `~/.copilot/session-state/embeddings_similarity_cache.json`.
     pub similarity_cache_path: Option<std::path::PathBuf>,
+    /// Override path for the 2-D embeddings projection cache JSON file.
+    /// `None` → falls back to `BROWSE_EMBEDDINGS_CACHE_PATH` env var or
+    /// `~/.copilot/session-state/embeddings_2d_cache.json`.
+    pub embeddings_cache_path: Option<std::path::PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -54,6 +58,7 @@ impl Default for ServerConfig {
             cors_origins: Vec::new(),
             trusted_proxy: false,
             similarity_cache_path: None,
+            embeddings_cache_path: None,
         }
     }
 }
@@ -82,6 +87,9 @@ impl ServerConfig {
             cors_origins,
             trusted_proxy,
             similarity_cache_path: std::env::var("BROWSE_SIMILARITY_CACHE_PATH")
+                .ok()
+                .map(std::path::PathBuf::from),
+            embeddings_cache_path: std::env::var("BROWSE_EMBEDDINGS_CACHE_PATH")
                 .ok()
                 .map(std::path::PathBuf::from),
         }
@@ -191,6 +199,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/knowledge/insights",
             get(crate::browse::api::insights::handle_knowledge_insights),
+        )
+        // ── Embeddings Projection API (issue #452 PR-3) ──────────────────
+        .route(
+            "/api/embeddings/points",
+            get(crate::browse::api::embeddings::handler),
         )
         .fallback(serve_static)
         .with_state(state.clone())
