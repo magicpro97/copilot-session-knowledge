@@ -1104,6 +1104,137 @@ impl BrowseDb {
             .collect();
         Ok(rows)
     }
+
+    /// Returns `true` when the `knowledge_entries` table exists in sqlite_master.
+    pub fn knowledge_entries_table_exists(&self) -> anyhow::Result<bool> {
+        let conn = self.read_pool.get()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='knowledge_entries'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Fetch knowledge relations for `GET /api/graph/evidence`.
+    ///
+    /// - Returns `Ok(vec![])` when `entry_ids` is empty.
+    /// - Returns `Ok(vec![])` when the `knowledge_relations` table is absent.
+    /// - Probes schema to determine `source`/`target` column names and whether
+    ///   `confidence` exists; only allowlisted column names are interpolated.
+    /// - Filters: both endpoints must be in `entry_ids`; optional
+    ///   `relation_types` IN filter; ordered `kr.id ASC LIMIT limit`.
+    ///
+    /// Returns `(source_id, target_id, relation_type, confidence)`.
+    pub fn list_knowledge_relations_for_evidence(
+        &self,
+        entry_ids: &[i64],
+        relation_types: &[String],
+        limit: i64,
+    ) -> anyhow::Result<Vec<(i64, i64, String, f64)>> {
+        if entry_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let conn = self.read_pool.get()?;
+
+        // Check table existence.
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='knowledge_relations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if table_exists == 0 {
+            return Ok(vec![]);
+        }
+
+        // Probe columns via pragma_table_info.
+        use std::collections::HashSet;
+        let columns: HashSet<String> = {
+            let mut stmt =
+                conn.prepare("SELECT name FROM pragma_table_info('knowledge_relations')")?;
+            let rows: HashSet<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+
+        // Determine allowlisted source/target column names.
+        let (source_col, target_col) =
+            if columns.contains("source_id") && columns.contains("target_id") {
+                ("source_id", "target_id")
+            } else if columns.contains("source_entry_id") && columns.contains("target_entry_id") {
+                ("source_entry_id", "target_entry_id")
+            } else {
+                return Ok(vec![]);
+            };
+
+        // confidence expression — allowlisted literal or column reference.
+        let confidence_expr = if columns.contains("confidence") {
+            "COALESCE(kr.confidence, 0.8)"
+        } else {
+            "0.8"
+        };
+
+        let entry_ph = entry_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        let rt_clause = if !relation_types.is_empty() {
+            let rt_ph = relation_types
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("AND kr.relation_type IN ({rt_ph}) ")
+        } else {
+            String::new()
+        };
+
+        // Only allowlisted identifiers are interpolated; all values are bound params.
+        let sql = format!(
+            "SELECT kr.{source_col}, kr.{target_col}, kr.relation_type, \
+                    {confidence_expr} AS confidence \
+             FROM knowledge_relations kr \
+             WHERE kr.{source_col} IN ({entry_ph}) \
+               AND kr.{target_col} IN ({entry_ph}) \
+             {rt_clause}\
+             ORDER BY kr.id ASC LIMIT ?"
+        );
+
+        // Build params: entry_ids twice, relation_type strings, limit.
+        use rusqlite::types::Value;
+        let mut params: Vec<Value> = Vec::new();
+        for &id in entry_ids {
+            params.push(Value::Integer(id));
+        }
+        for &id in entry_ids {
+            params.push(Value::Integer(id));
+        }
+        for rt in relation_types {
+            params.push(Value::Text(rt.clone()));
+        }
+        params.push(Value::Integer(limit));
+
+        let dyn_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(dyn_refs.as_slice(), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, f64>(3)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]

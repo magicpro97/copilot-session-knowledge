@@ -1,10 +1,12 @@
-//! `GET /api/graph` and `GET /api/graph/communities` handlers (issue #452).
+//! `GET /api/graph`, `GET /api/graph/communities`, and `GET /api/graph/evidence`
+//! handlers (issue #452).
 //!
 //! - `GET /api/graph` (PR-C): legacy entity-relation graph.  Returns
 //!   `{ nodes, edges, truncated }` mirroring `browse/routes/graph.py::_build_graph_data`.
 //! - `GET /api/graph/communities` (PR-B): community detection over entries.
+//! - `GET /api/graph/evidence` (PR-D): evidence graph backed by `knowledge_relations`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -369,4 +371,153 @@ pub async fn communities_handler(State(db): State<Arc<BrowseDb>>) -> Response {
                 .into_response()
         }
     }
+}
+
+// ── Evidence handler (PR-D) ───────────────────────────────────────────────────
+
+/// Query parameters accepted by `GET /api/graph/evidence`.
+#[derive(Debug, Deserialize, Default)]
+pub struct EvidenceParams {
+    /// Comma-separated wing filter values.
+    pub wing: Option<String>,
+    /// Comma-separated room filter values.
+    pub room: Option<String>,
+    /// Comma-separated category/kind filter values.
+    pub kind: Option<String>,
+    /// Comma-separated `relation_type` filter values.
+    pub relation_type: Option<String>,
+    /// Maximum entries to return (default 500, clamped 1-500).
+    pub limit: Option<String>,
+}
+
+/// `GET /api/graph/evidence` — evidence graph backed by `knowledge_relations`.
+///
+/// Mirrors `browse/routes/graph.py::handle_api_graph_evidence` and
+/// `_build_evidence_graph_data` exactly.
+pub async fn evidence_handler(
+    State(db): State<Arc<BrowseDb>>,
+    Query(params): Query<EvidenceParams>,
+) -> Response {
+    let wing_str = params.wing.unwrap_or_default();
+    let room_str = params.room.unwrap_or_default();
+    let kind_str = params.kind.unwrap_or_default();
+    let rt_str = params.relation_type.unwrap_or_default();
+    let limit_raw = params.limit.unwrap_or_default();
+
+    let limit: i64 = limit_raw.parse::<i64>().unwrap_or(500);
+    let limit = limit.clamp(1, 500);
+
+    let wings = csv_values(&wing_str);
+    let rooms = csv_values(&room_str);
+    let kinds = csv_values(&kind_str);
+    let relation_types = csv_values(&rt_str);
+
+    match tokio::task::spawn_blocking(move || {
+        build_evidence_graph_data(&db, wings, rooms, kinds, relation_types, limit)
+    })
+    .await
+    {
+        Ok(Ok(body)) => (StatusCode::OK, Json(body)).into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!("graph/evidence: db error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "db error"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("graph/evidence: spawn_blocking error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "internal error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Empty-payload sentinel returned when `knowledge_entries` table is absent.
+fn empty_evidence_payload() -> Value {
+    json!({
+        "nodes": [],
+        "edges": [],
+        "truncated": false,
+        "meta": {
+            "edge_source": "knowledge_relations",
+            "relation_types": [],
+        },
+    })
+}
+
+/// Build the `/api/graph/evidence` payload from the DB.
+///
+/// Mirrors Python `_build_evidence_graph_data`.
+fn build_evidence_graph_data(
+    db: &BrowseDb,
+    wings: Vec<String>,
+    rooms: Vec<String>,
+    kinds: Vec<String>,
+    relation_types: Vec<String>,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    // Guard: if knowledge_entries table absent return empty payload.
+    if !db.knowledge_entries_table_exists()? {
+        return Ok(empty_evidence_payload());
+    }
+
+    let entry_rows = db.list_knowledge_entries_for_graph(&wings, &rooms, &kinds, limit + 1)?;
+
+    let truncated = entry_rows.len() as i64 > limit;
+    let entry_rows: Vec<_> = entry_rows.into_iter().take(limit as usize).collect();
+
+    let mut nodes: Vec<Value> = Vec::with_capacity(entry_rows.len());
+    let mut entry_ids: Vec<i64> = Vec::with_capacity(entry_rows.len());
+
+    for (eid, raw_cat, raw_title, raw_wing, raw_room) in &entry_rows {
+        let cat = if raw_cat.is_empty() {
+            "unknown".to_string()
+        } else {
+            raw_cat.clone()
+        };
+        let label: String = raw_title.chars().take(80).collect();
+        entry_ids.push(*eid);
+        nodes.push(json!({
+            "id": format!("e-{eid}"),
+            "kind": "entry",
+            "label": label,
+            "wing": raw_wing,
+            "room": raw_room,
+            "category": cat,
+            "color": category_color(&cat),
+        }));
+    }
+
+    let rel_rows =
+        db.list_knowledge_relations_for_evidence(&entry_ids, &relation_types, limit * 4)?;
+
+    let mut relation_types_seen: BTreeSet<String> = BTreeSet::new();
+    let mut edges: Vec<Value> = Vec::new();
+
+    for (src_id, tgt_id, rel_type, confidence) in rel_rows {
+        relation_types_seen.insert(rel_type.clone());
+        edges.push(json!({
+            "source": format!("e-{src_id}"),
+            "target": format!("e-{tgt_id}"),
+            "relation_type": rel_type,
+            "confidence": confidence,
+        }));
+    }
+
+    let relation_types_list: Vec<&str> = relation_types_seen.iter().map(String::as_str).collect();
+
+    Ok(json!({
+        "nodes": nodes,
+        "edges": edges,
+        "truncated": truncated,
+        "meta": {
+            "edge_source": "knowledge_relations",
+            "relation_types": relation_types_list,
+        },
+    }))
 }
