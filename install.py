@@ -42,6 +42,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
@@ -1168,6 +1169,208 @@ def remove_windows_watch_task(quiet: bool = False) -> bool:
         return False
 
 
+
+
+# ---------------------------------------------------------------------------
+# Windows Task Scheduler — browse-backend auto-start
+# ---------------------------------------------------------------------------
+
+_WINDOWS_BROWSE_TASK_NAME = "CopilotBrowseBackend"
+
+
+def _windows_browse_task_exists() -> bool:
+    """Return True when the browse-backend scheduled task is registered."""
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", _WINDOWS_BROWSE_TASK_NAME, "/FO", "LIST"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _windows_browse_task_create_args() -> list[str]:
+    """Return the schtasks /Create arguments for browse-backend."""
+    python_bin = shutil.which("python3") or shutil.which("python") or sys.executable
+    task_run = (
+        f'"{python_bin}" -c "'
+        "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap'];"
+        'from browse import main; main()"'
+    )
+    return [
+        "schtasks",
+        "/Create",
+        "/F",
+        "/SC", "ONLOGON",
+        "/TN", _WINDOWS_BROWSE_TASK_NAME,
+        "/TR", task_run,
+        "/RL", "LIMITED",
+        "/DELAY", "0002:00",  # 2min delay after logon
+    ]
+
+
+def setup_windows_browse_task(dry_run: bool = False, quiet: bool = False) -> bool:
+    """Register browse-backend as a Windows Task Scheduler task (ONLOGON trigger).
+
+    Idempotent — /F overwrites if already present.
+    Returns True when a task was created/updated.
+    """
+    if os.name != "nt":
+        if not quiet:
+            print(f"  {INFO} Windows Task Scheduler setup skipped (not Windows)")
+        return False
+
+    create_args = _windows_browse_task_create_args()
+
+    if dry_run:
+        print(f"  [dry-run] Would register Windows Task Scheduler task: {_WINDOWS_BROWSE_TASK_NAME}")
+        return False
+
+    try:
+        result = subprocess.run(
+            create_args,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            if not quiet:
+                print(f"  {OK} Windows Task Scheduler task registered: {_WINDOWS_BROWSE_TASK_NAME}")
+                print(f"  {INFO} Browse backend starts at logon (2min delay, port 8765)")
+            return True
+        else:
+            stderr = (result.stderr or result.stdout).strip()
+            if not quiet:
+                print(f"  {WARN} schtasks /Create failed (exit {result.returncode}): {stderr[:200]}")
+            return False
+    except FileNotFoundError:
+        if not quiet:
+            print(f"  {WARN} schtasks not found — Windows Task Scheduler unavailable")
+        return False
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not register Task Scheduler task: {exc}")
+        return False
+
+
+def remove_windows_browse_task(quiet: bool = False) -> bool:
+    """Remove the browse-backend Windows Task Scheduler task if it exists."""
+    if os.name != "nt":
+        return False
+    if not _windows_browse_task_exists():
+        if not quiet:
+            print(f"  {INFO} Windows Task Scheduler task not present: {_WINDOWS_BROWSE_TASK_NAME}")
+        return False
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Delete", "/F", "/TN", _WINDOWS_BROWSE_TASK_NAME],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            if not quiet:
+                print(f"  {OK} Windows Task Scheduler task removed: {_WINDOWS_BROWSE_TASK_NAME}")
+            return True
+        else:
+            stderr = (result.stderr or result.stdout).strip()
+            if not quiet:
+                print(f"  {WARN} schtasks /Delete failed (exit {result.returncode}): {stderr[:200]}")
+            return False
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not remove Task Scheduler task: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Linux systemd — browse-backend auto-start
+# ---------------------------------------------------------------------------
+
+_LINUX_BROWSE_SERVICE_NAME = "copilot-browse-backend.service"
+
+
+def setup_linux_browse_service(dry_run: bool = False, quiet: bool = False) -> bool:
+    """Install a systemd user service for browse-backend on Linux.
+
+    Returns True when the service was created/enabled.
+    """
+    if platform.system() != "Linux":
+        return False
+
+    systemd_dir = Path.home() / ".config" / "systemd" / "user"
+    service_file = systemd_dir / _LINUX_BROWSE_SERVICE_NAME
+    python_bin = shutil.which("python3") or sys.executable
+    tools_dir = Path.home() / ".copilot" / "tools"
+
+    unit_content = f"""\
+[Unit]
+Description=Copilot Browse Backend (port 8765)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={tools_dir}
+ExecStart={python_bin} -c "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']; from browse import main; main()"
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:{Path.home()}/.copilot/session-state/.browse-backend.log
+StandardError=append:{Path.home()}/.copilot/session-state/.browse-backend.log
+
+[Install]
+WantedBy=default.target
+"""
+
+    if dry_run:
+        if not quiet:
+            print(f"  [dry-run] Would install systemd user service: {_LINUX_BROWSE_SERVICE_NAME}")
+        return False
+
+    try:
+        systemd_dir.mkdir(parents=True, exist_ok=True)
+        service_file.write_text(unit_content, encoding="utf-8")
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=15)
+        subprocess.run(["systemctl", "--user", "enable", _LINUX_BROWSE_SERVICE_NAME], capture_output=True, timeout=15)
+        subprocess.run(["systemctl", "--user", "start", _LINUX_BROWSE_SERVICE_NAME], capture_output=True, timeout=15)
+        if not quiet:
+            print(f"  {OK} systemd user service installed and started: {_LINUX_BROWSE_SERVICE_NAME}")
+        return True
+    except FileNotFoundError:
+        if not quiet:
+            print(f"  {INFO} systemctl not found — systemd service not available")
+        return False
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not install systemd service: {exc}")
+        return False
+
+
+def remove_linux_browse_service(quiet: bool = False) -> bool:
+    """Remove the browse-backend systemd user service if it exists."""
+    if platform.system() != "Linux":
+        return False
+    service_file = Path.home() / ".config" / "systemd" / "user" / _LINUX_BROWSE_SERVICE_NAME
+    if not service_file.is_file():
+        if not quiet:
+            print(f"  {INFO} systemd service not present: {_LINUX_BROWSE_SERVICE_NAME}")
+        return False
+    try:
+        subprocess.run(["systemctl", "--user", "stop", _LINUX_BROWSE_SERVICE_NAME], capture_output=True, timeout=15)
+        subprocess.run(["systemctl", "--user", "disable", _LINUX_BROWSE_SERVICE_NAME], capture_output=True, timeout=15)
+        service_file.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=15)
+        if not quiet:
+            print(f"  {OK} systemd service removed: {_LINUX_BROWSE_SERVICE_NAME}")
+        return True
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not remove systemd service: {exc}")
+        return False
+
+
 def _windows_path_entry_key(entry: str) -> str:
     """Normalize a Windows PATH entry for stable comparisons."""
     return entry.strip().rstrip("\\/").lower()
@@ -2265,6 +2468,10 @@ def _show_usage_hints():
         print(f"    python {inst} --setup-watch-task      # Register sk watch ONLOGON task (WBS-006)")
         print(f"    python {inst} --setup-watch-task --dry-run  # Preview without registering")
         print(f"    python {inst} --remove-watch-task     # Remove the scheduled task")
+    if os.name == "nt" or platform.system() == "Linux":
+        print("\n  Browse backend auto-start:")
+        print(f"    python {inst} --setup-browse-service  # Register browse backend auto-start")
+        print(f"    python {inst} --remove-browse-service # Remove browse backend auto-start")
     print("\n  Sync rollout note:")
     print("    sync-config.py --setup expects an HTTP(S) gateway URL (not raw Postgres/libSQL DSN)")
     print("    Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host)")
@@ -2802,6 +3009,32 @@ def main():
         if not quiet:
             print("\nRemoving Windows Task Scheduler task for sk watch...")
         remove_windows_watch_task(quiet=quiet)
+        return
+
+    if "--setup-browse-service" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nSetting up browse-backend auto-start service...")
+        if os.name == "nt":
+            setup_windows_browse_task(dry_run=dry_run, quiet=quiet)
+        elif platform.system() == "Linux":
+            setup_linux_browse_service(dry_run=dry_run, quiet=quiet)
+        elif platform.system() == "Darwin":
+            if not quiet:
+                print(f"  {INFO} macOS uses launchd — run: python launchd/install-launchd.py")
+        return
+
+    if "--remove-browse-service" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nRemoving browse-backend auto-start service...")
+        if os.name == "nt":
+            remove_windows_browse_task(quiet=quiet)
+        elif platform.system() == "Linux":
+            remove_linux_browse_service(quiet=quiet)
+        elif platform.system() == "Darwin":
+            if not quiet:
+                print(f"  {INFO} macOS uses launchd — run: python launchd/install-launchd.py --uninstall")
         return
 
     if "--install-binary" in args:

@@ -1855,6 +1855,7 @@ def restart_browse_backend():
     """Restart the browse backend service after browse/ files change.
 
     On macOS uses launchctl kickstart -k for the managed LaunchAgent.
+    On Linux uses systemctl --user restart for the systemd user service.
     Falls back to killing the old process and spawning a new one.
     """
     system = platform.system()
@@ -1870,6 +1871,20 @@ def restart_browse_backend():
             )
             ok("browse-backend restarted (launchd)")
             return
+
+    if system == "Linux":
+        service_file = Path.home() / ".config" / "systemd" / "user" / "copilot-browse-backend.service"
+        if service_file.exists():
+            r = subprocess.run(
+                ["systemctl", "--user", "restart", "copilot-browse-backend.service"],
+                capture_output=True,
+                timeout=15,
+            )
+            if r.returncode == 0:
+                ok("browse-backend restarted (systemd)")
+                return
+            else:
+                warn("systemd restart failed, falling back to manual restart")
 
     # Fallback: kill existing browse processes on port 8765 and start new one
     _restart_browse_manual()
