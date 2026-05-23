@@ -3,10 +3,10 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Mock } from "vitest";
-import type { BrowseDebugEntry, DebugLogResponse } from "@/lib/api/types";
+import type { BrowseDebugEntry, DebugLogResponse, SessionDebugLogResponse } from "@/lib/api/types";
 import { DebugLogTab } from "../debug-log-tab";
 
-// ── Mock useDebugLog ──────────────────────────────────────────────────────────
+// ── Mock useDebugLog and useSessionDebugLog ───────────────────────────────────
 
 vi.mock("@/lib/api/hooks", () => ({
   useDebugLog: vi.fn(() => ({
@@ -14,9 +14,21 @@ vi.mock("@/lib/api/hooks", () => ({
     error: null,
     isLoading: false,
   })),
+  useSessionDebugLog: vi.fn(() => ({
+    data: null,
+    error: null,
+    isLoading: false,
+  })),
 }));
 
-import { useDebugLog } from "@/lib/api/hooks";
+import { useDebugLog, useSessionDebugLog } from "@/lib/api/hooks";
+
+// Reset both mocks to their default no-data state before every test so that
+// mock state set inside individual `it` blocks does not leak to later tests.
+beforeEach(() => {
+  (useDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
+  (useSessionDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
+});
 
 // ── Mock lucide-react icons ───────────────────────────────────────────────────
 
@@ -81,17 +93,49 @@ function makeResponse(
   };
 }
 
+function makeSessionResponse(
+  entries: BrowseDebugEntry[],
+  overrides?: Partial<SessionDebugLogResponse>
+): SessionDebugLogResponse {
+  return {
+    schema_version: "1",
+    session_id: "sess-1",
+    from: 0,
+    limit: 100,
+    total: entries.length,
+    has_more: false,
+    entries,
+    ...overrides,
+  };
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("DebugLogTab – no run available", () => {
-  it("shows 'No run available' when runId is null", () => {
+describe("DebugLogTab – no run available (session-scoped path)", () => {
+  it("shows 'No debug events found' when runId is null and session API has no data", () => {
     render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
-    expect(screen.getByText(/no run available/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
   });
 
-  it("shows 'No run available' when runId is empty string", () => {
+  it("shows 'No debug events found' when runId is empty string", () => {
     render(<DebugLogTab sessionId="sess-1" runId="" host={HOST} />);
-    expect(screen.getByText(/no run available/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
+  });
+
+  it("useSessionDebugLog is called with enabled=true when runId is null", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect((useSessionDebugLog as Mock).mock.calls.at(-1)?.[2]).toBe(true);
+  });
+
+  it("useSessionDebugLog is called with enabled=false when runId is provided (operator path)", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect((useSessionDebugLog as Mock).mock.calls.at(-1)?.[2]).toBe(false);
+  });
+
+  it("useDebugLog is called with enabled=false when runId is null (session path)", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    // operatorQuery enabled = hasRunId && Boolean(sessionId) = false
+    expect((useDebugLog as Mock).mock.calls.at(-1)?.[3]).toBe(false);
   });
 });
 
@@ -108,7 +152,13 @@ describe("DebugLogTab – loading state", () => {
   it("renders loading message while resolving the latest operator run", () => {
     render(<DebugLogTab sessionId="sess-1" runId={null} runsLoading host={HOST} />);
     expect(screen.getByText(/loading debug log/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no run available/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no debug events found/i)).not.toBeInTheDocument();
+  });
+
+  it("renders loading message for session-scoped path when runId is null", () => {
+    (useSessionDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: true });
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.getByText(/loading debug log/i)).toBeInTheDocument();
   });
 });
 
@@ -400,18 +450,18 @@ describe("DebugLogTab – pagination", () => {
   });
 });
 
-// ── CLI-adoptable empty state (issue #xxx Debug Log UX) ───────────────────────
+// ── CLI-adoptable empty state (session path — secondary CTA only) ─────────────
 
 describe("DebugLogTab – CLI-adoptable empty state", () => {
-  it("shows CLI-adoptable message when noRunEmptyState=cli-adoptable and runId is null", () => {
+  it("shows 'No debug events found' when noRunEmptyState=cli-adoptable and runId is null", () => {
     render(
       <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="cli-adoptable" />
     );
-    expect(screen.getByText(/no debug log entries yet/i)).toBeInTheDocument();
-    expect(screen.getByText(/copilot cli/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events were recorded/i)).toBeInTheDocument();
   });
 
-  it("shows Adopt in Chat button in CLI-adoptable empty state", () => {
+  it("shows Adopt in Chat button as secondary CTA in CLI-adoptable empty state", () => {
     const onAdoptInChat = vi.fn();
     render(
       <DebugLogTab
@@ -469,6 +519,22 @@ describe("DebugLogTab – CLI-adoptable empty state", () => {
     expect(screen.getByTestId("icon-loader2")).toBeInTheDocument();
   });
 
+  it("does not block debug display on adoption — entries are shown when session API has data", () => {
+    const entry = makeEntry({ idx: 0, message: "CLI session event" });
+    (useSessionDebugLog as Mock).mockReturnValue({
+      data: makeSessionResponse([entry]),
+      error: null,
+      isLoading: false,
+    });
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="cli-adoptable" />
+    );
+    // Entries are shown — no adoption required to see them
+    expect(screen.getByText("CLI session event")).toBeInTheDocument();
+    // No Adopt button when there are entries
+    expect(screen.queryByTestId("debug-log-adopt-btn")).not.toBeInTheDocument();
+  });
+
   it("does not show generic 'No run available' in CLI-adoptable state", () => {
     render(
       <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="cli-adoptable" />
@@ -480,12 +546,12 @@ describe("DebugLogTab – CLI-adoptable empty state", () => {
 // ── Knowledge-only empty state ────────────────────────────────────────────────
 
 describe("DebugLogTab – knowledge-only empty state", () => {
-  it("shows knowledge-only message when noRunEmptyState=knowledge-only and runId is null", () => {
+  it("shows 'No debug events found' when noRunEmptyState=knowledge-only and runId is null", () => {
     render(
       <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="knowledge-only" />
     );
-    expect(screen.getByText(/no debug log entries/i)).toBeInTheDocument();
-    expect(screen.getByText(/no operator runs/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events were recorded/i)).toBeInTheDocument();
   });
 
   it("does not show Adopt in Chat button in knowledge-only state", () => {
@@ -506,14 +572,96 @@ describe("DebugLogTab – knowledge-only empty state", () => {
 // ── Generic fallback (noRunEmptyState=null) ────────────────────────────────────
 
 describe("DebugLogTab – generic no-run fallback (noRunEmptyState=null)", () => {
-  it("still shows generic 'No run available' when noRunEmptyState is not provided", () => {
+  it("shows 'No debug events found' when noRunEmptyState is not provided", () => {
     render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
-    expect(screen.getByText(/no run available/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
   });
 
-  it("still shows generic 'No run available' when noRunEmptyState=null explicitly", () => {
+  it("shows 'No debug events found' when noRunEmptyState=null explicitly", () => {
     render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState={null} />);
-    expect(screen.getByText(/no run available/i)).toBeInTheDocument();
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
+  });
+
+  it("does not show Adopt in Chat button when noRunEmptyState=null", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState={null} />);
+    expect(screen.queryByTestId("debug-log-adopt-btn")).not.toBeInTheDocument();
+  });
+});
+
+// ── Session-scoped path — entries render when no run exists ──────────────────
+
+describe("DebugLogTab – session-scoped entries (no operator run)", () => {
+  const sessionEntries = [
+    makeEntry({
+      idx: 0,
+      kind: "session_start",
+      message: "Session started via CLI",
+      tool_name: null,
+    }),
+    makeEntry({ idx: 1, kind: "tool_call", message: "Tool invocation", tool_name: "bash" }),
+  ];
+
+  beforeEach(() => {
+    (useSessionDebugLog as Mock).mockReturnValue({
+      data: makeSessionResponse(sessionEntries),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("renders event table entries when session API returns data and runId is null", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.getByText("Session started via CLI")).toBeInTheDocument();
+    expect(screen.getByText("Tool invocation")).toBeInTheDocument();
+  });
+
+  it("renders the correct number of rows from session API", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    const table = screen.getByRole("grid", { name: /debug log events/i });
+    // Each entry produces a row with aria-label starting "Debug event"
+    const labelledRows = within(table)
+      .getAllByRole("row")
+      .filter((r) => r.getAttribute("aria-label")?.startsWith("Debug event"));
+    expect(labelledRows).toHaveLength(2);
+  });
+
+  it("does not show empty state when session API has entries", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.queryByText(/no debug events found/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no run available/i)).not.toBeInTheDocument();
+  });
+
+  it("does not show Adopt in Chat button when entries exist (even for cli-adoptable)", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} host={HOST} noRunEmptyState="cli-adoptable" />
+    );
+    expect(screen.queryByTestId("debug-log-adopt-btn")).not.toBeInTheDocument();
+  });
+});
+
+// ── Session-scoped path — error treated as empty (graceful fallback) ──────────
+
+describe("DebugLogTab – session-scoped error fallback", () => {
+  it("shows 'No debug events found' on session API error (no error banner)", () => {
+    (useSessionDebugLog as Mock).mockReturnValue({
+      data: null,
+      error: new Error("API 404: not found"),
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.getByText(/no debug events found/i)).toBeInTheDocument();
+    expect(screen.queryByText(/failed to load debug log/i)).not.toBeInTheDocument();
+  });
+
+  it("shows error banner for operator path errors (runId present)", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: null,
+      error: new Error("Network error"),
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByText(/failed to load debug log/i)).toBeInTheDocument();
+    expect(screen.getByText(/network error/i)).toBeInTheDocument();
   });
 });
 

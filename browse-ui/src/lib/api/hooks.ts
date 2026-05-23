@@ -46,6 +46,7 @@ import {
   updateOperatorSessionRequestSchema,
   operatorModelCatalogResponseSchema,
   debugLogResponseSchema,
+  sessionDebugLogResponseSchema,
   cliSessionListResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
@@ -93,6 +94,7 @@ import type {
   OperatorModelCatalogResponse,
   DebugLogResponse,
   DebugLogParams,
+  SessionDebugLogResponse,
   CliSession,
   CliSessionListResponse,
   AdoptCliSessionRequest,
@@ -185,6 +187,8 @@ export const queryKeys = {
     params: DebugLogParams = {},
     hostId = LOCAL_HOST_ID
   ) => ["debug-log", hostId, sessionId, runId, params] as const,
+  sessionDebugLog: (sessionId: string, params: DebugLogParams = {}, hostId = LOCAL_HOST_ID) =>
+    ["session-debug-log", hostId, sessionId, params] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1133,6 +1137,42 @@ export function useDebugLog(
       );
       const data = await hostFetch<DebugLogResponse>(path, host);
       return debugLogResponseSchema.parse(data);
+    },
+  });
+}
+
+// ── Session-Scoped Debug Log (/api/session/{sid}/debug-log) ───────────────
+
+/**
+ * Query hook for the session-scoped debug log.
+ *
+ * Fetches GET /api/session/{sessionId}/debug-log with optional filter params
+ * (from, limit, kind, level). Used when there is no operator run (i.e. the
+ * session is a CLI/knowledge session with has_operator_runs=false).
+ *
+ * Returns React Query result with typed SessionDebugLogResponse.
+ */
+export function useSessionDebugLog(
+  sessionId: string,
+  params: DebugLogParams = {},
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.sessionDebugLog(sessionId, params, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<SessionDebugLogResponse> => {
+      const qs = createQueryString({
+        from: params.from,
+        limit: params.limit,
+        kind: params.kind,
+        level: params.level,
+      });
+      const path = withLeadingSlash(`/api/session/${encodeURIComponent(sessionId)}/debug-log${qs}`);
+      const data = await hostFetch<SessionDebugLogResponse>(path, host);
+      return sessionDebugLogResponseSchema.parse(data);
     },
   });
 }

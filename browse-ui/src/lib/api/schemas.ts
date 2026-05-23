@@ -1161,6 +1161,20 @@ export const debugLogResponseSchema = z.object({
   events: z.array(browseDebugEntrySchema),
 });
 
+/**
+ * HTTP response envelope for GET /api/session/{sid}/debug-log.
+ * Session-scoped debug log — not tied to any operator run.
+ */
+export const sessionDebugLogResponseSchema = z.object({
+  schema_version: z.string(),
+  session_id: z.string(),
+  from: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  total: z.number().int().nonnegative(),
+  has_more: z.boolean(),
+  entries: z.array(browseDebugEntrySchema),
+});
+
 // ── Host Profiles (client-side multi-host support) ─────────────────────
 
 /** Permissive CLI family schema — any non-empty string is accepted. */

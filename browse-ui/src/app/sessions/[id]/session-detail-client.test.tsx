@@ -99,14 +99,17 @@ vi.mock("./checkpoints-tab", () => ({
 }));
 vi.mock("./debug-log-tab", () => ({
   DebugLogTab: ({
+    sessionId,
     runsLoading,
     noRunEmptyState,
   }: {
+    sessionId?: string;
     runsLoading?: boolean;
     noRunEmptyState?: string | null;
   }) => (
     <div
       data-testid="debug-log-tab"
+      data-session-id={sessionId ?? ""}
       data-runs-loading={String(Boolean(runsLoading))}
       data-no-run-empty-state={noRunEmptyState ?? "null"}
     >
@@ -701,5 +704,12 @@ describe("SessionDetailClient — DebugLogTab noRunEmptyState wiring", () => {
       false,
       LOCAL_HOST,
     ]);
+  });
+
+  it("passes sessionId to DebugLogTab when on Debug Log tab", () => {
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+    const tab = screen.getByTestId("debug-log-tab");
+    expect(tab).toHaveAttribute("data-session-id", "test-session-123");
   });
 });

@@ -1291,6 +1291,20 @@ export interface DebugLogParams {
 }
 
 /**
+ * HTTP response envelope for GET /api/session/{sid}/debug-log.
+ * Session-scoped debug log — not tied to any operator run.
+ */
+export interface SessionDebugLogResponse {
+  schema_version: string;
+  session_id: string;
+  from: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+  entries: BrowseDebugEntry[];
+}
+
+/**
  * Runtime capabilities contract returned by `GET /api/operator/capabilities`.
  * Describes what the connected CLI server supports so the UI can adapt.
  *

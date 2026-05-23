@@ -188,6 +188,8 @@ GET  /api/operator/preview                   → file preview under ~/
 GET  /api/operator/diff                      → unified diff for two files under ~/
 GET  /api/operator/cli-sessions              → list real CLI sessions (Bearer/cookie; debug=True; read-only)
 GET  /api/operator/cli-sessions/{id}         → single CLI session by UUID (Bearer/cookie; debug=True; read-only)
+GET  /api/session/{id}/debug-log             → paginated session-scoped debug log (Bearer/cookie; debug=True; read-only)
+GET  /api/sessions/{id}/debug-log            → plural alias for the route above
 ```
 
 ### Guardrails

@@ -90,5 +90,5 @@ WBS-102 (redaction policy)  ────┼──> WBS-103 (backend GET route)
 |---|---|---|---|
 | WBS-101 | #426 | Define Agent Debug Log browse contract and schema fixtures | Done in this PR |
 | WBS-102 | #427 | Define debug log security and redaction policy | Placeholder reserved in `docs/DEBUG-LOG-CONTRACT.md` |
-| WBS-103 | #428 | Implement `GET /api/session/{id}/debug-log` backend route | Blocked on WBS-101 |
+| WBS-103 | #428 | Implement `GET /api/session/{id}/debug-log` backend route | **Done** — `browse/routes/debug_log.py`; tests in `tests/test_browse_cli_session_debug_log.py` |
 | WBS-104–110 | #429–435 | UI, schemas, SSE, integration, perf, CI | Blocked on WBS-101+103 |

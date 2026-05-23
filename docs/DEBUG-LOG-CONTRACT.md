@@ -357,9 +357,10 @@ No CSP loosening is applied for debug routes.
 
 The following are explicitly **out of scope** for the current debug-log contract:
 
-1. Session-scoped debug-log read/query API (`GET /api/session/{id}/debug-log`) — future work.
-   WBS-104 implements the operator-run read endpoint below.
-2. Frontend UI panel or event row renderer — future work.
+1. ~~Session-scoped debug-log read/query API (`GET /api/session/{id}/debug-log`) — future work.~~
+   **Implemented (WBS-428).** See [WBS-428 Session-Scoped Debug-Log Route](#wbs-428-session-scoped-debug-log-route) below.
+2. ~~Frontend UI panel or event row renderer — future work.~~
+   **Implemented (WBS-428).** Session debug-log tab and `useSessionDebugLog` hook are live in `browse-ui/`.
 3. TypeScript / Zod schema implementation — WBS-106.
 4. SSE streaming of debug log events — WBS-107.
 5. Redaction engine implementation — WBS-102.
@@ -739,6 +740,51 @@ and `_MAX_OUTPUT_LINES` are **unaffected**.
 
 ---
 
+## WBS-428 Session-Scoped Debug-Log Route
+
+### Endpoints
+
+```
+GET /api/session/{id}/debug-log
+GET /api/sessions/{id}/debug-log   (plural alias)
+```
+
+Both routes are authenticated (Bearer/cookie; `debug=True`). Query-string token access (`?token=`) is rejected.
+
+### Response Shape
+
+```json
+{
+  "schema_version": "1",
+  "session_id": "<uuid4>",
+  "from": 0,
+  "limit": 100,
+  "total": 42,
+  "has_more": false,
+  "entries": [/* BrowseDebugEntry[] */]
+}
+```
+
+Pagination parameters: `from` (int, ≥ 0, default 0) and `limit` (int, 1–100, default 100).
+Optional filters: `kind`, `level`, `since` (ISO-8601).
+
+### Security
+
+- Session ID validated against strict lowercase UUID4 before any path is constructed; invalid/unknown sessions return a uniform 404 without leaking the supplied value.
+- Path stays within `~/.copilot/session-state/` (verified via `Path.resolve()`).
+- `events.jsonl` is streamed line-by-line; symlinks are not followed.
+- All entries pass through `browse.core.redaction.redact_entry` before return.
+
+### Canonical Implementation References
+
+- **`browse/routes/debug_log.py`** — route handlers (`handle_session_debug_log`) for both paths.
+- **`tests/test_browse_cli_session_debug_log.py`** — backend unit tests.
+- **`browse-ui/src/lib/api/schemas.ts`** — `sessionDebugLogResponseSchema` (Zod).
+- **`browse-ui/src/lib/api/types.ts`** — `SessionDebugLogResponse` (TypeScript interface).
+- **`browse-ui/src/app/sessions/[id]/debug-log-tab.tsx`** — frontend panel (`useSessionDebugLog` hook, session-scoped tab path).
+
+---
+
 ## Acceptance Evidence Commands
 
 ```bash
@@ -830,6 +876,10 @@ The canonical implementation references are:
 - **`sk-rust/src/browse/importers/`** — native Rust parser parity port for VS Code
   Agent Debug Log and OTel `ReadableSpan` inputs (issue #455; no DB persistence
   or CLI entry point yet).
+
+- **`browse/routes/debug_log.py`** — `GET /api/session/{id}/debug-log` and `GET /api/sessions/{id}/debug-log`
+  session-scoped read endpoint (WBS-428).  Response shape: `{schema_version, session_id, from, limit, total, has_more, entries[]}`.
+- **`tests/test_browse_cli_session_debug_log.py`** — backend unit tests for the WBS-428 route.
 
 For the commit hash, run `git log --oneline -1` in the repo root after the WBS-110 merge commit
 lands.

@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useDebugLog } from "@/lib/api/hooks";
+import { useDebugLog, useSessionDebugLog } from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
 import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
 
@@ -624,7 +624,8 @@ function SpanTreeView({ entries, selectedEntry, onSelect }: SpanTreeViewProps) {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 /**
- * Debug Log tab — shows debug log entries for an operator session run.
+ * Debug Log tab — shows debug log entries for an operator session run, or for
+ * a CLI/knowledge session via the session-scoped API when no operator run exists.
  *
  * Follows the same pattern as timeline-tab.tsx:
  * 1. useQuery → loading / error / empty / success states
@@ -635,7 +636,10 @@ function SpanTreeView({ entries, selectedEntry, onSelect }: SpanTreeViewProps) {
  * Server-side pagination: fetches PAGE_SIZE events at a time.
  * For 1000+ events, the user pages through via Previous / Next controls.
  *
- * When runId is null or empty the tab shows an informational empty state.
+ * When runId is non-null: uses the operator run path (useDebugLog) — unchanged.
+ * When runId is null: uses the session-scoped path (useSessionDebugLog) for
+ * CLI/knowledge sessions; zero entries or API error shows a contextual empty
+ * state instead of blocking on adoption.
  */
 export function DebugLogTab({
   sessionId,
@@ -656,7 +660,7 @@ export function DebugLogTab({
   const [selectedEntry, setSelectedEntry] = useState<BrowseDebugEntry | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "tree">("list");
 
-  const isEnabled = Boolean(sessionId) && Boolean(runId);
+  const hasRunId = Boolean(runId);
 
   // Server-side pagination: fetch PAGE_SIZE events at a time.
   const fetchParams: DebugLogParams = {
@@ -664,13 +668,45 @@ export function DebugLogTab({
     limit: PAGE_SIZE,
   };
 
-  const query = useDebugLog(sessionId, runId ?? "", fetchParams, isEnabled, host);
+  // Operator run path — only active when runId is present.
+  const operatorQuery = useDebugLog(
+    sessionId,
+    runId ?? "",
+    fetchParams,
+    hasRunId && Boolean(sessionId),
+    host
+  );
+
+  // Session-scoped path — used when there is no operator run.
+  const sessionQuery = useSessionDebugLog(
+    sessionId,
+    fetchParams,
+    !hasRunId && Boolean(sessionId),
+    host
+  );
+
+  // Unified display data from whichever path is active.
+  const normalizedData = hasRunId
+    ? operatorQuery.data
+      ? {
+          events: operatorQuery.data.events,
+          total: operatorQuery.data.total,
+          has_more: operatorQuery.data.has_more,
+        }
+      : null
+    : sessionQuery.data
+      ? {
+          events: sessionQuery.data.entries,
+          total: sessionQuery.data.total,
+          has_more: page * PAGE_SIZE + sessionQuery.data.entries.length < sessionQuery.data.total,
+        }
+      : null;
 
   // Apply client-side filters (text, kind, level, status) — AND composition.
-  const filteredEvents = query.data?.events ? applyFilters(query.data.events, filters) : [];
+  const filteredEvents = normalizedData?.events ? applyFilters(normalizedData.events, filters) : [];
 
   // Show tree toggle only when any raw event has a span_id.
-  const hasSpanIds = Boolean(query.data?.events.some((e) => e.span_id !== null));
+  const hasSpanIds = Boolean(normalizedData?.events.some((e) => e.span_id !== null));
 
   const handleSelect = (entry: BrowseDebugEntry) => {
     setSelectedEntry((prev) => (prev?.idx === entry.idx ? null : entry));
@@ -691,58 +727,9 @@ export function DebugLogTab({
     );
   }
 
-  // ── No run available ───────────────────────────────────────────────────────
-  if (!runId) {
-    // CLI-adoptable: session was started by Copilot CLI, no operator run exists yet.
-    if (noRunEmptyState === "cli-adoptable") {
-      return (
-        <EmptyState
-          icon={<Terminal className="size-5" />}
-          title="No debug log entries yet"
-          description="Debug logs are recorded per operator run. This session was started directly by Copilot CLI and has no operator run yet. Adopt it in Chat to start an operator run and capture future debug events."
-          actionNode={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onAdoptInChat}
-              disabled={adoptPending}
-              data-testid="debug-log-adopt-btn"
-            >
-              {adoptPending ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
-                <Terminal className="size-4" aria-hidden />
-              )}
-              Adopt in Chat
-            </Button>
-          }
-        />
-      );
-    }
-
-    // Knowledge-only: imported/knowledge session with no operator runs.
-    if (noRunEmptyState === "knowledge-only") {
-      return (
-        <EmptyState
-          title="No debug log entries"
-          description="Debug logs are recorded per operator run. This session has no operator runs and no debug events."
-        />
-      );
-    }
-
-    // Generic fallback (operator session where the run hasn't resolved yet,
-    // or any other edge case where noRunEmptyState is null).
-    return (
-      <EmptyState
-        title="No run available"
-        description="No operator run was found for this session. Debug log entries are recorded per run."
-      />
-    );
-  }
-
-  // ── Loading state ──────────────────────────────────────────────────────────
-  if (query.isLoading) {
+  // ── Loading state (either path) ────────────────────────────────────────────
+  const isQueryLoading = hasRunId ? operatorQuery.isLoading : sessionQuery.isLoading;
+  if (isQueryLoading) {
     return (
       <div className="border-border text-muted-foreground rounded-xl border p-4 text-sm">
         Loading debug log…
@@ -750,19 +737,52 @@ export function DebugLogTab({
     );
   }
 
-  // ── Error state ────────────────────────────────────────────────────────────
-  if (query.error) {
+  // ── Error state (operator path only — session path falls through to empty) ──
+  if (hasRunId && operatorQuery.error) {
     return (
       <Banner
         tone="danger"
         title="Failed to load debug log"
-        description={query.error instanceof Error ? query.error.message : "Unknown error"}
+        description={
+          operatorQuery.error instanceof Error ? operatorQuery.error.message : "Unknown error"
+        }
       />
     );
   }
 
   // ── Empty state ────────────────────────────────────────────────────────────
-  if (!query.data || query.data.events.length === 0) {
+  if (!normalizedData || normalizedData.events.length === 0) {
+    if (!hasRunId) {
+      // Session-scoped path: no entries recorded (or session API unavailable).
+      // Do not block debug display on adoption; Adopt in Chat is a secondary CTA.
+      return (
+        <EmptyState
+          icon={<Terminal className="size-5" />}
+          title="No debug events found"
+          description="No debug events were recorded for this CLI session."
+          actionNode={
+            noRunEmptyState === "cli-adoptable" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onAdoptInChat}
+                disabled={adoptPending}
+                data-testid="debug-log-adopt-btn"
+              >
+                {adoptPending ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Terminal className="size-4" aria-hidden />
+                )}
+                Adopt in Chat
+              </Button>
+            ) : undefined
+          }
+        />
+      );
+    }
+    // Operator path: empty.
     return (
       <EmptyState
         title="No debug log entries"
@@ -771,7 +791,7 @@ export function DebugLogTab({
     );
   }
 
-  const { total, has_more } = query.data;
+  const { total, has_more } = normalizedData;
 
   return (
     <div className="space-y-3">
@@ -780,7 +800,7 @@ export function DebugLogTab({
         filters={filters}
         onChange={handleFilterChange}
         resultCount={filteredEvents.length}
-        totalCount={query.data.events.length}
+        totalCount={normalizedData.events.length}
       />
 
       {/* View mode toggle — only shown when the dataset has span_ids */}
@@ -876,8 +896,8 @@ export function DebugLogTab({
       {(page > 0 || has_more) && (
         <div className="flex items-center justify-between">
           <p className="text-muted-foreground text-xs">
-            Showing {page * PAGE_SIZE + 1}–{page * PAGE_SIZE + query.data.events.length} of {total}{" "}
-            total events
+            Showing {page * PAGE_SIZE + 1}–{page * PAGE_SIZE + normalizedData.events.length} of{" "}
+            {total} total events
           </p>
           <div className="flex gap-2">
             {page > 0 && (
