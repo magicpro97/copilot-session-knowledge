@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, CheckCircle2, Moon, Monitor, Sun } from "lucid
 import { useTheme } from "next-themes";
 
 import { Banner } from "@/components/data/banner";
+import { BuildIdentity } from "@/components/ui/build-identity";
 import { DensityToggle } from "@/components/layout/density-toggle";
 import { PaletteToggle } from "@/components/layout/palette-toggle";
 import { HostManagement } from "@/components/hosts/host-management";
@@ -1031,6 +1032,19 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           <HostManagement data-testid="host-management" />
+        </CardContent>
+      </Card>
+
+      <Card id="build-identity">
+        <CardHeader>
+          <CardTitle>Build identity</CardTitle>
+          <CardDescription>
+            Hosted deployment SHA and build timestamp from <code>/version.json</code>. Reloads from
+            the server on every page visit (no-store).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <BuildIdentity />
         </CardContent>
       </Card>
 
