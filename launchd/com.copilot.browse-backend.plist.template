@@ -10,7 +10,7 @@
         <string>__PYTHON3__</string>
         <string>-c</string>
         <string>
-import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']
+import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap','--debug-log']
 from browse import main; main()
 </string>
     </array>

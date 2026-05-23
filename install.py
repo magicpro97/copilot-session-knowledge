@@ -1195,7 +1195,7 @@ def _windows_browse_task_create_args() -> list[str]:
     python_bin = shutil.which("python3") or shutil.which("python") or sys.executable
     task_run = (
         f'"{python_bin}" -c "'
-        "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap'];"
+        "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap','--debug-log'];"
         'from browse import main; main()"'
     )
     return [
@@ -1317,7 +1317,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={tools_dir}
-ExecStart={python_bin} -c "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']; from browse import main; main()"
+ExecStart={python_bin} -c "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap','--debug-log']; from browse import main; main()"
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:{Path.home()}/.copilot/session-state/.browse-backend.log

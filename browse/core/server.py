@@ -248,9 +248,13 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             _dbg_valid, _dbg_token_val = check_debug_token(self.token, _dbg_cookie, _dbg_auth_hdr)
 
             if not _dbg_valid:
-                # Non-loopback + no server token configured → 403 (insecure config)
                 _dbg_host = self.headers.get("Host", "")
-                if not self.token and not _is_loopback_host(_dbg_host):
+                # Loopback + no server token → allow open-auth (same as regular routes)
+                if not self.token and _is_loopback_host(_dbg_host):
+                    _dbg_valid = True
+                    _dbg_token_val = ""
+                elif not self.token:
+                    # Non-loopback + no server token → 403 (insecure config)
                     self._send(
                         b"403 Forbidden",
                         "text/plain",
@@ -259,6 +263,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                         cors_headers=cors_resp_headers or None,
                         send_body=send_body,
                     )
+                    return
                 else:
                     self._send(
                         b"401 Unauthorized",
@@ -268,7 +273,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                         cors_headers=cors_resp_headers or None,
                         send_body=send_body,
                     )
-                return
+                    return
 
             # Dispatch debug handler
             try:
@@ -656,15 +661,27 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             )
             if not _dbg_valid:
                 _dbg_host = self.headers.get("Host", "")
-                status = 403 if not self.token and not _is_loopback_host(_dbg_host) else 401
-                self._send(
-                    b"403 Forbidden" if status == 403 else b"401 Unauthorized",
-                    "text/plain",
-                    status,
-                    nonce,
-                    cors_headers=cors_resp_headers or None,
-                )
-                return
+                # Loopback + no server token → allow (same as regular open-auth)
+                if not self.token and _is_loopback_host(_dbg_host):
+                    pass  # allow through to 404 below (debug routes are GET-only)
+                elif not self.token:
+                    self._send(
+                        b"403 Forbidden",
+                        "text/plain",
+                        403,
+                        nonce,
+                        cors_headers=cors_resp_headers or None,
+                    )
+                    return
+                else:
+                    self._send(
+                        b"401 Unauthorized",
+                        "text/plain",
+                        401,
+                        nonce,
+                        cors_headers=cors_resp_headers or None,
+                    )
+                    return
 
             self._send(
                 b"404 Not Found",
