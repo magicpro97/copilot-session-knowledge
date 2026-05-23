@@ -81,14 +81,41 @@ function makeResponse(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("DebugLogTab – no run available", () => {
-  it("shows 'No run available' when runId is null", () => {
+describe("DebugLogTab – knowledge-only session (hasOperatorRuns=false)", () => {
+  it("shows knowledge-only empty state when hasOperatorRuns is false", () => {
+    render(
+      <DebugLogTab sessionId="sess-1" runId={null} hasOperatorRuns={false} host={HOST} />
+    );
+    expect(screen.getByRole("heading", { name: /no operator runs/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/this session has no operator runs/i)
+    ).toBeInTheDocument();
+  });
+
+  it("shows knowledge-only empty state when hasOperatorRuns is omitted (default false)", () => {
     render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.getByRole("heading", { name: /no operator runs/i })).toBeInTheDocument();
+  });
+
+  it("does not call useDebugLog when hasOperatorRuns is false", () => {
+    (useDebugLog as Mock).mockClear();
+    render(<DebugLogTab sessionId="sess-1" runId={null} hasOperatorRuns={false} host={HOST} />);
+    // useDebugLog should never be enabled for knowledge-only sessions
+    const calls = (useDebugLog as Mock).mock.calls;
+    // All calls should have isEnabled=false (4th argument)
+    const anyEnabled = calls.some((args) => args[3] === true);
+    expect(anyEnabled).toBe(false);
+  });
+});
+
+describe("DebugLogTab – no run available", () => {
+  it("shows 'No run available' when runId is null and has_operator_runs is true", () => {
+    render(<DebugLogTab sessionId="sess-1" runId={null} hasOperatorRuns host={HOST} />);
     expect(screen.getByText(/no run available/i)).toBeInTheDocument();
   });
 
-  it("shows 'No run available' when runId is empty string", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="" host={HOST} />);
+  it("shows 'No run available' when runId is empty string and has_operator_runs is true", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="" hasOperatorRuns host={HOST} />);
     expect(screen.getByText(/no run available/i)).toBeInTheDocument();
   });
 });
@@ -99,12 +126,12 @@ describe("DebugLogTab – loading state", () => {
   });
 
   it("renders loading message", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByText(/loading debug log/i)).toBeInTheDocument();
   });
 
   it("renders loading message while resolving the latest operator run", () => {
-    render(<DebugLogTab sessionId="sess-1" runId={null} runsLoading host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId={null} runsLoading hasOperatorRuns host={HOST} />);
     expect(screen.getByText(/loading debug log/i)).toBeInTheDocument();
     expect(screen.queryByText(/no run available/i)).not.toBeInTheDocument();
   });
@@ -120,7 +147,7 @@ describe("DebugLogTab – error state", () => {
   });
 
   it("renders error banner with message", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByText(/failed to load debug log/i)).toBeInTheDocument();
     expect(screen.getByText(/network error/i)).toBeInTheDocument();
   });
@@ -136,7 +163,7 @@ describe("DebugLogTab – empty state", () => {
   });
 
   it("renders empty state", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByText(/no debug log entries/i)).toBeInTheDocument();
   });
 });
@@ -173,7 +200,7 @@ describe("DebugLogTab – populated state", () => {
   });
 
   it("renders event table with correct number of rows", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const table = screen.getByRole("grid", { name: /debug log events/i });
     // thead row + 3 data rows (data rows use role="row" with aria-label)
     const dataRows = within(table).getAllByRole("row", { name: /debug event/i });
@@ -181,7 +208,7 @@ describe("DebugLogTab – populated state", () => {
   });
 
   it("renders message text as text — no dangerouslySetInnerHTML", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     // All three messages appear as plain text
     expect(screen.getByText("Alpha")).toBeInTheDocument();
     expect(screen.getByText("Beta error")).toBeInTheDocument();
@@ -189,7 +216,7 @@ describe("DebugLogTab – populated state", () => {
   });
 
   it("renders tool name when present", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByText("bash")).toBeInTheDocument();
   });
 
@@ -200,7 +227,7 @@ describe("DebugLogTab – populated state", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByText("[redacted]")).toBeInTheDocument();
   });
 });
@@ -223,12 +250,12 @@ describe("DebugLogTab – detail expansion", () => {
   });
 
   it("detail drawer is hidden by default", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.queryByRole("dialog", { name: /debug event detail/i })).not.toBeInTheDocument();
   });
 
   it("clicking a row opens the detail drawer", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const row = screen.getByRole("row", {
       name: /debug event 0: tool_call from operator_console/i,
     });
@@ -237,7 +264,7 @@ describe("DebugLogTab – detail expansion", () => {
   });
 
   it("detail drawer shows all entry fields as text", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(
       screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
@@ -249,7 +276,7 @@ describe("DebugLogTab – detail expansion", () => {
   });
 
   it("detail drawer renders attrs as pre-formatted JSON text — no raw HTML", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(
       screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
@@ -264,7 +291,7 @@ describe("DebugLogTab – detail expansion", () => {
   });
 
   it("clicking row again closes the detail drawer (toggle)", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const row = screen.getByRole("row", {
       name: /debug event 0: tool_call from operator_console/i,
     });
@@ -274,7 +301,7 @@ describe("DebugLogTab – detail expansion", () => {
   });
 
   it("close button in detail drawer dismisses the drawer", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(
       screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
     );
@@ -313,7 +340,7 @@ describe("DebugLogTab – filter behavior", () => {
   });
 
   it("text filter reduces visible rows (substring match, no regex)", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const textInput = screen.getByRole("textbox", { name: /filter by text/i });
     fireEvent.change(textInput, { target: { value: "bash" } });
     // Only row with "bash" in message/tool_name should remain
@@ -323,7 +350,7 @@ describe("DebugLogTab – filter behavior", () => {
   });
 
   it("text filter is case-insensitive", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const textInput = screen.getByRole("textbox", { name: /filter by text/i });
     fireEvent.change(textInput, { target: { value: "BASH" } });
     expect(screen.getByText("Alpha bash tool")).toBeInTheDocument();
@@ -331,14 +358,14 @@ describe("DebugLogTab – filter behavior", () => {
   });
 
   it("shows 'No events match' message when all filtered out", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const textInput = screen.getByRole("textbox", { name: /filter by text/i });
     fireEvent.change(textInput, { target: { value: "zzz-nomatch-zzz" } });
     expect(screen.getByText(/no events match/i)).toBeInTheDocument();
   });
 
   it("text filter uses substring, not regex — special chars do not throw", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const textInput = screen.getByRole("textbox", { name: /filter by text/i });
     // This would throw if the input were treated as a regex
     expect(() => {
@@ -347,20 +374,20 @@ describe("DebugLogTab – filter behavior", () => {
   });
 
   it("filter toolbar shows result/total count", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     // All 3 visible: "3 of 3"
     expect(screen.getByText(/3 of 3/)).toBeInTheDocument();
   });
 
   it("result count updates after text filter", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     const textInput = screen.getByRole("textbox", { name: /filter by text/i });
     fireEvent.change(textInput, { target: { value: "bash" } });
     expect(screen.getByText(/1 of 3/)).toBeInTheDocument();
   });
 
   it("filters reset the detail drawer", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     // Open drawer for first row
     fireEvent.click(
       screen.getByRole("row", { name: /debug event 0: tool_call from operator_console/i })
@@ -380,7 +407,7 @@ describe("DebugLogTab – pagination", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByRole("button", { name: /next/i })).toBeInTheDocument();
     // No Previous on page 0
     expect(screen.queryByRole("button", { name: /previous/i })).not.toBeInTheDocument();
@@ -392,7 +419,7 @@ describe("DebugLogTab – pagination", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.queryByRole("button", { name: /next/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /previous/i })).not.toBeInTheDocument();
   });
@@ -409,7 +436,7 @@ describe("DebugLogTab – tree view toggle visibility", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByRole("button", { name: /^list$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^tree$/i })).toBeInTheDocument();
   });
@@ -420,7 +447,7 @@ describe("DebugLogTab – tree view toggle visibility", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.queryByRole("button", { name: /^list$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^tree$/i })).not.toBeInTheDocument();
   });
@@ -431,7 +458,7 @@ describe("DebugLogTab – tree view toggle visibility", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     expect(screen.getByRole("grid", { name: /debug log events/i })).toBeInTheDocument();
     expect(screen.queryByRole("tree", { name: /debug span tree/i })).not.toBeInTheDocument();
   });
@@ -444,7 +471,7 @@ describe("DebugLogTab – tree view toggle visibility", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
     expect(screen.getByRole("tree", { name: /debug span tree/i })).toBeInTheDocument();
     expect(screen.queryByRole("grid", { name: /debug log events/i })).not.toBeInTheDocument();
@@ -458,7 +485,7 @@ describe("DebugLogTab – tree view toggle visibility", () => {
       error: null,
       isLoading: false,
     });
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
     fireEvent.click(screen.getByRole("button", { name: /^list$/i }));
     expect(screen.getByRole("grid", { name: /debug log events/i })).toBeInTheDocument();
@@ -493,13 +520,13 @@ describe("DebugLogTab – tree view expand/collapse", () => {
   });
 
   it("child node is not visible before expanding parent", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
     expect(screen.queryByText("Child event")).not.toBeInTheDocument();
   });
 
   it("clicking parent row expands and shows child", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -510,7 +537,7 @@ describe("DebugLogTab – tree view expand/collapse", () => {
   });
 
   it("clicking parent row again collapses and hides child", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -523,7 +550,7 @@ describe("DebugLogTab – tree view expand/collapse", () => {
   });
 
   it("expanded parent row has aria-expanded=true", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -535,7 +562,7 @@ describe("DebugLogTab – tree view expand/collapse", () => {
   });
 
   it("leaf node does not have aria-expanded attribute", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -576,7 +603,7 @@ describe("DebugLogTab – tree view keyboard navigation", () => {
   });
 
   it("Enter key expands a collapsed node", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -587,7 +614,7 @@ describe("DebugLogTab – tree view keyboard navigation", () => {
   });
 
   it("Space key expands a collapsed node", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -598,7 +625,7 @@ describe("DebugLogTab – tree view keyboard navigation", () => {
   });
 
   it("ArrowRight expands a collapsed node", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -609,7 +636,7 @@ describe("DebugLogTab – tree view keyboard navigation", () => {
   });
 
   it("ArrowLeft collapses an expanded node", () => {
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const parentRow = screen.getByRole("treeitem", {
@@ -643,7 +670,7 @@ describe("DebugLogTab – tree view error node styling", () => {
       isLoading: false,
     });
 
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const row = screen.getByRole("treeitem", {
@@ -668,7 +695,7 @@ describe("DebugLogTab – tree view error node styling", () => {
       isLoading: false,
     });
 
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const row = screen.getByRole("treeitem", {
@@ -704,7 +731,7 @@ describe("DebugLogTab – tree view shares filter state", () => {
       isLoading: false,
     });
 
-    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" hasOperatorRuns host={HOST} />);
     fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
 
     const textInput = screen.getByRole("textbox", { name: /filter by text/i });

@@ -21,6 +21,7 @@ if os.name == "nt":
 
 from browse.api._common import json_error, normalize_session_meta
 from browse.core.fts import _SESSION_ID_RE
+from browse.core.operator_console import get_session as get_operator_session
 from browse.core.registry import route
 
 
@@ -52,6 +53,7 @@ def handle_api_session_detail(db, params, token, nonce, session_id: str = "") ->
     )
 
     meta = normalize_session_meta(dict(sess))
+    meta["has_operator_runs"] = get_operator_session(session_id) is not None
     timeline = [
         {
             "seq": r["seq"],

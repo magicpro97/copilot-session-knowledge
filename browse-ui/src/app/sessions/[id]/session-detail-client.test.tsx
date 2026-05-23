@@ -75,8 +75,18 @@ vi.mock("./checkpoints-tab", () => ({
   CheckpointsTab: () => <div data-testid="checkpoints-tab">Checkpoints content</div>,
 }));
 vi.mock("./debug-log-tab", () => ({
-  DebugLogTab: ({ runsLoading }: { runsLoading?: boolean }) => (
-    <div data-testid="debug-log-tab" data-runs-loading={String(Boolean(runsLoading))}>
+  DebugLogTab: ({
+    runsLoading,
+    hasOperatorRuns,
+  }: {
+    runsLoading?: boolean;
+    hasOperatorRuns?: boolean;
+  }) => (
+    <div
+      data-testid="debug-log-tab"
+      data-runs-loading={String(Boolean(runsLoading))}
+      data-has-operator-runs={String(Boolean(hasOperatorRuns))}
+    >
       DebugLog content
     </div>
   ),
@@ -206,8 +216,16 @@ describe("SessionDetailClient – layout/nav", () => {
     expect(screen.getByTestId("checkpoints-tab")).toBeVisible();
   });
 
-  it("only enables operator run lookup on the Debug Log tab", () => {
+  it("only enables operator run lookup on the Debug Log tab when has_operator_runs is true", () => {
+    (useSessionDetail as Mock).mockImplementation(() => ({
+      ...defaultSessionDetail,
+      data: {
+        ...defaultSessionDetail.data,
+        meta: { ...defaultSessionDetail.data.meta, has_operator_runs: true },
+      },
+    }));
     render(<SessionDetailClient />);
+    // Not on debug-log tab → enabled=false regardless of has_operator_runs
     expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
       "test-session-123",
       false,
@@ -216,11 +234,50 @@ describe("SessionDetailClient – layout/nav", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
 
+    // On debug-log tab AND has_operator_runs=true → enabled=true
     expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
       "test-session-123",
       true,
       LOCAL_HOST,
     ]);
+  });
+
+  it("does not enable operator run lookup when has_operator_runs is false (knowledge session)", () => {
+    // Default meta has no has_operator_runs → defaults to false
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    // Should stay false because has_operator_runs is false/missing
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
+      LOCAL_HOST,
+    ]);
+  });
+
+  it("passes hasOperatorRuns=false to DebugLogTab for knowledge-only sessions", () => {
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+    expect(screen.getByTestId("debug-log-tab")).toHaveAttribute(
+      "data-has-operator-runs",
+      "false"
+    );
+  });
+
+  it("passes hasOperatorRuns=true to DebugLogTab for operator sessions", () => {
+    (useSessionDetail as Mock).mockImplementation(() => ({
+      ...defaultSessionDetail,
+      data: {
+        ...defaultSessionDetail.data,
+        meta: { ...defaultSessionDetail.data.meta, has_operator_runs: true },
+      },
+    }));
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+    expect(screen.getByTestId("debug-log-tab")).toHaveAttribute(
+      "data-has-operator-runs",
+      "true"
+    );
   });
 
   it("passes operator run loading state to the Debug Log tab", () => {

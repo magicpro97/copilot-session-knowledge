@@ -48,6 +48,12 @@ export type DebugLogTabProps = {
   runId: string | null;
   /** True while the parent is resolving the latest operator run for this session. */
   runsLoading?: boolean;
+  /**
+   * True when the backend signals an operator session exists for this id.
+   * When false (default), the tab shows a knowledge-only empty state without
+   * issuing any network request to /api/operator/sessions/{id}/runs.
+   */
+  hasOperatorRuns?: boolean;
   host: HostProfile;
 };
 
@@ -614,7 +620,7 @@ function SpanTreeView({ entries, selectedEntry, onSelect }: SpanTreeViewProps) {
  *
  * When runId is null or empty the tab shows an informational empty state.
  */
-export function DebugLogTab({ sessionId, runId, runsLoading = false, host }: DebugLogTabProps) {
+export function DebugLogTab({ sessionId, runId, runsLoading = false, hasOperatorRuns = false, host }: DebugLogTabProps) {
   const [filters, setFilters] = useState<FilterState>({
     text: "",
     kind: "",
@@ -650,6 +656,16 @@ export function DebugLogTab({ sessionId, runId, runsLoading = false, host }: Deb
     // Reset detail drawer when filters change to avoid stale context.
     setSelectedEntry(null);
   };
+
+  // ── Knowledge-only session (no operator backing store) ────────────────────
+  if (!hasOperatorRuns) {
+    return (
+      <EmptyState
+        title="No operator runs"
+        description="This session has no operator runs. Debug Log is only available for sessions launched through the operator console."
+      />
+    );
+  }
 
   // ── Operator run lookup loading ────────────────────────────────────────────
   if (runsLoading) {

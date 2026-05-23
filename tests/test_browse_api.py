@@ -484,10 +484,45 @@ def run_all_tests() -> int:
         test("T5: meta indexed_at_r normalized to string", isinstance(data.get("meta", {}).get("indexed_at_r"), str))
         test("T5: meta file_mtime normalized to string", isinstance(data.get("meta", {}).get("file_mtime"), str))
         test("T5: timeline is list", isinstance(data.get("timeline"), list))
+        test("T5: meta has_operator_runs is False for SQLite-only session",
+             data.get("meta", {}).get("has_operator_runs") is False)
         if data.get("timeline"):
             entry = data["timeline"][0]
             test("T5: timeline entry has seq", "seq" in entry)
             test("T5: timeline entry has doc_type", "doc_type" in entry)
+    finally:
+        server.shutdown()
+
+    # ── T5a: has_operator_runs is True when operator session exists ───────────
+    print("\n-- T5a: has_operator_runs=true when operator session exists")
+    import unittest.mock
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        with unittest.mock.patch(
+            "browse.api.session_detail.get_operator_session",
+            return_value={"id": "session-id-0000-abcdef"},
+        ):
+            status, _, data = _get(host, port, "/api/sessions/session-id-0000-abcdef")
+        test("T5a: status 200", status == 200)
+        test("T5a: has_operator_runs is True when operator session present",
+             data.get("meta", {}).get("has_operator_runs") is True)
+    finally:
+        server.shutdown()
+
+    # ── T5b: has_operator_runs is False when operator session is None ──────────
+    print("\n-- T5b: has_operator_runs=false when operator session absent")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        with unittest.mock.patch(
+            "browse.api.session_detail.get_operator_session",
+            return_value=None,
+        ):
+            status, _, data = _get(host, port, "/api/sessions/session-id-0000-abcdef")
+        test("T5b: status 200", status == 200)
+        test("T5b: has_operator_runs is False when operator session absent",
+             data.get("meta", {}).get("has_operator_runs") is False)
     finally:
         server.shutdown()
 

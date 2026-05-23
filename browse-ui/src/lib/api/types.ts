@@ -14,6 +14,8 @@ export interface SessionRow {
 
 export interface SessionMeta extends SessionRow {
   file_mtime: string | null;
+  /** True when the backend has an operator session for this id (operator JSON store hit). */
+  has_operator_runs?: boolean;
 }
 
 // ── Home (/  ?format=json) ───────────────────────────────────────────

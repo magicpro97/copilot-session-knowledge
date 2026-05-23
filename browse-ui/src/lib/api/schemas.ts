@@ -14,6 +14,7 @@ export const sessionRowSchema = z.object({
 
 export const sessionMetaSchema = sessionRowSchema.extend({
   file_mtime: z.string().nullable(),
+  has_operator_runs: z.boolean().optional().default(false),
 });
 
 export const homeResponseSchema = z.array(sessionRowSchema);
