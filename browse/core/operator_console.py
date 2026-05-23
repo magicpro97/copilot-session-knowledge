@@ -160,6 +160,64 @@ def _is_valid_id(value: str) -> bool:
     return bool(value and _UUID4_RE.match(value))
 
 
+def validate_resume_target(value: object) -> str:
+    """Validate and return a canonical UUID4 resume target string.
+
+    Accepts only well-formed RFC-4122 UUID4 strings in canonical lowercase form.
+    Shared by the argv builder and future adopt/confirm API paths so that a single
+    enforcement point covers every code path that would inject a UUID into argv.
+
+    Rejects (raises ValueError):
+    - Non-str types
+    - Empty strings
+    - Strings containing non-ASCII bytes (unicode, multi-byte)
+    - Strings containing whitespace or control characters (\\x00–\\x1f, \\x7f)
+    - Strings containing path separators (/ or \\)
+    - Uppercase characters (UUIDs must be lowercase canonical form)
+    - Wrong length (must be exactly 36 characters)
+    - Wrong UUID version (must be version 4)
+    - Wrong RFC variant (variant bits must be [89ab])
+    - Any other pattern that does not match the full canonical form
+
+    Returns:
+        The validated, unchanged string on success.
+
+    Raises:
+        ValueError: with a descriptive message on any rejection.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"resume_target must be a str, got {type(value).__name__!r}")
+    if not value:
+        raise ValueError("resume_target must not be empty")
+    # Reject non-ASCII (unicode, multi-byte, surrogate-escaped bytes).
+    try:
+        value.encode("ascii")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        raise ValueError("resume_target contains non-ASCII characters") from None
+    # Reject whitespace, control characters (0x00-0x1f, 0x7f), and path separators.
+    # This is a belt-and-suspenders guard before the regex so each rejection
+    # produces a specific, auditable error message.
+    for ch in value:
+        cp = ord(ch)
+        if cp <= 0x1F or cp == 0x7F:
+            raise ValueError(f"resume_target contains disallowed control character U+{cp:04X}")
+    if "/" in value or "\\" in value:
+        raise ValueError("resume_target contains path separator characters")
+    # Reject uppercase — UUIDs must be canonical lowercase.
+    if value != value.lower():
+        raise ValueError("resume_target must be lowercase canonical UUID4 (no uppercase letters)")
+    # Exact length: canonical UUID is always 32 hex digits + 4 hyphens = 36 chars.
+    if len(value) != 36:
+        raise ValueError(f"resume_target has wrong length {len(value)} (expected 36 for canonical UUID4)")
+    # Full RFC-4122 v4 pattern: lowercase, version nibble=4, variant bits=[89ab].
+    if not _UUID4_RE.match(value):
+        raise ValueError(
+            "resume_target is not a valid canonical UUID4 "
+            "(expected xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx in lowercase)"
+        )
+    return value
+
+
 # ── WBS-090: _ACTIVE_RUNS cap + TTL eviction ──────────────────────────────────
 
 
@@ -780,6 +838,17 @@ def create_session(
         "run_count": 0,
         "last_run_id": None,
         "resume_ready": False,
+        # ── Issue #527: CLI session resume fields ─────────────────────────────
+        # resume_target: validated UUID4 of the Copilot CLI session to resume.
+        #   Set by the adopt/confirm API (issue #528).  None for plain new sessions.
+        #   Only a non-None, validated value produces --resume=<uuid> in argv.
+        "resume_target": None,
+        # confirmed_at: ISO-8601 timestamp when the operator confirmed adoption.
+        #   None until POST /sessions/{id}/confirm succeeds.
+        "confirmed_at": None,
+        # source: provenance string indicating how this session was created.
+        #   "" for a normal new session; "cli_adopt" when adopted from a CLI session.
+        "source": "",
     }
 
     _write_json(_sessions_dir() / f"{session_id}.json", session)
@@ -975,13 +1044,26 @@ def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | 
     """
     argv = [_resolve_copilot_command(), "-p", prompt_text]
 
-    name = str(session.get("name", "")).strip()
     resume_used = False
-    if session.get("resume_ready") is True and name:
-        argv.append(f"--resume={name}")
-        resume_used = True
-    elif name:
-        argv += ["--name", name]
+    if session.get("resume_ready") is True:
+        # Issue #527: only a validated UUID4 resume_target produces --resume=<uuid>.
+        # Display names MUST NOT be used as resume identifiers.
+        # Absent/None resume_target → no --resume and no --name fallback.
+        raw_target = session.get("resume_target")
+        if raw_target:
+            # validate_resume_target raises ValueError if the value has been tampered.
+            # The caller (start_run) must not proceed to Popen if this raises.
+            clean_target = validate_resume_target(raw_target)
+            argv.append(f"--resume={clean_target}")
+            resume_used = True
+        # When resume_ready=True but resume_target is absent, emit neither
+        # --resume nor --name.  This preserves backward compatibility for
+        # sessions created before adopt/confirm existed (they just won't resume).
+    else:
+        # Normal new-session path: --name is still valid as a Copilot session name.
+        name = str(session.get("name", "")).strip()
+        if name:
+            argv += ["--name", name]
 
     model = normalize_model_id(str(session.get("model", "")).strip())
     if model:
@@ -1316,6 +1398,10 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
     staged_meta: list[dict] = []
     augmented_prompt = prompt_text
     extra_add_dirs: list[str] = []
+    # Initialise to None so the ValueError handler below can reference it safely
+    # even when no attachments were staged (avoids NameError if only the argv
+    # builder raises).
+    run_upload_dir = None
 
     if attachments:
         if len(attachments) > _MAX_STAGED_FILES:
@@ -1368,7 +1454,21 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
         augmented_prompt = prompt_text + "\n" + "\n".join(at_mentions)
         extra_add_dirs = [str(run_upload_dir)]
 
-    argv, resume_used = _build_copilot_argv(session, augmented_prompt, extra_add_dirs=extra_add_dirs or None)
+    # Issue #527: _build_copilot_argv raises ValueError when resume_target fails
+    # validation (tampered or malformed UUID4).  Catch it here — the smallest
+    # correct boundary — so the operator API returns structured JSON
+    # instead of a plain-text 500.  Never proceed to Popen on a bad resume_target.
+    try:
+        argv, resume_used = _build_copilot_argv(session, augmented_prompt, extra_add_dirs=extra_add_dirs or None)
+    except ValueError:
+        _log.debug(
+            "[start_run] _build_copilot_argv rejected session %s: invalid resume_target; aborting",
+            session_id,
+            exc_info=True,
+        )
+        if run_upload_dir is not None:
+            shutil.rmtree(run_upload_dir, ignore_errors=True)
+        return None
 
     workspace = session.get("workspace", "").strip()
     cwd = None

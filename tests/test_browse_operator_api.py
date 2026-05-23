@@ -123,6 +123,7 @@ from browse.core.operator_console import (  # noqa: E402
     start_run,
     suggest_paths,
     update_session,
+    validate_resume_target,
 )
 
 
@@ -374,6 +375,9 @@ def test_oc19_list_sessions_returns_list():
 
 
 def test_oc20_build_copilot_argv_uses_resume_ready():
+    import uuid as _uuid
+
+    _valid_uuid = str(_uuid.uuid4())
     base_session = {
         "name": "resume-test",
         "model": "gpt-5.4",
@@ -381,14 +385,21 @@ def test_oc20_build_copilot_argv_uses_resume_ready():
         "add_dirs": [str(Path.home() / ".copilot")],
         "run_count": 99,
     }
+    # resume_ready=False: normal new-session → --name, no --resume.
     argv_no_resume, _ = _build_copilot_argv(dict(base_session, resume_ready=False), "hello")
-    argv_resume, _ = _build_copilot_argv(dict(base_session, resume_ready=True), "hello")
-    argv_nameless_resume, _ = _build_copilot_argv(dict(base_session, name="", resume_ready=True), "hello")
+    # resume_ready=True + valid UUID resume_target → --resume=<uuid>, no --name.
+    argv_resume, _ = _build_copilot_argv(dict(base_session, resume_ready=True, resume_target=_valid_uuid), "hello")
+    # resume_ready=True but no resume_target → no --resume and no --name fallback.
+    argv_no_target, _ = _build_copilot_argv(dict(base_session, resume_ready=True), "hello")
+    # resume_ready=True + None resume_target → same as absent.
+    argv_none_target, _ = _build_copilot_argv(dict(base_session, resume_ready=True, resume_target=None), "hello")
     test("OC20: no --resume without resume_ready", "--resume" not in argv_no_resume)
     test("OC20: new session keeps --name", "--name" in argv_no_resume)
     test("OC20: resumed session omits --name", "--name" not in argv_resume)
-    test("OC20: resumed session uses named --resume", "--resume=resume-test" in argv_resume)
-    test("OC20: nameless session omits bare --resume", "--resume" not in argv_nameless_resume)
+    test("OC20: resumed session uses UUID --resume", f"--resume={_valid_uuid}" in argv_resume)
+    test("OC20: no resume_target yields no --resume", "--resume" not in " ".join(argv_no_target))
+    test("OC20: no resume_target yields no --name fallback", "--name" not in argv_no_target)
+    test("OC20: None resume_target yields no --resume", "--resume" not in " ".join(argv_none_target))
 
 
 def test_oc20b_copilot_command_resolves_shell_free_windows_shim():
@@ -474,7 +485,10 @@ def test_oc23_make_stream_generator_replays_persisted_events():
         ],
     }
     (run_dir / f"{run_id}.json").write_text(json.dumps(run_data), encoding="utf-8")
-    frames = [json.loads(frame if isinstance(frame, str) else frame[0]) for frame in make_stream_generator(session["id"], run_id)(threading.Event())]
+    frames = [
+        json.loads(frame if isinstance(frame, str) else frame[0])
+        for frame in make_stream_generator(session["id"], run_id)(threading.Event())
+    ]
     test("OC23: first frame keeps assistant delta type", frames[0].get("type") == "assistant.message_delta")
     test("OC23: second frame keeps result type", frames[1].get("type") == "result")
     test("OC23: final frame is terminal status", frames[-1].get("type") == "status")
@@ -634,24 +648,31 @@ def test_sec33_is_https_untrusted_by_default():
     _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
 
     # Without trusted-proxy mode, forwarded headers are completely ignored
-    test("SEC33: X-Forwarded-Proto ignored without trusted-proxy",
-         is_https_request(_H({"X-Forwarded-Proto": "https"})) is False)
-    test("SEC33: X-Forwarded-Ssl ignored without trusted-proxy",
-         is_https_request(_H({"X-Forwarded-Ssl": "on"})) is False)
-    test("SEC33: both headers ignored without trusted-proxy",
-         is_https_request(_H({"X-Forwarded-Proto": "https", "X-Forwarded-Ssl": "on"})) is False)
-    test("SEC33: no headers, no trusted-proxy → False",
-         is_https_request(_H({})) is False)
+    test(
+        "SEC33: X-Forwarded-Proto ignored without trusted-proxy",
+        is_https_request(_H({"X-Forwarded-Proto": "https"})) is False,
+    )
+    test(
+        "SEC33: X-Forwarded-Ssl ignored without trusted-proxy", is_https_request(_H({"X-Forwarded-Ssl": "on"})) is False
+    )
+    test(
+        "SEC33: both headers ignored without trusted-proxy",
+        is_https_request(_H({"X-Forwarded-Proto": "https", "X-Forwarded-Ssl": "on"})) is False,
+    )
+    test("SEC33: no headers, no trusted-proxy → False", is_https_request(_H({})) is False)
 
     # With trusted-proxy mode enabled, forwarded headers ARE trusted
     _os.environ["BROWSE_TRUSTED_PROXY"] = "1"
     try:
-        test("SEC33: X-Forwarded-Proto trusted when BROWSE_TRUSTED_PROXY=1",
-             is_https_request(_H({"X-Forwarded-Proto": "https"})) is True)
-        test("SEC33: X-Forwarded-Ssl trusted when BROWSE_TRUSTED_PROXY=1",
-             is_https_request(_H({"X-Forwarded-Ssl": "on"})) is True)
-        test("SEC33: no headers → False even with BROWSE_TRUSTED_PROXY=1",
-             is_https_request(_H({})) is False)
+        test(
+            "SEC33: X-Forwarded-Proto trusted when BROWSE_TRUSTED_PROXY=1",
+            is_https_request(_H({"X-Forwarded-Proto": "https"})) is True,
+        )
+        test(
+            "SEC33: X-Forwarded-Ssl trusted when BROWSE_TRUSTED_PROXY=1",
+            is_https_request(_H({"X-Forwarded-Ssl": "on"})) is True,
+        )
+        test("SEC33: no headers → False even with BROWSE_TRUSTED_PROXY=1", is_https_request(_H({})) is False)
     finally:
         _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
 
@@ -1069,6 +1090,7 @@ def test_oc36_start_run_with_attachments_stages_files():
         return
 
     import time as _time
+
     _time.sleep(0.05)  # let the thread write to _ACTIVE_RUNS
 
     status = get_run_status(run_id)
@@ -1141,6 +1163,7 @@ def test_oc38_start_run_original_prompt_not_augmented():
     if run_id is None:
         return
     import time as _time
+
     _time.sleep(0.05)
     status = get_run_status(run_id)
     if status:
@@ -1201,10 +1224,7 @@ def test_oc41_start_run_rejects_too_many_attachments():
     from browse.core.operator_console import _MAX_STAGED_FILES
 
     session = create_session("too-many-attachments-test")
-    attachments = [
-        {"name": f"file-{i}.txt", "data": b"x", "mime": "text/plain"}
-        for i in range(_MAX_STAGED_FILES + 1)
-    ]
+    attachments = [{"name": f"file-{i}.txt", "data": b"x", "mime": "text/plain"} for i in range(_MAX_STAGED_FILES + 1)]
     run_id = start_run(session["id"], "too many files", attachments=attachments)
     test("OC41: too many attachments return None", run_id is None)
     uploads_root = _TEST_STATE_DIR / "uploads" / session["id"]
@@ -1213,18 +1233,26 @@ def test_oc41_start_run_rejects_too_many_attachments():
 
 def test_oc42_build_copilot_argv_resume_used_tuple():
     """OC42: _build_copilot_argv returns (argv, resume_used) where resume_used is a bool."""
+    import uuid as _uuid42
+
+    _resume_uuid = str(_uuid42.uuid4())
+
+    # resume_ready=True + valid UUID resume_target → resume_used=True, --resume=<uuid>.
     session_resume = {
         "name": "r-test",
         "model": "",
         "mode": "",
         "add_dirs": [],
         "resume_ready": True,
+        "resume_target": _resume_uuid,
     }
     argv_r, resume_used_r = _build_copilot_argv(session_resume, "hello")
     test("OC42: return is tuple of (list, bool)", isinstance(argv_r, list) and isinstance(resume_used_r, bool))
-    test("OC42: resume_used=True when resume_ready=True", resume_used_r is True)
-    test("OC42: --resume=r-test in argv", "--resume=r-test" in argv_r)
+    test("OC42: resume_used=True when resume_ready=True and resume_target set", resume_used_r is True)
+    test("OC42: --resume=<uuid> in argv when resume_target set", f"--resume={_resume_uuid}" in argv_r)
+    test("OC42: no --name when resume_target provided", "--name" not in argv_r)
 
+    # resume_ready=False → resume_used=False, no --resume.
     session_no_resume = {
         "name": "nr-test",
         "model": "",
@@ -1235,7 +1263,20 @@ def test_oc42_build_copilot_argv_resume_used_tuple():
     argv_nr, resume_used_nr = _build_copilot_argv(session_no_resume, "hello")
     test("OC42: resume_used=False when resume_ready=False", resume_used_nr is False)
 
-    # Nameless + resume_ready=True → no --resume injected so resume_used must be False.
+    # resume_ready=True but no resume_target → resume_used=False, no --resume, no --name fallback.
+    session_no_target = {
+        "name": "nt-test",
+        "model": "",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": True,
+    }
+    argv_nt, resume_used_nt = _build_copilot_argv(session_no_target, "hello")
+    test("OC42: resume_used=False when resume_ready=True but no resume_target", resume_used_nt is False)
+    test("OC42: no --resume when resume_target absent", "--resume" not in " ".join(argv_nt))
+    test("OC42: no --name fallback when resume_ready=True without resume_target", "--name" not in argv_nt)
+
+    # Nameless + resume_ready=True + no resume_target → still no --resume.
     session_nameless = {
         "name": "",
         "model": "",
@@ -1244,7 +1285,7 @@ def test_oc42_build_copilot_argv_resume_used_tuple():
         "resume_ready": True,
     }
     argv_nl, resume_used_nl = _build_copilot_argv(session_nameless, "hello")
-    test("OC42: nameless session resume_used=False (no name to resume)", resume_used_nl is False)
+    test("OC42: nameless session resume_used=False (no resume_target)", resume_used_nl is False)
     test("OC42: nameless session has no --resume", "--resume" not in " ".join(argv_nl))
 
 
@@ -1266,9 +1307,13 @@ def test_oc43_run_record_has_resume_used():
 
     # Resumed session → resume_used=True on run record.
     session_res = create_session("resume-flag-true-test")
-    # Patch session file on disk to mark it as resumed.
+    # Patch session file on disk to mark it as resumed WITH a valid resume_target.
+    # Issue #527: resume_used=True requires both resume_ready=True AND a valid UUID4
+    # resume_target; the display name must no longer be used as a resume identifier.
     session_res_path = _TEST_STATE_DIR / "sessions" / f"{session_res['id']}.json"
+    _cli_uuid = str(_uuid.uuid4())
     session_res["resume_ready"] = True
+    session_res["resume_target"] = _cli_uuid
     session_res_path.write_text(json.dumps(session_res), encoding="utf-8")
     run_id_res = start_run(session_res["id"], "test prompt for resume_used=True")
     test("OC43: resumed run started", run_id_res is not None)
@@ -1307,26 +1352,30 @@ def test_oc44_parse_output_event_promotes_top_level_content():
     raw_msg = json.dumps({"type": "assistant.message", "content": "Hello world"})
     event_msg = _parse_output_event(raw_msg, 0)
     test("OC44: assistant.message type preserved", event_msg.get("type") == "assistant.message")
-    test("OC44: top-level content promoted to data.content",
-         event_msg.get("data", {}).get("content") == "Hello world")
+    test("OC44: top-level content promoted to data.content", event_msg.get("data", {}).get("content") == "Hello world")
 
     # assistant.message_delta with top-level deltaContent (no data key) → data.deltaContent promoted.
     raw_delta = json.dumps({"type": "assistant.message_delta", "deltaContent": "delta text"})
     event_delta = _parse_output_event(raw_delta, 1)
-    test("OC44: assistant.message_delta type preserved",
-         event_delta.get("type") == "assistant.message_delta")
-    test("OC44: top-level deltaContent promoted to data.deltaContent",
-         event_delta.get("data", {}).get("deltaContent") == "delta text")
+    test("OC44: assistant.message_delta type preserved", event_delta.get("type") == "assistant.message_delta")
+    test(
+        "OC44: top-level deltaContent promoted to data.deltaContent",
+        event_delta.get("data", {}).get("deltaContent") == "delta text",
+    )
 
     # data already present → data takes precedence; top-level content is ignored.
-    raw_with_data = json.dumps({
-        "type": "assistant.message",
-        "content": "top-level",
-        "data": {"content": "from-data"},
-    })
+    raw_with_data = json.dumps(
+        {
+            "type": "assistant.message",
+            "content": "top-level",
+            "data": {"content": "from-data"},
+        }
+    )
     event_with_data = _parse_output_event(raw_with_data, 2)
-    test("OC44: data present takes precedence over top-level content",
-         event_with_data.get("data", {}).get("content") == "from-data")
+    test(
+        "OC44: data present takes precedence over top-level content",
+        event_with_data.get("data", {}).get("content") == "from-data",
+    )
 
     # Unrelated event type with top-level content → NOT promoted (no data injected).
     raw_other = json.dumps({"type": "progress", "content": "something"})
@@ -1336,10 +1385,11 @@ def test_oc44_parse_output_event_promotes_top_level_content():
     # assistant.message with both content and deltaContent → deltaContent wins.
     raw_both = json.dumps({"type": "assistant.message_delta", "deltaContent": "delta", "content": "content"})
     event_both = _parse_output_event(raw_both, 4)
-    test("OC44: deltaContent wins over content when both present",
-         event_both.get("data", {}).get("deltaContent") == "delta")
-    test("OC44: content not also promoted when deltaContent present",
-         "content" not in event_both.get("data", {}))
+    test(
+        "OC44: deltaContent wins over content when both present",
+        event_both.get("data", {}).get("deltaContent") == "delta",
+    )
+    test("OC44: content not also promoted when deltaContent present", "content" not in event_both.get("data", {}))
 
 
 def test_oc46_capabilities_supported_modes_correct():
@@ -1431,6 +1481,7 @@ def test_oc50_update_session_mode():
 def test_oc51_update_session_not_found():
     """OC51: update_session returns NOT_FOUND for unknown session."""
     import uuid as _uuid
+
     fake_id = str(_uuid.uuid4())
     result, err = update_session(fake_id, name="ghost")
     test("OC51: result is None for unknown session", result is None)
@@ -1440,6 +1491,7 @@ def test_oc51_update_session_not_found():
 def test_oc52_update_session_conflict_active_run():
     """OC52: update_session returns CONFLICT when session has an active run."""
     import uuid as _uuid
+
     s = create_session("conflict-session")
     sid = s["id"]
     fake_run_id = str(_uuid.uuid4())
@@ -1480,6 +1532,235 @@ def test_oc54_update_session_handles_disappearing_session():
     finally:
         operator_console_module._patch_session = original_patch_session
         delete_session(sid)
+
+
+# ── Issue #527: UUID4 validation, session schema, and argv builder tests ─────
+
+
+def test_oc55_validate_resume_target_accepts_valid():
+    """OC55: validate_resume_target accepts well-formed lowercase UUID4 strings."""
+    import uuid as _uuid55
+
+    # Generate several real UUID4 values and verify they are accepted.
+    for _ in range(5):
+        v = str(_uuid55.uuid4())
+        result = validate_resume_target(v)
+        test(f"OC55: valid UUID4 accepted: {v}", result == v)
+
+    # Hand-crafted known-good UUID4 (version nibble=4, variant nibble=a).
+    uuid4_known = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    result = validate_resume_target(uuid4_known)
+    test("OC55: known-good UUID4 accepted", result == uuid4_known)
+
+
+def test_oc56_validate_resume_target_rejects_invalid():
+    """OC56: validate_resume_target rejects all invalid/dangerous inputs."""
+    import uuid as _uuid56
+
+    def _rejects(label: str, value: object) -> None:
+        raised = False
+        try:
+            validate_resume_target(value)
+        except ValueError:
+            raised = True
+        test(f"OC56: rejected — {label}", raised)
+
+    # Non-str types.
+    _rejects("None", None)
+    _rejects("int", 42)
+    _rejects("bytes", b"f47ac10b-58cc-4372-a567-0e02b2c3d479")
+    _rejects("list", [])
+
+    # Empty string.
+    _rejects("empty string", "")
+
+    # Uppercase UUID (should be lowercase canonical only).
+    upper = str(_uuid56.uuid4()).upper()
+    _rejects(f"uppercase {upper}", upper)
+
+    # Mixed case.
+    mixed = "F47AC10B-58cc-4372-a567-0e02b2c3d479"
+    _rejects(f"mixed case {mixed}", mixed)
+
+    # Leading/trailing whitespace.
+    valid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    _rejects("leading space", " " + valid)
+    _rejects("trailing space", valid + " ")
+    _rejects("tab prefix", "\t" + valid)
+    _rejects("newline suffix", valid + "\n")
+
+    # Control characters.
+    _rejects("null byte in middle", valid[:10] + "\x00" + valid[10:])
+    _rejects("BEL char", valid[:10] + "\x07" + valid[10:])
+    _rejects("DEL char (0x7f)", valid[:10] + "\x7f" + valid[10:])
+
+    # Unicode / non-ASCII.
+    _rejects("unicode letter", valid[:9] + "\u00e9" + valid[10:])
+    _rejects("CJK character", "f47ac10b-58cc-4372-a567-0e02b2c3d4" + "\u4e2d" + "9")
+    _rejects("emoji", "f47ac10b-58cc-4372-a567-0e02b2c3d4\U0001f60079")
+
+    # Path separators.
+    _rejects("forward slash in value", "f47ac10b/58cc-4372-a567-0e02b2c3d479")
+    _rejects("backslash in value", "f47ac10b\\58cc-4372-a567-0e02b2c3d479")
+    _rejects("path-like prefix ../", "../f47ac10b-58cc-4372-a567-0e02b2c3d479")
+    _rejects("absolute path /", "/" + valid)
+
+    # Wrong length.
+    _rejects("too short 35 chars", valid[:-1])
+    _rejects("too long 37 chars", valid + "a")
+    _rejects("no dashes 32 chars", valid.replace("-", ""))
+
+    # Wrong UUID version (version nibble ≠ 4).
+    v1_like = "f47ac10b-58cc-1372-a567-0e02b2c3d479"  # version nibble = 1
+    _rejects(f"UUID version 1 {v1_like}", v1_like)
+    v3_like = "f47ac10b-58cc-3372-a567-0e02b2c3d479"  # version nibble = 3
+    _rejects(f"UUID version 3 {v3_like}", v3_like)
+
+    # Wrong RFC variant (variant nibble not in [89ab]).
+    bad_variant_c = "f47ac10b-58cc-4372-c567-0e02b2c3d479"  # variant = c (disallowed)
+    _rejects(f"bad variant c {bad_variant_c}", bad_variant_c)
+    bad_variant_0 = "f47ac10b-58cc-4372-0567-0e02b2c3d479"  # variant = 0 (disallowed)
+    _rejects(f"bad variant 0 {bad_variant_0}", bad_variant_0)
+
+    # All zeros (version nibble = 0, variant nibble = 0 — not valid UUID4).
+    _rejects("all zeros", "00000000-0000-0000-0000-000000000000")
+
+
+def test_oc57_build_argv_resume_target_raises_on_tamper():
+    """OC57: _build_copilot_argv raises ValueError if resume_target is tampered."""
+    tamper_cases = [
+        ("uppercase uuid", "F47AC10B-58CC-4372-A567-0E02B2C3D479"),
+        ("path injection ../", "../f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        ("space prefix", " f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        ("newline suffix", "f47ac10b-58cc-4372-a567-0e02b2c3d479\n"),
+        ("null byte", "f47ac10b\x00-58cc-4372-a567-0e02b2c3d47"),
+        ("unicode char", "f47ac10b-58cc-4372-a567-0e02b2c3\u00e479"),
+        ("wrong version", "f47ac10b-58cc-1372-a567-0e02b2c3d479"),
+        ("wrong variant", "f47ac10b-58cc-4372-e567-0e02b2c3d479"),
+    ]
+    for label, bad_target in tamper_cases:
+        raised = False
+        try:
+            _build_copilot_argv(
+                {
+                    "name": "tamper-test",
+                    "model": "",
+                    "mode": "",
+                    "add_dirs": [],
+                    "resume_ready": True,
+                    "resume_target": bad_target,
+                },
+                "hello",
+            )
+        except ValueError:
+            raised = True
+        test(f"OC57: tampered resume_target raises — {label}", raised)
+
+
+def test_oc58_create_session_default_resume_fields():
+    """OC58: create_session includes resume_target, confirmed_at, and source with correct defaults."""
+    s = create_session("resume-fields-test")
+    test("OC58: resume_target defaults to None", s.get("resume_target") is None)
+    test("OC58: confirmed_at defaults to None", s.get("confirmed_at") is None)
+    test("OC58: source defaults to empty string", s.get("source") == "")
+    test("OC58: resume_ready defaults to False", s.get("resume_ready") is False)
+    # New fields must survive a round-trip through disk.
+    loaded = get_session(s["id"])
+    test("OC58: resume_target persisted as None", loaded is not None and loaded.get("resume_target") is None)
+    test("OC58: confirmed_at persisted as None", loaded is not None and loaded.get("confirmed_at") is None)
+    test("OC58: source persisted as empty string", loaded is not None and loaded.get("source") == "")
+    delete_session(s["id"])
+
+
+def test_oc59_existing_session_loads_without_new_fields():
+    """OC59: sessions created before issue #527 (missing new fields) load without error."""
+    import json as _json59
+    import uuid as _uuid59
+
+    # Simulate a legacy session JSON that pre-dates the resume_target/confirmed_at/source fields.
+    legacy_id = str(_uuid59.uuid4())
+    legacy_data = {
+        "id": legacy_id,
+        "name": "legacy-session",
+        "model": "gpt-4o",
+        "mode": "agent",
+        "workspace": "",
+        "add_dirs": [],
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+        "run_count": 3,
+        "last_run_id": None,
+        "resume_ready": False,
+        # resume_target, confirmed_at, source are intentionally absent (legacy session)
+    }
+    sessions_dir = _TEST_STATE_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / f"{legacy_id}.json").write_text(_json59.dumps(legacy_data), encoding="utf-8")
+
+    loaded = get_session(legacy_id)
+    test("OC59: legacy session loads successfully", loaded is not None)
+    if loaded:
+        test("OC59: legacy session id intact", loaded.get("id") == legacy_id)
+        test("OC59: legacy session name intact", loaded.get("name") == "legacy-session")
+        # Fields absent from legacy JSON — .get() returns None, not an error.
+        test("OC59: legacy session resume_target absent is None", loaded.get("resume_target") is None)
+        test("OC59: legacy session confirmed_at absent is None", loaded.get("confirmed_at") is None)
+        # _build_copilot_argv must handle absent resume_target without raising.
+        argv, used = _build_copilot_argv(loaded, "hello")
+        test("OC59: legacy resume_ready=False → no --resume", "--resume" not in " ".join(argv))
+        test("OC59: legacy resume_used=False", used is False)
+
+    # Legacy session with resume_ready=True but no resume_target:
+    # must produce no --resume and no --name fallback (no regression to old name-based behavior).
+    legacy_ready_id = str(_uuid59.uuid4())
+    legacy_ready_data = dict(legacy_data, id=legacy_ready_id, resume_ready=True)
+    (sessions_dir / f"{legacy_ready_id}.json").write_text(_json59.dumps(legacy_ready_data), encoding="utf-8")
+    loaded_ready = get_session(legacy_ready_id)
+    test("OC59: legacy resume_ready session loads", loaded_ready is not None)
+    if loaded_ready:
+        argv_r, used_r = _build_copilot_argv(loaded_ready, "hello")
+        test("OC59: legacy resume_ready=True + no resume_target → no --resume", "--resume" not in " ".join(argv_r))
+        test("OC59: legacy resume_ready=True + no resume_target → resume_used=False", used_r is False)
+        test("OC59: legacy resume_ready=True + no resume_target → no --name fallback", "--name" not in argv_r)
+
+
+def test_oc60_start_run_returns_none_on_tampered_resume_target():
+    """OC60: start_run returns None and creates no run/process when resume_target is tampered.
+
+    This exercises the ValueError catch added to start_run (issue #527 code-review fix).
+    _build_copilot_argv raises ValueError; start_run must absorb it, not propagate it,
+    so the route layer can return structured JSON rather than a plain-text 500.
+    """
+    import json as _json60
+
+    tamper_cases = [
+        ("uppercase uuid", "F47AC10B-58CC-4372-A567-0E02B2C3D479"),
+        ("path injection", "../f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        ("space prefix", " f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        ("wrong version nibble", "f47ac10b-58cc-1372-a567-0e02b2c3d479"),
+        ("wrong variant nibble", "f47ac10b-58cc-4372-e567-0e02b2c3d479"),
+        ("newline suffix", "f47ac10b-58cc-4372-a567-0e02b2c3d479\n"),
+        ("null byte", "f47ac10b\x00-58cc-4372-a567-0e02b2c3d47"),
+    ]
+    sessions_dir = _TEST_STATE_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    for label, bad_target in tamper_cases:
+        s = create_session(f"oc60-{label[:12].replace(' ', '-')}")
+        sess_path = sessions_dir / f"{s['id']}.json"
+        # Patch the session on disk: resume_ready=True with a tampered resume_target.
+        s["resume_ready"] = True
+        s["resume_target"] = bad_target
+        sess_path.write_text(_json60.dumps(s), encoding="utf-8")
+
+        runs_before = set(_ACTIVE_RUNS.keys())
+        result = start_run(s["id"], "test prompt")
+        new_runs = set(_ACTIVE_RUNS.keys()) - runs_before
+
+        test(f"OC60: start_run returns None — {label}", result is None)
+        test(f"OC60: no run created in _ACTIVE_RUNS — {label}", len(new_runs) == 0)
+
+        delete_session(s["id"])
 
 
 def run_api_tests():
@@ -1534,7 +1815,10 @@ def _run_api_tests(port: int):
     resp_sec11 = conn_sec11.getresponse()
     cookie_sec11 = resp_sec11.getheader("Set-Cookie", "")
     test("SEC11: forwarded HTTPS GET /api/operator/sessions → 200", resp_sec11.status == 200)
-    test("SEC11: forwarded HTTPS GET /api/operator/sessions sets token cookie", "browse_token=test-token-operator" in cookie_sec11)
+    test(
+        "SEC11: forwarded HTTPS GET /api/operator/sessions sets token cookie",
+        "browse_token=test-token-operator" in cookie_sec11,
+    )
     # Issue #33: without BROWSE_TRUSTED_PROXY, forwarded headers are NOT trusted → no Secure flag
     test("SEC11: forwarded HTTPS without trusted-proxy → Secure flag NOT set", "Secure" not in cookie_sec11)
     _ = resp_sec11.read()
@@ -1558,6 +1842,7 @@ def _run_api_tests(port: int):
 
     # SEC34: with BROWSE_TRUSTED_PROXY=1 explicit opt-in, forwarded HTTPS DOES set Secure cookie
     import os as _sec34_os
+
     _sec34_os.environ["BROWSE_TRUSTED_PROXY"] = "1"
     try:
         conn_sec34a = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -1837,6 +2122,7 @@ def _run_api_tests(port: int):
         _preview_tmp.parent.mkdir(parents=True, exist_ok=True)
         _preview_tmp.write_bytes(b"api16 content check")  # 19 bytes
         import urllib.parse as _up
+
         encoded_p = _up.quote(str(_preview_tmp), safe="")
         resp16 = _get(port, f"/api/operator/preview?path={encoded_p}")
         test("API16: preview valid file → 200", resp16.status == 200)
@@ -2020,7 +2306,6 @@ def _run_api_tests(port: int):
         _ = resp_bearer_cookie.read()
         test("CORS5b: wrong Bearer + valid cookie → 401 (no fallthrough)", resp_bearer_cookie.status == 401)
 
-
         raw_cors_post = json.dumps({"name": "cors-test-session"}).encode("utf-8")
         conn_cors_post = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn_cors_post.request(
@@ -2143,8 +2428,10 @@ def _run_api_tests(port: int):
         )
         resp_diag_get = conn_diag_get.getresponse()
         acao_diag_get = resp_diag_get.getheader("Access-Control-Allow-Origin", "")
-        test("CORS11: GET non-operator /api/ allowlisted origin → ACAO present",
-             acao_diag_get == "https://agents.linhngo.dev")
+        test(
+            "CORS11: GET non-operator /api/ allowlisted origin → ACAO present",
+            acao_diag_get == "https://agents.linhngo.dev",
+        )
         _ = resp_diag_get.read()
 
         # CORS12: GET non-operator /api/ route with non-allowlisted origin → no ACAO header
@@ -2156,8 +2443,7 @@ def _run_api_tests(port: int):
         )
         resp_diag_get_bad = conn_diag_get_bad.getresponse()
         acao_diag_get_bad = resp_diag_get_bad.getheader("Access-Control-Allow-Origin", "")
-        test("CORS12: GET non-operator /api/ non-allowlisted origin → no ACAO header",
-             acao_diag_get_bad == "")
+        test("CORS12: GET non-operator /api/ non-allowlisted origin → no ACAO header", acao_diag_get_bad == "")
         _ = resp_diag_get_bad.read()
 
         # CORS13: allowlisted POST to non-operator /api/ route still returns ACAO on CSRF 403
@@ -2243,7 +2529,10 @@ def _run_api_tests(port: int):
             run_items = data_att_runs.get("runs") or []
             if run_items:
                 test("API21c: attachments hidden from runs response", "attachments" not in run_items[0])
-                test("API21c: public files metadata present on runs response", isinstance(run_items[0].get("files"), list))
+                test(
+                    "API21c: public files metadata present on runs response",
+                    isinstance(run_items[0].get("files"), list),
+                )
 
         # API22: POST /prompt with too many files → 400
         too_many = [{"name": f"f{i}.txt", "data": small_content, "type": "text/plain"} for i in range(11)]
@@ -2292,6 +2581,7 @@ def _run_api_tests(port: int):
         run_id_for_del = _read_json(att_run_resp).get("run_id", "")
         if run_id_for_del:
             import time as _time_api
+
             _time_api.sleep(0.1)
             run_st = get_run_status(run_id_for_del)
             staged_path = ""
@@ -2334,6 +2624,7 @@ def _run_api_tests(port: int):
 
         # API29: PATCH unknown session → 404
         import uuid as _uuid_api
+
         fake_id = str(_uuid_api.uuid4())
         resp_upd_404 = _patch(port, f"/api/operator/sessions/{fake_id}", {"name": "ghost"})
         test("API29: PATCH unknown session → 404", resp_upd_404.status == 404)
@@ -2342,15 +2633,12 @@ def _run_api_tests(port: int):
 
         # API30: PATCH session with active run → 409
         import uuid as _uuid_api2
+
         fake_run_id = str(_uuid_api2.uuid4())
         with _RUNS_LOCK:
-            _ACTIVE_RUNS[fake_run_id] = {
-                "id": fake_run_id, "session_id": upd_session_id, "status": "running"
-            }
+            _ACTIVE_RUNS[fake_run_id] = {"id": fake_run_id, "session_id": upd_session_id, "status": "running"}
         try:
-            resp_upd_409 = _patch(
-                port, f"/api/operator/sessions/{upd_session_id}", {"name": "blocked"}
-            )
+            resp_upd_409 = _patch(port, f"/api/operator/sessions/{upd_session_id}", {"name": "blocked"})
             test("API30: PATCH with active run → 409", resp_upd_409.status == 409)
             data_upd_409 = _read_json(resp_upd_409)
             test("API30: error code SESSION_ACTIVE_RUN", data_upd_409.get("code") == "SESSION_ACTIVE_RUN")
@@ -2373,6 +2661,31 @@ def _run_api_tests(port: int):
         test("API32: error code BAD_MODE", data_upd_bad_mode.get("code") == "BAD_MODE")
 
         _post(port, f"/api/operator/sessions/{upd_session_id}/delete")
+
+    # API33: tampered resume_target fails as structured JSON, not plain-text 500.
+    tamper_session_resp = _post(port, "/api/operator/sessions", {"name": "api-tamper-resume"})
+    tamper_session_id = _read_json(tamper_session_resp).get("id", "")
+    if tamper_session_id:
+        tamper_path = _TEST_STATE_DIR / "sessions" / f"{tamper_session_id}.json"
+        tamper_data = json.loads(tamper_path.read_text(encoding="utf-8"))
+        tamper_data["resume_ready"] = True
+        tamper_data["resume_target"] = "../f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        tamper_path.write_text(json.dumps(tamper_data), encoding="utf-8")
+
+        resp_tampered_resume = _post(
+            port,
+            f"/api/operator/sessions/{tamper_session_id}/prompt",
+            {"prompt": "should fail before Popen"},
+        )
+        tampered_content_type = resp_tampered_resume.getheader("Content-Type", "")
+        test("API33: tampered resume_target → 500", resp_tampered_resume.status == 500)
+        test("API33: tampered resume_target response is JSON", "application/json" in tampered_content_type)
+        data_tampered_resume = _read_json(resp_tampered_resume)
+        test(
+            "API33: tampered resume_target error code RUN_START_FAILED",
+            data_tampered_resume.get("code") == "RUN_START_FAILED",
+        )
+        _post(port, f"/api/operator/sessions/{tamper_session_id}/delete")
 
 
 if __name__ == "__main__":
@@ -2438,6 +2751,15 @@ if __name__ == "__main__":
     test_oc52_update_session_conflict_active_run()
     test_oc53_update_session_rejects_invalid_mode()
     test_oc54_update_session_handles_disappearing_session()
+
+    print()
+    print("── Issue #527: UUID4 validation, session schema, argv builder ────────")
+    test_oc55_validate_resume_target_accepts_valid()
+    test_oc56_validate_resume_target_rejects_invalid()
+    test_oc57_build_argv_resume_target_raises_on_tamper()
+    test_oc58_create_session_default_resume_fields()
+    test_oc59_existing_session_loads_without_new_fields()
+    test_oc60_start_run_returns_none_on_tampered_resume_target()
 
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")
