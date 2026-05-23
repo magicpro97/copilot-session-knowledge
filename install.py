@@ -1169,8 +1169,6 @@ def remove_windows_watch_task(quiet: bool = False) -> bool:
         return False
 
 
-
-
 # ---------------------------------------------------------------------------
 # Windows Task Scheduler — browse-backend auto-start
 # ---------------------------------------------------------------------------
@@ -1204,11 +1202,16 @@ def _windows_browse_task_create_args() -> list[str]:
         "schtasks",
         "/Create",
         "/F",
-        "/SC", "ONLOGON",
-        "/TN", _WINDOWS_BROWSE_TASK_NAME,
-        "/TR", task_run,
-        "/RL", "LIMITED",
-        "/DELAY", "0002:00",  # 2min delay after logon
+        "/SC",
+        "ONLOGON",
+        "/TN",
+        _WINDOWS_BROWSE_TASK_NAME,
+        "/TR",
+        task_run,
+        "/RL",
+        "LIMITED",
+        "/DELAY",
+        "0002:00",  # 2min delay after logon
     ]
 
 

@@ -1915,8 +1915,7 @@ def _restart_browse_manual():
 
         # Start new browse backend
         browse_cmd = (
-            "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']\n"
-            "from browse import main; main()\n"
+            "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']\nfrom browse import main; main()\n"
         )
         subprocess.Popen(
             [python_bin, "-c", browse_cmd],
@@ -1947,8 +1946,7 @@ def _restart_browse_manual():
 
         time.sleep(1)
         browse_cmd = (
-            "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']\n"
-            "from browse import main; main()\n"
+            "import sys; sys.argv = ['browse','--port','8765','--hosted-bootstrap']\nfrom browse import main; main()\n"
         )
         subprocess.Popen(
             [python_bin, "-c", browse_cmd],
