@@ -640,6 +640,44 @@ pnpm release:check
 
 The proof test is skipped in normal CI. `pnpm release:check` enables it explicitly and runs it in isolation, so the rest of the Playwright suite does not get forced onto the root-hosted artifact.
 
+### Post-deploy verification (live)
+
+`pnpm release:check` is a pre-deploy build gate. After `firebase deploy` completes, run the
+companion live check from `browse-ui/` to confirm the hosted origin is actually serving the new
+SHA and that HTML routes revalidate (so users do not keep a pre-fix app-shell HTML for an hour):
+
+```bash
+# From browse-ui/, against agents.linhngo.dev by default:
+pnpm verify:deploy
+
+# Pin to the SHA you just deployed (recommended in CI):
+EXPECTED_SHA=$(git rev-parse --short HEAD) pnpm verify:deploy
+
+# Or target a different origin:
+pnpm verify:deploy --origin https://agents.example.com --expected-sha abc1234
+```
+
+**What it asserts (live HTTP, exits non-zero on failure):**
+
+- `GET /version.json` is reachable; prints `buildHash`, `builtAt`, `basePath`.
+- If `EXPECTED_SHA` / `--expected-sha` is set, the hosted `buildHash` must start with it.
+- `/version.json` and every app-shell route HTML (`/`, `/chat/`, `/sessions/_verify`,
+  `/search/`, `/insights/`, `/graph/`, `/settings/`, `/diagnostics/`)
+  `Cache-Control` must revalidate
+  (`no-cache`, `no-store`, or `max-age=0`). `must-revalidate` alone is **not**
+  sufficient — it only forces revalidation once the response is already stale,
+  so a `max-age=3600, must-revalidate` response still lets the browser keep a
+  pre-fix app-shell for an hour.
+- A sampled `/_next/static/**` chunk must still be `immutable` with a long `max-age`
+  (so the cache-header changes did not regress hashed-chunk caching, including
+  hashed fonts/images under `/_next/static/media/**`).
+
+**Why this is a separate step:** `release:check` must stay offline so CI does not depend on the
+public DNS/CDN. `verify:deploy` is an explicit, network-gated operator command. The first failure
+mode this catches is exactly the one observed on 2026-05-23: `version.json` reported
+`buildHash=9468685` but the homepage HTML was served with `Cache-Control: max-age=3600`, so users
+kept the pre-fix app-shell until the CDN/browser cache expired.
+
 **Verified repro (2026-05-03):** A root-hosted Firebase deployment of `browse-ui` returned HTML with `/v2/_next/static/…` URLs. Requests to `/v2/_next/…` returned 404; requests to `/_next/…` returned 200. Root cause: the build included `basePath: "/v2"` in `next.config.ts`.
 
 ### Hosted Launcher — One-Shot Install/Uninstall (Issue #57)

@@ -212,6 +212,15 @@ def test_normalize_session_meta_returns_copy():
     test("norm_meta: returns new dict", id(result) != original_id)
 
 
+def test_normalize_session_meta_does_not_carry_has_operator_runs():
+    """has_operator_runs is a root-level field on session-detail responses
+    (issue #518); it must NOT be added to SessionMeta by normalize_session_meta.
+    SessionMeta is reused by list/home/operator-status payloads where the flag
+    would be semantically wrong."""
+    result = normalize_session_meta({"event_count_estimate": 1, "total_checkpoints": 1})
+    test("norm_meta: no has_operator_runs key", "has_operator_runs" not in (result or {}))
+
+
 # ── parse_int_param ───────────────────────────────────────────────────────────
 
 def test_parse_int_param_valid():
@@ -283,6 +292,7 @@ if __name__ == "__main__":
     test_normalize_session_meta_event_count_fallback()
     test_normalize_session_meta_event_count_kept_if_positive()
     test_normalize_session_meta_returns_copy()
+    test_normalize_session_meta_does_not_carry_has_operator_runs()
     test_parse_int_param_valid()
     test_parse_int_param_default()
     test_parse_int_param_clamp_min()

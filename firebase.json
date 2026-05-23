@@ -14,6 +14,15 @@
       ],
       "headers": [
         {
+          "source": "**/*.@(ico|png|jpg|jpeg|webp|svg|woff|woff2|ttf|eot)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "public, max-age=86400"
+            }
+          ]
+        },
+        {
           "source": "/_next/static/**",
           "headers": [
             {
@@ -23,11 +32,92 @@
           ]
         },
         {
-          "source": "**/*.@(ico|png|jpg|jpeg|webp|svg|woff|woff2|ttf|eot)",
+          "source": "**/*.@(html)",
           "headers": [
             {
               "key": "Cache-Control",
-              "value": "public, max-age=86400"
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/version.json",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/chat/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/sessions/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/search/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/insights/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/graph/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/settings/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
+            }
+          ]
+        },
+        {
+          "source": "/diagnostics/**",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "no-cache, must-revalidate, max-age=0"
             }
           ]
         },

@@ -310,6 +310,34 @@ This command:
 The proof test is skipped in normal CI runs; `pnpm release:check` enables it explicitly for the
 release gate without rebuilding the local `dist/` artifact.
 
+### Post-deploy verification (`pnpm verify:deploy`)
+
+After `firebase deploy` completes from the private hosting repo, run a **live** check against the
+hosted origin to confirm the deploy is actually serving the new SHA and that the app-shell HTML
+revalidates instead of being cached for an hour:
+
+```bash
+# From browse-ui/:
+pnpm verify:deploy
+# Optionally pin to a specific commit SHA you just deployed:
+EXPECTED_SHA=$(git rev-parse --short HEAD) pnpm verify:deploy
+# Or against a different origin:
+pnpm verify:deploy --origin https://agents.example.com --expected-sha abc1234
+```
+
+It performs network calls against the hosted origin and asserts:
+
+| Check | Why it matters |
+|-------|----------------|
+| `GET /version.json` is reachable and (optionally) `buildHash` starts with `--expected-sha` | Proves the hosted control plane is running the commit you just deployed |
+| `/version.json` `Cache-Control` revalidates (`no-cache` / `no-store` / `max-age=0`) | Otherwise operators see a stale `buildHash` even after a fresh deploy. `must-revalidate` alone is **not** sufficient because it only forces revalidation after the response is stale. |
+| `/`, `/chat/`, `/sessions/_verify`, `/search/`, `/insights/`, `/graph/`, `/settings/`, `/diagnostics/` HTML `Cache-Control` revalidate | Stops the "stale app-shell after deploy" failure mode where users keep pre-fix HTML referencing old hashed chunks for the full max-age. Probing one path per app-shell route prefix (including a rewrite/cleanUrls path under `/sessions/<id>`) catches cases where the HTML rule only covers `/` or `**/*.html`. |
+| A sampled `/_next/static/**` chunk is `immutable` with a long `max-age` | Confirms the immutable-asset caching guarantee was preserved by the cache rules, including for hashed font/image assets under `/_next/static/media/**`. |
+
+Exit code is non-zero (with an actionable message) on any failure. This command is intentionally
+**not** wired into `release:check` so the build gate stays offline; run `verify:deploy` as a
+post-deploy operator step.
+
 ### Deploying
 
 Requires [`firebase-tools`](https://firebase.google.com/docs/cli) installed globally (`npm install -g firebase-tools`).

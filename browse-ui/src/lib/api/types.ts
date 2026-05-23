@@ -43,6 +43,13 @@ export interface TimelineEntry {
 export interface SessionDetailResponse {
   meta: SessionMeta;
   timeline: TimelineEntry[];
+  /**
+   * True iff the backend has an operator-console session record for this id.
+   * Knowledge-only (SQLite/CLI) sessions report `false` so the UI can skip
+   * the `/api/operator/sessions/{id}/runs` request and avoid a visible 404.
+   * Always present on 200 responses (issue #518).
+   */
+  has_operator_runs: boolean;
 }
 
 // ── Timeline (/api/session/{id}/events) ──────────────────────────────

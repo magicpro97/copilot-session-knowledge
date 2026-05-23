@@ -4,8 +4,15 @@ Response shape (SessionDetailResponse):
   {
     "meta": { id, path, summary, source, event_count_estimate,
               fts_indexed_at, file_mtime },
-    "timeline": [{ seq, title, doc_type, section_name, content }, ...]
+    "timeline": [{ seq, title, doc_type, section_name, content }, ...],
+    "has_operator_runs": bool
   }
+
+`has_operator_runs` is a root-level boolean (NOT part of `meta`). It is True
+iff an operator-console session record exists for this id, signalling that
+`/api/operator/sessions/{id}/runs` will return a list rather than 404. The
+browse-ui Debug Log tab uses this flag to suppress operator-runs requests
+for knowledge-only (SQLite) sessions that have no operator counterpart.
 
 Returns 400 for invalid session ID, 404 if not found.
 """
@@ -20,8 +27,22 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 from browse.api._common import json_error, normalize_session_meta
+from browse.core import operator_console
 from browse.core.fts import _SESSION_ID_RE
 from browse.core.registry import route
+
+
+def _check_has_operator_runs(session_id: str) -> bool:
+    """Return True iff an operator-console session record exists.
+
+    Defaults to False on any lookup error so knowledge-only sessions and
+    transient operator-store failures are reported as "no operator runs"
+    rather than triggering a 404 in the browser when Debug Log opens.
+    """
+    try:
+        return operator_console.get_session(session_id) is not None
+    except Exception:
+        return False
 
 
 @route("/api/sessions/{id}", methods=["GET"])
@@ -63,5 +84,9 @@ def handle_api_session_detail(db, params, token, nonce, session_id: str = "") ->
         for r in timeline_rows
     ]
 
-    data = {"meta": meta, "timeline": timeline}
+    data = {
+        "meta": meta,
+        "timeline": timeline,
+        "has_operator_runs": _check_has_operator_runs(session_id),
+    }
     return json.dumps(data, default=str).encode("utf-8"), "application/json", 200

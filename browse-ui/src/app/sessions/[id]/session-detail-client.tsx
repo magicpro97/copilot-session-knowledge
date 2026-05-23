@@ -82,12 +82,15 @@ export function SessionDetailClient() {
   const [exportError, setExportError] = useState<string | null>(null);
 
   const detailQuery = useSessionDetail(sessionId, sessionsEnabled && Boolean(sessionId), host);
-  // Only fetch operator runs when the debug-log tab is active: the endpoint targets operator
-  // sessions (JSON-backed), not knowledge sessions (SQLite-backed). Eagerly querying it for
-  // every knowledge session produces a 404 and triggers the runtime-error guard in e2e tests.
+  // Only fetch operator runs when (a) Debug Log tab is active AND (b) the
+  // backend reports `has_operator_runs: true` on the session detail. The
+  // endpoint targets operator sessions (JSON-backed) only; knowledge sessions
+  // (SQLite/CLI) have no operator record and would otherwise emit a visible
+  // 404 in Chrome Network when Debug Log opens (issue #518).
+  const hasOperatorRuns = detailQuery.data?.has_operator_runs === true;
   const runsQuery = useOperatorRuns(
     sessionId,
-    sessionsEnabled && Boolean(sessionId) && activeTab === "debug-log",
+    sessionsEnabled && Boolean(sessionId) && activeTab === "debug-log" && hasOperatorRuns,
     host
   );
   const runsLoading = activeTab === "debug-log" && runsQuery.isLoading;

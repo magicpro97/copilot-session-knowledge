@@ -56,6 +56,7 @@ const defaultSessionDetail = {
       fts_indexed_at: "2024-01-01T00:00:00Z",
     },
     timeline: [],
+    has_operator_runs: false,
   },
   error: null,
   isLoading: false,
@@ -207,6 +208,31 @@ describe("SessionDetailClient – layout/nav", () => {
   });
 
   it("only enables operator run lookup on the Debug Log tab", () => {
+    // Default fixture: knowledge-only session (has_operator_runs=false).
+    // The gating must keep enabled=false even when Debug Log is active.
+    render(<SessionDetailClient />);
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
+      LOCAL_HOST,
+    ]);
+
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    // Knowledge-only: still disabled on Debug Log (issue #518 gate).
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
+      LOCAL_HOST,
+    ]);
+  });
+
+  it("enables operator run lookup on Debug Log only when has_operator_runs is true", () => {
+    (useSessionDetail as Mock).mockImplementation(() => ({
+      ...defaultSessionDetail,
+      data: { ...defaultSessionDetail.data, has_operator_runs: true },
+    }));
+
     render(<SessionDetailClient />);
     expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
       "test-session-123",
@@ -219,6 +245,24 @@ describe("SessionDetailClient – layout/nav", () => {
     expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
       "test-session-123",
       true,
+      LOCAL_HOST,
+    ]);
+  });
+
+  it("keeps operator run lookup disabled on Debug Log for knowledge-only sessions", () => {
+    // Explicit RED-fix proof for issue #518: even with Debug Log active and the
+    // session detail loaded, has_operator_runs:false must suppress the request.
+    (useSessionDetail as Mock).mockImplementation(() => ({
+      ...defaultSessionDetail,
+      data: { ...defaultSessionDetail.data, has_operator_runs: false },
+    }));
+
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+
+    expect((useOperatorRuns as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
       LOCAL_HOST,
     ]);
   });

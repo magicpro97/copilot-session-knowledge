@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const releaseProof = Boolean(process.env.FIREBASE_PROOF);
+// Hosted regression proof (#519) — navigates to real agents.linhngo.dev.
+// Set HOSTED_PROOF=1 to run; normal `pnpm test:e2e` runs are unaffected.
+const hostedProof = Boolean(process.env.HOSTED_PROOF);
 // Cross-platform: Windows ships `python`, Unix ships `python3`.
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
 // Cross-platform build command: bypass `pnpm build` (which requires pnpm
@@ -85,8 +88,20 @@ export default defineConfig({
           },
         ]
       : []),
+    // Hosted-UI regression proof (#519).
+    // Tests skip automatically via test.skip() without HOSTED_PROOF=1.
+    {
+      name: "hosted-proof",
+      testMatch: ["**/hosted-proof.spec.ts"],
+      use: {
+        ...devices["Desktop Chrome"],
+        // Navigate to real hosted origin; spec also uses absolute URLs.
+        baseURL: "https://agents.linhngo.dev",
+      },
+    },
   ],
-  webServer: releaseProof
+  // Do not start the local webServer for release or hosted proof runs.
+  webServer: releaseProof || hostedProof
     ? undefined
     : {
         command: buildCmd,

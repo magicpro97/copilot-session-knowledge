@@ -115,4 +115,94 @@ describe("probeLocalBootstrap", () => {
     expect(result).toEqual(expect.objectContaining({ status: "unavailable" }));
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
+
+  // ── Hosted HTTPS origin policy (#517) ───────────────────────────────────────
+  // From a hosted HTTPS origin (e.g. https://agents.linhngo.dev) the probe must
+  // NOT call any http:// loopback URL, and must NOT attempt the secondary
+  // no-cors probe. Both behaviors are user-visible Chrome LNA/PNA console
+  // errors and a potential trust-downgrade vector if HTTP loopback ever
+  // succeeded.
+
+  describe("from hosted HTTPS origin", () => {
+    beforeEach(() => {
+      vi.stubGlobal("window", {
+        location: { protocol: "https:", hostname: "agents.linhngo.dev" },
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("only probes HTTPS loopback candidates (no http://)", async () => {
+      const fetchMock = vi.fn(async () => {
+        throw new Error("offline");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await probeLocalBootstrap();
+
+      expect(result.status).toBe("unavailable");
+      const calls = (fetchMock.mock.calls as unknown as Array<[string, unknown?]>).map((c) => c[0]);
+      // No http:// URL should EVER be passed to fetch from a hosted HTTPS origin.
+      for (const url of calls) {
+        expect(url.startsWith("http://")).toBe(false);
+      }
+      // Both HTTPS candidates probed, no others.
+      expect(calls).toEqual([
+        "https://127.0.0.1:8765/.well-known/browse-host",
+        "https://localhost:8765/.well-known/browse-host",
+      ]);
+      // Exactly 2 primary probes; NO secondary no-cors probes.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not attempt the secondary no-cors probe on network-error", async () => {
+      const fetchMock = vi.fn(async () => {
+        throw new TypeError("Failed to fetch"); // network-error path
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await probeLocalBootstrap();
+
+      expect(result.status).toBe("unavailable");
+      if (result.status === "unavailable") {
+        // All reasons should be network-error with daemonState "unknown"
+        // (since we deliberately skip the secondary probe on hosted HTTPS).
+        for (const reason of result.reasons ?? []) {
+          expect(reason.reason).toBe("network-error");
+          expect(reason.daemonState).toBe("unknown");
+        }
+      }
+      // 2 HTTPS candidates × 1 primary probe each (no secondary) = 2 fetch calls.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const calls = (fetchMock.mock.calls as unknown as Array<[string, RequestInit?]>).map(
+        (c) => c[1]
+      );
+      // No fetch call should have used mode: "no-cors" from hosted HTTPS.
+      for (const init of calls) {
+        expect(init?.mode).not.toBe("no-cors");
+      }
+    });
+
+    it("returns detected when an HTTPS loopback backend answers", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          jsonResponse({
+            schema: "browse-host/1",
+            status: "ok",
+            auth: "open",
+            manual_token_required: false,
+            capabilities: ["discovery"],
+            cors_origins_configured: true,
+          })
+        )
+      );
+
+      const result = await probeLocalBootstrap();
+      expect(result.status).toBe("detected");
+      expect(result).toMatchObject({ url: "https://127.0.0.1:8765" });
+    });
+  });
 });

@@ -9,20 +9,25 @@
 import { browseHostBootstrapSchema } from "@/lib/api/schemas";
 import type { BrowseHostBootstrapResponse } from "@/lib/api/types";
 
+/** Returns true when the page is served from an HTTPS origin (e.g. the hosted
+ *  shell at agents.linhngo.dev). From hosted HTTPS we must NOT probe `http://`
+ *  loopback URLs:
+ *  - Chrome LNA/PNA blocks HTTP→loopback from HTTPS pages, so HTTP probes
+ *    cannot succeed — they only produce console/network spam (#517).
+ *  - Even if a future policy/browser permitted it, downgrading from hosted
+ *    HTTPS to plaintext HTTP would create a trust downgrade and local
+ *    impersonation risk. */
+function isSecureOrigin(): boolean {
+  return typeof window !== "undefined" && window.location.protocol === "https:";
+}
+
 /** Loopback candidates ordered by origin protocol:
- *  - From HTTPS origins (e.g. agents.linhngo.dev): HTTPS first — avoids
- *    Chrome PNA blocking HTTP→loopback from HTTPS pages.
- *  - From HTTP/file origins: HTTP first — Chrome Enterprise Policy
+ *  - From HTTPS origins (hosted shell): HTTPS-only. No HTTP fallback (#517).
+ *  - From HTTP/file origins (local dev): HTTP first — Chrome Enterprise Policy
  *    `InsecurePrivateNetworkRequestsAllowedForUrls` exempts HTTP→loopback. */
 function getLoopbackCandidates(): readonly string[] {
-  const isSecureOrigin = typeof window !== "undefined" && window.location.protocol === "https:";
-  return isSecureOrigin
-    ? [
-        "https://127.0.0.1:8765",
-        "https://localhost:8765",
-        "http://127.0.0.1:8765",
-        "http://localhost:8765",
-      ]
+  return isSecureOrigin()
+    ? ["https://127.0.0.1:8765", "https://localhost:8765"]
     : [
         "http://127.0.0.1:8765",
         "http://localhost:8765",
@@ -161,18 +166,27 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
         // Secondary no-cors probe to distinguish "daemon not running" (connection refused)
         // from "daemon running but CORS/PNA preflight rejected" (e.g. old version without
         // auto-CORS). In Chrome 126+ / LNA the secondary may also be blocked, yielding "unknown".
+        //
+        // From hosted HTTPS origins we skip the secondary probe entirely (#517):
+        //   - It produces a second visible LNA/PNA console error per candidate.
+        //   - Chrome LNA blocks the no-cors probe from HTTPS too, so the result is
+        //     always "unknown" → providing no diagnostic value, only noise.
+        // The DiagnosticPanel renders the PNA-blocked panel when daemonState is
+        // "unknown" on hosted origin, which is the correct guidance.
         let daemonState: DaemonState = "unknown";
-        try {
-          await fetch(`${baseUrl}/`, {
-            mode: "no-cors",
-            signal: AbortSignal.timeout(1_000),
-            cache: "no-store",
-          });
-          // Any response (even opaque) means something is listening → CORS/PNA is the blocker.
-          daemonState = "running-no-pna";
-        } catch {
-          // Connection refused or also blocked by LNA.
-          daemonState = "not-running";
+        if (!isSecureOrigin()) {
+          try {
+            await fetch(`${baseUrl}/`, {
+              mode: "no-cors",
+              signal: AbortSignal.timeout(1_000),
+              cache: "no-store",
+            });
+            // Any response (even opaque) means something is listening → CORS/PNA is the blocker.
+            daemonState = "running-no-pna";
+          } catch {
+            // Connection refused or also blocked by LNA.
+            daemonState = "not-running";
+          }
         }
         reasons.push({ url: baseUrl, reason, daemonState });
       } else {

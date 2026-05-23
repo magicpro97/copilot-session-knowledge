@@ -28,6 +28,7 @@ import {
   researchPackReloadResponseSchema,
   retroResponseSchema,
   pathSuggestResponseSchema,
+  sessionDetailResponseSchema,
   promptRequestSchema,
   promptSubmitResponseSchema,
   trendScoutStatusResponseSchema,
@@ -2018,5 +2019,52 @@ describe("operatorModelCatalogResponseSchema", () => {
     expect(cliKindSchema.parse("claude")).toBe("claude");
     expect(cliKindSchema.parse("some-future-cli")).toBe("some-future-cli");
     expect(() => cliKindSchema.parse("")).toThrow();
+  });
+});
+
+// ── Issue #518: root-level has_operator_runs on session detail ──────────────
+
+describe("sessionDetailResponseSchema – has_operator_runs (issue #518)", () => {
+  const baseMeta = {
+    id: "33169957-0dc1-4998-86c0-d2beba02e8b4",
+    path: null,
+    summary: null,
+    source: "copilot",
+    event_count_estimate: 0,
+    fts_indexed_at: null,
+    file_mtime: null,
+  };
+
+  it("parses payloads with has_operator_runs: true at root", () => {
+    const parsed = sessionDetailResponseSchema.parse({
+      meta: baseMeta,
+      timeline: [],
+      has_operator_runs: true,
+    });
+    expect(parsed.has_operator_runs).toBe(true);
+  });
+
+  it("parses payloads with has_operator_runs: false at root", () => {
+    const parsed = sessionDetailResponseSchema.parse({
+      meta: baseMeta,
+      timeline: [],
+      has_operator_runs: false,
+    });
+    expect(parsed.has_operator_runs).toBe(false);
+  });
+
+  it("defaults has_operator_runs to false when absent (older backend)", () => {
+    const parsed = sessionDetailResponseSchema.parse({ meta: baseMeta, timeline: [] });
+    expect(parsed.has_operator_runs).toBe(false);
+  });
+
+  it("rejects non-boolean has_operator_runs", () => {
+    expect(() =>
+      sessionDetailResponseSchema.parse({
+        meta: baseMeta,
+        timeline: [],
+        has_operator_runs: "yes",
+      })
+    ).toThrow();
   });
 });

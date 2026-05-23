@@ -37,6 +37,10 @@ export const timelineEntrySchema = z.object({
 export const sessionDetailResponseSchema = z.object({
   meta: sessionMetaSchema,
   timeline: z.array(timelineEntrySchema),
+  // Issue #518: root-level boolean. Default false for backward compatibility
+  // with older backends that have not yet been upgraded; the frontend treats
+  // missing/unknown as "no operator runs" so it does not issue the request.
+  has_operator_runs: z.boolean().optional().default(false),
 });
 
 export const timelineEventSchema = z.object({
