@@ -16,7 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:hosted": "HOSTED_PROOF=1 playwright test --project hosted-proof",
+    "test:e2e:hosted": "HOSTED_PROOF=1 playwright test --project hosted-regression",
     "preview": "npx serve dist",
     "deploy": "firebase deploy --only hosting:agents",
     "audit:high": "pnpm audit --audit-level=high"

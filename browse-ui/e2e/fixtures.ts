@@ -55,13 +55,20 @@ export const test = base.extend<{ runtimeErrorGuard: void }>({
       // pages never produce a 404 runtimeErrorGuard failure for sessions that have
       // no operator history.  chat.spec.ts registers its own per-test route AFTER
       // this one; Playwright resolves last-registered route first, so chat stubs win.
-      await page.route("**/api/operator/sessions/*/runs", async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ runs: [] }),
+      //
+      // HOSTED_PROOF regression note (#519): this stub is intentionally skipped
+      // when HOSTED_PROOF=1. The hosted-regression spec uses hosted-fixtures.ts
+      // which does NOT import or register any route stubs so that real 404s from
+      // the hosted origin are captured as evidence in runs-404.json.
+      if (!process.env.HOSTED_PROOF) {
+        await page.route("**/api/operator/sessions/*/runs", async (route) => {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ runs: [] }),
+          });
         });
-      });
+      }
 
       await use();
       page.off("console", onConsole);
