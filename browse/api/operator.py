@@ -10,6 +10,8 @@ Endpoints:
   GET   /api/operator/sessions/{id}/status  → run + session status
   GET   /api/operator/sessions/{id}/runs    → persisted run history → {runs: [...], count: N}
   POST  /api/operator/sessions/{id}/delete  → delete session → {deleted: true}
+  POST  /api/operator/sessions/adopt        → adopt CLI session → session dict (201|200)
+  POST  /api/operator/sessions/{id}/confirm → confirm adopted session → session dict
   GET   /api/operator/suggest               → path suggestions under ~/
   GET   /api/operator/preview               → file content under ~/
   GET   /api/operator/diff                  → unified diff of two files under ~/
@@ -35,7 +37,10 @@ if os.name == "nt":
 
 from browse.api._common import json_error, json_ok
 from browse.core.operator_console import (
+    _has_active_run,
+    adopt_cli_session,
     confine_path,
+    confirm_adopted_session,
     consume_resume_token,
     create_session,
     delete_session,
@@ -351,6 +356,10 @@ def handle_run_prompt(db, params, token, nonce, session_id: str = "") -> tuple:
     if session is None:
         return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
 
+    query_err = _reject_sensitive_query_fields(params)
+    if query_err:
+        return query_err
+
     body, err = _parse_json_body(params)
     if err:
         return err
@@ -364,6 +373,16 @@ def handle_run_prompt(db, params, token, nonce, session_id: str = "") -> tuple:
             "PROMPT_TOO_LONG",
             400,
         )
+
+    if session.get("source") == "cli_adopt":
+        if not session.get("confirmed_at"):
+            return json_error(
+                "adopted session must be confirmed before prompting",
+                "UNCONFIRMED_ADOPTION",
+                409,
+            )
+        if _has_active_run(session_id):
+            return json_error("session has an active run", "SESSION_ACTIVE_RUN", 409)
 
     attachments, att_err = _parse_attachments(body)
     if att_err:
@@ -991,3 +1010,146 @@ def handle_get_cli_session(db, params, token, nonce, cli_session_id: str = "") -
     if candidate is None:
         return json_error("cli session not found", "NOT_FOUND", 404)
     return json_ok(candidate)
+
+
+# ── Issue #529: adopt/confirm endpoints ───────────────────────────────────────
+
+_ADOPT_ALLOWED_KEYS = frozenset({"cli_session_id", "workspace", "add_dirs", "name"})
+_ADOPT_DENIED_KEYS = frozenset({"prompt", "resume_target", "token"})
+_SENSITIVE_QUERY_KEYS = frozenset({"cli_session_id", "prompt", "resume_target"})
+
+
+def _check_json_content_type(params: dict) -> "tuple | None":
+    """Return json_error tuple if Content-Type is not application/json. None if OK."""
+    ct = (params.get("_content_type") or [""])[0].strip().lower()
+    media_type = ct.split(";", 1)[0].strip()
+    # Accept "application/json" or "application/json; charset=utf-8".
+    if media_type == "application/json":
+        return None
+    return json_error(
+        "Content-Type must be application/json",
+        "UNSUPPORTED_MEDIA_TYPE",
+        415,
+    )
+
+
+def _reject_sensitive_query_fields(params: dict) -> "tuple | None":
+    """Reject secrets and prompt material supplied in URL query parameters."""
+    present = sorted(key for key in _SENSITIVE_QUERY_KEYS if key in params)
+    if not present:
+        return None
+    return json_error(
+        f"query-string fields are not accepted: {present}",
+        "QUERY_FIELDS_NOT_ALLOWED",
+        400,
+    )
+
+
+@route("/api/operator/sessions/adopt", methods=["POST"])
+def handle_adopt_session(db, params, token, nonce) -> tuple:
+    """POST /api/operator/sessions/adopt — adopt a CLI session.
+
+    Body: {"cli_session_id": "<uuid>", "workspace": "...", "add_dirs": [...], "name": "..."}
+    All fields except cli_session_id are optional.
+    """
+    # Content-Type check
+    ct_err = _check_json_content_type(params)
+    if ct_err:
+        return ct_err
+
+    query_err = _reject_sensitive_query_fields(params)
+    if query_err:
+        return query_err
+
+    # Auth defense-in-depth
+    if not token:
+        return json_error("authentication required", "AUTH_REQUIRED", 401)
+
+    body, err = _parse_json_body(params)
+    if err:
+        return err
+
+    # Reject unexpected keys
+    body_keys = set(body.keys())
+    denied_present = body_keys & _ADOPT_DENIED_KEYS
+    if denied_present:
+        return json_error(
+            f"unexpected fields: {sorted(denied_present)}",
+            "UNEXPECTED_FIELDS",
+            400,
+        )
+    unexpected = body_keys - _ADOPT_ALLOWED_KEYS
+    if unexpected:
+        return json_error(
+            f"unexpected fields: {sorted(unexpected)}",
+            "UNEXPECTED_FIELDS",
+            400,
+        )
+
+    # Required field
+    cli_session_id = body.get("cli_session_id")
+    if not cli_session_id or not isinstance(cli_session_id, str):
+        return json_error("'cli_session_id' is required", "BAD_BODY", 400)
+
+    # Validate add_dirs type
+    add_dirs = body.get("add_dirs")
+    if add_dirs is not None and not isinstance(add_dirs, list):
+        return json_error("'add_dirs' must be a list", "BAD_BODY", 400)
+
+    workspace = str(body.get("workspace") or "")
+    name = str(body.get("name") or "")
+
+    session, error_code, status = adopt_cli_session(
+        cli_session_id=cli_session_id,
+        workspace=workspace,
+        add_dirs=add_dirs,
+        name=name,
+    )
+    if error_code:
+        return json_error(error_code.replace("_", " ").lower(), error_code, status)
+    return json.dumps(session, default=str).encode("utf-8"), "application/json", status
+
+
+@route("/api/operator/sessions/{id}/confirm", methods=["POST"])
+def handle_confirm_session(db, params, token, nonce, session_id: str = "") -> tuple:
+    """POST /api/operator/sessions/{id}/confirm — confirm an adopted session.
+
+    Body: {} (empty JSON object).
+    """
+    # Content-Type check
+    ct_err = _check_json_content_type(params)
+    if ct_err:
+        return ct_err
+
+    query_err = _reject_sensitive_query_fields(params)
+    if query_err:
+        return query_err
+
+    # Auth defense-in-depth
+    if not token:
+        return json_error("authentication required", "AUTH_REQUIRED", 401)
+
+    body, err = _parse_json_body(params)
+    if err:
+        return err
+
+    # Reject unexpected body keys
+    unexpected = set(body.keys()) - set()
+    denied = {"prompt", "resume_target", "cli_session_id"} & unexpected
+    if denied:
+        return json_error(
+            f"unexpected fields: {sorted(denied)}",
+            "UNEXPECTED_FIELDS",
+            400,
+        )
+    if unexpected:
+        return json_error(
+            f"unexpected fields: {sorted(unexpected)}",
+            "UNEXPECTED_FIELDS",
+            400,
+        )
+
+    session, error_code, status = confirm_adopted_session(session_id)
+    if error_code:
+        return json_error(error_code.replace("_", " ").lower(), error_code, status)
+    return json_ok(session)

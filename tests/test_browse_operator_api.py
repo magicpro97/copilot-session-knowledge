@@ -56,6 +56,7 @@ Tests:
 """
 
 import http.client
+import hashlib
 import json
 import os
 import sqlite3
@@ -2579,12 +2580,12 @@ def _run_api_tests(port: int):
             },
         )
         run_id_for_del = _read_json(att_run_resp).get("run_id", "")
+        staged_path = ""
         if run_id_for_del:
             import time as _time_api
 
             _time_api.sleep(0.1)
             run_st = get_run_status(run_id_for_del)
-            staged_path = ""
             if run_st and run_st.get("attachments"):
                 staged_path = run_st["attachments"][0].get("path", "")
 
@@ -2688,6 +2689,390 @@ def _run_api_tests(port: int):
         _post(port, f"/api/operator/sessions/{tamper_session_id}/delete")
 
 
+# ── Issue #529: adopt/confirm tests ───────────────────────────────────────────
+
+
+def _post_raw(port: int, path: str, body_bytes: bytes, content_type: str = "", token: str = _TOKEN) -> http.client.HTTPResponse:
+    """POST with explicit Content-Type (or none) for testing content-type rejection."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    sep = "&" if "?" in path else "?"
+    headers = {"Content-Length": str(len(body_bytes))}
+    if content_type:
+        headers["Content-Type"] = content_type
+    conn.request("POST", f"{path}{sep}token={token}", body=body_bytes, headers=headers)
+    return conn.getresponse()
+
+
+def _setup_cli_session_fixture():
+    """Create a temp CLI session directory with workspace.yaml for adopt tests."""
+    import uuid as _uuid
+    cli_id = str(_uuid.uuid4())
+    cli_state_dir = Path(tempfile.mkdtemp())
+    os.environ["COPILOT_SESSION_STATE"] = str(cli_state_dir)
+    session_dir = cli_state_dir / cli_id
+    session_dir.mkdir(parents=True)
+    yaml_content = f"id: {cli_id}\ntitle: Test CLI session\nworkspace: {Path.home()}/projects/test\nbranch: main\nrepository: user/repo\n"
+    (session_dir / "workspace.yaml").write_text(yaml_content, encoding="utf-8")
+    return cli_id, cli_state_dir
+
+
+def _hash_tree(root: Path) -> str:
+    """Return a deterministic digest of file names and bytes under root."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        digest.update(rel.encode("utf-8"))
+        if path.is_file() and not path.is_symlink():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def run_adopt_confirm_tests():
+    """Run issue #529 adopt/confirm API tests."""
+    from browse.core.operator_console import (
+        _is_denied_operator_path,
+        _SESSIONS_LOCK,
+        adopt_cli_session,
+        confirm_adopted_session,
+        _build_copilot_argv,
+        _has_active_run,
+        get_session,
+    )
+
+    # Setup CLI session fixture
+    cli_id, cli_state_dir = _setup_cli_session_fixture()
+
+    # ── Core unit tests ───────────────────────────────────────────────────────
+    print()
+    print("  ── adopt_cli_session core tests ──")
+
+    # Happy path
+    session, code, status = adopt_cli_session(cli_id)
+    test("ADOPT1: happy path status 201", status == 201)
+    test("ADOPT1: no error code", code == "")
+    test("ADOPT1: operator UUID != CLI UUID", session.get("id") != cli_id)
+    test("ADOPT1: source is cli_adopt", session.get("source") == "cli_adopt")
+    test("ADOPT1: resume_target set", session.get("resume_target") == cli_id)
+    test("ADOPT1: confirmed_at is None", session.get("confirmed_at") is None)
+    test("ADOPT1: resume_ready is False", session.get("resume_ready") is False)
+    adopted_session_id = session.get("id", "")
+
+    # Duplicate before confirm → returns same session idempotently (200)
+    session2, code2, status2 = adopt_cli_session(cli_id)
+    test("ADOPT2: duplicate before confirm → 200", status2 == 200)
+    test("ADOPT2: same session id", session2.get("id") == adopted_session_id)
+    test("ADOPT2b: direct start_run blocked before confirm", start_run(adopted_session_id, "blocked") is None)
+
+    # Bad UUID
+    _, code3, status3 = adopt_cli_session("not-a-valid-uuid")
+    test("ADOPT3: bad UUID → 400", status3 == 400)
+    test("ADOPT3: INVALID_CLI_SESSION_ID", code3 == "INVALID_CLI_SESSION_ID")
+
+    # Missing CLI session
+    import uuid as _uuid
+    fake_uuid = str(_uuid.uuid4())
+    _, code4, status4 = adopt_cli_session(fake_uuid)
+    test("ADOPT4: missing CLI session → 404", status4 == 404)
+    test("ADOPT4: CLI_SESSION_NOT_FOUND", code4 == "CLI_SESSION_NOT_FOUND")
+
+    # Denied path
+    home = Path.home()
+    _, code5, status5 = adopt_cli_session(cli_id, workspace=str(home / ".ssh"))
+    # This will be 200 because duplicate returns existing
+    # Test deny-list directly
+    test("ADOPT5: _is_denied_operator_path(.ssh)", _is_denied_operator_path(home.resolve() / ".ssh"))
+    test("ADOPT5: _is_denied_operator_path(.aws)", _is_denied_operator_path(home.resolve() / ".aws"))
+    test("ADOPT5: _is_denied_operator_path(.gnupg)", _is_denied_operator_path(home.resolve() / ".gnupg"))
+    test("ADOPT5: _is_denied_operator_path(.copilot/session-state)",
+         _is_denied_operator_path(home.resolve() / ".copilot" / "session-state"))
+    test("ADOPT5: _is_denied_operator_path(.copilot/auth)",
+         _is_denied_operator_path(home.resolve() / ".copilot" / "auth"))
+    test("ADOPT5: safe path NOT denied",
+         not _is_denied_operator_path(home.resolve() / "projects" / "foo"))
+    test("ADOPT5: .copilot itself NOT denied",
+         not _is_denied_operator_path(home.resolve() / ".copilot"))
+
+    cli_id_denied = str(_uuid.uuid4())
+    session_dir_denied = cli_state_dir / cli_id_denied
+    session_dir_denied.mkdir(parents=True)
+    (session_dir_denied / "workspace.yaml").write_text(
+        f"id: {cli_id_denied}\ntitle: Denied workspace\nworkspace: {home}/test-denied\n",
+        encoding="utf-8",
+    )
+    _, code5b, status5b = adopt_cli_session(cli_id_denied, workspace=str(home / ".ssh"))
+    test("ADOPT5b: workspace denied path → 403", status5b == 403)
+    test("ADOPT5b: workspace DENIED_PATH", code5b == "DENIED_PATH")
+
+    # Workspace escape (outside ~)
+    # Create a fresh CLI session for this test (since previous one is adopted)
+    cli_id2 = str(_uuid.uuid4())
+    session_dir2 = cli_state_dir / cli_id2
+    session_dir2.mkdir(parents=True)
+    yaml2 = f"id: {cli_id2}\ntitle: CLI2\nworkspace: {home}/test2\n"
+    (session_dir2 / "workspace.yaml").write_text(yaml2, encoding="utf-8")
+
+    _, code6, status6 = adopt_cli_session(cli_id2, workspace="/etc")
+    test("ADOPT6: workspace escape → 403", status6 == 403)
+    test("ADOPT6: PATH_VIOLATION", code6 == "PATH_VIOLATION")
+
+    # add_dirs escape
+    _, code7, status7 = adopt_cli_session(cli_id2, add_dirs=["/etc/passwd"])
+    test("ADOPT7: add_dirs escape → 403", status7 == 403)
+    test("ADOPT7: PATH_VIOLATION", code7 == "PATH_VIOLATION")
+
+    # add_dirs denied path
+    _, code8, status8 = adopt_cli_session(cli_id2, add_dirs=[str(home / ".ssh")])
+    test("ADOPT8: add_dirs denied → 403", status8 == 403)
+    test("ADOPT8: DENIED_PATH", code8 == "DENIED_PATH")
+
+    # Symlink escape under ~/ resolving outside home
+    link_path = home / ".copilot" / "_test_adopt_symlink_escape"
+    try:
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        if link_path.exists() or link_path.is_symlink():
+            link_path.unlink()
+        link_path.symlink_to("/etc")
+        _, code_symlink, status_symlink = adopt_cli_session(cli_id2, workspace=str(link_path))
+        test("ADOPT9: symlink workspace escape → 403", status_symlink == 403)
+        test("ADOPT9: symlink workspace PATH_VIOLATION", code_symlink == "PATH_VIOLATION")
+    except (OSError, NotImplementedError):
+        test("ADOPT9: symlink workspace escape skipped", True)
+    finally:
+        try:
+            if link_path.exists() or link_path.is_symlink():
+                link_path.unlink()
+        except OSError:
+            pass
+
+    # ── Confirm tests ─────────────────────────────────────────────────────────
+    print()
+    print("  ── confirm_adopted_session core tests ──")
+
+    session_c, code_c, status_c = confirm_adopted_session(adopted_session_id)
+    test("CONFIRM1: confirm status 200", status_c == 200)
+    test("CONFIRM1: confirmed_at set", session_c.get("confirmed_at") is not None)
+    test("CONFIRM1: resume_ready True", session_c.get("resume_ready") is True)
+
+    # Idempotent confirm
+    original_confirmed_at = session_c.get("confirmed_at")
+    session_c2, code_c2, status_c2 = confirm_adopted_session(adopted_session_id)
+    test("CONFIRM2: idempotent confirm 200", status_c2 == 200)
+    test("CONFIRM2: confirmed_at unchanged", session_c2.get("confirmed_at") == original_confirmed_at)
+
+    # Confirm non-adopted session
+    normal = create_session("normal-session")
+    _, code_c3, status_c3 = confirm_adopted_session(normal["id"])
+    test("CONFIRM3: non-adopted → 400", status_c3 == 400)
+    test("CONFIRM3: NOT_ADOPTED", code_c3 == "NOT_ADOPTED")
+
+    # Confirm non-existent session
+    _, code_c4, status_c4 = confirm_adopted_session(str(_uuid.uuid4()))
+    test("CONFIRM4: not found → 404", status_c4 == 404)
+
+    # ── Build argv on confirmed session ───────────────────────────────────────
+    confirmed_session = get_session(adopted_session_id)
+    import uuid as _uuid_active
+
+    fake_active = str(_uuid_active.uuid4())
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS[fake_active] = {"id": fake_active, "session_id": adopted_session_id, "status": "running"}
+    try:
+        _, code_busy, status_busy = confirm_adopted_session(adopted_session_id)
+        test("CONFIRM2b: active adopted session confirm → 409", status_busy == 409)
+        test("CONFIRM2b: active adopted session SESSION_ACTIVE_RUN", code_busy == "SESSION_ACTIVE_RUN")
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(fake_active, None)
+
+    argv, resume_used = _build_copilot_argv(confirmed_session, "hello")
+    test("CONFIRM5: argv uses --resume", resume_used is True)
+    resume_args = [a for a in argv if a.startswith("--resume=")]
+    test("CONFIRM5: exactly one --resume arg", len(resume_args) == 1)
+    test("CONFIRM5: --resume has CLI UUID", resume_args[0] == f"--resume={cli_id}")
+
+    # ── Duplicate after confirm → 409 ─────────────────────────────────────────
+    _, code_dup, status_dup = adopt_cli_session(cli_id)
+    test("ADOPT10: duplicate after confirm → 409", status_dup == 409)
+    test("ADOPT10: ALREADY_ADOPTED", code_dup == "ALREADY_ADOPTED")
+
+    # ── Delete isolation: operator delete does not touch CLI session dir ───────
+    cli_dir_digest_before = _hash_tree(cli_state_dir / cli_id)
+    from browse.core.operator_console import delete_session as _del_sess
+    _del_sess(adopted_session_id)
+    cli_dir_digest_after = _hash_tree(cli_state_dir / cli_id)
+    test("DELETE_ISO: CLI session dir unchanged after operator delete",
+         cli_dir_digest_before == cli_dir_digest_after)
+
+    # Cleanup env
+    os.environ.pop("COPILOT_SESSION_STATE", None)
+
+
+def run_adopt_confirm_api_tests():
+    """Run issue #529 adopt/confirm HTTP API tests."""
+    import uuid as _uuid
+
+    # Setup CLI session fixture
+    cli_id, cli_state_dir = _setup_cli_session_fixture()
+
+    server, port = _make_test_server()
+    try:
+        print()
+        print("  ── adopt/confirm API HTTP tests ──")
+
+        # Wrong content type → 415
+        resp = _post_raw(port, "/api/operator/sessions/adopt", b'{"cli_session_id":"x"}',
+                         content_type="text/plain")
+        test("API_ADOPT1: wrong content-type → 415", resp.status == 415)
+        data = _read_json(resp)
+        test("API_ADOPT1: UNSUPPORTED_MEDIA_TYPE code", data.get("code") == "UNSUPPORTED_MEDIA_TYPE")
+
+        # No content type → 415
+        resp = _post_raw(port, "/api/operator/sessions/adopt", b'{"cli_session_id":"x"}',
+                         content_type="")
+        test("API_ADOPT2: missing content-type → 415", resp.status == 415)
+        _ = resp.read()
+
+        # Auth required (no token)
+        resp = _post_raw(port, "/api/operator/sessions/adopt",
+                         json.dumps({"cli_session_id": cli_id}).encode(),
+                         content_type="application/json", token="bad-token")
+        test("API_ADOPT3: bad token → 401", resp.status == 401)
+        _ = resp.read()
+
+        # Prompt in body rejected
+        resp = _post(port, "/api/operator/sessions/adopt",
+                     {"cli_session_id": cli_id, "prompt": "hello"})
+        test("API_ADOPT4: prompt in body → 400", resp.status == 400)
+        data4 = _read_json(resp)
+        test("API_ADOPT4: UNEXPECTED_FIELDS", data4.get("code") == "UNEXPECTED_FIELDS")
+
+        # resume_target in body rejected
+        resp = _post(port, "/api/operator/sessions/adopt",
+                     {"cli_session_id": cli_id, "resume_target": "x"})
+        test("API_ADOPT5: resume_target in body → 400", resp.status == 400)
+        data5 = _read_json(resp)
+        test("API_ADOPT5: UNEXPECTED_FIELDS", data5.get("code") == "UNEXPECTED_FIELDS")
+
+        # Bad UUID
+        resp = _post(port, "/api/operator/sessions/adopt",
+                     {"cli_session_id": "not-valid"})
+        test("API_ADOPT6: bad UUID → 400", resp.status == 400)
+        data6 = _read_json(resp)
+        test("API_ADOPT6: INVALID_CLI_SESSION_ID", data6.get("code") == "INVALID_CLI_SESSION_ID")
+
+        # Missing CLI session
+        resp = _post(port, "/api/operator/sessions/adopt",
+                     {"cli_session_id": str(_uuid.uuid4())})
+        test("API_ADOPT7: missing CLI session → 404", resp.status == 404)
+        data7 = _read_json(resp)
+        test("API_ADOPT7: CLI_SESSION_NOT_FOUND", data7.get("code") == "CLI_SESSION_NOT_FOUND")
+
+        # Happy path adopt
+        resp = _post(port, "/api/operator/sessions/adopt",
+                     {"cli_session_id": cli_id})
+        test("API_ADOPT8: adopt happy → 201", resp.status == 201)
+        data8 = _read_json(resp)
+        test("API_ADOPT8: operator id != cli id", data8.get("id") != cli_id)
+        test("API_ADOPT8: source cli_adopt", data8.get("source") == "cli_adopt")
+        test("API_ADOPT8: resume_target set", data8.get("resume_target") == cli_id)
+        adopted_id = data8.get("id", "")
+
+        # Unconfirmed prompt rejected
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/prompt",
+                     {"prompt": "hello"})
+        test("API_ADOPT9: unconfirmed prompt → 409", resp.status == 409)
+        data9 = _read_json(resp)
+        test("API_ADOPT9: UNCONFIRMED_ADOPTION", data9.get("code") == "UNCONFIRMED_ADOPTION")
+
+        # Confirm wrong content type
+        resp = _post_raw(port, f"/api/operator/sessions/{adopted_id}/confirm",
+                         b'{}', content_type="text/html")
+        test("API_CONFIRM1: wrong content-type → 415", resp.status == 415)
+        _ = resp.read()
+
+        # Confirm with unexpected fields
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm",
+                     {"prompt": "inject"})
+        test("API_CONFIRM2: unexpected fields → 400", resp.status == 400)
+        data_c2 = _read_json(resp)
+        test("API_CONFIRM2: UNEXPECTED_FIELDS", data_c2.get("code") == "UNEXPECTED_FIELDS")
+
+        # Confirm happy path
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm", {})
+        test("API_CONFIRM3: confirm → 200", resp.status == 200)
+        data_c3 = _read_json(resp)
+        test("API_CONFIRM3: confirmed_at set", data_c3.get("confirmed_at") is not None)
+        test("API_CONFIRM3: resume_ready True", data_c3.get("resume_ready") is True)
+
+        # Confirm idempotent
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm", {})
+        test("API_CONFIRM4: idempotent confirm → 200", resp.status == 200)
+        data_c4 = _read_json(resp)
+        test("API_CONFIRM4: confirmed_at unchanged",
+             data_c4.get("confirmed_at") == data_c3.get("confirmed_at"))
+
+        # Duplicate adopt after confirm → 409
+        resp = _post(port, "/api/operator/sessions/adopt",
+                     {"cli_session_id": cli_id})
+        test("API_ADOPT10: duplicate after confirm → 409", resp.status == 409)
+        data10 = _read_json(resp)
+        test("API_ADOPT10: ALREADY_ADOPTED", data10.get("code") == "ALREADY_ADOPTED")
+
+        # Query string cli_session_id without JSON body not accepted
+        resp = _post_raw(port, f"/api/operator/sessions/adopt?cli_session_id={cli_id}",
+                         b'', content_type="application/json")
+        test("API_ADOPT11: query-string cli_session_id rejected → 400", resp.status == 400)
+        data11 = _read_json(resp)
+        test("API_ADOPT11: QUERY_FIELDS_NOT_ALLOWED", data11.get("code") == "QUERY_FIELDS_NOT_ALLOWED")
+
+        # Query string cli_session_id rejected even when JSON body is otherwise valid.
+        cli_id2 = str(_uuid.uuid4())
+        session_dir2 = cli_state_dir / cli_id2
+        session_dir2.mkdir(parents=True)
+        (session_dir2 / "workspace.yaml").write_text(f"id: {cli_id2}\ntitle: Query test\n", encoding="utf-8")
+        resp = _post(
+            port,
+            f"/api/operator/sessions/adopt?cli_session_id={cli_id}",
+            {"cli_session_id": cli_id2},
+        )
+        test("API_ADOPT12: query-string cli_session_id with body rejected → 400", resp.status == 400)
+        data12 = _read_json(resp)
+        test("API_ADOPT12: QUERY_FIELDS_NOT_ALLOWED", data12.get("code") == "QUERY_FIELDS_NOT_ALLOWED")
+
+        # Query string prompt rejected on prompt route.
+        resp = _post(
+            port,
+            f"/api/operator/sessions/{adopted_id}/prompt?prompt=leak",
+            {"prompt": "body prompt"},
+        )
+        test("API_PROMPT1: query-string prompt rejected → 400", resp.status == 400)
+        data_p1 = _read_json(resp)
+        test("API_PROMPT1: QUERY_FIELDS_NOT_ALLOWED", data_p1.get("code") == "QUERY_FIELDS_NOT_ALLOWED")
+
+        # Query string resume_target rejected on confirm route.
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm?resume_target={cli_id}", {})
+        test("API_CONFIRM5: query-string resume_target rejected → 400", resp.status == 400)
+        data_c5 = _read_json(resp)
+        test("API_CONFIRM5: QUERY_FIELDS_NOT_ALLOWED", data_c5.get("code") == "QUERY_FIELDS_NOT_ALLOWED")
+
+        # Active adopted session rejects parallel prompt.
+        fake_run_id = str(_uuid.uuid4())
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[fake_run_id] = {"id": fake_run_id, "session_id": adopted_id, "status": "running"}
+        try:
+            resp = _post(port, f"/api/operator/sessions/{adopted_id}/prompt", {"prompt": "parallel"})
+            test("API_PROMPT2: active adopted session prompt → 409", resp.status == 409)
+            data_p2 = _read_json(resp)
+            test("API_PROMPT2: SESSION_ACTIVE_RUN", data_p2.get("code") == "SESSION_ACTIVE_RUN")
+        finally:
+            with _RUNS_LOCK:
+                _ACTIVE_RUNS.pop(fake_run_id, None)
+
+    finally:
+        server.shutdown()
+        os.environ.pop("COPILOT_SESSION_STATE", None)
+
+
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
     test_oc1_create_session_fields()
@@ -2764,6 +3149,14 @@ if __name__ == "__main__":
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")
     run_api_tests()
+
+    print()
+    print("── Issue #529: adopt/confirm core tests ─────────────────────────────")
+    run_adopt_confirm_tests()
+
+    print()
+    print("── Issue #529: adopt/confirm API tests ──────────────────────────────")
+    run_adopt_confirm_api_tests()
 
     print()
     print("=" * 60)

@@ -769,6 +769,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         # Inject body + request metadata into params for handlers
         params["_body"] = [body_bytes.decode("utf-8", errors="replace")]
         params["_user_agent"] = [self.headers.get("User-Agent", "")]
+        params["_content_type"] = [self.headers.get("Content-Type", "")]
 
         # Route dispatch
         handler_fn, kwargs, _dbg = match_route(path, method)

@@ -174,11 +174,14 @@ The header renders a compact AWS-region-style global host dropdown that calls `s
 POST /api/operator/sessions                  → create session
 GET  /api/operator/sessions                  → list sessions
 GET  /api/operator/sessions/{id}             → session detail
+PATCH /api/operator/sessions/{id}            → update session mutable fields
 POST /api/operator/sessions/{id}/prompt      → submit prompt → {run_id}
 GET  /api/operator/sessions/{id}/stream      → SSE run output
 GET  /api/operator/sessions/{id}/status      → session + active run status (?run=<run_id>)
 GET  /api/operator/sessions/{id}/runs        → persisted run history
 POST /api/operator/sessions/{id}/delete      → delete session
+POST /api/operator/sessions/adopt            → adopt CLI session → operator session (201|200|409)
+POST /api/operator/sessions/{id}/confirm     → confirm adopted session → enable resume
 GET  /api/operator/suggest                   → path/workspace suggestions under ~/
 GET  /api/operator/preview                   → file preview under ~/
 GET  /api/operator/diff                      → unified diff for two files under ~/

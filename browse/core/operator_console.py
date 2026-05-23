@@ -152,6 +152,23 @@ _MODEL_CACHE: dict = {
 }
 _MODEL_CACHE_LOCK = threading.Lock()
 
+# ── Issue #529: sessions lock for adopt/confirm concurrency safety ────────────
+_SESSIONS_LOCK = threading.Lock()
+
+# ── Issue #529: sensitive path deny-list for adopt workspace/add_dirs ─────────
+_DENIED_SENSITIVE_SUBTREES: tuple[str, ...] = (
+    ".ssh",
+    ".gnupg",
+    ".gpg",
+    ".aws",
+    ".config/gh",
+    ".netrc",
+    ".kube",
+    ".docker",
+    ".copilot/session-state",
+    ".copilot/auth",
+)
+
 # ── Validation regexes ────────────────────────────────────────────────────────
 
 _UUID4_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
@@ -1388,6 +1405,10 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
     if not prompt_text:
         return None
 
+    adopted_session = session.get("source") == "cli_adopt"
+    if adopted_session and not session.get("confirmed_at"):
+        return None
+
     run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1512,8 +1533,20 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
 
     evict_active_runs()
 
+    blocked_by_active_run = False
     with _RUNS_LOCK:
-        _ACTIVE_RUNS[run_id] = run
+        if adopted_session and any(
+            r.get("session_id") == session_id and r.get("status") not in _TERMINAL_RUN_STATUSES
+            for r in _ACTIVE_RUNS.values()
+        ):
+            blocked_by_active_run = True
+        else:
+            _ACTIVE_RUNS[run_id] = run
+
+    if blocked_by_active_run:
+        if run_upload_dir is not None:
+            shutil.rmtree(run_upload_dir, ignore_errors=True)
+        return None
 
     session["last_run_id"] = run_id
     session["updated_at"] = now
@@ -2234,3 +2267,141 @@ def get_cli_session_by_id(cli_session_id: str) -> "dict | None":
     if candidate is not None:
         candidate.pop("_mtime_epoch", None)
     return candidate
+
+
+# ── Issue #529: adopt/confirm core logic ──────────────────────────────────────
+
+
+def _is_denied_operator_path(resolved: Path) -> bool:
+    """Return True if *resolved* is inside any sensitive subtree deny-list entry.
+
+    The deny-list guards sensitive credential directories under the user's home.
+    """
+    home = _home_dir().resolve()
+    for subtree in _DENIED_SENSITIVE_SUBTREES:
+        denied_root = home / subtree
+        try:
+            resolved.relative_to(denied_root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def adopt_cli_session(
+    cli_session_id: str,
+    workspace: str = "",
+    add_dirs: "list | None" = None,
+    name: str = "",
+) -> "tuple[dict, str, int]":
+    """Adopt a CLI session into operator management.
+
+    Returns (session_dict, error_code, http_status).
+    On success: (session, "", 201) for new or (session, "", 200) for idempotent.
+    On error: ({}, code, status).
+    """
+    # Validate cli_session_id
+    try:
+        validate_resume_target(cli_session_id)
+    except ValueError:
+        return {}, "INVALID_CLI_SESSION_ID", 400
+
+    # Verify the CLI session exists
+    cli_info = get_cli_session_by_id(cli_session_id)
+    if cli_info is None:
+        return {}, "CLI_SESSION_NOT_FOUND", 404
+
+    # Validate workspace path
+    ws_path = ""
+    if workspace and workspace.strip():
+        p = confine_path(workspace)
+        if p is None:
+            return {}, "PATH_VIOLATION", 403
+        if _is_denied_operator_path(p):
+            return {}, "DENIED_PATH", 403
+        ws_path = str(p)
+
+    # Validate add_dirs
+    validated_dirs: list[str] = []
+    for d in add_dirs or []:
+        if not isinstance(d, str):
+            return {}, "BAD_ADD_DIR", 400
+        if not d.strip():
+            continue
+        p = confine_path(d)
+        if p is None:
+            return {}, "PATH_VIOLATION", 403
+        if _is_denied_operator_path(p):
+            return {}, "DENIED_PATH", 403
+        validated_dirs.append(str(p))
+
+    # Concurrency-safe duplicate check + create
+    with _SESSIONS_LOCK:
+        # Scan existing sessions for duplicate resume_target
+        for sp in _sessions_dir().glob("*.json"):
+            existing = _read_json(sp)
+            if not existing or not isinstance(existing, dict):
+                continue
+            if existing.get("resume_target") == cli_session_id and existing.get("source") == "cli_adopt":
+                # Duplicate found
+                if existing.get("confirmed_at"):
+                    return {}, "ALREADY_ADOPTED", 409
+                # Unconfirmed duplicate → return idempotently
+                return existing, "", 200
+
+        # Create fresh operator session
+        session_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        session = {
+            "id": session_id,
+            "name": (name or "").strip()[:128],
+            "model": "",
+            "mode": "",
+            "workspace": ws_path,
+            "add_dirs": validated_dirs,
+            "created_at": now,
+            "updated_at": now,
+            "run_count": 0,
+            "last_run_id": None,
+            "resume_ready": False,
+            "resume_target": cli_session_id,
+            "confirmed_at": None,
+            "source": "cli_adopt",
+        }
+        _write_json(_sessions_dir() / f"{session_id}.json", session)
+        return session, "", 201
+
+
+def confirm_adopted_session(session_id: str) -> "tuple[dict, str, int]":
+    """Confirm an adopted session, enabling resume.
+
+    Returns (session_dict, error_code, http_status).
+    """
+    with _SESSIONS_LOCK:
+        session = get_session(session_id)
+        if session is None:
+            return {}, "SESSION_NOT_FOUND", 404
+
+        if session.get("source") != "cli_adopt":
+            return {}, "NOT_ADOPTED", 400
+
+        try:
+            resume_target = validate_resume_target(session.get("resume_target"))
+        except ValueError:
+            return {}, "INVALID_CLI_SESSION_ID", 400
+
+        if get_cli_session_by_id(resume_target) is None:
+            return {}, "CLI_SESSION_NOT_FOUND", 404
+
+        if _has_active_run(session_id):
+            return {}, "SESSION_ACTIVE_RUN", 409
+
+        if session.get("confirmed_at"):
+            return session, "", 200
+
+        updated = dict(session)
+        updated["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+        updated["resume_ready"] = True
+        updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _write_json(_sessions_dir() / f"{session_id}.json", updated)
+        return updated, "", 200
