@@ -195,15 +195,23 @@ def test_classify_kind_session_start():
     test("CSD-u3 assistant.turn_start → turn_start", _classify_cli_event_type("assistant.turn_start") == "turn_start")
     test("CSD-u4 turn.start → turn_start", _classify_cli_event_type("turn.start") == "turn_start")
     test("CSD-u5 tool.execution_start → tool_call", _classify_cli_event_type("tool.execution_start") == "tool_call")
-    test("CSD-u6 tool.execution_complete → tool_call", _classify_cli_event_type("tool.execution_complete") == "tool_call")
+    test(
+        "CSD-u6 tool.execution_complete → tool_call", _classify_cli_event_type("tool.execution_complete") == "tool_call"
+    )
     test("CSD-u7 hook.start → hook", _classify_cli_event_type("hook.start") == "hook")
     test("CSD-u8 hook.end → hook", _classify_cli_event_type("hook.end") == "hook")
     test("CSD-u9 assistant.message → agent_response", _classify_cli_event_type("assistant.message") == "agent_response")
-    test("CSD-u10 assistant.response → agent_response", _classify_cli_event_type("assistant.response") == "agent_response")
+    test(
+        "CSD-u10 assistant.response → agent_response",
+        _classify_cli_event_type("assistant.response") == "agent_response",
+    )
     test("CSD-u11 error → error", _classify_cli_event_type("error") == "error")
     test("CSD-u12 exception → error", _classify_cli_event_type("exception") == "error")
     test("CSD-u13 unknown_type → generic", _classify_cli_event_type("completely.unknown.type") == "generic")
-    test("CSD-u14 session.model_change → generic (not llm_request)", _classify_cli_event_type("session.model_change") == "generic")
+    test(
+        "CSD-u14 session.model_change → generic (not llm_request)",
+        _classify_cli_event_type("session.model_change") == "generic",
+    )
     test("CSD-u15 subagent.start → subagent", _classify_cli_event_type("subagent.start") == "subagent")
     test("CSD-u16 llm_request → llm_request", _classify_cli_event_type("llm_request") == "llm_request")
 
@@ -568,11 +576,13 @@ def test_redaction_bearer_token():
     from browse.routes.debug_log import _map_cli_event_line  # noqa: PLC0415
     from browse.core.redaction import redact_entry  # noqa: PLC0415
 
-    line = json.dumps({
-        "type": "session.info",
-        "data": {"message": "token is Bearer ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"},
-        "timestamp": _now_iso(),
-    })
+    line = json.dumps(
+        {
+            "type": "session.info",
+            "data": {"message": "token is Bearer ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"},
+            "timestamp": _now_iso(),
+        }
+    )
     entry = _map_cli_event_line(line, 0)
     redacted = redact_entry(entry)
     msg = redacted.get("message", "")
@@ -585,11 +595,13 @@ def test_redaction_macos_path():
     from browse.routes.debug_log import _map_cli_event_line  # noqa: PLC0415
     from browse.core.redaction import redact_entry  # noqa: PLC0415
 
-    line = json.dumps({
-        "type": "session.info",
-        "data": {"message": "cwd=/Users/alice/projects/myapp"},
-        "timestamp": _now_iso(),
-    })
+    line = json.dumps(
+        {
+            "type": "session.info",
+            "data": {"message": "cwd=/Users/alice/projects/myapp"},
+            "timestamp": _now_iso(),
+        }
+    )
     entry = _map_cli_event_line(line, 0)
     redacted = redact_entry(entry)
     msg = redacted.get("message", "")
@@ -618,11 +630,13 @@ def test_tool_name_extracted():
     """CSD30: tool.execution_start includes tool_name."""
     from browse.routes.debug_log import _map_cli_event_line  # noqa: PLC0415
 
-    line = json.dumps({
-        "type": "tool.execution_start",
-        "data": {"toolName": "read_file"},
-        "timestamp": _now_iso(),
-    })
+    line = json.dumps(
+        {
+            "type": "tool.execution_start",
+            "data": {"toolName": "read_file"},
+            "timestamp": _now_iso(),
+        }
+    )
     entry = _map_cli_event_line(line, 0)
     test("CSD30 tool_name=read_file", entry.get("tool_name") == "read_file")
     test("CSD30 kind=tool_call", entry.get("kind") == "tool_call")
@@ -655,11 +669,13 @@ def test_attrs_extraction():
     from browse.core.redaction import redact_entry  # noqa: PLC0415
 
     session_uuid = "3a1b2c3d-0000-4000-8000-000000000001"
-    line = json.dumps({
-        "type": "session.start",
-        "data": {"sessionId": session_uuid, "newModel": "claude-opus-4.5"},
-        "timestamp": _now_iso(),
-    })
+    line = json.dumps(
+        {
+            "type": "session.start",
+            "data": {"sessionId": session_uuid, "newModel": "claude-opus-4.5"},
+            "timestamp": _now_iso(),
+        }
+    )
     entry = _map_cli_event_line(line, 0)
     redacted = redact_entry(entry)
     attrs = redacted.get("attrs", {})
@@ -674,9 +690,11 @@ def test_malformed_raw_line():
         sid, session_dir = _make_session_dir()
         # Write a mix of valid and malformed lines
         (session_dir / "events.jsonl").write_text(
-            json.dumps(_cli_event("session.start")) + "\n"
+            json.dumps(_cli_event("session.start"))
+            + "\n"
             + "this is not json <<<\n"
-            + json.dumps(_cli_event("assistant.message")) + "\n",
+            + json.dumps(_cli_event("assistant.message"))
+            + "\n",
             encoding="utf-8",
         )
 
@@ -746,6 +764,318 @@ def test_from_limit_echoed():
         server.shutdown()
 
 
+# ── Raw-id preservation + duration pairing (Debug Log v2) ──────────────────────
+
+
+def test_raw_id_preserved_in_span_id():
+    """span_id is derived from raw event `id` (sha1[:16]) so identical ids
+    across events yield identical span_ids — preserving the parent/child graph."""
+    from browse.routes.debug_log import _map_cli_event_line, _span_id_from_raw  # noqa: PLC0415
+
+    raw_uuid = "4756ec74-0946-4c87-8f22-3b9796237368"
+    line = json.dumps(
+        {
+            "type": "session.start",
+            "id": raw_uuid,
+            "parentId": None,
+            "timestamp": _now_iso(),
+            "data": {},
+        }
+    )
+    e1 = _map_cli_event_line(line, 0)
+    e2 = _map_cli_event_line(line, 99)
+    expected = _span_id_from_raw(raw_uuid, "cli", 0)
+
+    test("raw-id span_id is 16 hex", len(e1["span_id"]) == 16 and all(c in "0123456789abcdef" for c in e1["span_id"]))
+    test("raw-id span_id derived from raw id (idx-independent)", e1["span_id"] == e2["span_id"] == expected)
+    test(
+        "no raw id → falls back to synthetic idx-based span",
+        _span_id_from_raw(None, "cli", 7) == _span_id_from_raw(None, "cli", 7),
+    )
+    test("different raw ids → different span_ids", _span_id_from_raw("a-different-uuid", "cli", 0) != expected)
+
+
+def test_parent_span_id_preserved():
+    """parent_span_id is derived from raw `parentId` using the same rule."""
+    from browse.routes.debug_log import _map_cli_event_line, _span_id_from_raw  # noqa: PLC0415
+
+    parent_uuid = "4756ec74-0946-4c87-8f22-3b9796237368"
+    child_uuid = "23c513dc-852c-4633-ae61-2040f783ea18"
+
+    parent_line = json.dumps(
+        {
+            "type": "session.start",
+            "id": parent_uuid,
+            "parentId": None,
+            "timestamp": _now_iso(),
+            "data": {},
+        }
+    )
+    child_line = json.dumps(
+        {
+            "type": "session.info",
+            "id": child_uuid,
+            "parentId": parent_uuid,
+            "timestamp": _now_iso(),
+            "data": {},
+        }
+    )
+    parent = _map_cli_event_line(parent_line, 0)
+    child = _map_cli_event_line(child_line, 1)
+
+    test("parent has parent_span_id=None when raw parentId is null", parent["parent_span_id"] is None)
+    test("child parent_span_id == parent span_id", child["parent_span_id"] == parent["span_id"])
+    test("child span_id == sha1 of child raw id", child["span_id"] == _span_id_from_raw(child_uuid, "cli", 1))
+
+
+def test_hook_pair_duration_and_span_reuse():
+    """hook.end matched to hook.start by hookInvocationId reuses span_id and
+    derives duration_ms from the timestamp delta."""
+    from browse.routes.debug_log import _map_cli_event_line, _new_pair_ctx  # noqa: PLC0415
+
+    ctx = _new_pair_ctx()
+    start = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "hook.start",
+                "id": "id-hook-1",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.000Z",
+                "data": {"hookInvocationId": "HOOK-A", "hookType": "preToolUse"},
+            }
+        ),
+        0,
+        ctx,
+    )
+    end = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "hook.end",
+                "id": "id-hook-2",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.250Z",
+                "data": {"hookInvocationId": "HOOK-A", "success": True},
+            }
+        ),
+        1,
+        ctx,
+    )
+
+    test("hook.start duration_ms=None", start["duration_ms"] is None)
+    test("hook.end duration_ms=250", end["duration_ms"] == 250.0)
+    test("hook.end span_id reuses hook.start span_id", end["span_id"] == start["span_id"])
+
+
+def test_tool_pair_duration_and_span_reuse():
+    """tool.execution_complete pairs with tool.execution_start by toolCallId."""
+    from browse.routes.debug_log import _map_cli_event_line, _new_pair_ctx  # noqa: PLC0415
+
+    ctx = _new_pair_ctx()
+    start = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "tool.execution_start",
+                "id": "id-tool-1",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.000Z",
+                "data": {"toolCallId": "TC-1", "toolName": "read_file"},
+            }
+        ),
+        0,
+        ctx,
+    )
+    end = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "tool.execution_complete",
+                "id": "id-tool-2",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:01.500Z",
+                "data": {"toolCallId": "TC-1", "success": True},
+            }
+        ),
+        1,
+        ctx,
+    )
+
+    test("tool.execution_complete duration_ms=1500", end["duration_ms"] == 1500.0)
+    test("tool span_id reused on complete", end["span_id"] == start["span_id"])
+
+
+def test_turn_pair_duration_and_span_reuse():
+    """assistant.turn_end pairs with assistant.turn_start by turnId."""
+    from browse.routes.debug_log import _map_cli_event_line, _new_pair_ctx  # noqa: PLC0415
+
+    ctx = _new_pair_ctx()
+    start = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "assistant.turn_start",
+                "id": "id-turn-1",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.000Z",
+                "data": {"turnId": "TURN-X", "interactionId": "I-1"},
+            }
+        ),
+        0,
+        ctx,
+    )
+    end = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "assistant.turn_end",
+                "id": "id-turn-2",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:02.000Z",
+                "data": {"turnId": "TURN-X"},
+            }
+        ),
+        1,
+        ctx,
+    )
+
+    test("turn_end duration_ms=2000", end["duration_ms"] == 2000.0)
+    test("turn span_id reused on end", end["span_id"] == start["span_id"])
+
+
+def test_subagent_completion_prefers_explicit_duration_ms():
+    """subagent.completed prefers data.durationMs over computed delta, and
+    still reuses the start's span_id when toolCallId matches."""
+    from browse.routes.debug_log import _map_cli_event_line, _new_pair_ctx  # noqa: PLC0415
+
+    ctx = _new_pair_ctx()
+    start = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "subagent.started",
+                "id": "id-sa-1",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.000Z",
+                "data": {"toolCallId": "SA-1", "agentName": "explore"},
+            }
+        ),
+        0,
+        ctx,
+    )
+    end = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "subagent.completed",
+                "id": "id-sa-2",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:05.000Z",
+                "data": {"toolCallId": "SA-1", "durationMs": 4321, "agentName": "explore"},
+            }
+        ),
+        1,
+        ctx,
+    )
+
+    test("subagent.completed duration_ms uses explicit durationMs", end["duration_ms"] == 4321.0)
+    test("subagent span_id reused on completion", end["span_id"] == start["span_id"])
+
+
+def test_subagent_failed_falls_back_to_timestamp_delta():
+    """subagent.failed without explicit durationMs falls back to ts delta."""
+    from browse.routes.debug_log import _map_cli_event_line, _new_pair_ctx  # noqa: PLC0415
+
+    ctx = _new_pair_ctx()
+    _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "subagent.started",
+                "id": "id-sa-3",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.000Z",
+                "data": {"toolCallId": "SA-2"},
+            }
+        ),
+        0,
+        ctx,
+    )
+    end = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "subagent.failed",
+                "id": "id-sa-4",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.750Z",
+                "data": {"toolCallId": "SA-2", "error": "boom"},
+            }
+        ),
+        1,
+        ctx,
+    )
+
+    test("subagent.failed falls back to ts delta", end["duration_ms"] == 750.0)
+
+
+def test_unmatched_end_event_has_null_duration():
+    """An end event without a matching start gets duration_ms=None and keeps
+    its own derived span_id (no crash)."""
+    from browse.routes.debug_log import _map_cli_event_line, _new_pair_ctx  # noqa: PLC0415
+
+    ctx = _new_pair_ctx()
+    end = _map_cli_event_line(
+        json.dumps(
+            {
+                "type": "hook.end",
+                "id": "id-orphan",
+                "parentId": None,
+                "timestamp": "2030-01-01T00:00:00.000Z",
+                "data": {"hookInvocationId": "NEVER-SEEN"},
+            }
+        ),
+        0,
+        ctx,
+    )
+    test("orphan hook.end duration_ms=None", end["duration_ms"] is None)
+    test("orphan hook.end has its own 16-hex span_id", isinstance(end["span_id"], str) and len(end["span_id"]) == 16)
+
+
+def test_api_returns_paired_span_and_duration():
+    """End-to-end through the HTTP route: a hook.start/hook.end pair survives
+    redaction and pagination with reused span_id and computed duration_ms."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(
+            session_dir,
+            [
+                {
+                    "type": "hook.start",
+                    "id": "4756ec74-0946-4c87-8f22-3b9796237368",
+                    "parentId": None,
+                    "timestamp": "2030-01-01T00:00:00.000Z",
+                    "data": {"hookInvocationId": "HOOK-API", "hookType": "preToolUse"},
+                },
+                {
+                    "type": "hook.end",
+                    "id": "23c513dc-852c-4633-ae61-2040f783ea18",
+                    "parentId": "4756ec74-0946-4c87-8f22-3b9796237368",
+                    "timestamp": "2030-01-01T00:00:00.125Z",
+                    "data": {"hookInvocationId": "HOOK-API", "success": True},
+                },
+            ],
+        )
+
+        resp = _bearer(port, _debug_path(sid))
+        data = json.loads(resp.read())
+        entries = {e["idx"]: e for e in data["entries"]}
+        start_e, end_e = entries[0], entries[1]
+
+        test("API hook.start has duration_ms=None", start_e.get("duration_ms") is None)
+        test("API hook.end has duration_ms=125", end_e.get("duration_ms") == 125)
+        test("API hook.end reuses hook.start span_id", end_e["span_id"] == start_e["span_id"])
+        test("API hook.end parent_span_id matches start span_id", end_e["parent_span_id"] == start_e["span_id"])
+        test(
+            "API span_ids are 16 lowercase hex",
+            all(len(e["span_id"]) == 16 and e["span_id"] == e["span_id"].lower() for e in (start_e, end_e)),
+        )
+    finally:
+        server.shutdown()
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
@@ -782,6 +1112,15 @@ def _run_all() -> None:
     test_empty_events_file()
     test_uniform_404_codes()
     test_from_limit_echoed()
+    test_raw_id_preserved_in_span_id()
+    test_parent_span_id_preserved()
+    test_hook_pair_duration_and_span_reuse()
+    test_tool_pair_duration_and_span_reuse()
+    test_turn_pair_duration_and_span_reuse()
+    test_subagent_completion_prefers_explicit_duration_ms()
+    test_subagent_failed_falls_back_to_timestamp_delta()
+    test_unmatched_end_event_has_null_duration()
+    test_api_returns_paired_span_and_duration()
 
     print("=" * 70)
     total = _PASS + _FAIL

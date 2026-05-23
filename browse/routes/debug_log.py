@@ -55,6 +55,9 @@ _CLI_SOURCE = "cli"
 
 _NULLABLE_DEBUG_ENTRY_FIELDS = ("tool_name", "duration_ms", "parent_span_id", "status")
 
+# Strict 16-lowercase-hex span_id pattern (mirrors browse.core.redaction._SPAN_ID_RE).
+_SPAN_ID_HEX_RE = re.compile(r"^[0-9a-f]{16}$")
+
 # Strict lowercase UUID4 — matches the same pattern used by operator_console.py.
 _UUID4_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
 
@@ -153,6 +156,141 @@ def _synthetic_span_id(source: str, idx: int, seq: int = 1) -> str:
     if candidate == "0000000000000000":
         return _synthetic_span_id(source, idx, seq + 1)
     return candidate
+
+
+def _span_id_from_raw(raw_id: object, fallback_source: str, fallback_idx: int) -> str:
+    """Derive a 16-hex span_id from a raw CLI event id.
+
+    Rules (per DEBUG-LOG-CONTRACT.md §Synthetic Span-ID Rule, CLI carve-out):
+      - If raw_id is already 16 lowercase hex, use it directly.
+      - Else if raw_id is a non-empty string (e.g. UUID), use sha1(raw_id)[:16].
+        This preserves the parent/child graph: identical raw ids → identical span_ids
+        across events, so `parentId` lookups work without an extra index.
+      - Otherwise fall back to the deterministic synthetic formula keyed on idx.
+    """
+    if isinstance(raw_id, str) and raw_id:
+        if _SPAN_ID_HEX_RE.match(raw_id):
+            return raw_id
+        candidate = _hashlib.sha1(raw_id.encode("utf-8", errors="replace")).hexdigest()[:16]
+        if candidate != "0000000000000000":
+            return candidate
+    return _synthetic_span_id(fallback_source, fallback_idx)
+
+
+def _parse_ts_ms(ts: object) -> "float | None":
+    """Parse an ISO-8601 timestamp string to epoch milliseconds. Returns None on failure."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000.0
+    except (ValueError, TypeError):
+        return None
+
+
+# Pairing categories — keys map start events to (start_ts_ms, span_id) so the
+# matching completion event can reuse the start's span_id and derive duration.
+def _new_pair_ctx() -> dict:
+    return {
+        "hook": {},  # hookInvocationId -> (ts_ms, span_id)
+        "tool": {},  # toolCallId       -> (ts_ms, span_id)
+        "turn": {},  # turnId           -> (ts_ms, span_id)
+        "subagent": {},  # toolCallId|agentId -> (ts_ms, span_id)
+    }
+
+
+def _resolve_pairing(
+    event_type: str,
+    data: dict,
+    span_id: str,
+    ts_ms: "float | None",
+    pair_ctx: "dict | None",
+) -> "tuple[str, float | None]":
+    """Update pair_ctx and return (effective_span_id, duration_ms).
+
+    For start events: register (ts_ms, span_id) under the appropriate key.
+    For end events:   look up the matching start, reuse its span_id, and
+                       compute duration_ms = end_ts - start_ts (or use explicit
+                       data.durationMs when present for subagent completions).
+    Never raises; if pair_ctx is None or keys are missing, returns (span_id, None).
+    """
+    if pair_ctx is None:
+        # Still honor explicit durationMs from subagent completions.
+        if event_type in ("subagent.completed", "subagent.failed"):
+            dms = _coerce_duration_ms(data.get("durationMs"))
+            return span_id, dms
+        return span_id, None
+
+    et = event_type
+    duration_ms: float | None = None
+    eff_span = span_id
+
+    if et == "hook.start":
+        key = data.get("hookInvocationId")
+        if isinstance(key, str) and key and ts_ms is not None:
+            pair_ctx["hook"][key] = (ts_ms, span_id)
+    elif et == "hook.end":
+        key = data.get("hookInvocationId")
+        if isinstance(key, str) and key:
+            start = pair_ctx["hook"].pop(key, None)
+            if start is not None:
+                eff_span = start[1]
+                if ts_ms is not None and ts_ms >= start[0]:
+                    duration_ms = ts_ms - start[0]
+    elif et == "tool.execution_start":
+        key = data.get("toolCallId")
+        if isinstance(key, str) and key and ts_ms is not None:
+            pair_ctx["tool"][key] = (ts_ms, span_id)
+    elif et == "tool.execution_complete":
+        key = data.get("toolCallId")
+        if isinstance(key, str) and key:
+            start = pair_ctx["tool"].pop(key, None)
+            if start is not None:
+                eff_span = start[1]
+                if ts_ms is not None and ts_ms >= start[0]:
+                    duration_ms = ts_ms - start[0]
+    elif et in ("assistant.turn_start", "turn.start", "turn_start"):
+        key = data.get("turnId")
+        if isinstance(key, str) and key and ts_ms is not None:
+            pair_ctx["turn"][key] = (ts_ms, span_id)
+    elif et in ("assistant.turn_end", "turn.end", "turn_end"):
+        key = data.get("turnId")
+        if isinstance(key, str) and key:
+            start = pair_ctx["turn"].pop(key, None)
+            if start is not None:
+                eff_span = start[1]
+                if ts_ms is not None and ts_ms >= start[0]:
+                    duration_ms = ts_ms - start[0]
+    elif et in ("subagent.started", "subagent.start"):
+        key = data.get("toolCallId") or data.get("agentId")
+        if isinstance(key, str) and key and ts_ms is not None:
+            pair_ctx["subagent"][key] = (ts_ms, span_id)
+    elif et in ("subagent.completed", "subagent.failed"):
+        # Prefer explicit durationMs from the source event.
+        duration_ms = _coerce_duration_ms(data.get("durationMs"))
+        key = data.get("toolCallId") or data.get("agentId")
+        if isinstance(key, str) and key:
+            start = pair_ctx["subagent"].pop(key, None)
+            if start is not None:
+                eff_span = start[1]
+                if duration_ms is None and ts_ms is not None and ts_ms >= start[0]:
+                    duration_ms = ts_ms - start[0]
+
+    return eff_span, duration_ms
+
+
+def _coerce_duration_ms(raw: object) -> "float | None":
+    """Return raw as a non-negative finite number, or None."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        import math as _math  # noqa: PLC0415
+
+        if _math.isfinite(raw) and raw >= 0:
+            return float(raw)
+    return None
 
 
 # ── Message builder ────────────────────────────────────────────────────────────
@@ -297,14 +435,31 @@ def _extract_cli_attrs(event: dict) -> dict:
 # ── Line mapper ───────────────────────────────────────────────────────────────
 
 
-def _map_cli_event_line(raw_line: str, line_idx: int) -> dict:
+def _map_cli_event_line(raw_line: str, line_idx: int, pair_ctx: "dict | None" = None) -> dict:
     """Map one raw line from events.jsonl to a pre-redaction BrowseDebugEntry dict.
 
     - line_idx is the zero-based line number in the source file (used as idx).
     - Malformed JSON or lines without a 'type' key → kind='raw'.
     - source is always 'cli'.
-    - span_id is always synthetic (sha1 formula).
+    - span_id derivation order:
+        1. If the event has a raw `id` that is 16 lowercase hex, use it directly.
+        2. Else if the raw `id` is a non-empty string (e.g. CLI UUID), use
+           sha1(raw_id)[:16]. This preserves the parent/child graph from the
+           raw stream so `parentId` lookups in the UI/flowchart work.
+        3. Else fall back to the synthetic _synthetic_span_id(source, idx) formula.
+      For paired completion events (hook.end, tool.execution_complete,
+      assistant.turn_end, subagent.completed/failed) the start event's span_id
+      is reused so start/complete rows share one span.
+    - parent_span_id is derived from the raw `parentId` using the same rule;
+      `null` when the source carries no parentId.
+    - duration_ms is populated when a paired start has been seen earlier in
+      the same stream (or when the source provides data.durationMs for
+      subagent completions). `null` otherwise.
     - CLI events carry no level field; level is always null.
+
+    pair_ctx is an opaque dict created by _new_pair_ctx() and shared across
+    all lines in a single stream pass. When None, pairing/duration derivation
+    is skipped (used by unit tests that map one line in isolation).
     """
     # Truncation check before JSON parse.
     raw_bytes = len(raw_line.encode("utf-8", errors="replace"))
@@ -322,6 +477,8 @@ def _map_cli_event_line(raw_line: str, line_idx: int) -> dict:
             "source": _CLI_SOURCE,
             "message": message,
             "span_id": _synthetic_span_id(_CLI_SOURCE, line_idx),
+            "parent_span_id": None,
+            "duration_ms": None,
             "attrs": {},
         }
 
@@ -334,6 +491,8 @@ def _map_cli_event_line(raw_line: str, line_idx: int) -> dict:
             "source": _CLI_SOURCE,
             "message": str(event)[:_DEBUG_MSG_MAX],
             "span_id": _synthetic_span_id(_CLI_SOURCE, line_idx),
+            "parent_span_id": None,
+            "duration_ms": None,
             "attrs": {},
         }
 
@@ -346,7 +505,13 @@ def _map_cli_event_line(raw_line: str, line_idx: int) -> dict:
             "level": None,
             "source": _CLI_SOURCE,
             "message": "(no type)",
-            "span_id": _synthetic_span_id(_CLI_SOURCE, line_idx),
+            "span_id": _span_id_from_raw(event.get("id"), _CLI_SOURCE, line_idx),
+            "parent_span_id": (
+                _span_id_from_raw(event.get("parentId"), _CLI_SOURCE, line_idx)
+                if isinstance(event.get("parentId"), str) and event.get("parentId")
+                else None
+            ),
+            "duration_ms": None,
             "attrs": {},
         }
 
@@ -356,6 +521,20 @@ def _map_cli_event_line(raw_line: str, line_idx: int) -> dict:
         ts = None
 
     kind = _classify_cli_event_type(event_type)
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+    # Derive span_id / parent_span_id from raw id / parentId before pairing,
+    # so the pairing layer can register the start's span under its raw id.
+    span_id = _span_id_from_raw(event.get("id"), _CLI_SOURCE, line_idx)
+    raw_parent = event.get("parentId")
+    parent_span_id: str | None = None
+    if isinstance(raw_parent, str) and raw_parent:
+        parent_span_id = _span_id_from_raw(raw_parent, _CLI_SOURCE, line_idx)
+
+    # Pair start/complete events using running context. For completion events
+    # this returns the start's span_id and a derived duration_ms.
+    ts_ms = _parse_ts_ms(ts)
+    span_id, duration_ms = _resolve_pairing(event_type, data, span_id, ts_ms, pair_ctx)
 
     if truncated:
         sha = _hashlib.sha256(raw_line.encode("utf-8", errors="replace")).hexdigest()[:16]
@@ -372,7 +551,9 @@ def _map_cli_event_line(raw_line: str, line_idx: int) -> dict:
         "level": None,
         "source": _CLI_SOURCE,
         "message": message,
-        "span_id": _synthetic_span_id(_CLI_SOURCE, line_idx),
+        "span_id": span_id,
+        "parent_span_id": parent_span_id,
+        "duration_ms": duration_ms,
         "attrs": attrs,
     }
 
@@ -406,6 +587,7 @@ def _read_cli_session_events(
     page: list = []
     total_filtered = 0
     line_no = 0
+    pair_ctx = _new_pair_ctx()
 
     with path.open(encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
@@ -414,7 +596,7 @@ def _read_cli_session_events(
                 line_no += 1
                 continue
 
-            entry = _map_cli_event_line(raw_line, line_no)
+            entry = _map_cli_event_line(raw_line, line_no, pair_ctx)
             line_no += 1
 
             # ── Apply filters ──────────────────────────────────────────────────

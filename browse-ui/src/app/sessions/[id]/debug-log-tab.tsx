@@ -18,6 +18,8 @@ import { useDebugLog, useSessionDebugLog } from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
 import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
 
+import { DebugLogFlowChart } from "./debug-log-flow-chart";
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** All event kinds from the taxonomy. */
@@ -658,7 +660,7 @@ export function DebugLogTab({
   });
   const [page, setPage] = useState(0);
   const [selectedEntry, setSelectedEntry] = useState<BrowseDebugEntry | null>(null);
-  const [viewMode, setViewMode] = useState<"list" | "tree">("list");
+  const [viewMode, setViewMode] = useState<"list" | "tree" | "flow">("list");
 
   const hasRunId = Boolean(runId);
 
@@ -805,7 +807,7 @@ export function DebugLogTab({
 
       {/* View mode toggle — only shown when the dataset has span_ids */}
       {hasSpanIds && (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" role="group" aria-label="Debug log view mode">
           <button
             type="button"
             className={`rounded px-2 py-1 text-xs transition-colors ${
@@ -830,11 +832,30 @@ export function DebugLogTab({
           >
             Tree
           </button>
+          <button
+            type="button"
+            data-testid="debug-log-view-flow"
+            className={`rounded px-2 py-1 text-xs transition-colors ${
+              viewMode === "flow"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            aria-pressed={viewMode === "flow"}
+            onClick={() => setViewMode("flow")}
+          >
+            Flow
+          </button>
         </div>
       )}
 
-      {/* Tree view */}
-      {viewMode === "tree" ? (
+      {/* Flow / Tree / List views */}
+      {viewMode === "flow" ? (
+        <DebugLogFlowChart
+          entries={filteredEvents}
+          selectedEntry={selectedEntry}
+          onSelect={handleSelect}
+        />
+      ) : viewMode === "tree" ? (
         <SpanTreeView
           entries={filteredEvents}
           selectedEntry={selectedEntry}

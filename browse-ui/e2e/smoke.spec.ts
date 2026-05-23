@@ -182,6 +182,82 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
   expect(cliSessionRequests).toEqual([]);
 });
 
+test("session debug log renders flow chart from CLI hierarchy data", async ({ page }) => {
+  await assertSeededSessionAvailable(page);
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "debug-log/1",
+        session_id: SEEDED_SESSION_ID,
+        from: 0,
+        limit: 100,
+        total: 3,
+        has_more: false,
+        entries: [
+          {
+            idx: 0,
+            timestamp: "2026-05-01T00:00:00.000Z",
+            kind: "turn_start",
+            level: "info",
+            source: "copilot-cli",
+            message: "Turn started",
+            tool_name: null,
+            duration_ms: 240,
+            span_id: "turn-root",
+            parent_span_id: null,
+            status: "ok",
+            attrs: null,
+            redacted: false,
+          },
+          {
+            idx: 1,
+            timestamp: "2026-05-01T00:00:00.050Z",
+            kind: "tool_call",
+            level: "debug",
+            source: "tool",
+            message: "Read debug event file",
+            tool_name: "view",
+            duration_ms: 90,
+            span_id: "tool-child",
+            parent_span_id: "turn-root",
+            status: "ok",
+            attrs: null,
+            redacted: false,
+          },
+          {
+            idx: 2,
+            timestamp: "2026-05-01T00:00:00.120Z",
+            kind: "hook",
+            level: "info",
+            source: "hook",
+            message: "Post tool hook completed",
+            tool_name: null,
+            duration_ms: 30,
+            span_id: "hook-child",
+            parent_span_id: "tool-child",
+            status: "ok",
+            attrs: null,
+            redacted: false,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/#debug-log`);
+  await expect(page.getByRole("tab", { name: "Debug Log" })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByTestId("debug-log-view-flow")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("debug-log-view-flow").click();
+
+  await expect(page.getByTestId("debug-log-flow-chart")).toBeVisible();
+  await expect(page.getByLabel("Debug log flow chart")).toContainText("Turn started");
+  await expect(page.getByLabel("Debug log flow chart")).toContainText("Read debug event file");
+  await expect(page.getByLabel("Debug log flow chart")).toContainText("Post tool hook completed");
+});
+
 test("sessions list click-through opens real UUID session detail", async ({ page }) => {
   await assertSeededSessionAvailable(page);
   await page.goto("/sessions/");

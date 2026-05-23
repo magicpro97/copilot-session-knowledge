@@ -775,6 +775,45 @@ Optional filters: `kind`, `level`, `since` (ISO-8601).
 - `events.jsonl` is streamed line-by-line; symlinks are not followed.
 - All entries pass through `browse.core.redaction.redact_entry` before return.
 
+### CLI Event → BrowseDebugEntry Field Derivation
+
+CLI `events.jsonl` lines carry top-level `id`, `parentId`, and `timestamp`
+fields plus start/complete pairs that share a stable correlation key. The
+mapper preserves this graph instead of inventing one:
+
+- **`span_id`** — derived from the raw `id` field with the following
+  precedence (extends the [Synthetic Span-ID Rule](#synthetic-span-id-rule)):
+  1. If raw `id` is already 16 lowercase hex characters, use it directly.
+  2. If raw `id` is a non-empty string (e.g. a UUID), use
+     `sha1(raw_id)[:16]`. Identical raw ids across events therefore yield
+     identical `span_id`s, so parent/child references survive into the API.
+  3. Otherwise fall back to `synthetic_span_id("cli", idx, 1)`.
+- **`parent_span_id`** — derived from the raw `parentId` using the same
+  precedence; `null` when the source carries no `parentId`.
+- **Paired completion events** — for `hook.end`, `tool.execution_complete`,
+  `assistant.turn_end`/`turn.end`, and `subagent.completed`/`subagent.failed`,
+  `span_id` is reused from the matching start event (paired by
+  `hookInvocationId` / `toolCallId` / `turnId` / `toolCallId|agentId`
+  respectively). This matches the [Paired tool-call completion rule
+  carve-out](#synthetic-span-id-rule) so the UI can collapse start+complete
+  rows into a single visual span.
+- **`duration_ms`** — derived on the completion event:
+  - `subagent.completed` / `subagent.failed`: prefer explicit
+    `data.durationMs` when finite and non-negative; otherwise fall back to
+    `end.timestamp − start.timestamp` in milliseconds.
+  - Other paired completions: computed as
+    `end.timestamp − start.timestamp` in milliseconds, only when both
+    timestamps parse successfully.
+  - Start events and orphan completions retain `duration_ms = null`. Never
+    use `0` as a sentinel for "unknown duration".
+
+### Pagination Cap
+
+`limit` is bounded at **100**, matching the VS Code reference flow chart
+(`PAGE_SIZE = 100` in `chatDebugFlowChartView.ts`). Larger windows must use
+the `from`/`has_more` pagination contract (Show More) rather than a wider
+single request — the backend never loads the whole stream into memory.
+
 ### Canonical Implementation References
 
 - **`browse/routes/debug_log.py`** — route handlers (`handle_session_debug_log`) for both paths.

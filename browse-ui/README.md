@@ -51,8 +51,11 @@ pnpm build
 
 > **Debug Log tab** (`/sessions/[id]`, 5th tab): displays debug events for the most recent
 > operator run — event list table with timestamp/kind/source/duration/status columns, filter
-> toolbar (text, kind, level, status), detail drawer with full field view, and span tree
-> visualization when parent/child spans are present.
+> toolbar (text, kind, level, status), detail drawer with full field view, and three view
+> modes (toggled when span data is present): **List** (flat table), **Tree** (collapsible
+> parent/child hierarchy), and **Flow** (VS Code Agent Debug-style visual event hierarchy
+> built from `span_id`/`parent_span_id`, with node-click detail panel, pan/zoom canvas, and
+> a 100-event pagination limit).
 
 > **Deployment prefix:** Canonical routes are root-relative on both the local Python browse server
 > and the Firebase-hosted deployment. Compatibility redirects from `/v2/*` → `/*` remain for old

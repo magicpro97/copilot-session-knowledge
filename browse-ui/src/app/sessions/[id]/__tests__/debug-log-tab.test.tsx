@@ -981,3 +981,117 @@ describe("DebugLogTab – tree view shares filter state", () => {
     expect(screen.queryByText("Beta event")).not.toBeInTheDocument();
   });
 });
+
+// ── Flow chart view ───────────────────────────────────────────────────────────
+
+describe("DebugLogTab – flow chart view", () => {
+  const entries = [
+    makeEntry({
+      idx: 0,
+      span_id: "rootaaaaaaaaaaaa",
+      parent_span_id: null,
+      kind: "turn_start",
+      message: "Turn root",
+      tool_name: null,
+    }),
+    makeEntry({
+      idx: 1,
+      span_id: "childbbbbbbbbbbb",
+      parent_span_id: "rootaaaaaaaaaaaa",
+      kind: "tool_call",
+      message: "Child tool",
+      tool_name: "bash",
+    }),
+    makeEntry({
+      idx: 2,
+      span_id: "siblingccccccccc",
+      parent_span_id: "rootaaaaaaaaaaaa",
+      kind: "agent_response",
+      message: "Sibling response",
+      tool_name: null,
+      duration_ms: null,
+      timestamp: null,
+    }),
+  ];
+
+  beforeEach(() => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(entries),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("Flow toggle is visible when entries have span_ids", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByTestId("debug-log-view-flow")).toBeInTheDocument();
+  });
+
+  it("renders a flow chart with one node per entry (plus parent edges)", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-node-0")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-node-1")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-node-2")).toBeInTheDocument();
+  });
+
+  it("clicking a flow node opens the existing detail drawer", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    fireEvent.click(screen.getByTestId("debug-log-flow-node-1"));
+    expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
+  });
+
+  it("filter narrows the chart to matching nodes", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const textInput = screen.getByRole("textbox", { name: /filter by text/i });
+    fireEvent.change(textInput, { target: { value: "Sibling" } });
+
+    // Filter strips out parent → all three become orphans; only the matching one remains as a node.
+    expect(screen.getByTestId("debug-log-flow-node-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("debug-log-flow-node-0")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("debug-log-flow-node-1")).not.toBeInTheDocument();
+  });
+
+  it("does not crash when entries are missing parent_span_id, duration, or timestamp", () => {
+    const messyEntries = [
+      makeEntry({
+        idx: 10,
+        span_id: null,
+        parent_span_id: null,
+        duration_ms: null,
+        timestamp: null,
+        tool_name: null,
+        message: "Bare event",
+      }),
+      makeEntry({
+        idx: 11,
+        span_id: "orphanaaaaaaaaaa",
+        parent_span_id: "missing000000000",
+        duration_ms: null,
+        timestamp: null,
+        tool_name: null,
+        message: "Orphan event",
+      }),
+    ];
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(messyEntries),
+      error: null,
+      isLoading: false,
+    });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Flow toggle is only shown when at least one entry has a span_id.
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-chart")).toBeInTheDocument();
+    // Orphan entry rendered, plus synthetic orphans group.
+    expect(screen.getByTestId("debug-log-flow-node-11")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-node-orphan")).toBeInTheDocument();
+  });
+});
