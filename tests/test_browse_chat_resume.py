@@ -134,6 +134,7 @@ def _write_shim() -> str:
         shim_exec.write_text(
             f"#!{sys.executable}\n" + shim_body, encoding="utf-8"
         )
+        # POSIX-only path (os.name != "nt"): set execute bits on the shim.
         shim_exec.chmod(shim_exec.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         return str(shim_exec)
 
