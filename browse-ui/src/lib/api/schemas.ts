@@ -945,7 +945,7 @@ export const operatorSessionListResponseSchema = z.object({
 
 /** A single CLI history session returned by the discovery endpoint. */
 export const cliSessionSchema = z.object({
-  cli_session_id: z.string(),
+  cli_session_id: z.string().uuid(),
   title: z.string(),
   mtime: z.string(),
   workspace_hint: z.string().nullable().optional(),
@@ -961,7 +961,7 @@ export const cliSessionListResponseSchema = z.object({
 
 /** Request body for `POST /api/operator/sessions/adopt`. CLI UUID in JSON body only. */
 export const adoptCliSessionRequestSchema = z.object({
-  cli_session_id: z.string(),
+  cli_session_id: z.string().uuid(),
   workspace: z.string().optional(),
   add_dirs: z.array(z.string()).optional(),
   name: z.string().optional(),

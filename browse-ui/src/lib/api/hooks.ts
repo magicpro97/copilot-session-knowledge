@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
 import { hostFetch, buildHostUrl } from "@/lib/api/client";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
+import { peekToken } from "@/lib/auth";
 import {
   compareResponseSchema,
   communitiesResponseSchema,
@@ -1139,6 +1140,45 @@ export function useDebugLog(
 // ── CLI Session Discovery & Adopt/Confirm ──────────────────────────────────
 
 /**
+ * Returns true when an operator token is available for this host.
+ *
+ * Token semantics mirror those of `hostRequest`:
+ *   - Remote host (`host.base_url` is non-empty): only `host.token` counts.
+ *     `hostRequest` sends `host.token` as the Authorization header for remote
+ *     requests and ignores the local session-storage token entirely.  Allowing
+ *     a local session token to gate a remote probe would let the query fire but
+ *     then fail with 401 because `hostRequest` would send no Authorization.
+ *   - Local host (`host.base_url` is empty): either `host.token` **or** the
+ *     local session-storage token (read via the pure {@link peekToken} helper)
+ *     is sufficient.
+ *
+ * Using `peekToken()` — not `getToken()` — avoids triggering URL ingestion
+ * (`?token=` parsing) and `history.replaceState` side effects during React
+ * render (React Query calls `enabled` synchronously during the render phase).
+ */
+function hasOperatorToken(host: HostProfile): boolean {
+  const isRemote = host.base_url.length > 0;
+  if (isRemote) {
+    return Boolean(host.token);
+  }
+  return Boolean(host.token) || Boolean(peekToken());
+}
+
+/**
+ * Returns `true` when the error should suppress retries on a capability probe.
+ *
+ * - 404: backend doesn't support the endpoint (older version).
+ * - "Unauthorized": `hostRequest`/`hostFetch` throws `new Error("Unauthorized")`
+ *   (not "HTTP 401 …") for any 401 response.  Matching the literal production
+ *   message keeps the predicate narrow — it doesn't swallow generic errors.
+ */
+function isNoRetryProbeError(error: unknown): boolean {
+  return (
+    error instanceof Error && (error.message.includes("404") || error.message === "Unauthorized")
+  );
+}
+
+/**
  * Fetches CLI history sessions from `GET /api/operator/cli-sessions`.
  *
  * 404 responses (older backends that don't support cli_adopt) are surfaced as
@@ -1151,16 +1191,20 @@ export function useCliSessions(host: HostProfile = LOCAL_HOST, enabled = true) {
     queryKey: queryKeys.cliSessions(host.id),
     staleTime: STALE_TIMES.sessions,
     gcTime: CACHE_TIMES.sessions,
-    enabled,
+    enabled: enabled && hasOperatorToken(host),
     retry: (failureCount, error) => {
-      // Don't retry 404 — older backends simply don't have this endpoint.
-      if (error instanceof Error && error.message.includes("404")) return false;
+      // Don't retry unavailable/unauthenticated capability probes.
+      if (isNoRetryProbeError(error)) {
+        return false;
+      }
       return failureCount < 3;
     },
     queryFn: async (): Promise<CliSessionListResponse> => {
       const data = await hostFetch<CliSessionListResponse>(
         withLeadingSlash("/api/operator/cli-sessions"),
-        host
+        host,
+        undefined,
+        { noRedirectOn401: true }
       );
       return cliSessionListResponseSchema.parse(data);
     },
@@ -1175,15 +1219,19 @@ export function useCliSession(id: string, host: HostProfile = LOCAL_HOST, enable
     queryKey: queryKeys.cliSession(id, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
-    enabled: enabled && Boolean(id),
+    enabled: enabled && Boolean(id) && hasOperatorToken(host),
     retry: (failureCount, error) => {
-      if (error instanceof Error && error.message.includes("404")) return false;
+      if (isNoRetryProbeError(error)) {
+        return false;
+      }
       return failureCount < 3;
     },
     queryFn: async (): Promise<CliSession> => {
       const data = await hostFetch<CliSession>(
         withLeadingSlash(`/api/operator/cli-sessions/${encodeURIComponent(id)}`),
-        host
+        host,
+        undefined,
+        { noRedirectOn401: true }
       );
       return cliSessionSchema.parse(data);
     },

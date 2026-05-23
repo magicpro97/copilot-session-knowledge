@@ -145,6 +145,13 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
       placeholderSessionRequests.push(url);
     }
   });
+  // Operator CLI-session endpoint must not fire when no operator token is present.
+  const cliSessionRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/operator/cli-sessions")) {
+      cliSessionRequests.push(request.url());
+    }
+  });
 
   await page.goto(`/sessions/${SEEDED_SESSION_ID}/`);
   await expect(page).toHaveURL(new RegExp(`/sessions/${SEEDED_SESSION_ID}/?(#overview)?$`));
@@ -172,6 +179,7 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
   await page.getByRole("tab", { name: "Checkpoints" }).click();
   await page.waitForLoadState("networkidle");
   expect(placeholderSessionRequests).toEqual([]);
+  expect(cliSessionRequests).toEqual([]);
 });
 
 test("sessions list click-through opens real UUID session detail", async ({ page }) => {

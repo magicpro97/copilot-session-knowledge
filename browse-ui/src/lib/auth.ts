@@ -4,6 +4,21 @@ function hostTokenKey(hostId: string): string {
   return `browse_token_host_${hostId}`;
 }
 
+/**
+ * Pure, side-effect-free token reader.
+ *
+ * Unlike {@link getToken}, this function never reads `window.location.search`,
+ * never writes to `sessionStorage`, and never calls `history.replaceState`.
+ * It is safe to call during React render (e.g., from a React Query `enabled`
+ * guard or any derived selector).
+ */
+export function peekToken(): string {
+  if (typeof window !== "undefined") {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+  }
+  return "";
+}
+
 export function getToken(): string {
   if (typeof window !== "undefined") {
     const params = new URLSearchParams(window.location.search);

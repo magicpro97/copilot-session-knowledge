@@ -46,6 +46,8 @@ import {
   timelineEventsResponseSchema,
   operatorModelEntrySchema,
   operatorModelCatalogResponseSchema,
+  cliSessionSchema,
+  adoptCliSessionRequestSchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -2066,5 +2068,39 @@ describe("sessionDetailResponseSchema – has_operator_runs (issue #518)", () =>
         has_operator_runs: "yes",
       })
     ).toThrow();
+  });
+});
+
+describe("cliSessionSchema", () => {
+  it("accepts a valid UUID cli_session_id", () => {
+    const parsed = cliSessionSchema.parse({
+      cli_session_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      title: "Test session",
+      mtime: "2024-06-01T10:00:00Z",
+    });
+    expect(parsed.cli_session_id).toBe("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+  });
+
+  it("rejects a non-UUID cli_session_id", () => {
+    expect(() =>
+      cliSessionSchema.parse({
+        cli_session_id: "e2e-session-0001-abcdef",
+        title: "Test session",
+        mtime: "2024-06-01T10:00:00Z",
+      })
+    ).toThrow();
+  });
+});
+
+describe("adoptCliSessionRequestSchema", () => {
+  it("accepts a valid UUID cli_session_id", () => {
+    const parsed = adoptCliSessionRequestSchema.parse({
+      cli_session_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    });
+    expect(parsed.cli_session_id).toBe("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+  });
+
+  it("rejects a non-UUID cli_session_id", () => {
+    expect(() => adoptCliSessionRequestSchema.parse({ cli_session_id: "not-a-uuid" })).toThrow();
   });
 });

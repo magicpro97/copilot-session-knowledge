@@ -58,7 +58,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 export async function hostRequest(
   path: string,
   host: HostProfile,
-  init?: RequestInit
+  init?: RequestInit,
+  options?: { noRedirectOn401?: boolean }
 ): Promise<Response> {
   const isRemote = host.base_url.length > 0;
   const base = isRemote
@@ -81,7 +82,7 @@ export async function hostRequest(
   const res = await fetch(urlString, withLoopbackHint(urlString, { ...init, headers }));
 
   if (res.status === 401) {
-    if (!isRemote) {
+    if (!isRemote && !options?.noRedirectOn401) {
       clearToken();
       if (typeof window !== "undefined") {
         window.location.href = "/sessions";
@@ -129,8 +130,9 @@ export async function fetchDebugLog(
 export async function hostFetch<T>(
   path: string,
   host: HostProfile,
-  init?: RequestInit
+  init?: RequestInit,
+  options?: { noRedirectOn401?: boolean }
 ): Promise<T> {
-  const res = await hostRequest(path, host, init);
+  const res = await hostRequest(path, host, init, options);
   return res.json() as Promise<T>;
 }

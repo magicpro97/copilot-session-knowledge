@@ -163,6 +163,7 @@ describe("apiFetch", () => {
 describe("hostFetch", () => {
   beforeEach(() => {
     sessionStorageMock.clear();
+    window.location.href = "http://localhost/v2/sessions";
     vi.resetAllMocks();
   });
 
@@ -270,6 +271,30 @@ describe("hostFetch", () => {
 
     // No redirect for remote hosts
     expect(window.location.href).not.toContain("/v2/sessions/login");
+  });
+
+  it("can suppress local 401 redirect for optional capability probes", async () => {
+    window.location.href = "http://localhost/v2/sessions/e2e-session-0001-abcdef";
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => "Unauthorized",
+    });
+    globalThis.fetch = mockFetch;
+
+    const { hostFetch } = await import("./client");
+    await expect(
+      hostFetch(
+        "/api/operator/cli-sessions/f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        LOCAL_HOST_FIXTURE as never,
+        undefined,
+        {
+          noRedirectOn401: true,
+        }
+      )
+    ).rejects.toThrow("Unauthorized");
+
+    expect(window.location.href).toBe("http://localhost/v2/sessions/e2e-session-0001-abcdef");
   });
 
   it("uses profile token over sessionStorage token for local host with explicit token", async () => {
