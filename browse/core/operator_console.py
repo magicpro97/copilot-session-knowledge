@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import shutil
+import stat as _stat_mod
 import subprocess
 import sys
 import threading
@@ -1866,3 +1867,370 @@ def get_available_models() -> dict:
     Safe for direct API consumption; never exposes internal cache-only keys.
     """
     return probe_available_models()
+
+
+# ── CLI session discovery (issue #528) ───────────────────────────────────────
+# Read-only discovery of real Copilot CLI sessions under
+# ~/.copilot/session-state/<uuid>/workspace.yaml.
+#
+# Security invariants (all enforced, no exceptions):
+# - NEVER write / rename / unlink / chmod / touch anything under the CLI tree.
+# - lstat every UUID dir and workspace.yaml; reject symlinks and non-regular files.
+# - Cap workspace.yaml size at _WORKSPACE_YAML_MAX_BYTES (64 KiB).
+# - Open with O_RDONLY | O_NOFOLLOW (where available); fstat+compare inode/dev.
+# - Exclude operator-console, worktrees, non-UUID dirs, uppercase-UUID dirs.
+# - Return minimal/redacted output: no full paths, no raw cwd, no token values.
+
+_WORKSPACE_YAML_MAX_BYTES: int = 64 * 1024  # 64 KiB hard cap
+_CLI_SESSION_LIMIT: int = 100  # max sessions returned per list call
+
+# Allowlisted flat YAML keys to extract from workspace.yaml
+_WORKSPACE_YAML_KEY_ALLOWLIST = frozenset(
+    {
+        "id",
+        "title",
+        "summary",
+        "description",
+        "workspace",
+        "cwd",
+        "workdir",
+        "branch",
+        "repository",
+        "repo",
+    }
+)
+
+# Reuses the module-level _UUID4_RE for CLI session directory validation.
+# Exposed as a named alias for clarity in the discovery functions.
+_CLI_SESSION_UUID4_RE = _UUID4_RE
+
+
+def _cli_session_state_root() -> Path:
+    """Return the Copilot CLI session-state root.
+
+    Uses COPILOT_SESSION_STATE env var when set (for tests).
+    Otherwise returns the canonical ~/.copilot/session-state.
+    This variable is NOT added to _ENV_ALLOWLIST (subprocess env allowlist);
+    it is only read for Browse operator discovery, never forwarded to CLI.
+    """
+    env_root = os.environ.get("COPILOT_SESSION_STATE", "").strip()
+    if env_root:
+        return Path(env_root)
+    return Path.home() / ".copilot" / "session-state"
+
+
+def _parse_flat_yaml(text: str) -> dict:
+    """Parse a flat (non-nested) YAML subset into a dict.
+
+    Accepts only simple ``key: value`` lines from an allowlisted key set.
+    Skips blank lines, comments, list items, and any line that cannot be
+    split cleanly.  Does NOT handle nested structures, anchors, or
+    multi-line values — this is intentionally minimal and safe.
+
+    Returns dict with string keys and string values (both stripped).
+    """
+    result: dict = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        colon_idx = line.find(":")
+        if colon_idx <= 0:
+            continue
+        key = line[:colon_idx].strip()
+        # Skip keys with spaces/tabs (multi-word keys indicate nested YAML)
+        if not key or " " in key or "\t" in key:
+            continue
+        if key not in _WORKSPACE_YAML_KEY_ALLOWLIST:
+            continue
+        value = line[colon_idx + 1 :].strip()
+        # Strip surrounding single or double quotes
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        result[key] = value
+    return result
+
+
+def _open_read_safe(path_str: str, lstat_result: "os.stat_result", max_bytes: int) -> "bytes | None":
+    """Open a file O_RDONLY (|O_NOFOLLOW where available), fstat-verify, and read.
+
+    Compares inode/dev from *lstat_result* with an fstat after open to guard
+    against TOCTOU race between the earlier lstat and the open call.
+
+    Reads in a loop until EOF so that short-reads on network/FUSE filesystems
+    are handled correctly.  Never reads more than *max_bytes* in total.
+
+    Returns raw bytes (up to *max_bytes*) on success, None on any failure.
+    Closes fd internally via try/finally.
+    """
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = None
+    try:
+        fd = os.open(path_str, flags)
+        open_st = os.fstat(fd)
+        # TOCTOU guard: inode and device must match the earlier lstat result
+        if open_st.st_ino != lstat_result.st_ino or open_st.st_dev != lstat_result.st_dev:
+            return None
+        # Loop until EOF, capping total bytes at max_bytes.
+        chunks: list = []
+        remaining = max_bytes
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _read_workspace_yaml_safe(dir_path: Path) -> "tuple[dict, float] | None":
+    """Read and parse workspace.yaml from a CLI session directory.
+
+    Safety checks (all applied; any failure → return None):
+    1. dir_path must not be a symlink and must be a directory (lstat).
+    2. workspace.yaml must not be a symlink and must be a regular file.
+    3. workspace.yaml size must be <= _WORKSPACE_YAML_MAX_BYTES.
+    4. File is opened with O_RDONLY | O_NOFOLLOW (where available).
+    5. fstat inode/dev must match lstat result (TOCTOU guard).
+    6. Content must decode as UTF-8.
+    7. Returns only allowlisted flat YAML keys (via _parse_flat_yaml).
+
+    Returns a ``(parsed_dict, file_mtime_epoch)`` tuple on success so that
+    callers can use the workspace.yaml file mtime for sorting and display
+    (directory mtime does not change when workspace.yaml contents are
+    rewritten).
+
+    This function is strictly read-only — it never writes, renames, or
+    modifies anything under *dir_path*.
+    """
+    try:
+        dir_st = os.lstat(str(dir_path))
+    except OSError:
+        return None
+    if _stat_mod.S_ISLNK(dir_st.st_mode):
+        return None
+    if not _stat_mod.S_ISDIR(dir_st.st_mode):
+        return None
+
+    yaml_path = dir_path / "workspace.yaml"
+    try:
+        file_st = os.lstat(str(yaml_path))
+    except OSError:
+        return None
+
+    if _stat_mod.S_ISLNK(file_st.st_mode):
+        return None
+    if not _stat_mod.S_ISREG(file_st.st_mode):
+        return None
+    if file_st.st_size > _WORKSPACE_YAML_MAX_BYTES:
+        return None
+
+    raw = _open_read_safe(str(yaml_path), file_st, _WORKSPACE_YAML_MAX_BYTES)
+    if raw is None:
+        return None
+
+    try:
+        text = raw.decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+    return _parse_flat_yaml(text), file_st.st_mtime
+
+
+def _safe_workspace_hint(raw_path: str) -> str:
+    """Return a safe workspace hint with username/home prefix stripped.
+
+    Returns at most the last 2 path components (no full path with username).
+    Strips /home/<user>/, /Users/<user>/, C:\\Users\\<user>\\ prefixes
+    whether or not the path starts with the current user's home dir.
+    """
+    if not raw_path:
+        return ""
+    normalized = raw_path.replace("\\", "/")
+    home_norm = str(Path.home()).replace("\\", "/")
+
+    if normalized.startswith(home_norm + "/"):
+        rel = normalized[len(home_norm) + 1 :]
+    elif normalized == home_norm:
+        return "~"
+    else:
+        # Strip /home/<user>/ or /Users/<user>/ for any username
+        rel = re.sub(r"^/(?:home|Users)/[^/]+/", "", normalized)
+        # Strip Windows C:\Users\<user>\
+        rel = re.sub(r"^[A-Za-z]:/Users/[^/]+/", "", rel)
+
+    parts = [p for p in rel.split("/") if p]
+    if not parts:
+        return ""
+    return "/".join(parts[-2:]) if len(parts) > 2 else "/".join(parts)
+
+
+def _safe_repository_hint(raw_repo: str) -> str:
+    """Return a safe repository hint (owner/repo or just the repo name).
+
+    Accepts:
+    - ``owner/repo``       → returned as-is
+    - ``owner/repo.git``   → returns ``owner/repo``
+    - ``/full/path/repo``  → returns ``repo``
+    - ``repo``             → returned as-is
+    """
+    if not raw_repo:
+        return ""
+    normalized = raw_repo.replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    if not parts:
+        return ""
+    last = parts[-1]
+    if last.endswith(".git"):
+        last = last[:-4]
+    # GitHub-style ``owner/repo`` (exactly 2 parts, no filesystem root)
+    if len(parts) == 2 and not normalized.startswith("/"):
+        return f"{parts[0]}/{last}"
+    return last
+
+
+def _build_cli_session_candidate(entry: Path, name: str) -> "dict | None":
+    """Build a redacted candidate dict for one CLI session directory.
+
+    *entry* is the Path to the UUID-named session directory (already validated
+    to match the UUID4 pattern and not be named "operator-console").
+    *name* is the UUID4 string (same as ``entry.name``).
+
+    Returns a candidate dict on success, None when any safety check fails.
+    The returned dict contains an internal ``_mtime_epoch`` key used by
+    ``discover_cli_sessions`` for sorting; callers remove it before returning
+    to API consumers.
+
+    Read-only: does NOT write/rename/unlink anything under *entry*.
+    """
+    result = _read_workspace_yaml_safe(entry)
+    if result is None:
+        return None
+    yaml_data, file_mtime = result
+
+    # Cross-validate the id field when present
+    yaml_id = yaml_data.get("id", "").strip()
+    if yaml_id:
+        if yaml_id != name:
+            return None  # id mismatch: directory UUID and yaml id differ
+    else:
+        # id absent: accept only when other useful fields provide context
+        useful = any(yaml_data.get(k) for k in ("title", "summary", "workspace", "cwd", "branch", "repository", "repo"))
+        if not useful:
+            return None
+
+    mtime_iso = ""
+    try:
+        mtime_iso = datetime.fromtimestamp(file_mtime, tz=timezone.utc).isoformat()
+    except (OSError, ValueError, OverflowError):
+        pass
+
+    raw_title = (yaml_data.get("title") or yaml_data.get("summary") or yaml_data.get("description") or "").strip()
+    title = redact_secrets(raw_title)[:200]
+
+    raw_ws = (yaml_data.get("workspace") or yaml_data.get("cwd") or yaml_data.get("workdir") or "").strip()
+    workspace_hint = _safe_workspace_hint(raw_ws)
+
+    branch = str(yaml_data.get("branch") or "").strip()[:100]
+
+    raw_repo = str(yaml_data.get("repository") or yaml_data.get("repo") or "").strip()
+    repository = _safe_repository_hint(raw_repo)
+
+    return {
+        "cli_session_id": name,
+        "title": title,
+        "mtime": mtime_iso,
+        "workspace_hint": workspace_hint,
+        "branch": branch,
+        "repository": repository,
+        "_mtime_epoch": file_mtime,  # internal sort key; stripped before API response
+    }
+
+
+def discover_cli_sessions(limit: int = _CLI_SESSION_LIMIT) -> dict:
+    """Discover real Copilot CLI sessions under the session-state root.
+
+    Scans ``~/.copilot/session-state/`` (or the directory pointed to by the
+    COPILOT_SESSION_STATE env var) for UUID4-named subdirectories that contain
+    a readable ``workspace.yaml`` file.
+
+    Returns::
+
+        {"sessions": [...], "count": N, "truncated": bool}
+
+    Each session entry is::
+
+        {
+          "cli_session_id": "<uuid>",
+          "title":          "<str, max 200 chars, secrets redacted>",
+          "mtime":          "<ISO-8601>",
+          "workspace_hint": "<path hint, no username>",
+          "branch":         "<str, max 100 chars>",
+          "repository":     "<str, safe repo name>",
+        }
+
+    Security invariants (strictly enforced, never relaxed):
+    - Read-only: no writes/renames/unlinks/chmod/touch under the CLI tree.
+    - Symlink directories and workspace.yaml symlinks are rejected.
+    - Only lowercase UUID4-named directories are considered.
+    - "operator-console" is always excluded.
+    - Full paths and usernames are stripped from workspace_hint.
+    - Title/summary is scrubbed via redact_secrets.
+    """
+    root = _cli_session_state_root()
+    candidates: list = []
+
+    try:
+        if not root.is_dir():
+            return {"sessions": [], "count": 0, "truncated": False}
+
+        for entry in root.iterdir():
+            name = entry.name
+            if name == "operator-console":
+                continue
+            # Must be lowercase UUID4 — rejects uppercase, non-UUID names, worktrees
+            if not _CLI_SESSION_UUID4_RE.match(name):
+                continue
+            candidate = _build_cli_session_candidate(entry, name)
+            if candidate is not None:
+                candidates.append(candidate)
+    except OSError:
+        pass
+
+    # Sort most recently modified first
+    candidates.sort(key=lambda c: c.get("_mtime_epoch", 0.0), reverse=True)
+    for c in candidates:
+        c.pop("_mtime_epoch", None)
+
+    truncated = len(candidates) > limit
+    result = candidates[:limit]
+    return {"sessions": result, "count": len(result), "truncated": truncated}
+
+
+def get_cli_session_by_id(cli_session_id: str) -> "dict | None":
+    """Look up a single CLI session candidate by its UUID.
+
+    Validates *cli_session_id* against the strict UUID4 pattern before
+    constructing any path.  Returns the candidate dict (mtime_epoch stripped)
+    or None when not found, invalid, or any safety check fails.
+
+    Read-only: delegates all I/O to _build_cli_session_candidate.
+    """
+    if not cli_session_id or not _CLI_SESSION_UUID4_RE.match(cli_session_id):
+        return None
+    root = _cli_session_state_root()
+    entry = root / cli_session_id
+    candidate = _build_cli_session_candidate(entry, cli_session_id)
+    if candidate is not None:
+        candidate.pop("_mtime_epoch", None)
+    return candidate

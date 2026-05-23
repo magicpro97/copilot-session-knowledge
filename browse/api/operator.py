@@ -39,7 +39,9 @@ from browse.core.operator_console import (
     consume_resume_token,
     create_session,
     delete_session,
+    discover_cli_sessions,
     get_available_models,
+    get_cli_session_by_id,
     get_run_status,
     get_session,
     list_runs,
@@ -920,3 +922,72 @@ def handle_debug_log(
             "events": redacted,
         }
     )
+
+
+# ── CLI session discovery (issue #528) ────────────────────────────────────────
+#
+# GET /api/operator/cli-sessions
+# GET /api/operator/cli-sessions/{cli_session_id}
+#
+# Both routes are registered with debug=True so the server dispatcher rejects
+# ?token= query-string access and accepts only Bearer/cookie credentials.
+# The handlers still require a non-empty token because the debug dispatcher has
+# a loopback open-auth compatibility path that dispatches with token="".
+# This prevents CLI session UUIDs and summaries from appearing in access logs
+# or browser history via token-in-URL patterns.
+#
+# These endpoints are strictly read-only: they never write to the CLI session
+# tree.  The core discovery logic lives in browse/core/operator_console.py.
+
+
+@route("/api/operator/cli-sessions", methods=["GET"], debug=True)
+def handle_list_cli_sessions(db, params, token, nonce) -> tuple:
+    """GET /api/operator/cli-sessions — discover real Copilot CLI sessions.
+
+    Scans ``~/.copilot/session-state/`` for UUID4-named directories that
+    contain a readable ``workspace.yaml`` file.  Returns a minimal, redacted
+    summary of each discovered session — never raw CWD paths, checkpoint
+    content, or internal YAML keys outside the allowlist.
+
+    Response shape::
+
+        {
+          "sessions": [
+            {
+              "cli_session_id": "<uuid>",
+              "title":          "<str, max 200 chars, secrets redacted>",
+              "mtime":          "<ISO-8601>",
+              "workspace_hint": "<relative path hint, no username>",
+              "branch":         "<str, max 100 chars>",
+              "repository":     "<str, safe repo name>"
+            },
+            ...
+          ],
+          "count":     N,
+          "truncated": false
+        }
+
+    Auth: Bearer or cookie only (debug=True; ?token= rejected).
+    """
+    if not token:
+        return json_error("authentication required", "AUTH_REQUIRED", 401)
+    result = discover_cli_sessions()
+    return json_ok(result)
+
+
+@route("/api/operator/cli-sessions/{cli_session_id}", methods=["GET"], debug=True)
+def handle_get_cli_session(db, params, token, nonce, cli_session_id: str = "") -> tuple:
+    """GET /api/operator/cli-sessions/{cli_session_id} — get one CLI session.
+
+    Validates *cli_session_id* as a strict lowercase UUID4 before constructing
+    any filesystem path.  Returns the same shape as individual entries in the
+    list endpoint, or 404 when the session is not found.
+
+    Auth: Bearer or cookie only (debug=True; ?token= rejected).
+    """
+    if not token:
+        return json_error("authentication required", "AUTH_REQUIRED", 401)
+    candidate = get_cli_session_by_id(cli_session_id)
+    if candidate is None:
+        return json_error("cli session not found", "NOT_FOUND", 404)
+    return json_ok(candidate)
