@@ -1104,6 +1104,57 @@ impl BrowseDb {
             .collect();
         Ok(rows)
     }
+
+    /// Fetch all embedding rows needed by `GET /api/graph/similarity`.
+    ///
+    /// SQL mirrors Python `_load_rows`:
+    /// ```sql
+    /// SELECT e.id, e.source_id, e.dimensions, e.vector, ke.title, ke.category
+    /// FROM embeddings e
+    /// LEFT JOIN knowledge_entries ke ON ke.id = e.source_id
+    /// WHERE e.source_type = 'knowledge' AND e.vector IS NOT NULL
+    /// ORDER BY e.source_id ASC, e.id DESC
+    /// ```
+    ///
+    /// Returns `Ok(vec![])` when the `embeddings` table does not exist.
+    #[allow(clippy::type_complexity)]
+    pub fn list_embeddings_for_similarity(
+        &self,
+    ) -> anyhow::Result<Vec<(i64, i64, i64, Vec<u8>, Option<String>, Option<String>)>> {
+        let conn = self.read_pool.get()?;
+        // Guard: return empty when embeddings table is absent.
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if exists == 0 {
+            return Ok(vec![]);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.source_id, e.dimensions, e.vector, ke.title, ke.category \
+             FROM embeddings e \
+             LEFT JOIN knowledge_entries ke ON ke.id = e.source_id \
+             WHERE e.source_type = 'knowledge' AND e.vector IS NOT NULL \
+             ORDER BY e.source_id ASC, e.id DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
