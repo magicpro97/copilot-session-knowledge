@@ -49,32 +49,39 @@ fn make_vecs_gauss(seed: u64, n: usize, dims: usize) -> Vec<Vec<f64>> {
 //   xs, ys = pca_2d(vecs)
 //
 // Bits verified with `struct.pack('>d', v).hex()`.
+//
+// Note: f64::from_bits is not const-stable until Rust 1.83 (MSRV is 1.75),
+// so these are runtime functions instead of const arrays.
 
-const SMALL_XS: &[f64] = &[
-    f64::from_bits(0xbfd04c044b532beb),
-    f64::from_bits(0x4001645940ecfbc2),
-    f64::from_bits(0xc008a589ca3e69ca),
-    f64::from_bits(0x3fd51d7aaea840e2),
-    f64::from_bits(0xbfba8a17bc252796),
-    f64::from_bits(0x3fb568f66567b2c6),
-    f64::from_bits(0x4001ec87ffe3193c),
-    f64::from_bits(0x3fd9b9ae6eabc8b4),
-    f64::from_bits(0xbff43738dbae4a5c),
-    f64::from_bits(0xbfe0e05a6112d84f),
-];
+fn small_xs() -> [f64; 10] {
+    [
+        f64::from_bits(0xbfd04c044b532beb),
+        f64::from_bits(0x4001645940ecfbc2),
+        f64::from_bits(0xc008a589ca3e69ca),
+        f64::from_bits(0x3fd51d7aaea840e2),
+        f64::from_bits(0xbfba8a17bc252796),
+        f64::from_bits(0x3fb568f66567b2c6),
+        f64::from_bits(0x4001ec87ffe3193c),
+        f64::from_bits(0x3fd9b9ae6eabc8b4),
+        f64::from_bits(0xbff43738dbae4a5c),
+        f64::from_bits(0xbfe0e05a6112d84f),
+    ]
+}
 
-const SMALL_YS: &[f64] = &[
-    f64::from_bits(0xbff03375c6687b3a),
-    f64::from_bits(0xbfe72ca788ccc9fc),
-    f64::from_bits(0xbfcdfc751ff2209e),
-    f64::from_bits(0x3ff37086a6ec271d),
-    f64::from_bits(0x40046a840ab14d8a),
-    f64::from_bits(0xbff0ea985c382ab7),
-    f64::from_bits(0xbfcdc83520edc33e),
-    f64::from_bits(0x3fd73ca2f81e216a),
-    f64::from_bits(0xbfe42bcc24c1598a),
-    f64::from_bits(0xbfce8ed1c694b2da),
-];
+fn small_ys() -> [f64; 10] {
+    [
+        f64::from_bits(0xbff03375c6687b3a),
+        f64::from_bits(0xbfe72ca788ccc9fc),
+        f64::from_bits(0xbfcdfc751ff2209e),
+        f64::from_bits(0x3ff37086a6ec271d),
+        f64::from_bits(0x40046a840ab14d8a),
+        f64::from_bits(0xbff0ea985c382ab7),
+        f64::from_bits(0xbfcdc83520edc33e),
+        f64::from_bits(0x3fd73ca2f81e216a),
+        f64::from_bits(0xbfe42bcc24c1598a),
+        f64::from_bits(0xbfce8ed1c694b2da),
+    ]
+}
 
 // ── Golden constants: large case (n=600, dims=4, input seed=888) — first 20 ──
 //
@@ -82,52 +89,59 @@ const SMALL_YS: &[f64] = &[
 //   rng = random.Random(888)
 //   vecs = [[rng.gauss(0,1) for _ in range(4)] for _ in range(600)]
 //   xs, ys = pca_2d(vecs)
+//
+// Note: f64::from_bits is not const-stable until Rust 1.83 (MSRV is 1.75),
+// so these are runtime functions instead of const arrays.
 
-const LARGE_XS_20: &[f64] = &[
-    f64::from_bits(0x3fe75568e12cf286),
-    f64::from_bits(0x3fe84f4dbc62465b),
-    f64::from_bits(0x3ff56db716dacca8),
-    f64::from_bits(0xbfb703dd80a2013d),
-    f64::from_bits(0x3fd9348601fca150),
-    f64::from_bits(0xbff1e90c041afe01),
-    f64::from_bits(0xbffadc94b8636a8f),
-    f64::from_bits(0xbfe5e34df485206f),
-    f64::from_bits(0x3fae75b86556800b),
-    f64::from_bits(0x3ffdc86a7b472045),
-    f64::from_bits(0xbff946a77bf3f9f9),
-    f64::from_bits(0xbfad86883baf1f68),
-    f64::from_bits(0xbfc2d2c7ac34a7b9),
-    f64::from_bits(0xbfeb38bfb25753de),
-    f64::from_bits(0xbfe85cedde3531dd),
-    f64::from_bits(0x4002209e5172d8bf),
-    f64::from_bits(0xbfeedbcae9ce2852),
-    f64::from_bits(0x3fda40c1ed51561a),
-    f64::from_bits(0x3fd67d0636e37cbb),
-    f64::from_bits(0x3ff4c883087531cd),
-];
+fn large_xs_20() -> [f64; 20] {
+    [
+        f64::from_bits(0x3fe75568e12cf286),
+        f64::from_bits(0x3fe84f4dbc62465b),
+        f64::from_bits(0x3ff56db716dacca8),
+        f64::from_bits(0xbfb703dd80a2013d),
+        f64::from_bits(0x3fd9348601fca150),
+        f64::from_bits(0xbff1e90c041afe01),
+        f64::from_bits(0xbffadc94b8636a8f),
+        f64::from_bits(0xbfe5e34df485206f),
+        f64::from_bits(0x3fae75b86556800b),
+        f64::from_bits(0x3ffdc86a7b472045),
+        f64::from_bits(0xbff946a77bf3f9f9),
+        f64::from_bits(0xbfad86883baf1f68),
+        f64::from_bits(0xbfc2d2c7ac34a7b9),
+        f64::from_bits(0xbfeb38bfb25753de),
+        f64::from_bits(0xbfe85cedde3531dd),
+        f64::from_bits(0x4002209e5172d8bf),
+        f64::from_bits(0xbfeedbcae9ce2852),
+        f64::from_bits(0x3fda40c1ed51561a),
+        f64::from_bits(0x3fd67d0636e37cbb),
+        f64::from_bits(0x3ff4c883087531cd),
+    ]
+}
 
-const LARGE_YS_20: &[f64] = &[
-    f64::from_bits(0x3fe3abd4d24192b8),
-    f64::from_bits(0xbfbc469959f9b9ac),
-    f64::from_bits(0xbffdc87a0b9e355d),
-    f64::from_bits(0x3fe5b7c7a179cd6d),
-    f64::from_bits(0xbfc59dc04807b00f),
-    f64::from_bits(0xbffd1db49873ca69),
-    f64::from_bits(0x3fd7b2a3b616a651),
-    f64::from_bits(0xbff125c5874604c5),
-    f64::from_bits(0x3fa408a2af334272),
-    f64::from_bits(0xbffa414fc009b22e),
-    f64::from_bits(0xbff1633e9417becf),
-    f64::from_bits(0x3ff4d7f137cbc231),
-    f64::from_bits(0x3fe9d3fd4b1037cc),
-    f64::from_bits(0x3ff790f140a544f2),
-    f64::from_bits(0xbff5f53296fc26d2),
-    f64::from_bits(0xbfeabca6ae8ae8bc),
-    f64::from_bits(0xbfea1622317ec86e),
-    f64::from_bits(0x3ff01955361ef1dc),
-    f64::from_bits(0x3fe055c04f6aa84f),
-    f64::from_bits(0xbfe2a45ed0435b1a),
-];
+fn large_ys_20() -> [f64; 20] {
+    [
+        f64::from_bits(0x3fe3abd4d24192b8),
+        f64::from_bits(0xbfbc469959f9b9ac),
+        f64::from_bits(0xbffdc87a0b9e355d),
+        f64::from_bits(0x3fe5b7c7a179cd6d),
+        f64::from_bits(0xbfc59dc04807b00f),
+        f64::from_bits(0xbffd1db49873ca69),
+        f64::from_bits(0x3fd7b2a3b616a651),
+        f64::from_bits(0xbff125c5874604c5),
+        f64::from_bits(0x3fa408a2af334272),
+        f64::from_bits(0xbffa414fc009b22e),
+        f64::from_bits(0xbff1633e9417becf),
+        f64::from_bits(0x3ff4d7f137cbc231),
+        f64::from_bits(0x3fe9d3fd4b1037cc),
+        f64::from_bits(0x3ff790f140a544f2),
+        f64::from_bits(0xbff5f53296fc26d2),
+        f64::from_bits(0xbfeabca6ae8ae8bc),
+        f64::from_bits(0xbfea1622317ec86e),
+        f64::from_bits(0x3ff01955361ef1dc),
+        f64::from_bits(0x3fe055c04f6aa84f),
+        f64::from_bits(0xbfe2a45ed0435b1a),
+    ]
+}
 
 // ── Golden constants: render-cap indices (n=2500, max=2000, seed=42) — first 20
 //
@@ -149,9 +163,11 @@ fn projection_parity_small_n10_dims4() {
     assert_eq!(xs.len(), 10, "xs length");
     assert_eq!(ys.len(), 10, "ys length");
 
+    let want_xs = small_xs();
+    let want_ys = small_ys();
     for i in 0..10 {
-        assert_near(xs[i], SMALL_XS[i], &format!("small xs[{i}]"));
-        assert_near(ys[i], SMALL_YS[i], &format!("small ys[{i}]"));
+        assert_near(xs[i], want_xs[i], &format!("small xs[{i}]"));
+        assert_near(ys[i], want_ys[i], &format!("small ys[{i}]"));
     }
 }
 
@@ -166,9 +182,11 @@ fn projection_parity_large_n600_dims4_sample_path() {
     assert_eq!(xs.len(), 600, "xs length");
     assert_eq!(ys.len(), 600, "ys length");
 
+    let want_xs = large_xs_20();
+    let want_ys = large_ys_20();
     for i in 0..20 {
-        assert_near(xs[i], LARGE_XS_20[i], &format!("large xs[{i}]"));
-        assert_near(ys[i], LARGE_YS_20[i], &format!("large ys[{i}]"));
+        assert_near(xs[i], want_xs[i], &format!("large xs[{i}]"));
+        assert_near(ys[i], want_ys[i], &format!("large ys[{i}]"));
     }
 }
 
