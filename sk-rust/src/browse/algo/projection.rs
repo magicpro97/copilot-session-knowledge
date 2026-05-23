@@ -1,18 +1,24 @@
 //! Pure-Rust port of `browse/core/projection.py` — PCA-to-2D projection.
 //!
-//! No I/O, no cache, no DB, no RNG dependency.
+//! No I/O, no cache, no DB.
 //!
-//! ## Known parity differences from Python
+//! ## CPython parity
 //!
-//! 1. **Power-iteration init**: Rust uses a deterministic fixed init vector
-//!    (all-ones normalised, then second standard basis for the deflated pass)
-//!    instead of Python's `random.gauss`-seeded vector.  Eigenvectors may
-//!    therefore differ by sign.
+//! This module matches Python's `projection.pca_2d` output bit-for-bit on
+//! IEEE 754 platforms (verified by the `projection_parity_test` integration
+//! test harness):
 //!
-//! 2. **PCA sample selection**: when `n > PCA_SAMPLE`, Rust takes the *first*
-//!    `PCA_SAMPLE` centered rows; Python uses
-//!    `random.Random(99).sample(range(n), PCA_SAMPLE)`.  Projection
-//!    coordinates may differ numerically for large datasets.
+//! - **Power-iteration init**: uses `cpyrand::Random::new(seed).gauss(0.0, 1.0)`
+//!   for each dimension (seed 1 for e1, seed 2 for e2 on the deflated sample),
+//!   matching Python's `random.Random(seed).gauss(0, 1)`.
+//!
+//! - **PCA sample selection**: when `n > PCA_SAMPLE`, uses
+//!   `cpyrand::Random::new(99).sample_indices(n, PCA_SAMPLE)` preserving the
+//!   CPython `random.sample(range(n), PCA_SAMPLE)` order.
+//!
+//! - **Render-cap**: `sample_render_indices(n, max_render)` uses
+//!   `cpyrand::Random::new(42).sample_indices(n, max_render)` when
+//!   `n > max_render`, matching Python's `random.Random(42).sample(raw, MAX_RENDER)`.
 
 /// Number of rows sampled from the full data to compute eigenvectors.
 pub const PCA_SAMPLE: usize = 500;
@@ -133,8 +139,8 @@ pub fn power_iter(x: &[Vec<f64>], n_iters: usize, init: &[f64]) -> Vec<f64> {
 
 /// Project *vectors* (equal-length rows) to 2D via two-component PCA.
 ///
-/// Mirrors `projection.pca_2d` from Python.  Uses a fixed deterministic init
-/// instead of `random.gauss`; eigenvectors may differ by sign from Python.
+/// Matches `projection.pca_2d` from Python bit-for-bit on IEEE 754 platforms.
+/// Uses `cpyrand` for both power-iteration init and PCA sample selection.
 ///
 /// Returns `(xs, ys)`.
 pub fn pca_2d(vectors: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>) {
@@ -167,24 +173,33 @@ pub fn pca_2d(vectors: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>) {
         .map(|v| v.iter().zip(&mean).map(|(x, m)| x - m).collect())
         .collect();
 
-    // Sample for eigenvector computation (deterministic: first PCA_SAMPLE rows).
+    // Sample for eigenvector computation.
+    // Matches Python: `random.Random(99).sample(range(n), PCA_SAMPLE)`.
+    let sample_buf: Vec<Vec<f64>>;
     let sample: &[Vec<f64>] = if n > PCA_SAMPLE {
-        &centered[..PCA_SAMPLE]
+        let idxs = super::cpyrand::Random::new(99).sample_indices(n, PCA_SAMPLE);
+        sample_buf = idxs.into_iter().map(|i| centered[i].clone()).collect();
+        &sample_buf
     } else {
         &centered
     };
 
-    // First eigenvector: all-ones init (normalised inside power_iter).
-    let init_e1 = vec![1.0_f64; n_dims];
+    // First eigenvector init: matches Python `random.Random(1).gauss(0, 1)` × n_dims.
+    let init_e1: Vec<f64> = {
+        let mut rng = super::cpyrand::Random::new(1);
+        (0..n_dims).map(|_| rng.gauss(0.0, 1.0)).collect()
+    };
     let e1 = power_iter(sample, POWER_ITERS, &init_e1);
     if norm(&e1) < 1e-12 {
         return (vec![0.0_f64; n], vec![0.0_f64; n]);
     }
 
-    // Second eigenvector: deflate then use the second standard basis vector.
+    // Second eigenvector init on the deflated sample: seed 2.
     let sample_d = deflate(sample, &e1);
-    let mut init_e2 = vec![0.0_f64; n_dims];
-    init_e2[1] = 1.0; // second standard basis
+    let init_e2: Vec<f64> = {
+        let mut rng = super::cpyrand::Random::new(2);
+        (0..n_dims).map(|_| rng.gauss(0.0, 1.0)).collect()
+    };
     let e2 = power_iter(&sample_d, POWER_ITERS, &init_e2);
 
     let xs: Vec<f64> = centered.iter().map(|row| dot(row, &e1)).collect();
@@ -195,6 +210,23 @@ pub fn pca_2d(vectors: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>) {
     };
 
     (xs, ys)
+}
+
+/// Return rendering-cap indices for *n* points capped at *max_render*.
+///
+/// When `n > max_render`, selects `max_render` indices via
+/// `cpyrand::Random::new(42).sample_indices(n, max_render)`, matching
+/// Python's `random.Random(42).sample(raw, MAX_RENDER)`.
+/// When `n <= max_render`, returns the identity range `0..n`.
+///
+/// The endpoint may call this to determine which subset to render without
+/// changing projection order or any cache/HTTP behaviour.
+pub fn sample_render_indices(n: usize, max_render: usize) -> Vec<usize> {
+    if n > max_render {
+        super::cpyrand::Random::new(42).sample_indices(n, max_render)
+    } else {
+        (0..n).collect()
+    }
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
