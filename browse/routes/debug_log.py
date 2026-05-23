@@ -472,13 +472,14 @@ def _handle_cli_session_debug_log(db, params, token, nonce, session_id: str = ""
     Validates session_id, locates events.jsonl, streams and paginates events.
     Returns BrowseDebugEntry list per the DebugLogResponse contract (WBS-428).
 
-    Auth is enforced by the server dispatcher (debug=True).  An explicit token
-    check here prevents open-auth loopback bypass on zero-token servers.
+    Auth is fully enforced by the server dispatcher (debug=True gate in
+    browse/core/server.py): Bearer/cookie only; ?token= rejected; static-slot
+    → 403; non-loopback zero-token server → 403; loopback zero-token server
+    → open-auth allowed (token passed in as "").  Do NOT add a handler-level
+    token check here — it would break the legitimate open-auth loopback flow
+    used by the default hosted launcher.
     """
     from browse.core.redaction import redact_entry  # noqa: PLC0415
-
-    if not token:
-        return json_error("authentication required", "AUTH_REQUIRED", 401)
 
     # ── Validate session_id (no path leakage on bad input) ────────────────────
     if not session_id or not _UUID4_RE.match(session_id):

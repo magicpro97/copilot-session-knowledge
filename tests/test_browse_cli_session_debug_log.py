@@ -45,6 +45,7 @@ Tests:
   CSD38: Attrs extraction: model populated from data.newModel
   CSD39: Content-Type is application/json for all responses
   CSD40: Path traversal in session_id rejected as 404
+  CSD41: Open-auth loopback (token="") + no Authorization → 200 with entries
 """
 
 import http.client
@@ -541,6 +542,27 @@ def test_cookie_auth():
         server.shutdown()
 
 
+def test_open_auth_loopback_200():
+    """CSD41: Open-auth loopback (token="") + no Authorization → 200 with entries.
+
+    Regression for the hosted-launcher / default local-backend flow:
+    browse/core/server.py debug gate allows loopback zero-token servers
+    through with token="" and must NOT be blocked by a handler-level check.
+    """
+    server, port = _make_test_server(token="")
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start"), _cli_event("session.info")])
+        resp = _no_auth(port, _debug_path(sid, qs="limit=1"))
+        body = resp.read()
+        test("CSD41 open-auth loopback → 200", resp.status == 200)
+        data = json.loads(body)
+        test("CSD41 entries present", isinstance(data.get("entries"), list) and len(data["entries"]) >= 1)
+        test("CSD41 schema_version=1", data.get("schema_version") == "1")
+    finally:
+        server.shutdown()
+
+
 def test_redaction_bearer_token():
     """CSD25: Bearer token in message → redacted=True, token replaced."""
     from browse.routes.debug_log import _map_cli_event_line  # noqa: PLC0415
@@ -749,6 +771,7 @@ def _run_all() -> None:
     test_query_token_rejected()
     test_wrong_bearer_401()
     test_cookie_auth()
+    test_open_auth_loopback_200()
     test_redaction_bearer_token()
     test_redaction_macos_path()
     test_event_kind_mapping()
