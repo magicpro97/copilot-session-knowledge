@@ -33,6 +33,8 @@
 
 import { z } from "zod";
 
+import { withLoopbackHint } from "@/lib/http/loopback";
+
 // ── Ticket payload schema ──────────────────────────────────────────────────────
 
 export const pairingTicketPayloadSchema = z.object({
@@ -184,13 +186,16 @@ export async function verifyPairingTicketServer(
   const url = `${backendBaseUrl.replace(/\/$/, "")}/.well-known/browse-host/verify`;
   let resp: Response;
   try {
-    resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket, max_age_seconds: maxAgeSeconds }),
-      // Short timeout — if the server is unreachable, fail fast.
-      signal: AbortSignal.timeout(5000),
-    });
+    resp = await fetch(
+      url,
+      withLoopbackHint(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket, max_age_seconds: maxAgeSeconds }),
+        // Short timeout — if the server is unreachable, fail fast.
+        signal: AbortSignal.timeout(5000),
+      })
+    );
   } catch (err) {
     return {
       ok: false,

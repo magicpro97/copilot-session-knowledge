@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { buildHostUrl } from "@/lib/api/client";
+import { withLoopbackHint } from "@/lib/http/loopback";
 import { getTelegramBotUrl } from "@/lib/api/broker-client";
 import type { HostProfile } from "@/lib/api/types";
 import {
@@ -91,11 +92,15 @@ async function probeRemoteHost(baseUrl: string, token: string): Promise<string |
     const probeUrl = buildHostUrl(baseUrl, "/api/operator/capabilities");
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(probeUrl.toString(), {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(8000),
-    });
+    const probeUrlString = probeUrl.toString();
+    const res = await fetch(
+      probeUrlString,
+      withLoopbackHint(probeUrlString, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(8000),
+      })
+    );
     if (res.status === 401) {
       return "Authentication failed (401) — the token was rejected. Check the auth token.";
     }

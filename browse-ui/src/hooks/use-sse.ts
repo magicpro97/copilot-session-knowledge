@@ -11,6 +11,7 @@ import {
 } from "react";
 import type { LiveEvent } from "@/lib/api/types";
 import { liveEventSchema } from "@/lib/api/schemas";
+import { withLoopbackHint } from "@/lib/http/loopback";
 
 type SseTransport = "eventsource" | "fetch";
 
@@ -66,10 +67,13 @@ export function useSSE(url: string, options?: UseSseOptions) {
           if (options.authToken) {
             headers["Authorization"] = `Bearer ${options.authToken}`;
           }
-          const res = await fetch(url, {
-            headers,
-            signal: controller.signal,
-          });
+          const res = await fetch(
+            url,
+            withLoopbackHint(url, {
+              headers,
+              signal: controller.signal,
+            })
+          );
           if (!res.ok || !res.body) {
             setStatus("closed");
             return;

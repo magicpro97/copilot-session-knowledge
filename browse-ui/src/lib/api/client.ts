@@ -1,5 +1,6 @@
 import { getToken, clearToken } from "@/lib/auth";
 import type { HostProfile } from "@/lib/api/types";
+import { withLoopbackHint } from "@/lib/http/loopback";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
@@ -73,7 +74,11 @@ export async function hostRequest(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const res = await fetch(url.toString(), { ...init, headers });
+  // Chrome LNA (Chrome 138+) blocks fetches from an HTTPS page to a loopback
+  // target unless `targetAddressSpace: "loopback"` is set. `withLoopbackHint`
+  // is a no-op for non-loopback targets, HTTP page origins, and SSR.
+  const urlString = url.toString();
+  const res = await fetch(urlString, withLoopbackHint(urlString, { ...init, headers }));
 
   if (res.status === 401) {
     if (!isRemote) {

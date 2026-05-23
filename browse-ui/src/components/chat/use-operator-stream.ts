@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CopilotStreamFrame, CopilotStatusFrame, HostProfile } from "@/lib/api/types";
 import { createOperatorStreamPath, createOperatorStreamUrl } from "@/lib/api/hooks";
+import { withLoopbackHint } from "@/lib/http/loopback";
 
 export type StreamStatus = "idle" | "connecting" | "streaming" | "done" | "error";
 
@@ -118,7 +119,7 @@ export function useOperatorStream(
       }
       const headers = Object.keys(authHeaders).length > 0 ? authHeaders : undefined;
 
-      fetch(url, { headers, signal: controller.signal })
+      fetch(url, withLoopbackHint(url, { headers, signal: controller.signal }))
         .then(async (res) => {
           if (!res.ok || !res.body) {
             setStatus("error");

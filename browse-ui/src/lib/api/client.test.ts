@@ -294,3 +294,109 @@ describe("hostFetch", () => {
     expect(calledHeaders?.get("Authorization")).not.toContain("session-storage-token");
   });
 });
+
+describe("hostRequest LNA loopback hint (issue #517)", () => {
+  const LOOPBACK_HTTPS_HOST = {
+    id: "local-https",
+    label: "Local HTTPS",
+    base_url: "https://127.0.0.1:8765",
+    token: "loopback-token",
+    cli_kind: "copilot",
+    is_default: false,
+  };
+
+  const REMOTE_HTTPS_HOST = {
+    id: "remote",
+    label: "Remote",
+    base_url: "https://xyz.ngrok.io",
+    token: "remote-token",
+    cli_kind: "copilot",
+    is_default: false,
+  };
+
+  beforeEach(() => {
+    sessionStorageMock.clear();
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // Restore default window for other suites.
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        location: {
+          origin: "http://localhost",
+          search: "",
+          href: "http://localhost/v2/sessions",
+        },
+        history: { replaceState: vi.fn() },
+      },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  function setHttpsPage(): void {
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        location: {
+          protocol: "https:",
+          origin: "https://agents.linhngo.dev",
+          search: "",
+          href: "https://agents.linhngo.dev/v2/sessions",
+        },
+        history: { replaceState: vi.fn() },
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  it("sets targetAddressSpace=loopback when fetching a loopback host from an HTTPS page", async () => {
+    setHttpsPage();
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    globalThis.fetch = mockFetch;
+
+    const { hostFetch } = await import("./client");
+    await hostFetch("/api/operator/capabilities", LOOPBACK_HTTPS_HOST as never);
+
+    const init = mockFetch.mock.calls[0][1] as { targetAddressSpace?: string };
+    expect(init.targetAddressSpace).toBe("loopback");
+  });
+
+  it("does NOT set targetAddressSpace for remote (non-loopback) hosts", async () => {
+    setHttpsPage();
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    globalThis.fetch = mockFetch;
+
+    const { hostFetch } = await import("./client");
+    await hostFetch("/api/operator/capabilities", REMOTE_HTTPS_HOST as never);
+
+    const init = mockFetch.mock.calls[0][1] as { targetAddressSpace?: string };
+    expect(init.targetAddressSpace).toBeUndefined();
+  });
+
+  it("does NOT set targetAddressSpace when the page origin is not HTTPS", async () => {
+    // Default window has protocol unset (treated as non-https).
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    globalThis.fetch = mockFetch;
+
+    const { hostFetch } = await import("./client");
+    await hostFetch("/api/operator/capabilities", LOOPBACK_HTTPS_HOST as never);
+
+    const init = mockFetch.mock.calls[0][1] as { targetAddressSpace?: string };
+    expect(init.targetAddressSpace).toBeUndefined();
+  });
+});
