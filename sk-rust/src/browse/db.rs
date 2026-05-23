@@ -1156,6 +1156,79 @@ impl BrowseDb {
         Ok(rows)
     }
 
+    // ── Embeddings projection helpers ─────────────────────────────────────────
+
+    /// Count `embeddings` rows with `source_type='knowledge'`.
+    ///
+    /// Mirrors Python `_count_db_embeddings`. Returns `0` when the table is
+    /// absent or any error occurs.
+    pub fn count_embeddings_for_projection(&self) -> i64 {
+        let conn = match self.read_pool.get() {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        conn.query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE source_type = 'knowledge'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Load raw embedding rows for 2-D projection.
+    ///
+    /// Mirrors Python `_load_raw`:
+    /// ```sql
+    /// SELECT e.id, e.source_id, e.dimensions, e.vector, ke.category, ke.title
+    /// FROM embeddings e
+    /// LEFT JOIN knowledge_entries ke
+    ///        ON ke.id = e.source_id AND e.source_type = 'knowledge'
+    /// WHERE e.source_type = 'knowledge'
+    ///   AND e.vector IS NOT NULL
+    /// ```
+    ///
+    /// Returns `(id, source_id, dimensions, vector_blob, category, title)`.
+    /// Returns `Ok(vec![])` when the `embeddings` table does not exist.
+    #[allow(clippy::type_complexity)]
+    pub fn load_raw_embeddings_for_projection(
+        &self,
+    ) -> anyhow::Result<Vec<(i64, i64, i64, Vec<u8>, Option<String>, Option<String>)>> {
+        let conn = self.read_pool.get()?;
+        // Guard: return empty when embeddings table is absent.
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if exists == 0 {
+            return Ok(vec![]);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.source_id, e.dimensions, e.vector, ke.category, ke.title \
+             FROM embeddings e \
+             LEFT JOIN knowledge_entries ke \
+                    ON ke.id = e.source_id AND e.source_type = 'knowledge' \
+             WHERE e.source_type = 'knowledge' \
+               AND e.vector IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Returns `true` when the `knowledge_entries` table exists in sqlite_master.
     pub fn knowledge_entries_table_exists(&self) -> anyhow::Result<bool> {
         let conn = self.read_pool.get()?;
