@@ -1,0 +1,78 @@
+{
+  "nodes": [
+    {
+      "id": "e-104",
+      "kind": "entry",
+      "label": "Lint Tool",
+      "wing": "backend",
+      "room": "devops",
+      "category": "tool",
+      "color": "#20c997"
+    },
+    {
+      "id": "e-103",
+      "kind": "entry",
+      "label": "CSS Discovery",
+      "wing": "frontend",
+      "room": "ui",
+      "category": "discovery",
+      "color": "#cc5de8"
+    },
+    {
+      "id": "e-102",
+      "kind": "entry",
+      "label": "UI Decision",
+      "wing": "frontend",
+      "room": "ui",
+      "category": "decision",
+      "color": "#339af0"
+    },
+    {
+      "id": "e-101",
+      "kind": "entry",
+      "label": "Auth Pattern",
+      "wing": "backend",
+      "room": "auth",
+      "category": "pattern",
+      "color": "#51cf66"
+    },
+    {
+      "id": "e-100",
+      "kind": "entry",
+      "label": "Auth Bug",
+      "wing": "backend",
+      "room": "auth",
+      "category": "mistake",
+      "color": "#ff6b6b"
+    }
+  ],
+  "edges": [
+    {
+      "source": "e-100",
+      "target": "e-101",
+      "relation_type": "RESOLVED_BY",
+      "confidence": 0.88
+    },
+    {
+      "source": "e-101",
+      "target": "e-102",
+      "relation_type": "TAG_OVERLAP",
+      "confidence": 0.55
+    },
+    {
+      "source": "e-100",
+      "target": "e-103",
+      "relation_type": "SAME_SESSION",
+      "confidence": 0.7
+    }
+  ],
+  "truncated": false,
+  "meta": {
+    "edge_source": "knowledge_relations",
+    "relation_types": [
+      "RESOLVED_BY",
+      "SAME_SESSION",
+      "TAG_OVERLAP"
+    ]
+  }
+}
