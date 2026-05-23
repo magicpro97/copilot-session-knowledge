@@ -351,7 +351,7 @@ describe("DiagnosticPanel", () => {
     );
   });
 
-  it("shows PNA-blocked panel when daemon states are all unknown on hosted origin", () => {
+  it("shows PNA-blocked panel when HTTP-origin daemon states are all unknown on hosted origin", () => {
     render(
       <DiagnosticPanel
         compat={null}
@@ -367,6 +367,61 @@ describe("DiagnosticPanel", () => {
     const panel = screen.getByTestId("diagnostic-panel");
     expect(panel).toHaveTextContent(/Browser blocking local backend connection/);
     expect(panel).toHaveTextContent(/127\.0\.0\.1:8765/);
+  });
+
+  it("shows HTTPS-local-backend-required panel when HTTPS candidates return unknown on hosted origin", () => {
+    render(
+      <DiagnosticPanel
+        compat={null}
+        probeResult={{
+          status: "unavailable",
+          reasons: [
+            { url: "https://127.0.0.1:8765", reason: "network-error", daemonState: "unknown" },
+            { url: "https://localhost:8765", reason: "network-error", daemonState: "unknown" },
+          ],
+        }}
+        isHosted={true}
+      />
+    );
+    const panel = screen.getByTestId("diagnostic-panel");
+    expect(panel).toHaveAttribute(
+      "aria-label",
+      "Connectivity diagnostic: HTTPS local backend required"
+    );
+    // Must include TLS/mkcert guidance
+    expect(panel).toHaveTextContent(/mkcert/);
+    // Must include HTTPS tunnel guidance
+    expect(panel).toHaveTextContent(/ngrok http 8765/);
+    // Must mention opening local URL directly
+    expect(panel).toHaveTextContent(/127\.0\.0\.1:8765/);
+    // Must NOT claim daemon is not running
+    expect(panel).not.toHaveTextContent(/not running/i);
+    // Must reference issue #36 (future HTTPS backend) or mkcert instructions
+    expect(panel).toHaveTextContent(/#36/);
+  });
+
+  it("HTTPS-unknown panel does not instruct --hosted-bootstrap only", () => {
+    render(
+      <DiagnosticPanel
+        compat={null}
+        probeResult={{
+          status: "unavailable",
+          reasons: [
+            { url: "https://127.0.0.1:8765", reason: "network-error", daemonState: "unknown" },
+            { url: "https://localhost:8765", reason: "network-error", daemonState: "unknown" },
+          ],
+        }}
+        isHosted={true}
+      />
+    );
+    const panel = screen.getByTestId("diagnostic-panel");
+    // Panel must not solely instruct `--hosted-bootstrap` as the only fix
+    // (backend is HTTPS-absent, not a PNA header issue)
+    expect(panel).not.toHaveAttribute("aria-label", "Connectivity diagnostic: daemon not running");
+    expect(panel).not.toHaveAttribute(
+      "aria-label",
+      "Connectivity diagnostic: daemon running without --hosted-bootstrap"
+    );
   });
 
   it("renders no-host-configured panel for hosted origin with no issues", () => {

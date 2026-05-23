@@ -347,9 +347,76 @@ function DaemonNoPnaPanel() {
 }
 
 /**
- * All loopback probes returned "unknown" daemon state — most likely Chrome PNA
- * (Private Network Access) is silently blocking the request at the network stack.
+ * All loopback probes from a hosted HTTPS origin returned "unknown" — the local
+ * backend does not serve HTTPS, so the HTTPS loopback probes were rejected by TLS
+ * or the backend is not running at all. The browser never attempted HTTP loopback
+ * because HTTP loopback is not probed from HTTPS origin (issue #517).
+ * Guides the user to HTTPS-local-backend, mkcert, HTTPS tunnel, or direct URL.
+ */
+function HostedHttpsUnknownPanel() {
+  return (
+    <div
+      className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-50/50 p-3 dark:bg-amber-950/20"
+      data-testid="diagnostic-panel"
+      role="alert"
+      aria-label="Connectivity diagnostic: HTTPS local backend required"
+    >
+      <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+        ⚠ HTTPS local backend required
+      </p>
+      <p className="text-muted-foreground text-xs">
+        From a hosted HTTPS page, browsers block HTTP loopback requests. Probes to{" "}
+        <CodeSnippet copyText="https://127.0.0.1:8765">https://127.0.0.1:8765</CodeSnippet> and{" "}
+        <CodeSnippet copyText="https://localhost:8765">https://localhost:8765</CodeSnippet> received
+        no valid response — either no backend was detected at these addresses, or it does not yet
+        serve HTTPS. To connect from the hosted shell your local backend must be reachable over
+        HTTPS.
+      </p>
+      <p className="text-foreground text-xs font-medium">Fix options:</p>
+      <ol className="list-none space-y-1.5">
+        <Step n={1}>
+          Use an HTTPS tunnel: <CodeSnippet copyText="ngrok http 8765">ngrok http 8765</CodeSnippet>
+          , then add the tunnel URL in <strong>Settings → Hosts</strong>. This is the quickest path
+          with no TLS setup.
+        </Step>
+        <Step n={2}>
+          Run the local backend with a trusted TLS certificate via{" "}
+          <a
+            href="https://github.com/FiloSottile/mkcert"
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+          >
+            mkcert
+          </a>
+          :{" "}
+          <CodeSnippet copyText="mkcert -install && mkcert localhost 127.0.0.1">
+            mkcert -install &amp;&amp; mkcert localhost 127.0.0.1
+          </CodeSnippet>
+          , then restart with the generated cert paths. (Native HTTPS backend tracked in issue #36.)
+        </Step>
+        <Step n={3}>
+          Or open the local browse UI directly at{" "}
+          <a
+            href="http://127.0.0.1:8765/"
+            className="font-mono text-blue-600 underline underline-offset-2 dark:text-blue-400"
+            target="_blank"
+            rel="noreferrer"
+          >
+            http://127.0.0.1:8765/
+          </a>{" "}
+          — all features work from that origin without HTTPS restrictions.
+        </Step>
+      </ol>
+    </div>
+  );
+}
+
+/**
+ * All loopback probes from an HTTP origin returned "unknown" daemon state — most likely
+ * Chrome PNA (Private Network Access) is silently blocking the request at the network stack.
  * Guides the user to the direct localhost URL or tunnel alternative.
+ * (For HTTPS origin unknown state, see HostedHttpsUnknownPanel.)
  */
 function PnaBlockedPanel() {
   return (
@@ -477,12 +544,13 @@ export interface DiagnosticPanelProps {
  * Replaces the generic "Cannot reach this host from a secure page" warning
  * with a reason-code + actionable fix list tailored to the browser and failure mode.
  *
- * Covers six distinct failure classes:
+ * Covers seven distinct failure classes:
  * - `mixed-content-http`: HTTPS → non-loopback HTTP (hard browser block).
  * - `pna-required`: HTTPS → HTTP loopback (Private Network Access needed; browser-specific).
  * - Daemon not running: loopback probe shows connection refused.
  * - Daemon running without `--hosted-bootstrap`: probe blocked by PNA/CORS, server is up.
  * - `auth-required`: Backend found but needs a user-supplied token.
+ * - HTTPS local backend required: HTTPS-origin probed HTTPS candidates, all unknown (TLS absent).
  * - No host configured: Hosted static origin with no remote agent host added.
  *
  * Returns null when there is nothing actionable to display.
@@ -531,8 +599,17 @@ export function DiagnosticPanel({
       // All candidates with a daemon state concluded "not running".
       return <DaemonNotRunningPanel />;
     }
-    // All probes returned "unknown" daemon state — likely PNA blocking at network stack.
+    // All probes returned "unknown" daemon state.
+    // Distinguish by candidate URL scheme:
+    //   • HTTPS candidates (https://) → backend needs HTTPS/TLS; show mkcert/tunnel guidance.
+    //   • HTTP candidates (http://)   → Chrome PNA blocking at network stack; show direct-URL guidance.
     if (daemonStates.has("unknown") && isHosted) {
+      const unknownReasons = reasons.filter((r) => r.daemonState === "unknown");
+      const allHttpsCandidates =
+        unknownReasons.length > 0 && unknownReasons.every((r) => r.url.startsWith("https://"));
+      if (allHttpsCandidates) {
+        return <HostedHttpsUnknownPanel />;
+      }
       return <PnaBlockedPanel />;
     }
     // Inconclusive daemon state — fall through to NoHostConfiguredPanel below.
