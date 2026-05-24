@@ -1270,3 +1270,111 @@ describe("DebugLogTab – flow chart rich render", () => {
     expect(calls).toContain("wheel");
   });
 });
+
+// ── focusEntryIdx — Timeline → Debug Log sync handoff (#541) ─────────────────
+
+describe("DebugLogTab – focusEntryIdx handoff", () => {
+  const page0Entries = [
+    makeEntry({ idx: 0, kind: "session_start", message: "Session start" }),
+    makeEntry({ idx: 1, kind: "tool_call", message: "First tool" }),
+    makeEntry({ idx: 5, kind: "error", message: "Error entry", status: "error" }),
+  ];
+
+  beforeEach(() => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(page0Entries),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("default behavior unchanged when focusEntryIdx is not provided", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // No detail drawer open by default
+    expect(screen.queryByRole("dialog", { name: /debug event detail/i })).not.toBeInTheDocument();
+    // All 3 entries visible
+    expect(screen.getByText("Session start")).toBeInTheDocument();
+    expect(screen.getByText("First tool")).toBeInTheDocument();
+    expect(screen.getByText("Error entry")).toBeInTheDocument();
+  });
+
+  it("default behavior unchanged when focusEntryIdx is null", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} focusEntryIdx={null} />);
+    expect(screen.queryByRole("dialog", { name: /debug event detail/i })).not.toBeInTheDocument();
+  });
+
+  it("opens detail drawer for the requested idx when entry is on current page", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} focusEntryIdx={1} />);
+    // Entry idx=1 should be selected and detail drawer open
+    expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
+  });
+
+  it("detail drawer shows the correct entry when focusEntryIdx is provided", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} focusEntryIdx={5} />);
+    const drawer = screen.getByRole("dialog", { name: /debug event detail/i });
+    // Entry idx=5 is "Error entry"
+    expect(within(drawer).getByText("Error entry")).toBeInTheDocument();
+  });
+
+  it("clears filters when focusEntryIdx is set (so filters do not hide target)", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} focusEntryIdx={5} />);
+    // Filters should have been cleared — all 3 entries should be in the page-level data
+    // The filter toolbar should show "3 of 3"
+    expect(screen.getByText(/3 of 3/)).toBeInTheDocument();
+  });
+
+  it("calls onFocusEntryHandled after selecting the entry", () => {
+    const onFocusEntryHandled = vi.fn();
+    render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId="run-1"
+        host={HOST}
+        focusEntryIdx={1}
+        onFocusEntryHandled={onFocusEntryHandled}
+      />
+    );
+    expect(onFocusEntryHandled).toHaveBeenCalledOnce();
+  });
+
+  it("calls onFocusEntryHandled even when target idx not found in data", () => {
+    const onFocusEntryHandled = vi.fn();
+    // Request idx=999 which is not in page0Entries
+    render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId="run-1"
+        host={HOST}
+        focusEntryIdx={999}
+        onFocusEntryHandled={onFocusEntryHandled}
+      />
+    );
+    // No detail drawer since idx=999 not found
+    expect(screen.queryByRole("dialog", { name: /debug event detail/i })).not.toBeInTheDocument();
+    // But handler still called to avoid repeated loops
+    expect(onFocusEntryHandled).toHaveBeenCalledOnce();
+  });
+
+  it("navigates to target page when focusEntryIdx is on a different page", () => {
+    // Simulate idx=105 on page 1 (PAGE_SIZE=100); page 0 has different entries
+    // First mock returns page 0 data (no idx=105)
+    const page1Entry = makeEntry({ idx: 105, kind: "llm_request", message: "Page 1 entry" });
+    (useDebugLog as Mock)
+      .mockReturnValueOnce({
+        // Initial call: page 0 data
+        data: makeResponse(page0Entries),
+        error: null,
+        isLoading: false,
+      })
+      .mockReturnValue({
+        // After page change to page 1
+        data: makeResponse([page1Entry], { from: 100, total: 200, has_more: true }),
+        error: null,
+        isLoading: false,
+      });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} focusEntryIdx={105} />);
+    // After re-render with page 1 data, detail drawer should open for idx=105
+    expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
+  });
+});

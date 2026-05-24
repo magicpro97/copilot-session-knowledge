@@ -138,6 +138,25 @@ test("session detail route renders tabbed UI", async ({ page }) => {
 
 test("direct real UUID session detail route renders tabbed UI", async ({ page }) => {
   await assertSeededSessionAvailable(page);
+
+  // Stub the debug-log endpoint (skeleton + full) so runtimeErrorGuard does not
+  // catch a 404 when the Timeline tab fires useSessionDebugLogSkeleton.
+  // The e2e session has no events.jsonl on disk → the backend returns 404 by design.
+  // Returning an empty-entries 200 keeps the Timeline smoke test honest (shows empty
+  // state) without suppressing real regressions.
+  const emptyDebugLogPayload = JSON.stringify({
+    schema_version: "debug-log/1",
+    session_id: SEEDED_SESSION_ID,
+    from: 0,
+    limit: 5000,
+    total: 0,
+    has_more: false,
+    entries: [],
+  });
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: emptyDebugLogPayload });
+  });
+
   const placeholderSessionRequests: string[] = [];
   page.on("request", (request) => {
     const url = request.url();
@@ -498,6 +517,278 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   ).toEqual([]);
   expect(pageErrors, `Unexpected page errors: ${JSON.stringify(pageErrors)}`).toEqual([]);
 });
+
+// Issue #542: Timeline Playback — Playwright e2e proof.
+//
+// Acceptance:
+//   * Stubs /api/session/{id}/debug-log with a projection-aware handler:
+//     - projection=skeleton  → BrowseDebugSkeletonEntry[] payload (5 entries)
+//     - no projection / full → BrowseDebugEntry[] payload (same 5 entries, full fields)
+//   * Navigates to #timeline, asserts player, waterfall, and lane rows visible.
+//   * Play/Pause button toggles aria-label between "Play" and "Pause".
+//   * Event card initially shows Event 0 (turn_start).
+//   * Scrubber range change moves playhead → event card updates.
+//   * btn-marker-next advances to next marker (agent_response).
+//   * Waterfall bar click changes current event.
+//   * "Open in Debug Log" navigates to #debug-log and selects the matching entry.
+//   * runtimeErrorGuard (auto fixture) fails the test on any console.error/pageerror/API 4xx.
+test(
+  "Timeline playback: player, waterfall, play/pause, scrub, marker, bar, Open in Debug Log (issue #542)",
+  async ({ page }) => {
+    await assertSeededSessionAvailable(page);
+
+    // ── Redaction-safe skeleton entries (no message/attrs/source/level/tool_name) ──
+    const TIMELINE_SKELETON_ENTRIES = [
+      {
+        idx: 0,
+        timestamp: "2026-05-01T00:00:00.000Z",
+        kind: "turn_start",
+        duration_ms: 500,
+        status: "ok",
+        span_id: "span-t0",
+        parent_span_id: null,
+      },
+      {
+        idx: 1,
+        timestamp: "2026-05-01T00:00:01.000Z",
+        kind: "tool_call",
+        duration_ms: 100,
+        status: "ok",
+        span_id: "span-tl1",
+        parent_span_id: "span-t0",
+      },
+      {
+        idx: 2,
+        timestamp: "2026-05-01T00:00:02.000Z",
+        kind: "agent_response",
+        duration_ms: 200,
+        status: "ok",
+        span_id: "span-ar2",
+        parent_span_id: "span-t0",
+      },
+      {
+        idx: 3,
+        timestamp: "2026-05-01T00:00:03.000Z",
+        kind: "hook",
+        duration_ms: 50,
+        status: "ok",
+        span_id: "span-h3",
+        parent_span_id: "span-tl1",
+      },
+      {
+        idx: 4,
+        timestamp: "2026-05-01T00:00:04.000Z",
+        kind: "turn_start",
+        duration_ms: 600,
+        status: "ok",
+        span_id: "span-t4",
+        parent_span_id: null,
+      },
+    ];
+
+    const TIMELINE_SKELETON_PAYLOAD = {
+      schema_version: "debug-log/1",
+      session_id: SEEDED_SESSION_ID,
+      from: 0,
+      limit: 5000,
+      total: 5,
+      has_more: false,
+      entries: TIMELINE_SKELETON_ENTRIES,
+    };
+
+    // ── Full BrowseDebugEntry payload for the Debug Log tab (no projection param) ──
+    const TIMELINE_FULL_PAYLOAD = {
+      schema_version: "debug-log/1",
+      session_id: SEEDED_SESSION_ID,
+      from: 0,
+      limit: 50,
+      total: 5,
+      has_more: false,
+      entries: [
+        {
+          idx: 0,
+          timestamp: "2026-05-01T00:00:00.000Z",
+          kind: "turn_start",
+          level: "info",
+          source: "copilot-cli",
+          message: "Turn started",
+          tool_name: null,
+          duration_ms: 500,
+          span_id: "span-t0",
+          parent_span_id: null,
+          status: "ok",
+          attrs: null,
+          redacted: false,
+        },
+        {
+          idx: 1,
+          timestamp: "2026-05-01T00:00:01.000Z",
+          kind: "tool_call",
+          level: "debug",
+          source: "tool",
+          message: "Read file contents",
+          tool_name: "view",
+          duration_ms: 100,
+          span_id: "span-tl1",
+          parent_span_id: "span-t0",
+          status: "ok",
+          attrs: null,
+          redacted: false,
+        },
+        {
+          idx: 2,
+          timestamp: "2026-05-01T00:00:02.000Z",
+          kind: "agent_response",
+          level: "info",
+          source: "copilot-cli",
+          message: "Assistant produced response",
+          tool_name: null,
+          duration_ms: 200,
+          span_id: "span-ar2",
+          parent_span_id: "span-t0",
+          status: "ok",
+          attrs: null,
+          redacted: false,
+        },
+        {
+          idx: 3,
+          timestamp: "2026-05-01T00:00:03.000Z",
+          kind: "hook",
+          level: "info",
+          source: "hook",
+          message: "Post-tool hook completed",
+          tool_name: null,
+          duration_ms: 50,
+          span_id: "span-h3",
+          parent_span_id: "span-tl1",
+          status: "ok",
+          attrs: null,
+          redacted: false,
+        },
+        {
+          idx: 4,
+          timestamp: "2026-05-01T00:00:04.000Z",
+          kind: "turn_start",
+          level: "info",
+          source: "copilot-cli",
+          message: "Second turn started",
+          tool_name: null,
+          duration_ms: 600,
+          span_id: "span-t4",
+          parent_span_id: null,
+          status: "ok",
+          attrs: null,
+          redacted: false,
+        },
+      ],
+    };
+
+    // ── Route: skeleton projection → skeleton payload; otherwise full payload ──
+    // The Timeline tab fetches with ?projection=skeleton&from=0&limit=5000.
+    // The Debug Log tab fetches without projection (uses session-scoped path).
+    // Both share the same URL pattern; the handler discriminates on the query param.
+    await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+      const url = new URL(route.request().url());
+      const isSkeleton = url.searchParams.get("projection") === "skeleton";
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(isSkeleton ? TIMELINE_SKELETON_PAYLOAD : TIMELINE_FULL_PAYLOAD),
+      });
+    });
+
+    // ── Navigate to #timeline ────────────────────────────────────────────────
+    await page.goto(`/sessions/${SEEDED_SESSION_ID}/#timeline`);
+
+    // Timeline tab should be selected (hash sets activeTab on mount).
+    await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+      { timeout: 20_000 }
+    );
+
+    // ── Player and waterfall visibility ──────────────────────────────────────
+    const player = page.getByTestId("timeline-player");
+    await expect(player).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("waterfall")).toBeVisible();
+
+    // Expect lane rows for the entry kinds in our fixture:
+    //   turn_start/turn_start → "Turn" lane
+    //   tool_call/hook        → "Tool/Hook/Skill" lane
+    //   agent_response        → "Model" lane
+    await expect(page.getByTestId("lane-row-Turn")).toBeVisible();
+    await expect(page.getByTestId("lane-row-Tool/Hook/Skill")).toBeVisible();
+    await expect(page.getByTestId("lane-row-Model")).toBeVisible();
+
+    // ── Initial event card shows Event 0 (turn_start) ────────────────────────
+    const card = page.getByTestId("event-card");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("Event 0");
+    await expect(card).toContainText("turn_start");
+
+    // ── Play / Pause toggle ───────────────────────────────────────────────────
+    const playPauseBtn = page.getByTestId("btn-play-pause");
+    await expect(playPauseBtn).toHaveAttribute("aria-label", "Play");
+    await playPauseBtn.click();
+    await expect(playPauseBtn).toHaveAttribute("aria-label", "Pause", { timeout: 5_000 });
+    await playPauseBtn.click();
+    await expect(playPauseBtn).toHaveAttribute("aria-label", "Play", { timeout: 5_000 });
+
+    // ── Scrubber drag changes current event ──────────────────────────────────
+    // Entries sorted by timestamp: idx 0→1→2→3→4 maps to sortedIndex 0→1→2→3→4.
+    // Use keyboard ArrowRight/ArrowLeft on the focused scrubber to advance/retreat
+    // the playhead. Native keyboard events reliably fire React onChange on range inputs.
+    const scrubber = page.getByTestId("scrubber");
+    await scrubber.focus();
+    // Arrow right ×2: sortedIndex 0 → 1 → 2 (agent_response)
+    await scrubber.press("ArrowRight");
+    await scrubber.press("ArrowRight");
+    await expect(card).toContainText("Event 2", { timeout: 5_000 });
+    await expect(card).toContainText("agent_response");
+
+    // Arrow left ×2: sortedIndex 2 → 1 → 0 (turn_start) — reset position.
+    await scrubber.press("ArrowLeft");
+    await scrubber.press("ArrowLeft");
+    await expect(card).toContainText("Event 0", { timeout: 5_000 });
+
+    // ── Marker navigation (btn-marker-next) ──────────────────────────────────
+    // Markers are derived from entries with kind turn_start or agent_response:
+    //   sortedIdx=0 (turn_start), sortedIdx=2 (agent_response), sortedIdx=4 (turn_start).
+    // From sortedIdx=0, nextMarkerIndex should advance to sortedIdx=2 (agent_response).
+    const markerNextBtn = page.getByTestId("btn-marker-next");
+    await expect(markerNextBtn).toBeVisible();
+    await markerNextBtn.click();
+    await expect(card).toContainText("agent_response", { timeout: 5_000 });
+
+    // ── Waterfall bar click changes current event ─────────────────────────────
+    // Each bar button has aria-label "Event {idx}: {kind}".
+    // Click the bar for entry idx=1 (tool_call) in the waterfall.
+    await page.getByTestId("waterfall").getByLabel("Event 1: tool_call").click();
+    await expect(card).toContainText("Event 1", { timeout: 5_000 });
+    await expect(card).toContainText("tool_call");
+
+    // ── "Open in Debug Log" navigates to #debug-log and selects entry ─────────
+    // btn-open-debug-log is in the event card when onOpenDebugLog is wired.
+    // Current event is idx=1 (tool_call).
+    const openBtn = page.getByTestId("btn-open-debug-log");
+    await expect(openBtn).toBeVisible();
+    await openBtn.click();
+
+    // URL hash must change to #debug-log.
+    await expect(page).toHaveURL(/#debug-log/, { timeout: 10_000 });
+    await expect(page.getByRole("tab", { name: "Debug Log" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+      { timeout: 10_000 }
+    );
+
+    // Effect 1 (focusEntryIdx=1) → navigates debug-log to page 0, clears filters.
+    // Effect 2 → data loads (our stub fires immediately), finds idx=1, setSelectedEntry.
+    // The selected row's aria-expanded becomes "true" once the state machine completes.
+    await expect(
+      page.locator('[aria-label="Debug event 1: tool_call from tool"]')
+    ).toHaveAttribute("aria-expanded", "true", { timeout: 15_000 });
+  }
+);
 
 test("sessions list click-through opens real UUID session detail", async ({ page }) => {
   await assertSeededSessionAvailable(page);

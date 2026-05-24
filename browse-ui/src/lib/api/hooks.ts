@@ -47,6 +47,7 @@ import {
   operatorModelCatalogResponseSchema,
   debugLogResponseSchema,
   sessionDebugLogResponseSchema,
+  sessionDebugSkeletonResponseSchema,
   cliSessionListResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
@@ -95,6 +96,7 @@ import type {
   DebugLogResponse,
   DebugLogParams,
   SessionDebugLogResponse,
+  SessionDebugSkeletonResponse,
   CliSession,
   CliSessionListResponse,
   AdoptCliSessionRequest,
@@ -189,6 +191,11 @@ export const queryKeys = {
   ) => ["debug-log", hostId, sessionId, runId, params] as const,
   sessionDebugLog: (sessionId: string, params: DebugLogParams = {}, hostId = LOCAL_HOST_ID) =>
     ["session-debug-log", hostId, sessionId, params] as const,
+  sessionDebugLogSkeleton: (
+    sessionId: string,
+    params: Omit<DebugLogParams, "projection"> = {},
+    hostId = LOCAL_HOST_ID
+  ) => ["session-debug-log-skeleton", hostId, sessionId, params] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1108,7 +1115,8 @@ export function useHostCapabilities(host: HostProfile = LOCAL_HOST, enabled = tr
  * Query hook for the debug log of a specific operator session run.
  *
  * Fetches GET /api/operator/sessions/{sessionId}/runs/{runId}/debug with
- * optional filter params (from, limit, kind, level, since).
+ * optional filter params (from, limit, kind, level, since, projection,
+ * until, to_idx).
  *
  * Returns React Query result with typed DebugLogResponse.
  */
@@ -1131,6 +1139,9 @@ export function useDebugLog(
         kind: params.kind,
         level: params.level,
         since: params.since,
+        projection: params.projection,
+        until: params.until,
+        to_idx: params.to_idx,
       });
       const path = withLeadingSlash(
         `/api/operator/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/debug${qs}`
@@ -1147,8 +1158,14 @@ export function useDebugLog(
  * Query hook for the session-scoped debug log.
  *
  * Fetches GET /api/session/{sessionId}/debug-log with optional filter params
- * (from, limit, kind, level). Used when there is no operator run (i.e. the
- * session is a CLI/knowledge session with has_operator_runs=false).
+ * (from, limit, kind, level, since, projection, until, to_idx). Used when
+ * there is no operator run (i.e. the session is a CLI/knowledge session with
+ * has_operator_runs=false).
+ *
+ * For projection=skeleton use useSessionDebugLogSkeleton instead.
+ * Existing callers passing no projection receive full entries (default backend
+ * behavior) and the response parses as SessionDebugLogResponse — backward-
+ * compatible.
  *
  * Returns React Query result with typed SessionDebugLogResponse.
  */
@@ -1169,10 +1186,60 @@ export function useSessionDebugLog(
         limit: params.limit,
         kind: params.kind,
         level: params.level,
+        since: params.since,
+        projection: params.projection,
+        until: params.until,
+        to_idx: params.to_idx,
       });
       const path = withLeadingSlash(`/api/session/${encodeURIComponent(sessionId)}/debug-log${qs}`);
       const data = await hostFetch<SessionDebugLogResponse>(path, host);
       return sessionDebugLogResponseSchema.parse(data);
+    },
+  });
+}
+
+// ── Session-Scoped Debug Log Skeleton (/api/session/{sid}/debug-log?projection=skeleton) ─
+
+/**
+ * Query hook for the session-scoped debug log skeleton projection.
+ *
+ * Fetches GET /api/session/{sessionId}/debug-log?projection=skeleton with
+ * optional window params (from, limit up to 5000, kind, since, until, to_idx).
+ * Returns lightweight BrowseDebugSkeletonEntry records suitable for timeline
+ * and playback rendering without exposing message/attrs/tool_name/source.
+ *
+ * Query key is under "session-debug-log-skeleton" and is params-scoped, so
+ * different window params get distinct cache entries. The projection param is
+ * always "skeleton" and is not included in the key discriminator (it is
+ * implicit in the key prefix).
+ *
+ * Returns React Query result with typed SessionDebugSkeletonResponse.
+ */
+export function useSessionDebugLogSkeleton(
+  sessionId: string,
+  params: Omit<DebugLogParams, "projection"> = {},
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.sessionDebugLogSkeleton(sessionId, params, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<SessionDebugSkeletonResponse> => {
+      const qs = createQueryString({
+        from: params.from,
+        limit: params.limit,
+        kind: params.kind,
+        level: params.level,
+        since: params.since,
+        projection: "skeleton",
+        until: params.until,
+        to_idx: params.to_idx,
+      });
+      const path = withLeadingSlash(`/api/session/${encodeURIComponent(sessionId)}/debug-log${qs}`);
+      const data = await hostFetch<SessionDebugSkeletonResponse>(path, host);
+      return sessionDebugSkeletonResponseSchema.parse(data);
     },
   });
 }

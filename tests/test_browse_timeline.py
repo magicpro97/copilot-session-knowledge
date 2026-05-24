@@ -273,6 +273,26 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── TL7: Regression — /api/session/{id}/events is unaffected by #538 ─────
+    print("\n-- TL7: /api/session/{id}/events regression — no projection param")
+    db = _make_test_db()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        # projection=skeleton must be silently ignored (not a param of this endpoint)
+        # The response must still return the legacy {events, total, session_id} shape.
+        s, _, body = _get(host, port, "/api/session/test-session-abc/events?token=tok&projection=skeleton")
+        test("TL7: events endpoint ignores projection → 200", s == 200)
+        try:
+            data = json.loads(body)
+            test("TL7: legacy 'events' key present", "events" in data)
+            test("TL7: no 'schema_version' key (debug-log field)", "schema_version" not in data)
+            test("TL7: no 'entries' key (debug-log field)", "entries" not in data)
+        except (json.JSONDecodeError, KeyError) as exc:
+            test("TL7: valid JSON", False)
+            print(f"    exception: {exc}")
+    finally:
+        server.shutdown()
+
     print(f"\n{'=' * 50}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")
     return _FAIL

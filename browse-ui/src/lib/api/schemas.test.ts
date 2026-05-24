@@ -48,6 +48,10 @@ import {
   operatorModelCatalogResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
+  browseDebugSkeletonEntrySchema,
+  sessionDebugSkeletonResponseSchema,
+  sessionDebugLogResponseSchema,
+  browseDebugEntrySchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -2102,5 +2106,189 @@ describe("adoptCliSessionRequestSchema", () => {
 
   it("rejects a non-UUID cli_session_id", () => {
     expect(() => adoptCliSessionRequestSchema.parse({ cli_session_id: "not-a-uuid" })).toThrow();
+  });
+});
+
+// ── Skeleton projection schemas (issue #538 / #539) ──────────────────────────
+
+describe("browseDebugSkeletonEntrySchema (projection=skeleton)", () => {
+  const VALID_SKELETON = {
+    idx: 0,
+    timestamp: "2024-01-01T12:00:00.000Z",
+    kind: "tool_call",
+    duration_ms: 42,
+    status: "ok",
+    span_id: "abcdef0123456789",
+    parent_span_id: null,
+  };
+
+  it("parses a valid skeleton entry", () => {
+    const parsed = browseDebugSkeletonEntrySchema.parse(VALID_SKELETON);
+    expect(parsed.idx).toBe(0);
+    expect(parsed.kind).toBe("tool_call");
+    expect(parsed.duration_ms).toBe(42);
+    expect(parsed.status).toBe("ok");
+  });
+
+  it("accepts all null-able fields as null", () => {
+    expect(() =>
+      browseDebugSkeletonEntrySchema.parse({
+        idx: 1,
+        timestamp: null,
+        kind: "generic",
+        duration_ms: null,
+        status: null,
+        span_id: null,
+        parent_span_id: null,
+      })
+    ).not.toThrow();
+  });
+
+  it("strips forbidden fields — message, source, tool_name, attrs, redacted, level", () => {
+    const raw = {
+      ...VALID_SKELETON,
+      message: "secret content",
+      source: "operator_console",
+      tool_name: "bash",
+      attrs: { hook_status: "ok" },
+      redacted: true,
+      level: "info",
+    };
+    const parsed = browseDebugSkeletonEntrySchema.parse(raw);
+    expect("message" in parsed).toBe(false);
+    expect("source" in parsed).toBe(false);
+    expect("tool_name" in parsed).toBe(false);
+    expect("attrs" in parsed).toBe(false);
+    expect("redacted" in parsed).toBe(false);
+    expect("level" in parsed).toBe(false);
+  });
+
+  it("rejects negative idx", () => {
+    expect(() => browseDebugSkeletonEntrySchema.parse({ ...VALID_SKELETON, idx: -1 })).toThrow();
+  });
+
+  it("rejects missing idx", () => {
+    const { idx: _, ...withoutIdx } = VALID_SKELETON;
+    expect(() => browseDebugSkeletonEntrySchema.parse(withoutIdx)).toThrow();
+  });
+
+  it("accepts unknown future kind strings (open kind schema)", () => {
+    expect(() =>
+      browseDebugSkeletonEntrySchema.parse({ ...VALID_SKELETON, kind: "future_kind_v99" })
+    ).not.toThrow();
+  });
+});
+
+describe("sessionDebugSkeletonResponseSchema", () => {
+  it("parses a valid skeleton response envelope", () => {
+    const raw = {
+      schema_version: "1",
+      session_id: "sess-001",
+      from: 0,
+      limit: 1000,
+      total: 2,
+      has_more: false,
+      entries: [
+        {
+          idx: 0,
+          timestamp: null,
+          kind: "turn_start",
+          duration_ms: null,
+          status: null,
+          span_id: null,
+          parent_span_id: null,
+        },
+        {
+          idx: 1,
+          timestamp: "2024-01-01T12:00:01Z",
+          kind: "tool_call",
+          duration_ms: 50,
+          status: "ok",
+          span_id: "aa",
+          parent_span_id: null,
+        },
+      ],
+    };
+    const parsed = sessionDebugSkeletonResponseSchema.parse(raw);
+    expect(parsed.session_id).toBe("sess-001");
+    expect(parsed.entries).toHaveLength(2);
+    expect(parsed.entries[1].span_id).toBe("aa");
+  });
+
+  it("rejects when entries have forbidden fields (strict skeleton)", () => {
+    // message field is not in skeleton schema → should be stripped (no error, just stripped)
+    const raw = {
+      schema_version: "1",
+      session_id: "s",
+      from: 0,
+      limit: 10,
+      total: 1,
+      has_more: false,
+      entries: [
+        {
+          idx: 0,
+          timestamp: null,
+          kind: "generic",
+          duration_ms: null,
+          status: null,
+          span_id: null,
+          parent_span_id: null,
+          message: "hidden",
+        },
+      ],
+    };
+    const parsed = sessionDebugSkeletonResponseSchema.parse(raw);
+    expect("message" in parsed.entries[0]).toBe(false);
+  });
+});
+
+describe("sessionDebugLogResponseSchema (full projection — unchanged)", () => {
+  it("still parses full BrowseDebugEntry entries with all fields", () => {
+    const raw = {
+      schema_version: "1",
+      session_id: "s1",
+      from: 0,
+      limit: 10,
+      total: 1,
+      has_more: false,
+      entries: [
+        {
+          idx: 0,
+          timestamp: "2024-01-01T12:00:00Z",
+          kind: "tool_call",
+          level: "info",
+          source: "operator_console",
+          message: "running bash",
+          tool_name: "bash",
+          duration_ms: 100,
+          span_id: "abc123",
+          parent_span_id: null,
+          status: "ok",
+          attrs: { tool_status: "ok" },
+          redacted: false,
+        },
+      ],
+    };
+    const parsed = sessionDebugLogResponseSchema.parse(raw);
+    expect(parsed.entries[0].tool_name).toBe("bash");
+    expect(parsed.entries[0].message).toBe("running bash");
+    expect(parsed.entries[0].attrs).toEqual({ tool_status: "ok" });
+  });
+});
+
+describe("browseDebugEntrySchema (full — unchanged by skeleton addition)", () => {
+  it("still requires message, source, redacted fields", () => {
+    expect(() =>
+      browseDebugEntrySchema.parse({
+        idx: 0,
+        timestamp: null,
+        kind: "generic",
+        duration_ms: null,
+        status: null,
+        span_id: null,
+        parent_span_id: null,
+        // Missing level, source, message, tool_name, attrs, redacted
+      })
+    ).toThrow();
   });
 });

@@ -1456,6 +1456,372 @@ def test_unsafe_top_level_keys_dropped():
         test(f"rich-tool forbidden key '{k}' absent", k not in a)
 
 
+# ── Issue #538: skeleton projection ───────────────────────────────────────────
+
+
+def test_skeleton_projection_shape():
+    """CSD-538-1: projection=skeleton returns only safe-subset fields."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(
+            session_dir,
+            [
+                _cli_event("session.start", {"sessionId": sid}),
+                _cli_event("tool.execution_start", {"toolName": "read_file", "toolCallId": "TC1"}),
+                _cli_event("assistant.message", {"content": "Hello user!"}),
+            ],
+        )
+
+        resp = _bearer(port, _debug_path(sid, "projection=skeleton&limit=10"))
+        body = resp.read()
+        test("CSD-538-1 status=200", resp.status == 200)
+        data = json.loads(body)
+        entries = data.get("entries", [])
+        test("CSD-538-1 entries is list", isinstance(entries, list))
+        test("CSD-538-1 at least 1 entry", len(entries) >= 1)
+
+        # Check every entry: must have ONLY skeleton fields
+        allowed = {"idx", "timestamp", "kind", "duration_ms", "status", "span_id", "parent_span_id"}
+        forbidden = {"message", "attrs", "tool_name", "source", "redacted", "level"}
+        for e in entries:
+            extra_keys = set(e.keys()) - allowed
+            test(f"CSD-538-1 entry[{e.get('idx')}] no extra keys", not extra_keys)
+            for fk in forbidden:
+                test(f"CSD-538-1 entry[{e.get('idx')}] no '{fk}'", fk not in e)
+            # Required skeleton fields present
+            for fld in ("idx", "timestamp", "kind", "span_id"):
+                test(f"CSD-538-1 entry[{e.get('idx')}] has '{fld}'", fld in e)
+    finally:
+        server.shutdown()
+
+
+def test_skeleton_no_message_no_attrs():
+    """CSD-538-2: skeleton entries never contain message, attrs, or tool_name."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(
+            session_dir,
+            [
+                # tool_call event with explicit tool_name to confirm it's dropped in skeleton
+                _cli_event(
+                    "tool.execution_start",
+                    {"toolName": "bash", "toolCallId": "TC-LEAK", "success": True},
+                ),
+                # error event with message content that must not leak
+                _cli_event("error", {"message": "secret-error-details"}),
+            ],
+        )
+
+        resp = _bearer(port, _debug_path(sid, "projection=skeleton"))
+        body = resp.read()
+        test("CSD-538-2 status=200", resp.status == 200)
+        data = json.loads(body)
+        raw_body = body.decode("utf-8")
+        # "message" as a key should not appear in the response at all
+        # (note: "message" in error body from params is separate; this checks entries)
+        entries = data.get("entries", [])
+        for e in entries:
+            test("CSD-538-2 no 'message' key", "message" not in e)
+            test("CSD-538-2 no 'attrs' key", "attrs" not in e)
+            test("CSD-538-2 no 'tool_name' key", "tool_name" not in e)
+            test("CSD-538-2 no 'source' key", "source" not in e)
+    finally:
+        server.shutdown()
+
+
+def test_skeleton_limit_5000_accepted():
+    """CSD-538-3: skeleton mode accepts limit up to 5000."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start")])
+
+        resp = _bearer(port, _debug_path(sid, "projection=skeleton&limit=5000"))
+        resp.read()
+        test("CSD-538-3 skeleton limit=5000 accepted", resp.status == 200)
+
+        # 5001 should be rejected
+        resp2 = _bearer(port, _debug_path(sid, "projection=skeleton&limit=5001"))
+        resp2.read()
+        test("CSD-538-3 skeleton limit=5001 rejected", resp2.status == 400)
+    finally:
+        server.shutdown()
+
+
+def test_full_mode_limit_100_still_enforced():
+    """CSD-538-4: full projection (default) still rejects limit > 100."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start")])
+
+        # full mode (default) must reject 101
+        resp = _bearer(port, _debug_path(sid, "limit=101"))
+        resp.read()
+        test("CSD-538-4 full mode limit=101 rejected", resp.status == 400)
+
+        # explicit projection=full must reject 101
+        resp2 = _bearer(port, _debug_path(sid, "projection=full&limit=101"))
+        resp2.read()
+        test("CSD-538-4 projection=full limit=101 rejected", resp2.status == 400)
+
+        # explicit projection=full, limit=100 accepted
+        resp3 = _bearer(port, _debug_path(sid, "projection=full&limit=100"))
+        resp3.read()
+        test("CSD-538-4 projection=full limit=100 accepted", resp3.status == 200)
+    finally:
+        server.shutdown()
+
+
+def test_invalid_projection_400():
+    """CSD-538-5: invalid projection value → 400."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start")])
+
+        resp = _bearer(port, _debug_path(sid, "projection=raw"))
+        resp.read()
+        test("CSD-538-5 projection=raw → 400", resp.status == 400)
+
+        resp2 = _bearer(port, _debug_path(sid, "projection="))
+        resp2.read()
+        # empty string falls through to default "full" — 200 expected
+        test("CSD-538-5 projection='' defaults to full → 200", resp2.status == 200)
+    finally:
+        server.shutdown()
+
+
+def test_until_filter():
+    """CSD-538-6: until filter includes events at/before the timestamp."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        early_ts = "2020-01-01T00:00:00Z"
+        mid_ts   = "2025-06-01T00:00:00Z"
+        late_ts  = "2030-01-01T00:00:00Z"
+        _write_events(
+            session_dir,
+            [
+                _cli_event("session.start", ts=early_ts),
+                _cli_event("assistant.message", ts=mid_ts),
+                _cli_event("error", ts=late_ts),
+            ],
+        )
+
+        # until=2025-06-01 → should include early + mid, exclude late
+        resp = _bearer(port, _debug_path(sid, "until=2025-06-01T00:00:00Z"))
+        data = json.loads(resp.read())
+        test("CSD-538-6 until status=200", resp.status == 200)
+        test("CSD-538-6 until=mid → 2 entries", data.get("total") == 2)
+        kinds = [e.get("kind") for e in data.get("entries", [])]
+        test("CSD-538-6 no error entry past until", "error" not in kinds)
+
+        # since+until window (only mid)
+        resp2 = _bearer(port, _debug_path(sid, "since=2025-01-01T00:00:00Z&until=2026-01-01T00:00:00Z"))
+        data2 = json.loads(resp2.read())
+        test("CSD-538-6 since+until window total=1", data2.get("total") == 1)
+        if data2.get("entries"):
+            test("CSD-538-6 only mid entry", data2["entries"][0].get("kind") == "agent_response")
+    finally:
+        server.shutdown()
+
+
+def test_until_invalid_400():
+    """CSD-538-7: invalid until value → 400."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start")])
+
+        resp = _bearer(port, _debug_path(sid, "until=not-a-date"))
+        resp.read()
+        test("CSD-538-7 invalid until → 400", resp.status == 400)
+    finally:
+        server.shutdown()
+
+
+def test_to_idx_filter():
+    """CSD-538-8: to_idx limits the window to [from_idx, to_idx)."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        events = [_cli_event(f"session.info", {"n": i}) for i in range(10)]
+        _write_events(session_dir, events)
+
+        # to_idx=3 → window [0, 3) → 3 entries
+        resp = _bearer(port, _debug_path(sid, "from=0&to_idx=3&limit=10"))
+        data = json.loads(resp.read())
+        test("CSD-538-8 to_idx=3 status=200", resp.status == 200)
+        test("CSD-538-8 to_idx=3 total=3", data.get("total") == 3)
+        test("CSD-538-8 to_idx=3 entries=3", len(data.get("entries", [])) == 3)
+        test("CSD-538-8 has_more=False", data.get("has_more") is False)
+
+        # from=1, to_idx=3 → window [0,3) has 3 events; page starts at 1 → 2 entries
+        resp2 = _bearer(port, _debug_path(sid, "from=1&to_idx=3&limit=10"))
+        data2 = json.loads(resp2.read())
+        test("CSD-538-8 from=1 to_idx=3 total=3 (full window)", data2.get("total") == 3)
+        test("CSD-538-8 from=1 to_idx=3 entries=2", len(data2.get("entries", [])) == 2)
+    finally:
+        server.shutdown()
+
+
+def test_to_idx_less_than_from_empty():
+    """CSD-538-9: to_idx < from → deterministic empty result."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event(f"session.info") for _ in range(5)])
+
+        resp = _bearer(port, _debug_path(sid, "from=5&to_idx=3&limit=10"))
+        data = json.loads(resp.read())
+        test("CSD-538-9 to_idx<from status=200", resp.status == 200)
+        test("CSD-538-9 to_idx<from total=0", data.get("total") == 0)
+        test("CSD-538-9 to_idx<from entries=[]", data.get("entries") == [])
+        test("CSD-538-9 to_idx<from has_more=False", data.get("has_more") is False)
+
+        # to_idx == from → also empty
+        resp2 = _bearer(port, _debug_path(sid, "from=3&to_idx=3&limit=10"))
+        data2 = json.loads(resp2.read())
+        test("CSD-538-9 to_idx==from total=0", data2.get("total") == 0)
+    finally:
+        server.shutdown()
+
+
+def test_to_idx_invalid_400():
+    """CSD-538-10: invalid to_idx value → 400."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start")])
+
+        resp = _bearer(port, _debug_path(sid, "to_idx=abc"))
+        resp.read()
+        test("CSD-538-10 to_idx=abc → 400", resp.status == 400)
+
+        resp2 = _bearer(port, _debug_path(sid, "to_idx=-1"))
+        resp2.read()
+        test("CSD-538-10 to_idx=-1 → 400", resp2.status == 400)
+    finally:
+        server.shutdown()
+
+
+def test_skeleton_high_limit_scale():
+    """CSD-538-11: skeleton mode streams 5000 events without error (scale smoke test)."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        # Write 5000 events so we can request all of them in one skeleton page
+        n = 5000
+        lines = []
+        for i in range(n):
+            lines.append(
+                json.dumps(
+                    {
+                        "type": "tool.execution_start",
+                        "id": str(uuid.uuid4()),
+                        "timestamp": f"2025-01-01T00:{i // 60:02d}:{i % 60:02d}Z",
+                        "data": {"toolName": f"tool_{i}", "toolCallId": f"TC{i}"},
+                    }
+                )
+            )
+        (session_dir / "events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        resp = _bearer(port, _debug_path(sid, "projection=skeleton&limit=5000"))
+        body = resp.read()
+        test("CSD-538-11 status=200", resp.status == 200)
+        data = json.loads(body)
+        entries = data.get("entries", [])
+        test("CSD-538-11 total=5000", data.get("total") == n)
+        test("CSD-538-11 entries=5000", len(entries) == n)
+        test("CSD-538-11 has_more=False", data.get("has_more") is False)
+        # Spot-check that skeleton fields only
+        if entries:
+            allowed = {"idx", "timestamp", "kind", "duration_ms", "status", "span_id", "parent_span_id"}
+            extra = set(entries[0].keys()) - allowed
+            test("CSD-538-11 first entry skeleton-only", not extra)
+    finally:
+        server.shutdown()
+
+
+def test_skeleton_status_derived_from_attrs():
+    """CSD-538-12: skeleton 'status' is derived from tool/hook attrs, not raw message."""
+    from browse.routes.debug_log import _map_cli_event_line, _project_skeleton  # noqa: PLC0415
+    from browse.core.redaction import redact_entry  # noqa: PLC0415
+
+    # tool_call with tool_status in attrs
+    line = json.dumps({
+        "type": "tool.execution_complete",
+        "id": "abc123def456abcd",
+        "timestamp": _now_iso(),
+        "data": {"toolCallId": "TC1", "success": True, "status": "ok"},
+    })
+    entry = _map_cli_event_line(line, 0)
+    redacted = redact_entry(entry)
+    skeleton = _project_skeleton(redacted)
+    test("CSD-538-12 skeleton has status key", "status" in skeleton)
+    test("CSD-538-12 no 'message' in skeleton", "message" not in skeleton)
+    test("CSD-538-12 no 'attrs' in skeleton", "attrs" not in skeleton)
+    test("CSD-538-12 no 'source' in skeleton", "source" not in skeleton)
+    test("CSD-538-12 has span_id", "span_id" in skeleton)
+    test("CSD-538-12 has idx", skeleton.get("idx") == 0)
+    test("CSD-538-12 has kind=tool_call", skeleton.get("kind") == "tool_call")
+
+
+def test_project_skeleton_unit():
+    """CSD-538-13 (unit): _project_skeleton strips forbidden fields, keeps allowed."""
+    from browse.routes.debug_log import _project_skeleton  # noqa: PLC0415
+
+    full_entry = {
+        "idx": 7,
+        "timestamp": "2025-01-01T00:00:00Z",
+        "kind": "hook",
+        "duration_ms": 123.4,
+        "status": None,
+        "span_id": "abc123def456abcd",
+        "parent_span_id": "fffffffffff00001",
+        "message": "SHOULD NOT APPEAR",
+        "attrs": {"hook_status": "ok", "secret": "leak"},
+        "tool_name": "dangerous",
+        "source": "cli",
+        "redacted": False,
+        "level": None,
+    }
+    s = _project_skeleton(full_entry)
+    allowed = {"idx", "timestamp", "kind", "duration_ms", "status", "span_id", "parent_span_id"}
+    test("CSD-538-13 only allowed keys", set(s.keys()) == allowed)
+    test("CSD-538-13 idx=7", s["idx"] == 7)
+    test("CSD-538-13 kind=hook", s["kind"] == "hook")
+    test("CSD-538-13 span_id preserved", s["span_id"] == "abc123def456abcd")
+    test("CSD-538-13 parent_span_id preserved", s["parent_span_id"] == "fffffffffff00001")
+    # status should be derived from attrs["hook_status"]
+    test("CSD-538-13 status from hook_status", s["status"] == "ok")
+
+
+def test_full_mode_unchanged_shape():
+    """CSD-538-14: projection=full (default) retains legacy shape with message/attrs."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start", {"sessionId": sid})])
+
+        resp = _bearer(port, _debug_path(sid, "projection=full"))
+        data = json.loads(resp.read())
+        test("CSD-538-14 status=200", resp.status == 200)
+        entries = data.get("entries", [])
+        test("CSD-538-14 at least 1 entry", len(entries) >= 1)
+        if entries:
+            e = entries[0]
+            test("CSD-538-14 full has 'message'", "message" in e)
+            test("CSD-538-14 full has 'attrs'", "attrs" in e)
+            test("CSD-538-14 full has 'source'", "source" in e)
+            test("CSD-538-14 full has 'redacted'", "redacted" in e)
+    finally:
+        server.shutdown()
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
@@ -1512,6 +1878,21 @@ def _run_all() -> None:
     test_session_summary_metadata()
     test_message_builder_includes_safe_summaries()
     test_unsafe_top_level_keys_dropped()
+    # Issue #538 — skeleton projection + window filters
+    test_project_skeleton_unit()
+    test_skeleton_status_derived_from_attrs()
+    test_skeleton_projection_shape()
+    test_skeleton_no_message_no_attrs()
+    test_skeleton_limit_5000_accepted()
+    test_full_mode_limit_100_still_enforced()
+    test_invalid_projection_400()
+    test_until_filter()
+    test_until_invalid_400()
+    test_to_idx_filter()
+    test_to_idx_less_than_from_empty()
+    test_to_idx_invalid_400()
+    test_full_mode_unchanged_shape()
+    test_skeleton_high_limit_scale()
 
     print("=" * 70)
     total = _PASS + _FAIL

@@ -1215,6 +1215,41 @@ export const sessionDebugLogResponseSchema = z.object({
   entries: z.array(browseDebugEntrySchema),
 });
 
+/**
+ * Lightweight debug log entry returned by `projection=skeleton`.
+ *
+ * Strict schema: only the seven safe fields produced by the backend
+ * `_project_skeleton` helper are accepted. Unknown keys are stripped
+ * (no `.passthrough()`). This deliberately rejects message, attrs,
+ * tool_name, source, level, and redacted — use browseDebugEntrySchema
+ * for full entries.
+ *
+ * See backend _SKELETON_FIELDS in browse/routes/debug_log.py (issue #538).
+ */
+export const browseDebugSkeletonEntrySchema = z.object({
+  idx: z.number().int().nonnegative(),
+  timestamp: z.string().nullable(),
+  kind: debugKindSchema,
+  duration_ms: z.number().nullable(),
+  status: debugStatusSchema.nullable(),
+  span_id: z.string().nullable(),
+  parent_span_id: z.string().nullable(),
+});
+
+/**
+ * HTTP response envelope for GET /api/session/{sid}/debug-log?projection=skeleton.
+ * Session-scoped skeleton debug log for timeline/playback use.
+ */
+export const sessionDebugSkeletonResponseSchema = z.object({
+  schema_version: z.string(),
+  session_id: z.string(),
+  from: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  total: z.number().int().nonnegative(),
+  has_more: z.boolean(),
+  entries: z.array(browseDebugSkeletonEntrySchema),
+});
+
 // ── Host Profiles (client-side multi-host support) ─────────────────────
 
 /** Permissive CLI family schema — any non-empty string is accepted. */

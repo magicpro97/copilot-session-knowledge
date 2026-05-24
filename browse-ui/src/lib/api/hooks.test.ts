@@ -1016,3 +1016,82 @@ describe("useAdoptCliSession", () => {
     expect((calledInit as RequestInit | undefined)?.method).toBe("POST");
   });
 });
+
+// ── Debug log params & query keys (issue #538 / #539) ─────────────────────────
+
+describe("debug log params and query keys (projection, until, to_idx)", () => {
+  it("sessionDebugLog query key includes full params object", () => {
+    const params = { from: 0, limit: 10, projection: "skeleton" as const };
+    const key = queryKeys.sessionDebugLog("sess-1", params, LOCAL_HOST_ID);
+    expect(key).toEqual(["session-debug-log", LOCAL_HOST_ID, "sess-1", params]);
+  });
+
+  it("sessionDebugLog query keys differ when params differ", () => {
+    const keyFull = queryKeys.sessionDebugLog("s", { projection: "full" }, LOCAL_HOST_ID);
+    const keySkel = queryKeys.sessionDebugLog("s", { projection: "skeleton" }, LOCAL_HOST_ID);
+    expect(keyFull).not.toEqual(keySkel);
+  });
+
+  it("sessionDebugLogSkeleton key is under a different prefix from sessionDebugLog", () => {
+    const skeletonKey = queryKeys.sessionDebugLogSkeleton("s", {}, LOCAL_HOST_ID);
+    const fullKey = queryKeys.sessionDebugLog("s", {}, LOCAL_HOST_ID);
+    expect(skeletonKey[0]).toBe("session-debug-log-skeleton");
+    expect(fullKey[0]).toBe("session-debug-log");
+    expect(skeletonKey).not.toEqual(fullKey);
+  });
+
+  it("sessionDebugLogSkeleton key differs when window params differ", () => {
+    const key1 = queryKeys.sessionDebugLogSkeleton(
+      "s",
+      { from: 0, until: "2024-01-01T00:00:00Z" },
+      LOCAL_HOST_ID
+    );
+    const key2 = queryKeys.sessionDebugLogSkeleton(
+      "s",
+      { from: 0, until: "2024-01-02T00:00:00Z" },
+      LOCAL_HOST_ID
+    );
+    expect(key1).not.toEqual(key2);
+  });
+
+  it("sessionDebugLogSkeleton key includes to_idx in params", () => {
+    const key = queryKeys.sessionDebugLogSkeleton("s", { to_idx: 500 }, LOCAL_HOST_ID);
+    expect(key[3]).toMatchObject({ to_idx: 500 });
+  });
+
+  it("debugLog key is host-scoped", () => {
+    const local = queryKeys.debugLog("s", "r", {}, LOCAL_HOST_ID);
+    const remote = queryKeys.debugLog("s", "r", {}, "remote-host-1");
+    expect(local[1]).toBe(LOCAL_HOST_ID);
+    expect(remote[1]).toBe("remote-host-1");
+    expect(local).not.toEqual(remote);
+  });
+
+  it("createQueryString includes projection, until, to_idx", () => {
+    const qs = createQueryString({
+      from: 0,
+      limit: 5000,
+      projection: "skeleton",
+      until: "2024-01-01T12:00:00Z",
+      to_idx: 200,
+    });
+    expect(qs).toContain("projection=skeleton");
+    expect(qs).toContain("until=2024-01-01T12%3A00%3A00Z");
+    expect(qs).toContain("to_idx=200");
+    expect(qs).toContain("from=0");
+    expect(qs).toContain("limit=5000");
+  });
+
+  it("createQueryString omits undefined params", () => {
+    const qs = createQueryString({ projection: undefined, until: undefined, to_idx: undefined });
+    expect(qs).toBe("");
+  });
+
+  it("createQueryString omits null params", () => {
+    const qs = createQueryString({
+      projection: null as unknown as string,
+      until: null as unknown as string,
+    });
+    expect(qs).toBe("");
+  });
+});

@@ -89,7 +89,16 @@ vi.mock("./overview-tab", () => ({
   OverviewTab: () => <div data-testid="overview-tab">Overview content</div>,
 }));
 vi.mock("./timeline-tab", () => ({
-  TimelineTab: () => <div data-testid="timeline-tab">Timeline content</div>,
+  TimelineTab: ({ onOpenDebugLog }: { onOpenDebugLog?: (idx: number) => void }) => (
+    <div data-testid="timeline-tab">
+      Timeline content
+      {onOpenDebugLog && (
+        <button data-testid="mock-open-debug-log" onClick={() => onOpenDebugLog(7)}>
+          Open in Debug Log
+        </button>
+      )}
+    </div>
+  ),
 }));
 vi.mock("./mindmap-tab", () => ({
   MindmapTab: () => <div data-testid="mindmap-tab">Mindmap content</div>,
@@ -102,18 +111,28 @@ vi.mock("./debug-log-tab", () => ({
     sessionId,
     runsLoading,
     noRunEmptyState,
+    focusEntryIdx,
+    onFocusEntryHandled,
   }: {
     sessionId?: string;
     runsLoading?: boolean;
     noRunEmptyState?: string | null;
+    focusEntryIdx?: number | null;
+    onFocusEntryHandled?: () => void;
   }) => (
     <div
       data-testid="debug-log-tab"
       data-session-id={sessionId ?? ""}
       data-runs-loading={String(Boolean(runsLoading))}
       data-no-run-empty-state={noRunEmptyState ?? "null"}
+      data-focus-entry-idx={focusEntryIdx != null ? String(focusEntryIdx) : "null"}
     >
       DebugLog content
+      {onFocusEntryHandled && (
+        <button data-testid="mock-focus-handled" onClick={onFocusEntryHandled}>
+          Handled
+        </button>
+      )}
     </div>
   ),
 }));
@@ -711,5 +730,58 @@ describe("SessionDetailClient — DebugLogTab noRunEmptyState wiring", () => {
     fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
     const tab = screen.getByTestId("debug-log-tab");
     expect(tab).toHaveAttribute("data-session-id", "test-session-123");
+  });
+});
+
+// ── Timeline → Debug Log handoff (#541) ──────────────────────────────────────
+
+describe("SessionDetailClient – Open in Debug Log handoff", () => {
+  it("TimelineTab receives onOpenDebugLog callback", () => {
+    render(<SessionDetailClient />);
+    // Navigate to timeline tab
+    fireEvent.click(screen.getByRole("tab", { name: /timeline/i }));
+    // The mock button only renders when onOpenDebugLog is provided
+    expect(screen.getByTestId("mock-open-debug-log")).toBeInTheDocument();
+  });
+
+  it("clicking Open in Debug Log from timeline switches to debug-log tab", () => {
+    render(<SessionDetailClient />);
+    // Start on timeline tab
+    fireEvent.click(screen.getByRole("tab", { name: /timeline/i }));
+    // Trigger the handoff
+    fireEvent.click(screen.getByTestId("mock-open-debug-log"));
+    // Debug Log tab should now be active
+    const debugTab = screen.getByRole("tab", { name: /debug log/i });
+    expect(debugTab).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("focusEntryIdx is passed to DebugLogTab after handoff", () => {
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /timeline/i }));
+    // Mock calls onOpenDebugLog(7)
+    fireEvent.click(screen.getByTestId("mock-open-debug-log"));
+    // Check focusEntryIdx=7 is passed to DebugLogTab
+    const debugLogEl = screen.getByTestId("debug-log-tab");
+    expect(debugLogEl).toHaveAttribute("data-focus-entry-idx", "7");
+  });
+
+  it("focusEntryIdx is cleared after onFocusEntryHandled is called", () => {
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /timeline/i }));
+    fireEvent.click(screen.getByTestId("mock-open-debug-log"));
+    // Navigate to debug log tab where mock-focus-handled button is visible
+    const debugLogEl = screen.getByTestId("debug-log-tab");
+    expect(debugLogEl).toHaveAttribute("data-focus-entry-idx", "7");
+    // Trigger the handled callback
+    fireEvent.click(screen.getByTestId("mock-focus-handled"));
+    // focusEntryIdx should reset to null
+    expect(debugLogEl).toHaveAttribute("data-focus-entry-idx", "null");
+  });
+
+  it("DebugLogTab gets focusEntryIdx=null when no handoff has occurred", () => {
+    render(<SessionDetailClient />);
+    fireEvent.click(screen.getByRole("tab", { name: /debug log/i }));
+    const debugLogEl = screen.getByTestId("debug-log-tab");
+    expect(debugLogEl).toHaveAttribute("data-focus-entry-idx", "null");
   });
 });

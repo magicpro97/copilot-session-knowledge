@@ -1,33 +1,28 @@
-import { useQuery } from "@tanstack/react-query";
-
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
 import { TimelinePlayer } from "@/components/data/timeline-player";
-import { hostFetch } from "@/lib/api/client";
-import { timelineEventsResponseSchema } from "@/lib/api/schemas";
+import { useSessionDebugLogSkeleton } from "@/lib/api/hooks";
 import type { HostProfile } from "@/lib/api/types";
 
 type TimelineTabProps = {
   sessionId: string;
   active: boolean;
   host: HostProfile;
+  onOpenDebugLog?: (entryIdx: number) => void;
 };
 
-export function TimelineTab({ sessionId, active, host }: TimelineTabProps) {
-  const query = useQuery({
-    queryKey: ["session-timeline-events", host.id, sessionId],
-    enabled: Boolean(sessionId),
-    queryFn: async () => {
-      const encoded = encodeURIComponent(sessionId);
-      const data = await hostFetch(`/api/session/${encoded}/events?from=0&limit=200`, host);
-      return timelineEventsResponseSchema.parse(data);
-    },
-  });
+export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: TimelineTabProps) {
+  const query = useSessionDebugLogSkeleton(
+    sessionId,
+    { from: 0, limit: 5000 },
+    Boolean(sessionId),
+    host
+  );
 
   if (query.isLoading) {
     return (
       <div className="border-border text-muted-foreground rounded-xl border p-4 text-sm">
-        Loading timeline events...
+        Loading timeline…
       </div>
     );
   }
@@ -36,20 +31,28 @@ export function TimelineTab({ sessionId, active, host }: TimelineTabProps) {
     return (
       <Banner
         tone="danger"
-        title="Failed to load timeline events"
+        title="Failed to load timeline"
         description={query.error instanceof Error ? query.error.message : "Unknown error"}
       />
     );
   }
 
-  if (!query.data || query.data.events.length === 0) {
+  if (!query.data || query.data.entries.length === 0) {
     return (
       <EmptyState
-        title="No timeline events"
-        description="No event offsets were available for this session."
+        title="No timeline data"
+        description="No debug timeline entries were found for this session. The session may not have recorded structured events yet."
       />
     );
   }
 
-  return <TimelinePlayer events={query.data.events} total={query.data.total} active={active} />;
+  return (
+    <TimelinePlayer
+      entries={query.data.entries}
+      total={query.data.total}
+      hasMore={query.data.has_more}
+      active={active}
+      onOpenDebugLog={onOpenDebugLog}
+    />
+  );
 }

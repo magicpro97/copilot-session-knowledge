@@ -88,6 +88,8 @@ export function SessionDetailClient() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [adoptError, setAdoptError] = useState<string | null>(null);
+  /** idx of the Debug Log entry that Timeline requested to open; null = no pending focus. */
+  const [requestedDebugIdx, setRequestedDebugIdx] = useState<number | null>(null);
 
   // CLI adopt feature — only probe if sessions capability is available.
   const { supported: cliAdoptSupported } = useHostFeature(host, "cli_adopt", sessionsEnabled);
@@ -122,6 +124,12 @@ export function SessionDetailClient() {
   }, [cliSessionQuery.data, adoptMutation, host, router]);
 
   const detailQuery = useSessionDetail(sessionId, sessionsEnabled && Boolean(sessionId), host);
+
+  /** Switch to Debug Log and request focus on the given entry idx. */
+  const handleOpenDebugLog = useCallback((entryIdx: number) => {
+    setRequestedDebugIdx(entryIdx);
+    setActiveTab("debug-log");
+  }, []);
   // Only fetch operator runs when (a) Debug Log tab is active AND (b) the
   // backend reports `has_operator_runs: true` on the session detail. The
   // endpoint targets operator sessions (JSON-backed) only; knowledge sessions
@@ -387,7 +395,12 @@ export function SessionDetailClient() {
           />
         </TabsContent>
         <TabsContent value="timeline">
-          <TimelineTab sessionId={sessionId} active={activeTab === "timeline"} host={host} />
+          <TimelineTab
+            sessionId={sessionId}
+            active={activeTab === "timeline"}
+            host={host}
+            onOpenDebugLog={handleOpenDebugLog}
+          />
         </TabsContent>
         <TabsContent value="mindmap">
           <MindmapTab sessionId={sessionId} active={activeTab === "mindmap"} host={host} />
@@ -404,6 +417,8 @@ export function SessionDetailClient() {
             noRunEmptyState={debugLogEmptyState}
             onAdoptInChat={handleAdoptFromDetail}
             adoptPending={adoptMutation.isPending}
+            focusEntryIdx={requestedDebugIdx}
+            onFocusEntryHandled={() => setRequestedDebugIdx(null)}
           />
         </TabsContent>
       </Tabs>

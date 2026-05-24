@@ -1,4 +1,4 @@
-"""browse/routes/debug_log.py — Debug-log routes (WBS-103, WBS-428).
+"""browse/routes/debug_log.py — Debug-log routes (WBS-103, WBS-428, issue #538).
 
 Routes registered here:
 
@@ -16,6 +16,16 @@ Routes registered here:
                        has_more, entries: [BrowseDebugEntry, ...]}
       (WBS-428)
 
+      Issue #538 additive query parameters:
+        projection  "full" (default) | "skeleton"
+            full     — existing shape + limit 1..100
+            skeleton — strict safe subset for Timeline playback; limit 1..5000
+                       Fields: idx, timestamp, kind, duration_ms, status,
+                               span_id, parent_span_id  (no message/attrs/etc.)
+        until   ISO-8601 datetime (paired with since) — include events at/before
+        to_idx  int >= 0           (paired with from)  — upper bound on filtered idx;
+                                    if to_idx < from, returns empty / total 0
+
 All auth/CORS gating is handled by the server dispatcher (debug=True routes
 receive Bearer/cookie gating only; ?token= query-string access is rejected).
 
@@ -28,6 +38,10 @@ Security invariants (all enforced, no relaxation):
 - Symlinks to events.jsonl are not followed (lstat check).
 - All entries pass through browse.core.redaction.redact_entry before return.
 - The response never includes raw filesystem paths or usernames.
+- Skeleton projection applies an additional strict allowlist on top of
+  redact_entry; it NEVER includes message, attrs, tool_name, source,
+  redacted, raw event ids/parent ids, raw event_type, prompts, tool
+  args/results, or paths.
 """
 
 import hashlib as _hashlib
@@ -54,6 +68,55 @@ _TRUNCATION_BYTES = 8192  # raw-event byte limit before truncation marker
 _CLI_SOURCE = "cli"
 
 _NULLABLE_DEBUG_ENTRY_FIELDS = ("tool_name", "duration_ms", "parent_span_id", "status")
+
+# Projection limits (issue #538)
+_FULL_LIMIT_MAX = 100  # unchanged from WBS-428
+_SKELETON_LIMIT_MAX = 5000  # high-limit for timeline playback skeleton
+
+# Skeleton projection: strict safe-subset fields for Timeline playback (issue #538).
+# ONLY these fields are emitted; everything else (message, attrs, tool_name,
+# source, redacted, level, raw event ids/types, paths, usernames) is omitted.
+_SKELETON_FIELDS = frozenset({"idx", "timestamp", "kind", "duration_ms", "status", "span_id", "parent_span_id"})
+
+# ── Skeleton projection helper ────────────────────────────────────────────────
+
+
+def _project_skeleton(entry: dict) -> dict:
+    """Return a strict safe-subset dict for skeleton projection.
+
+    Only fields in _SKELETON_FIELDS are included.  The 'status' field is
+    sourced from entry['attrs'].get('tool_status') or entry['attrs'].get(
+    'hook_status') when available (safe derived enum), or from top-level
+    'status' if present.  All other fields are silently dropped.
+
+    This is applied AFTER redact_entry so we are projecting an already-
+    redacted entry — no redaction bypass is possible.
+    """
+    attrs = entry.get("attrs") or {}
+
+    # Derive a safe status enum: prefer explicit tool/hook status attrs
+    # (already safe enums) then fall back to a top-level 'status' if present.
+    status: str | None = None
+    for attr_key in ("tool_status", "hook_status"):
+        v = attrs.get(attr_key)
+        if isinstance(v, str) and v:
+            status = v
+            break
+    if status is None:
+        v = entry.get("status")
+        if isinstance(v, str) and v:
+            status = v
+
+    return {
+        "idx": entry.get("idx"),
+        "timestamp": entry.get("timestamp"),
+        "kind": entry.get("kind"),
+        "duration_ms": entry.get("duration_ms"),
+        "status": status,
+        "span_id": entry.get("span_id"),
+        "parent_span_id": entry.get("parent_span_id"),
+    }
+
 
 # Strict 16-lowercase-hex span_id pattern (mirrors browse.core.redaction._SPAN_ID_RE).
 _SPAN_ID_HEX_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -784,16 +847,30 @@ def _read_cli_session_events(
     kind_filter: "str | None",
     level_filter: "str | None",
     since_filter: "datetime | None",
+    until_filter: "datetime | None" = None,
+    to_idx: "int | None" = None,
 ) -> "tuple[list, int]":
     """Read events.jsonl with filtering and bounded pagination.
 
     Single-pass streaming: iterates all lines, keeps only the current page
     in memory (at most `limit` entries).  Computes total after filters.
 
+    Issue #538 additions:
+    - until_filter: when set, events with timestamp > until_filter are excluded.
+      Events missing a timestamp are excluded when ANY time filter is active.
+    - to_idx: when set, only filtered events with sequential index < to_idx are
+      included in the window [from_idx, to_idx).  If to_idx <= from_idx, the
+      function returns ([], 0) immediately — deterministic empty window.
+
     Returns (page, total) where:
       page  — list of pre-redaction BrowseDebugEntry dicts for [from_idx, from_idx+limit)
-      total — total filtered event count (for has_more / pagination)
+              within the [from_idx, to_idx) window when to_idx is set
+      total — total filtered event count within the effective window
     """
+    # Fast path: empty window when to_idx is set and is not greater than from_idx
+    if to_idx is not None and to_idx <= from_idx:
+        return [], 0
+
     page: list = []
     total_filtered = 0
     line_no = 0
@@ -817,7 +894,9 @@ def _read_cli_session_events(
             if level_filter and entry.get("level") != level_filter:
                 continue
 
-            if since_filter is not None:
+            # Time filters: events missing a timestamp are excluded when any
+            # time filter is active (since or until).
+            if since_filter is not None or until_filter is not None:
                 ts_val = entry.get("timestamp")
                 if not ts_val:
                     continue
@@ -825,15 +904,28 @@ def _read_cli_session_events(
                     ts = datetime.fromisoformat(str(ts_val).replace("Z", "+00:00"))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
-                    if ts < since_filter:
+                    if since_filter is not None and ts < since_filter:
+                        continue
+                    if until_filter is not None and ts > until_filter:
                         continue
                 except (ValueError, TypeError):
                     continue
+
+            # ── to_idx window upper bound (filtered sequential index) ──────────
+            if to_idx is not None and total_filtered >= to_idx:
+                # We've passed the window end; still need total count, so keep
+                # going but stop adding to page.
+                total_filtered += 1
+                continue
 
             # ── Page accumulation (check before incrementing total) ────────────
             if from_idx <= total_filtered < from_idx + limit:
                 page.append(entry)
             total_filtered += 1
+
+    # When to_idx is set, total is capped to the window [0, to_idx).
+    if to_idx is not None:
+        total_filtered = min(total_filtered, to_idx)
 
     return page, total_filtered
 
@@ -903,6 +995,13 @@ def _handle_cli_session_debug_log(db, params, token, nonce, session_id: str = ""
         return json_error("debug log not found", "NOT_FOUND", 404)
 
     # ── Parse and validate query parameters ───────────────────────────────────
+
+    # projection (issue #538): "full" (default) | "skeleton"
+    projection_raw = (params.get("projection", ["full"])[0] or "full").strip().lower()
+    if projection_raw not in ("full", "skeleton"):
+        return json_error("'projection' must be 'full' or 'skeleton'", "BAD_PARAM", 400)
+    skeleton_mode = projection_raw == "skeleton"
+
     try:
         from_idx = int(params.get("from", ["0"])[0] or "0")
         if from_idx < 0:
@@ -910,12 +1009,19 @@ def _handle_cli_session_debug_log(db, params, token, nonce, session_id: str = ""
     except (ValueError, TypeError):
         return json_error("'from' must be a non-negative integer", "BAD_PARAM", 400)
 
+    # limit: skeleton mode allows up to _SKELETON_LIMIT_MAX; full mode unchanged.
+    limit_max = _SKELETON_LIMIT_MAX if skeleton_mode else _FULL_LIMIT_MAX
+    limit_default = min(100, limit_max)
     try:
-        limit = int(params.get("limit", ["100"])[0] or "100")
-        if not (1 <= limit <= 100):
+        limit = int(params.get("limit", [str(limit_default)])[0] or str(limit_default))
+        if not (1 <= limit <= limit_max):
             raise ValueError("limit out of range")
     except (ValueError, TypeError):
-        return json_error("'limit' must be an integer between 1 and 100", "BAD_PARAM", 400)
+        return json_error(
+            f"'limit' must be an integer between 1 and {limit_max}",
+            "BAD_PARAM",
+            400,
+        )
 
     kind_filter = (params.get("kind", [""])[0] or "").strip() or None
     if kind_filter and kind_filter not in _DEBUG_KIND_ENUM:
@@ -947,9 +1053,44 @@ def _handle_cli_session_debug_log(db, params, token, nonce, session_id: str = ""
                 400,
             )
 
+    # until filter (issue #538): paired with since; at/before semantics.
+    until_filter: datetime | None = None
+    until_str = (params.get("until", [""])[0] or "").strip() or None
+    if until_str:
+        try:
+            until_filter = datetime.fromisoformat(until_str.replace("Z", "+00:00"))
+            if until_filter.tzinfo is None:
+                until_filter = until_filter.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return json_error(
+                "'until' must be a valid ISO-8601 datetime string",
+                "BAD_PARAM",
+                400,
+            )
+
+    # to_idx filter (issue #538): upper-bound on filtered sequential index.
+    to_idx: int | None = None
+    to_idx_str = (params.get("to_idx", [""])[0] or "").strip() or None
+    if to_idx_str:
+        try:
+            to_idx = int(to_idx_str)
+            if to_idx < 0:
+                raise ValueError("to_idx must be >= 0")
+        except (ValueError, TypeError):
+            return json_error("'to_idx' must be a non-negative integer", "BAD_PARAM", 400)
+
     # ── Stream, filter, paginate ───────────────────────────────────────────────
     try:
-        page, total = _read_cli_session_events(events_path, from_idx, limit, kind_filter, level_filter, since_filter)
+        page, total = _read_cli_session_events(
+            events_path,
+            from_idx,
+            limit,
+            kind_filter,
+            level_filter,
+            since_filter,
+            until_filter=until_filter,
+            to_idx=to_idx,
+        )
     except OSError:
         return json_error("debug log not found", "NOT_FOUND", 404)
 
@@ -957,9 +1098,15 @@ def _handle_cli_session_debug_log(db, params, token, nonce, session_id: str = ""
 
     # Redact page entries; ensure nullable fields are always present.
     redacted = [redact_entry(e) for e in page]
-    for entry in redacted:
-        for field in _NULLABLE_DEBUG_ENTRY_FIELDS:
-            entry.setdefault(field, None)
+    if skeleton_mode:
+        # Apply strict skeleton projection on top of redaction.
+        # Only _SKELETON_FIELDS pass through; no nullable-field backfill needed
+        # because the skeleton shape has its own explicit None defaults above.
+        redacted = [_project_skeleton(e) for e in redacted]
+    else:
+        for entry in redacted:
+            for field in _NULLABLE_DEBUG_ENTRY_FIELDS:
+                entry.setdefault(field, None)
 
     return json_ok(
         {
@@ -1005,12 +1152,15 @@ def handle_cli_session_debug_log(db, params, token, nonce, session_id: str = "")
     BrowseDebugEntry objects conforming to the DebugLogResponse contract
     (DEBUG-LOG-CONTRACT.md §DebugLogResponse, WBS-428).
 
-    Query parameters:
+    Query parameters (issue #538 additions marked with *):
+      projection  "full"|"skeleton"  (default "full")  — * response projection
       from    int >= 0          (default 0)    — pagination offset into filtered events
-      limit   1..100            (default 100)  — page size
+      limit   1..100 (full) / 1..5000 (skeleton)  (default 100)  — page size
       kind    <KIND_ENUM>       (optional)     — filter by event kind
       level   <LEVEL_ENUM>      (optional)     — filter by severity (CLI events always null)
       since   ISO-8601 datetime (optional)     — include only events at or after this time
+      until   ISO-8601 datetime (optional)     — * include only events at or before this time
+      to_idx  int >= 0          (optional)     — * upper bound on filtered sequential index
 
     Response shape:
       {
@@ -1022,6 +1172,9 @@ def handle_cli_session_debug_log(db, params, token, nonce, session_id: str = "")
         "has_more": false,
         "entries": [BrowseDebugEntry, ...]
       }
+
+    Skeleton projection entries contain only:
+      idx, timestamp, kind, duration_ms, status, span_id, parent_span_id
 
     Auth: Bearer or cookie only (debug=True; ?token= rejected by dispatcher).
     Unknown/invalid session → 404 with no UUID or path leakage.

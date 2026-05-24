@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Check, Filter, Loader2, Terminal } from "lucide-react";
 
 import { Banner } from "@/components/data/banner";
@@ -74,6 +74,14 @@ export type DebugLogTabProps = {
   onAdoptInChat?: () => void;
   /** True while an adopt mutation is in flight — disables the adopt button. */
   adoptPending?: boolean;
+  /**
+   * When set, DebugLogTab will navigate to the page containing this entry idx,
+   * clear active filters, and open the detail drawer for the matching entry.
+   * Resets to null (via onFocusEntryHandled) after processing.
+   */
+  focusEntryIdx?: number | null;
+  /** Called once the focus request has been processed (entry selected or unavailable). */
+  onFocusEntryHandled?: () => void;
 };
 
 type FilterState = {
@@ -651,6 +659,8 @@ export function DebugLogTab({
   noRunEmptyState = null,
   onAdoptInChat,
   adoptPending = false,
+  focusEntryIdx = null,
+  onFocusEntryHandled,
 }: DebugLogTabProps) {
   const [filters, setFilters] = useState<FilterState>({
     text: "",
@@ -661,6 +671,36 @@ export function DebugLogTab({
   const [page, setPage] = useState(0);
   const [selectedEntry, setSelectedEntry] = useState<BrowseDebugEntry | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "tree" | "flow">("list");
+
+  // ── Focus-entry-idx: navigate to target page and select entry ─────────────────
+  /**
+   * Tracks a pending "focus to entry idx" request from Timeline.
+   * Stored in a ref so Effect 2 (the selection effect) can access it without
+   * being in the dependency array (avoids stale-closure loops).
+   */
+  const pendingFocusRef = useRef<{ idx: number; targetPage: number } | null>(null);
+  /**
+   * Stable ref for onFocusEntryHandled to avoid re-registering Effect 2
+   * every time the parent re-renders.
+   */
+  const onFocusHandledRef = useRef(onFocusEntryHandled);
+  useLayoutEffect(() => {
+    onFocusHandledRef.current = onFocusEntryHandled;
+  });
+
+  // Effect 1: react to a new focusEntryIdx — navigate to target page, clear filters.
+  useEffect(() => {
+    if (focusEntryIdx == null) {
+      pendingFocusRef.current = null;
+      return;
+    }
+    const targetPage = Math.floor(focusEntryIdx / PAGE_SIZE);
+    pendingFocusRef.current = { idx: focusEntryIdx, targetPage };
+    // Clear filters so they cannot hide the requested entry.
+    setFilters({ text: "", kind: "", level: "", status: "" });
+    setSelectedEntry(null);
+    setPage(targetPage);
+  }, [focusEntryIdx]);
 
   const hasRunId = Boolean(runId);
 
@@ -687,6 +727,9 @@ export function DebugLogTab({
     host
   );
 
+  // ── Derived data — computed before early returns so effects can read them ──
+  const isQueryLoading = hasRunId ? operatorQuery.isLoading : sessionQuery.isLoading;
+
   // Unified display data from whichever path is active.
   const normalizedData = hasRunId
     ? operatorQuery.data
@@ -703,6 +746,30 @@ export function DebugLogTab({
           has_more: page * PAGE_SIZE + sessionQuery.data.entries.length < sessionQuery.data.total,
         }
       : null;
+
+  // Effect 2: once the target page's data is available, find and select the entry.
+  // Runs after normalizedData, isQueryLoading, or page changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (pending == null) return;
+    // Wait until we're rendering the right page.
+    if (page !== pending.targetPage) return;
+    // Wait for the query to finish loading.
+    if (isQueryLoading) return;
+    // If there's no data (error / empty), give up and notify the caller.
+    if (!normalizedData?.events) {
+      pendingFocusRef.current = null;
+      onFocusHandledRef.current?.();
+      return;
+    }
+    const target = normalizedData.events.find((e) => e.idx === pending.idx);
+    pendingFocusRef.current = null;
+    if (target) setSelectedEntry(target);
+    onFocusHandledRef.current?.();
+    // Intentionally omitting onFocusHandledRef from deps — it's accessed via
+    // ref to avoid re-registering on every parent render.
+  }, [normalizedData, isQueryLoading, page]);
 
   // Apply client-side filters (text, kind, level, status) — AND composition.
   const filteredEvents = normalizedData?.events ? applyFilters(normalizedData.events, filters) : [];
@@ -730,7 +797,6 @@ export function DebugLogTab({
   }
 
   // ── Loading state (either path) ────────────────────────────────────────────
-  const isQueryLoading = hasRunId ? operatorQuery.isLoading : sessionQuery.isLoading;
   if (isQueryLoading) {
     return (
       <div className="border-border text-muted-foreground rounded-xl border p-4 text-sm">

@@ -1328,6 +1328,62 @@ export interface DebugLogParams {
   kind?: string;
   level?: string;
   since?: string;
+  /**
+   * Response projection mode (issue #538).
+   * - "full": full BrowseDebugEntry (default, max limit 100).
+   * - "skeleton": lightweight subset only — idx/timestamp/kind/duration_ms/status/span_id/parent_span_id (max limit 5000).
+   */
+  projection?: "full" | "skeleton";
+  /**
+   * Upper-bound window filter (ISO-8601). Events with timestamp > until are excluded.
+   * Events missing a timestamp are also excluded when any time filter is active.
+   */
+  until?: string;
+  /**
+   * Sequential upper-bound index (exclusive). Only events up to this filtered
+   * position are returned. Must be >= 0. No-op when to_idx <= from.
+   */
+  to_idx?: number;
+}
+
+/**
+ * Lightweight debug log entry returned by `projection=skeleton`.
+ *
+ * Contains only safe, non-sensitive fields sufficient for timeline rendering.
+ * Never includes message, attrs, tool_name, source, level, or redacted.
+ * Status is derived from attrs.hook_status / attrs.tool_status by the backend.
+ *
+ * See backend `_project_skeleton` in browse/routes/debug_log.py.
+ */
+export interface BrowseDebugSkeletonEntry {
+  /** Zero-based position; monotonically increasing per session run. */
+  idx: number;
+  /** Event wall-clock time (ISO-8601). null when absent in source. */
+  timestamp: string | null;
+  /** Event taxonomy value. */
+  kind: DebugKind | (string & {});
+  /** Elapsed milliseconds for completed spans. null when unknown. */
+  duration_ms: number | null;
+  /** Derived terminal status (ok/error/cancelled). null for non-terminal or unknown. */
+  status: DebugStatus | (string & {}) | null;
+  /** 16 lowercase hex chars. null when no span. */
+  span_id: string | null;
+  /** 16 lowercase hex chars for the parent span. null when no parent. */
+  parent_span_id: string | null;
+}
+
+/**
+ * HTTP response envelope for GET /api/session/{sid}/debug-log?projection=skeleton.
+ * Session-scoped skeleton debug log — lightweight projection for timeline use.
+ */
+export interface SessionDebugSkeletonResponse {
+  schema_version: string;
+  session_id: string;
+  from: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+  entries: BrowseDebugSkeletonEntry[];
 }
 
 /**
