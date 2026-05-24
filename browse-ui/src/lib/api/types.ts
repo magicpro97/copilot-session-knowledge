@@ -1542,3 +1542,68 @@ export interface SubagentActivityResponse {
   dropped_pending_starts: number;
   entries: SubagentActivityEntry[];
 }
+
+// ── Subagent Internals (GET /api/session/{id}/subagent-internals) ───────────
+
+export interface SubagentInternalToolEvent {
+  idx: number;
+  end_idx: number | null;
+  tool_name: string | null;
+  status: "running" | "completed" | "failed" | "unknown";
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  input_bytes: number | null;
+  output_bytes: number | null;
+}
+
+export interface SubagentInternalModelEvent {
+  idx: number;
+  timestamp: string | null;
+  output_tokens: number | null;
+  tool_request_count: number | null;
+}
+
+export interface SubagentInternals {
+  tool_call_count: number;
+  tool_success_count: number;
+  tool_failure_count: number;
+  llm_turn_count: number;
+  output_tokens_total: number;
+  internal_event_count: number;
+  tool_names: string[];
+  tools: SubagentInternalToolEvent[];
+  tools_truncated: boolean;
+  model_events: SubagentInternalModelEvent[];
+  model_events_truncated: boolean;
+}
+
+export interface SubagentInternalsEntry {
+  agent_key_hash: string;
+  span_id: string | null;
+  agent_name: string | null;
+  agent_display_name: string | null;
+  model: string | null;
+  status: SubagentStatus;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  start_idx: number | null;
+  end_idx: number | null;
+  redacted: boolean;
+  internals: SubagentInternals;
+}
+
+export interface SubagentInternalsResponse {
+  schema_version: "1";
+  session_id: string;
+  total_agents_seen: number;
+  returned: number;
+  cap: number;
+  truncated: boolean;
+  dropped_pending_starts: number;
+  skill_correlation_supported: boolean;
+  uncorrelated_skill_invocations: number;
+  session_skill_names: string[];
+  entries: SubagentInternalsEntry[];
+}

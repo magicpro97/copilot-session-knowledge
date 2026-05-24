@@ -51,6 +51,7 @@ import {
   browseCheckpointsResponseSchema,
   browseRewindSnapshotsResponseSchema,
   subagentActivityResponseSchema,
+  subagentInternalsResponseSchema,
   cliSessionListResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
@@ -103,6 +104,7 @@ import type {
   BrowseCheckpointsResponse,
   BrowseRewindSnapshotsResponse,
   SubagentActivityResponse,
+  SubagentInternalsResponse,
   CliSession,
   CliSessionListResponse,
   AdoptCliSessionRequest,
@@ -209,6 +211,8 @@ export const queryKeys = {
     ["session-rewind-snapshots", hostId, sessionId] as const,
   subagentActivity: (sessionId: string, hostId = LOCAL_HOST_ID) =>
     ["subagent-activity", hostId, sessionId] as const,
+  subagentInternals: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["subagent-internals", hostId, sessionId] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1289,6 +1293,34 @@ export function useSubagentActivity(
       );
       const data = await hostFetch<SubagentActivityResponse>(path, host);
       return subagentActivityResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * Returns safe per-subagent internals for a CLI session.
+ *
+ * Fetches GET /api/session/{id}/subagent-internals, a bounded aggregation of
+ * child tool/model events keyed by the backend's opaque span ids.  The route
+ * intentionally reports skill loads only at session level because current CLI
+ * skill events do not carry per-agent correlation fields.
+ */
+export function useSubagentInternals(
+  sessionId: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.subagentInternals(sessionId, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<SubagentInternalsResponse> => {
+      const path = withLeadingSlash(
+        `/api/session/${encodeURIComponent(sessionId)}/subagent-internals`
+      );
+      const data = await hostFetch<SubagentInternalsResponse>(path, host);
+      return subagentInternalsResponseSchema.parse(data);
     },
   });
 }

@@ -26,14 +26,17 @@
  *                  tools|tokens|duration|outcome|jump"
  */
 
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { Fragment, forwardRef, useEffect, useRef, useState } from "react";
 
 import type {
   SubagentActivitySummary,
   SubagentExecution,
   SubagentFilter,
+  SubagentInternalsBySpanId,
+  SubagentInternalsSummary,
 } from "@/lib/flight-recorder";
 import { filterSubagentExecutions } from "@/lib/flight-recorder";
+import type { SubagentInternalsEntry } from "@/lib/api/types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +61,14 @@ function formatDur(ms: number | null): string {
   const minutes = Math.floor(ms / 60_000);
   const seconds = Math.floor((ms % 60_000) / 1000);
   return `${minutes}m${seconds.toString().padStart(2, "0")}s`;
+}
+
+/** Format byte counts for compact tool I/O chips. */
+function formatBytes(bytes: number | null): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 /** Format ISO timestamp as locale time string (or "—"). */
@@ -127,6 +138,227 @@ export interface SubagentActivityPanelProps {
    * showing data-flash="true".
    */
   flashTick?: number;
+  /** Lookup from activity span_id to safe backend internals row. */
+  internalsBySpanId?: SubagentInternalsBySpanId;
+  /** Envelope-level internals metadata, including session-level skill attribution status. */
+  internalsSummary?: SubagentInternalsSummary;
+  /** True while the internals query is loading. */
+  internalsLoading?: boolean;
+  /** Error object when internals query failed; raw message is never rendered. */
+  internalsError?: Error | null;
+}
+
+type SubagentInternalsDetailsProps = {
+  execution: SubagentExecution;
+  row: SubagentInternalsEntry | null;
+  loading?: boolean;
+  error?: Error | null;
+  summary?: SubagentInternalsSummary;
+  onOpenDebugLog?: (idx: number) => void;
+  rowId: string;
+};
+
+function SubagentInternalsDetails({
+  execution,
+  row,
+  loading,
+  error,
+  summary,
+  onOpenDebugLog,
+  rowId,
+}: SubagentInternalsDetailsProps) {
+  const jumpTo = (idx: number) => {
+    if (onOpenDebugLog) onOpenDebugLog(idx);
+  };
+
+  if (loading) {
+    return (
+      <div className="text-muted-foreground px-3 py-2 text-xs" data-testid={`${rowId}-trace`}>
+        Loading sub-agent internals...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="text-muted-foreground px-3 py-2 text-xs"
+        data-testid={`${rowId}-trace`}
+        role="status"
+      >
+        Sub-agent internals unavailable.
+      </div>
+    );
+  }
+
+  if (!row) {
+    return (
+      <div className="text-muted-foreground px-3 py-2 text-xs" data-testid={`${rowId}-trace`}>
+        No correlated internals found for {execution.displayName}.
+      </div>
+    );
+  }
+
+  const { internals } = row;
+  const firstErrorTool = internals.tools.find((tool) => tool.status === "failed");
+
+  return (
+    <div
+      className="bg-muted/20 space-y-2 px-3 py-2 text-xs"
+      data-testid={`${rowId}-trace`}
+      aria-label={`Internals for ${execution.displayName}`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">Internals</span>
+        <span className="text-muted-foreground" data-testid={`${rowId}-trace-summary`}>
+          {internals.tool_call_count} tools · {internals.llm_turn_count} model messages ·{" "}
+          {internals.output_tokens_total.toLocaleString()} output tokens ·{" "}
+          {internals.internal_event_count} correlated events
+        </span>
+        {internals.tool_failure_count > 0 ? (
+          <span className="text-red-600 dark:text-red-400">
+            {internals.tool_failure_count} tool failure
+            {internals.tool_failure_count === 1 ? "" : "s"}
+          </span>
+        ) : null}
+      </div>
+
+      {internals.tool_names.length > 0 ? (
+        <div className="flex flex-wrap gap-1" data-testid={`${rowId}-trace-tool-names`}>
+          {internals.tool_names.map((name) => (
+            <span key={name} className="border-border bg-background rounded border px-1.5 py-0.5">
+              {name}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {internals.tools.length > 0 ? (
+        <div className="space-y-1" data-testid={`${rowId}-trace-tools`}>
+          <p className="text-muted-foreground font-medium">Tool timeline</p>
+          {internals.tools.slice(0, 30).map((tool) => {
+            const statusClass =
+              tool.status === "failed"
+                ? "bg-red-500"
+                : tool.status === "completed"
+                  ? "bg-green-500"
+                  : tool.status === "running"
+                    ? "bg-yellow-500"
+                    : "bg-muted-foreground";
+            const input = formatBytes(tool.input_bytes);
+            const output = formatBytes(tool.output_bytes);
+            return (
+              <div
+                key={`${tool.idx}-${tool.end_idx ?? "running"}`}
+                className="border-border bg-background/60 flex flex-wrap items-center gap-2 rounded border px-2 py-1"
+                data-testid={`${rowId}-trace-tool-${tool.idx}`}
+              >
+                <span className={`size-2 rounded-full ${statusClass}`} aria-hidden />
+                <span className="font-medium">{tool.tool_name ?? "tool"}</span>
+                <span className="text-muted-foreground">{formatTime(tool.started_at)}</span>
+                {tool.duration_ms !== null ? (
+                  <span className="text-muted-foreground">{formatDur(tool.duration_ms)}</span>
+                ) : null}
+                {input ? <span className="text-muted-foreground">in {input}</span> : null}
+                {output ? <span className="text-muted-foreground">out {output}</span> : null}
+                {onOpenDebugLog ? (
+                  <button
+                    type="button"
+                    className="border-border hover:bg-muted ml-auto rounded border px-1.5 py-0.5"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      jumpTo(tool.idx);
+                    }}
+                  >
+                    Jump
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+          {internals.tools_truncated ? (
+            <p className="text-muted-foreground">
+              Tool timeline truncated; jump to the debug log for full detail.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {internals.model_events.length > 0 ? (
+        <div className="space-y-1" data-testid={`${rowId}-trace-model-events`}>
+          <p className="text-muted-foreground font-medium">Model messages</p>
+          {internals.model_events.slice(0, 20).map((event) => (
+            <div
+              key={event.idx}
+              className="border-border bg-background/60 flex flex-wrap items-center gap-2 rounded border px-2 py-1"
+              data-testid={`${rowId}-trace-model-${event.idx}`}
+            >
+              <span className="font-medium">assistant.message</span>
+              <span className="text-muted-foreground">{formatTime(event.timestamp)}</span>
+              {event.output_tokens !== null ? (
+                <span className="text-muted-foreground">
+                  {event.output_tokens.toLocaleString()} tok
+                </span>
+              ) : null}
+              {event.tool_request_count !== null ? (
+                <span className="text-muted-foreground">{event.tool_request_count} tool req</span>
+              ) : null}
+              {onOpenDebugLog ? (
+                <button
+                  type="button"
+                  className="border-border hover:bg-muted ml-auto rounded border px-1.5 py-0.5"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    jumpTo(event.idx);
+                  }}
+                >
+                  Jump
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {internals.model_events_truncated ? (
+            <p className="text-muted-foreground">
+              Model event list truncated; jump to debug log for full detail.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {summary && !summary.skillCorrelationSupported && summary.uncorrelatedSkillInvocations > 0 ? (
+        <div
+          className="border-border bg-background/60 rounded border px-2 py-1"
+          data-testid={`${rowId}-trace-skills`}
+        >
+          <span className="font-medium">Skills:</span>{" "}
+          <span className="text-muted-foreground">
+            {summary.uncorrelatedSkillInvocations} session-level skill load
+            {summary.uncorrelatedSkillInvocations === 1 ? "" : "s"} recorded, but current CLI events
+            do not expose per-agent skill attribution.
+          </span>
+          {summary.sessionSkillNames.length > 0 ? (
+            <span className="text-muted-foreground">
+              {" "}
+              Seen: {summary.sessionSkillNames.join(", ")}.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {firstErrorTool && onOpenDebugLog ? (
+        <button
+          type="button"
+          className="border-border hover:bg-muted rounded border px-2 py-1 text-red-600 dark:text-red-400"
+          onClick={(e) => {
+            e.stopPropagation();
+            jumpTo(firstErrorTool.idx);
+          }}
+        >
+          Jump to first failed tool
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -142,17 +374,23 @@ export const SubagentActivityPanel = forwardRef<HTMLDivElement, SubagentActivity
       activeTimeMs,
       onSeekToExecution,
       flashTick = 0,
+      internalsBySpanId,
+      internalsSummary,
+      internalsLoading,
+      internalsError,
     },
     ref
   ) {
     const [filter, setFilter] = useState<SubagentFilter>("all");
     const [isFlashing, setIsFlashing] = useState(false);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
     const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // React to flash tick — reset filter to "all" and briefly set data-flash.
     useEffect(() => {
       if (flashTick === 0) return;
       setFilter("all");
+      setExpandedId(null);
       setIsFlashing(true);
       if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
       flashTimerRef.current = setTimeout(() => {
@@ -266,7 +504,10 @@ export const SubagentActivityPanel = forwardRef<HTMLDivElement, SubagentActivity
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border text-muted-foreground hover:text-foreground"
               }`}
-              onClick={() => setFilter(f)}
+              onClick={() => {
+                setFilter(f);
+                setExpandedId(null);
+              }}
             >
               {f === "all" ? "All" : f === "failed" ? "Failed" : "Running"}
             </button>
@@ -322,6 +563,9 @@ export const SubagentActivityPanel = forwardRef<HTMLDivElement, SubagentActivity
                   const slug = safeTestSlug(exec.id);
                   const rowId = `subagent-activity-row-${slug}`;
                   const jumpIdx = exec.startIdx ?? exec.endIdx;
+                  const isExpanded = expandedId === exec.id;
+                  const internalsRow =
+                    internalsBySpanId && exec.id ? (internalsBySpanId.get(exec.id) ?? null) : null;
 
                   const isActive =
                     activeTimeMs !== null &&
@@ -332,127 +576,148 @@ export const SubagentActivityPanel = forwardRef<HTMLDivElement, SubagentActivity
                     activeTimeMs < exec.endedAtMs;
 
                   const canSeek = Boolean(onSeekToExecution && exec.startedAtMs !== null);
+                  const canExpand = Boolean(
+                    internalsBySpanId || internalsSummary || internalsLoading || internalsError
+                  );
 
                   return (
-                    <tr
-                      key={exec.id}
-                      data-testid={rowId}
-                      data-status={rowDataStatus(exec)}
-                      data-agent={exec.agentName ?? exec.displayName}
-                      aria-current={isActive ? "true" : undefined}
-                      className={[
-                        "border-border border-b transition-colors last:border-0",
-                        exec.status === "failed" ? "border-l-2 border-l-red-500" : "",
-                        isActive ? "bg-primary/5" : "hover:bg-muted/30",
-                        canSeek ? "cursor-pointer" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                      onClick={
-                        canSeek && exec.startedAtMs !== null
-                          ? () => onSeekToExecution!(exec.startedAtMs!)
-                          : undefined
-                      }
-                    >
-                      {/* Status icon */}
-                      <td data-testid={`${rowId}-status`} className="px-2 py-1.5 text-center">
-                        {exec.status === "completed" ? (
-                          <span
-                            className="text-green-600 dark:text-green-400"
-                            aria-label="Completed"
-                          >
-                            ✓
-                          </span>
-                        ) : exec.status === "failed" ? (
-                          <span className="text-red-600 dark:text-red-400" aria-label="Failed">
-                            ✕
-                          </span>
-                        ) : exec.status === "running" ? (
-                          <span
-                            className="text-yellow-600 dark:text-yellow-400"
-                            aria-label="Running"
-                          >
-                            ⟳
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground" aria-label="Unknown">
-                            ?
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Started */}
-                      <td
-                        data-testid={`${rowId}-started`}
-                        className="px-2 py-1.5 whitespace-nowrap"
-                        title={exec.startedAt ?? ""}
+                    <Fragment key={exec.id}>
+                      <tr
+                        data-testid={rowId}
+                        data-status={rowDataStatus(exec)}
+                        data-agent={exec.agentName ?? exec.displayName}
+                        aria-current={isActive ? "true" : undefined}
+                        aria-expanded={canExpand ? isExpanded : undefined}
+                        className={[
+                          "border-border border-b transition-colors last:border-0",
+                          exec.status === "failed" ? "border-l-2 border-l-red-500" : "",
+                          isActive ? "bg-primary/5" : "hover:bg-muted/30",
+                          canSeek || canExpand ? "cursor-pointer" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        onClick={() => {
+                          if (canExpand)
+                            setExpandedId((prev) => (prev === exec.id ? null : exec.id));
+                          if (canSeek && exec.startedAtMs !== null)
+                            onSeekToExecution!(exec.startedAtMs!);
+                        }}
                       >
-                        {formatTime(exec.startedAt)}
-                      </td>
+                        {/* Status icon */}
+                        <td data-testid={`${rowId}-status`} className="px-2 py-1.5 text-center">
+                          {exec.status === "completed" ? (
+                            <span
+                              className="text-green-600 dark:text-green-400"
+                              aria-label="Completed"
+                            >
+                              ✓
+                            </span>
+                          ) : exec.status === "failed" ? (
+                            <span className="text-red-600 dark:text-red-400" aria-label="Failed">
+                              ✕
+                            </span>
+                          ) : exec.status === "running" ? (
+                            <span
+                              className="text-yellow-600 dark:text-yellow-400"
+                              aria-label="Running"
+                            >
+                              ⟳
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground" aria-label="Unknown">
+                              ?
+                            </span>
+                          )}
+                        </td>
 
-                      {/* Agent display name */}
-                      <td
-                        data-testid={`${rowId}-agent`}
-                        className="max-w-[120px] truncate px-2 py-1.5 font-medium"
-                        title={exec.displayName}
-                      >
-                        {exec.displayName}
-                      </td>
+                        {/* Started */}
+                        <td
+                          data-testid={`${rowId}-started`}
+                          className="px-2 py-1.5 whitespace-nowrap"
+                          title={exec.startedAt ?? ""}
+                        >
+                          {formatTime(exec.startedAt)}
+                        </td>
 
-                      {/* Model — empty string when null (never "null") */}
-                      <td
-                        data-testid={`${rowId}-model`}
-                        className="text-muted-foreground px-2 py-1.5"
-                      >
-                        {exec.model ?? ""}
-                      </td>
+                        {/* Agent display name */}
+                        <td
+                          data-testid={`${rowId}-agent`}
+                          className="max-w-[120px] truncate px-2 py-1.5 font-medium"
+                          title={exec.displayName}
+                        >
+                          {exec.displayName}
+                        </td>
 
-                      {/* Tool calls — empty string when null */}
-                      <td
-                        data-testid={`${rowId}-tools`}
-                        className="px-2 py-1.5 text-right tabular-nums"
-                      >
-                        {exec.totalToolCalls !== null ? exec.totalToolCalls : ""}
-                      </td>
+                        {/* Model — empty string when null (never "null") */}
+                        <td
+                          data-testid={`${rowId}-model`}
+                          className="text-muted-foreground px-2 py-1.5"
+                        >
+                          {exec.model ?? ""}
+                        </td>
 
-                      {/* Tokens — empty string when null */}
-                      <td
-                        data-testid={`${rowId}-tokens`}
-                        className="px-2 py-1.5 text-right tabular-nums"
-                      >
-                        {exec.totalTokens !== null ? exec.totalTokens.toLocaleString() : ""}
-                      </td>
+                        {/* Tool calls — empty string when null */}
+                        <td
+                          data-testid={`${rowId}-tools`}
+                          className="px-2 py-1.5 text-right tabular-nums"
+                        >
+                          {exec.totalToolCalls !== null ? exec.totalToolCalls : ""}
+                        </td>
 
-                      {/* Duration */}
-                      <td
-                        data-testid={`${rowId}-duration`}
-                        className="px-2 py-1.5 text-right whitespace-nowrap tabular-nums"
-                      >
-                        {formatDur(exec.durationMs)}
-                      </td>
+                        {/* Tokens — empty string when null */}
+                        <td
+                          data-testid={`${rowId}-tokens`}
+                          className="px-2 py-1.5 text-right tabular-nums"
+                        >
+                          {exec.totalTokens !== null ? exec.totalTokens.toLocaleString() : ""}
+                        </td>
 
-                      {/* Outcome — never raw error text */}
-                      <td data-testid={`${rowId}-outcome`} className="px-2 py-1.5">
-                        {outcomeText(exec)}
-                      </td>
+                        {/* Duration */}
+                        <td
+                          data-testid={`${rowId}-duration`}
+                          className="px-2 py-1.5 text-right whitespace-nowrap tabular-nums"
+                        >
+                          {formatDur(exec.durationMs)}
+                        </td>
 
-                      {/* Jump button */}
-                      <td data-testid={`${rowId}-jump`} className="px-2 py-1.5">
-                        {jumpIdx !== null && onOpenDebugLog ? (
-                          <button
-                            type="button"
-                            aria-label={`Jump to debug log entry for ${exec.displayName}`}
-                            className="border-border hover:bg-muted rounded border px-1.5 py-0.5 text-xs"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenDebugLog(jumpIdx);
-                            }}
-                          >
-                            Jump
-                          </button>
-                        ) : null}
-                      </td>
-                    </tr>
+                        {/* Outcome — never raw error text */}
+                        <td data-testid={`${rowId}-outcome`} className="px-2 py-1.5">
+                          {outcomeText(exec)}
+                        </td>
+
+                        {/* Jump button */}
+                        <td data-testid={`${rowId}-jump`} className="px-2 py-1.5">
+                          {jumpIdx !== null && onOpenDebugLog ? (
+                            <button
+                              type="button"
+                              aria-label={`Jump to debug log entry for ${exec.displayName}`}
+                              className="border-border hover:bg-muted rounded border px-1.5 py-0.5 text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenDebugLog(jumpIdx);
+                              }}
+                            >
+                              Jump
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                      {isExpanded ? (
+                        <tr key={`${exec.id}-trace`} className="border-border border-b">
+                          <td colSpan={9} className="p-0">
+                            <SubagentInternalsDetails
+                              execution={exec}
+                              row={internalsRow}
+                              loading={internalsLoading}
+                              error={internalsError}
+                              summary={internalsSummary}
+                              onOpenDebugLog={onOpenDebugLog}
+                              rowId={rowId}
+                            />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>

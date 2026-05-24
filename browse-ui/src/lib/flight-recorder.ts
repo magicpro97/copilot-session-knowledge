@@ -16,6 +16,8 @@ import type {
   SubagentActivityEntry,
   SubagentActivityResponse,
   SubagentErrorCategory,
+  SubagentInternalsEntry,
+  SubagentInternalsResponse,
 } from "@/lib/api/types";
 import {
   normalizeAndSortEntries,
@@ -941,4 +943,64 @@ export function deriveSubagentChipsFromActivity(
     bumpChip(counts, label);
   }
   return chipsFromMap(counts);
+}
+
+// ── Sub-agent Internals Model Helpers ─────────────────────────────────────────
+
+export type SubagentInternalsBySpanId = Map<string, SubagentInternalsEntry>;
+
+/**
+ * Build a lookup from sub-agent span_id to internals row. Rows without span_id
+ * are intentionally excluded because the UI cannot safely join them to an
+ * activity execution.
+ */
+export function deriveSubagentInternalsBySpanId(
+  response?: SubagentInternalsResponse | null
+): SubagentInternalsBySpanId {
+  const bySpan = new Map<string, SubagentInternalsEntry>();
+  if (!response?.entries?.length) return bySpan;
+  for (const entry of response.entries) {
+    if (typeof entry.span_id === "string" && entry.span_id.length > 0) {
+      bySpan.set(entry.span_id, entry);
+    }
+  }
+  return bySpan;
+}
+
+export interface SubagentInternalsSummary {
+  totalAgentsSeen: number;
+  returned: number;
+  cap: number;
+  truncated: boolean;
+  droppedPendingStarts: number;
+  skillCorrelationSupported: boolean;
+  uncorrelatedSkillInvocations: number;
+  sessionSkillNames: string[];
+}
+
+export function deriveSubagentInternalsSummary(
+  response?: SubagentInternalsResponse | null
+): SubagentInternalsSummary {
+  if (!response) {
+    return {
+      totalAgentsSeen: 0,
+      returned: 0,
+      cap: 0,
+      truncated: false,
+      droppedPendingStarts: 0,
+      skillCorrelationSupported: false,
+      uncorrelatedSkillInvocations: 0,
+      sessionSkillNames: [],
+    };
+  }
+  return {
+    totalAgentsSeen: response.total_agents_seen,
+    returned: response.returned,
+    cap: response.cap,
+    truncated: response.truncated,
+    droppedPendingStarts: response.dropped_pending_starts,
+    skillCorrelationSupported: response.skill_correlation_supported,
+    uncorrelatedSkillInvocations: response.uncorrelated_skill_invocations,
+    sessionSkillNames: response.session_skill_names,
+  };
 }

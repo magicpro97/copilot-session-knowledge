@@ -26,6 +26,15 @@ Routes registered here:
                        returned, cap, truncated, dropped_pending_starts,
                        entries: [SubagentActivityRow, ...]}
 
+  GET /api/session/{id}/subagent-internals
+  GET /api/sessions/{id}/subagent-internals   (plural alias)
+      One-pass bounded aggregation of sub-agent-internal tool/model activity.
+      Correlates child events using data.parentToolCallId / top-level agentId
+      against the subagent.started data.toolCallId key.  Never exposes raw
+      toolCallId, agentId, tool arguments/results, assistant content, or paths.
+      skill.invoked events are reported only at session level because current
+      CLI events do not carry enough fields to attribute them to a sub-agent.
+
       Issue #538 additive query parameters:
         projection  "full" (default) | "skeleton"
             full     — existing shape + limit 1..100
@@ -94,6 +103,11 @@ _SUBAGENT_MAX_ROWS = 1000  # hard cap on returned activity rows per call
 _SUBAGENT_PENDING_CAP = 2048  # max in-flight starts before FIFO eviction
 _SUBAGENT_STR_MAX = 64  # max chars for agent_name / display_name / model
 _SUBAGENT_ERROR_PREVIEW_MAX = 120  # max chars for redacted error_preview field
+_SUBAGENT_INTERNAL_TOOL_EVENT_CAP = 200  # max per-agent tool event details
+_SUBAGENT_INTERNAL_MODEL_EVENT_CAP = 200  # max per-agent assistant/model details
+_SUBAGENT_INTERNAL_TOOL_NAME_CAP = 20  # max distinct tool names per agent
+_SUBAGENT_INTERNAL_PENDING_TOOL_CAP = 4096  # max in-flight child tools retained for completion pairing
+_SUBAGENT_SESSION_SKILL_NAME_CAP = 20  # max distinct un-attributed session skills
 
 # Opaque pairing-key validation: safe alphabet, bounded length.
 # Rejects path-like values (/etc/passwd), newlines, and embedded JWTs.
@@ -200,6 +214,43 @@ def _derive_error_category(raw_error: object) -> str:
         if needle in low:
             return category
     return "unknown"
+
+
+def _safe_nonneg_int(raw: object) -> "int | None":
+    """Return raw as a non-negative finite int, or None."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    if isinstance(raw, float):
+        import math as _math  # noqa: PLC0415
+
+        if _math.isfinite(raw) and raw >= 0:
+            return int(raw)
+    return None
+
+
+def _safe_pairing_key(raw: object) -> "str | None":
+    """Validate an opaque tool/agent pairing key for in-memory correlation only."""
+    if isinstance(raw, str) and _SUBAGENT_ID_RE.match(raw):
+        return raw
+    return None
+
+
+def _hash_pairing_key(pair_key: str) -> str:
+    """Return a stable opaque 16-hex hash for a raw pairing key."""
+    return _hashlib.sha1(pair_key.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _metric_from_tool_telemetry(data: dict, key: str) -> "float | None":
+    """Read a finite non-negative numeric metric from toolTelemetry.metrics."""
+    telem = data.get("toolTelemetry")
+    if not isinstance(telem, dict):
+        return None
+    metrics = telem.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    return _coerce_duration_ms(metrics.get(key))
 
 
 # ── Kind / level allowlists (mirrors redaction.py) ────────────────────────────
@@ -1567,6 +1618,364 @@ def _stream_subagent_activity(path: Path) -> dict:
     }
 
 
+# ── Subagent internals aggregator ──────────────────────────────────────────────
+
+
+def _new_subagent_internal_stats(
+    pair_key: str,
+    *,
+    span_id: str,
+    agent_name: "str | None",
+    agent_name_redacted: bool,
+    agent_display_name: "str | None",
+    agent_display_name_redacted: bool,
+    started_at: "str | None",
+    start_idx: "int | None",
+) -> dict:
+    """Build mutable in-memory stats for one sub-agent execution.
+
+    The raw pair_key is kept only in memory for stream correlation.  It is
+    replaced by agent_key_hash in the response builder.
+    """
+    return {
+        "pair_key": pair_key,
+        "agent_key_hash": _hash_pairing_key(pair_key),
+        "span_id": span_id,
+        "agent_name": agent_name,
+        "agent_name_redacted": agent_name_redacted,
+        "agent_display_name": agent_display_name,
+        "agent_display_name_redacted": agent_display_name_redacted,
+        "model": None,
+        "model_redacted": False,
+        "status": "running",
+        "started_at": started_at,
+        "ended_at": None,
+        "duration_ms": None,
+        "start_idx": start_idx,
+        "end_idx": None,
+        "tool_call_count": 0,
+        "tool_success_count": 0,
+        "tool_failure_count": 0,
+        "llm_turn_count": 0,
+        "output_tokens_total": 0,
+        "internal_event_count": 0,
+        "tool_names": set(),
+        "tools": [],
+        "tools_truncated": False,
+        "model_events": [],
+        "model_events_truncated": False,
+    }
+
+
+def _build_subagent_internal_row(stats: dict) -> dict:
+    """Build a strict, redaction-safe sub-agent internals row."""
+    tool_names = sorted(str(v) for v in stats.get("tool_names", set()) if isinstance(v, str))
+    return {
+        "agent_key_hash": stats.get("agent_key_hash"),
+        "span_id": stats.get("span_id"),
+        "agent_name": stats.get("agent_name"),
+        "agent_display_name": stats.get("agent_display_name"),
+        "model": stats.get("model"),
+        "status": stats.get("status"),
+        "started_at": stats.get("started_at"),
+        "ended_at": stats.get("ended_at"),
+        "duration_ms": stats.get("duration_ms"),
+        "start_idx": stats.get("start_idx"),
+        "end_idx": stats.get("end_idx"),
+        "redacted": bool(
+            stats.get("agent_name_redacted") or stats.get("agent_display_name_redacted") or stats.get("model_redacted")
+        ),
+        "internals": {
+            "tool_call_count": int(stats.get("tool_call_count") or 0),
+            "tool_success_count": int(stats.get("tool_success_count") or 0),
+            "tool_failure_count": int(stats.get("tool_failure_count") or 0),
+            "llm_turn_count": int(stats.get("llm_turn_count") or 0),
+            "output_tokens_total": int(stats.get("output_tokens_total") or 0),
+            "internal_event_count": int(stats.get("internal_event_count") or 0),
+            "tool_names": tool_names[:_SUBAGENT_INTERNAL_TOOL_NAME_CAP],
+            "tools": stats.get("tools") or [],
+            "tools_truncated": bool(stats.get("tools_truncated")),
+            "model_events": stats.get("model_events") or [],
+            "model_events_truncated": bool(stats.get("model_events_truncated")),
+        },
+    }
+
+
+def _tool_event_status(success: object) -> str:
+    """Map a tool completion success flag to a safe status enum."""
+    if success is True:
+        return "completed"
+    if success is False:
+        return "failed"
+    return "unknown"
+
+
+def _stream_subagent_internals(path: Path) -> dict:
+    """One-pass streaming aggregator for sub-agent internals.
+
+    Correlation evidence from CLI sessions:
+      subagent.started data.toolCallId == child data.parentToolCallId
+      and child top-level agentId == child data.parentToolCallId.
+
+    Only safe scalar metadata is emitted.  Raw tool inputs/results, assistant
+    content/reasoning, raw IDs, agentDescription, and filesystem paths are never
+    read into the response.  skill.invoked events are counted at session level
+    only because the current stream does not attach them to sub-agent IDs.
+    """
+    agents: dict[str, dict] = {}
+    agent_order: list[str] = []
+    pending_tools: dict[str, tuple[str, dict | None]] = {}
+    pending_tool_order: list[str] = []
+    total_starts_seen = 0
+    dropped_pending_starts = 0
+    truncated = False
+    uncorrelated_skill_invocations = 0
+    session_skill_names: set[str] = set()
+
+    line_no = 0
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            raw_line = raw_line.rstrip("\r\n")
+            if not raw_line:
+                line_no += 1
+                continue
+
+            raw_bytes = len(raw_line.encode("utf-8", errors="replace"))
+            if raw_bytes > _TRUNCATION_BYTES:
+                line_no += 1
+                continue
+
+            try:
+                event = json.loads(raw_line)
+            except (json.JSONDecodeError, ValueError):
+                line_no += 1
+                continue
+            if not isinstance(event, dict):
+                line_no += 1
+                continue
+
+            event_type = event.get("type")
+            if not isinstance(event_type, str):
+                line_no += 1
+                continue
+            et = event_type.lower()
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            ts = event.get("timestamp") if isinstance(event.get("timestamp"), str) else None
+
+            if et.startswith("skill."):
+                uncorrelated_skill_invocations += 1
+                raw_skill_name = data.get("name")
+                if (
+                    isinstance(raw_skill_name, str)
+                    and _SHORT_ENUM_RE.match(raw_skill_name)
+                    and len(session_skill_names) < _SUBAGENT_SESSION_SKILL_NAME_CAP
+                ):
+                    session_skill_names.add(raw_skill_name)
+                line_no += 1
+                continue
+
+            if et in ("subagent.started", "subagent.start"):
+                total_starts_seen += 1
+                pair_key = _safe_pairing_key(data.get("toolCallId")) or _safe_pairing_key(event.get("agentId"))
+                if not pair_key:
+                    line_no += 1
+                    continue
+                safe_agent_name, agent_name_redacted = _safe_subagent_str(data.get("agentName"))
+                safe_display_name, display_name_redacted = _safe_subagent_str(data.get("agentDisplayName"))
+                span_id = _span_id_from_raw(event.get("id"), _CLI_SOURCE, line_no)
+
+                if pair_key not in agents and len(agent_order) >= _SUBAGENT_MAX_ROWS:
+                    evict_key = agent_order.pop(0)
+                    agents.pop(evict_key, None)
+                    dropped_pending_starts += 1
+                    truncated = True
+
+                is_new = pair_key not in agents
+                agents[pair_key] = _new_subagent_internal_stats(
+                    pair_key,
+                    span_id=span_id,
+                    agent_name=safe_agent_name,
+                    agent_name_redacted=agent_name_redacted,
+                    agent_display_name=safe_display_name,
+                    agent_display_name_redacted=display_name_redacted,
+                    started_at=ts,
+                    start_idx=line_no,
+                )
+                if is_new:
+                    agent_order.append(pair_key)
+                line_no += 1
+                continue
+
+            if et in ("subagent.completed", "subagent.failed"):
+                pair_key = _safe_pairing_key(data.get("toolCallId")) or _safe_pairing_key(event.get("agentId"))
+                if not pair_key:
+                    line_no += 1
+                    continue
+                stats = agents.get(pair_key)
+                if stats is None:
+                    total_starts_seen += 1
+                    if len(agent_order) >= _SUBAGENT_MAX_ROWS:
+                        truncated = True
+                        line_no += 1
+                        continue
+                    safe_agent_name, agent_name_redacted = _safe_subagent_str(data.get("agentName"))
+                    safe_display_name, display_name_redacted = _safe_subagent_str(data.get("agentDisplayName"))
+                    stats = _new_subagent_internal_stats(
+                        pair_key,
+                        span_id=_span_id_from_raw(event.get("id"), _CLI_SOURCE, line_no),
+                        agent_name=safe_agent_name,
+                        agent_name_redacted=agent_name_redacted,
+                        agent_display_name=safe_display_name,
+                        agent_display_name_redacted=display_name_redacted,
+                        started_at=None,
+                        start_idx=None,
+                    )
+                    agents[pair_key] = stats
+                    agent_order.append(pair_key)
+
+                safe_model, model_redacted = _safe_subagent_str(data.get("model"))
+                stats["model"] = safe_model
+                stats["model_redacted"] = bool(model_redacted)
+                stats["status"] = "completed" if et == "subagent.completed" else "failed"
+                stats["ended_at"] = ts
+                stats["end_idx"] = line_no
+                dms = _coerce_duration_ms(data.get("durationMs"))
+                if dms is None and stats.get("started_at") is not None and ts is not None:
+                    start_ms = _parse_ts_ms(stats.get("started_at"))
+                    end_ms = _parse_ts_ms(ts)
+                    if start_ms is not None and end_ms is not None and end_ms >= start_ms:
+                        dms = end_ms - start_ms
+                stats["duration_ms"] = dms
+                line_no += 1
+                continue
+
+            # Child events are attributed only when they carry the proven
+            # parentToolCallId/agentId correlation.  Unknown parents are skipped
+            # rather than creating phantom sub-agent rows.
+            parent_key = _safe_pairing_key(data.get("parentToolCallId")) or _safe_pairing_key(event.get("agentId"))
+            stats = agents.get(parent_key) if parent_key else None
+            if stats is None:
+                line_no += 1
+                continue
+
+            if et == "tool.execution_start":
+                stats["internal_event_count"] += 1
+                stats["tool_call_count"] += 1
+                tool_name = _extract_tool_name(event)
+                if tool_name and len(stats["tool_names"]) < _SUBAGENT_INTERNAL_TOOL_NAME_CAP:
+                    stats["tool_names"].add(tool_name)
+
+                tool_call_key = _safe_pairing_key(data.get("toolCallId"))
+                tool_row: dict | None = None
+                if len(stats["tools"]) < _SUBAGENT_INTERNAL_TOOL_EVENT_CAP:
+                    tool_row = {
+                        "idx": line_no,
+                        "end_idx": None,
+                        "tool_name": tool_name,
+                        "status": "running",
+                        "started_at": ts,
+                        "ended_at": None,
+                        "duration_ms": None,
+                        "input_bytes": None,
+                        "output_bytes": None,
+                    }
+                    stats["tools"].append(tool_row)
+                else:
+                    stats["tools_truncated"] = True
+                if tool_call_key and tool_row is not None:
+                    if tool_call_key not in pending_tools and len(pending_tools) >= _SUBAGENT_INTERNAL_PENDING_TOOL_CAP:
+                        evict_tool_key = pending_tool_order.pop(0) if pending_tool_order else None
+                        evicted = pending_tools.pop(evict_tool_key, None) if evict_tool_key else None
+                        if evicted is not None:
+                            evicted_stats = agents.get(evicted[0])
+                            if evicted_stats is not None:
+                                evicted_stats["tools_truncated"] = True
+                            evicted_row = evicted[1]
+                            if evicted_row is not None and evicted_row.get("status") == "running":
+                                evicted_row["status"] = "unknown"
+                    is_new_pending_tool = tool_call_key not in pending_tools
+                    pending_tools[tool_call_key] = (parent_key, tool_row)
+                    if is_new_pending_tool:
+                        pending_tool_order.append(tool_call_key)
+                line_no += 1
+                continue
+
+            if et == "tool.execution_complete":
+                stats["internal_event_count"] += 1
+                success = data.get("success")
+                if success is True:
+                    stats["tool_success_count"] += 1
+                elif success is False:
+                    stats["tool_failure_count"] += 1
+
+                tool_call_key = _safe_pairing_key(data.get("toolCallId"))
+                pending = pending_tools.pop(tool_call_key, None) if tool_call_key else None
+                if pending is not None and tool_call_key in pending_tool_order:
+                    pending_tool_order.remove(tool_call_key)
+                tool_row = pending[1] if pending is not None and pending[0] == parent_key else None
+                if tool_row is not None:
+                    tool_row["status"] = _tool_event_status(success)
+                    tool_row["ended_at"] = ts
+                    tool_row["end_idx"] = line_no
+                    dms = _metric_from_tool_telemetry(data, "durationMs")
+                    if dms is None and tool_row.get("started_at") is not None and ts is not None:
+                        start_ms = _parse_ts_ms(tool_row.get("started_at"))
+                        end_ms = _parse_ts_ms(ts)
+                        if start_ms is not None and end_ms is not None and end_ms >= start_ms:
+                            dms = end_ms - start_ms
+                    tool_row["duration_ms"] = dms
+                    tool_row["input_bytes"] = _safe_nonneg_int(
+                        (data.get("toolTelemetry") or {}).get("metrics", {}).get("inputBytes")
+                        if isinstance(data.get("toolTelemetry"), dict)
+                        and isinstance(data.get("toolTelemetry", {}).get("metrics"), dict)
+                        else None
+                    )
+                    tool_row["output_bytes"] = _safe_nonneg_int(
+                        (data.get("toolTelemetry") or {}).get("metrics", {}).get("outputBytes")
+                        if isinstance(data.get("toolTelemetry"), dict)
+                        and isinstance(data.get("toolTelemetry", {}).get("metrics"), dict)
+                        else None
+                    )
+                line_no += 1
+                continue
+
+            if et == "assistant.message":
+                stats["internal_event_count"] += 1
+                stats["llm_turn_count"] += 1
+                output_tokens = _safe_nonneg_int(data.get("outputTokens"))
+                if output_tokens is not None:
+                    stats["output_tokens_total"] += output_tokens
+                tool_request_count = (
+                    len(data.get("toolRequests")) if isinstance(data.get("toolRequests"), list) else None
+                )
+                if len(stats["model_events"]) < _SUBAGENT_INTERNAL_MODEL_EVENT_CAP:
+                    stats["model_events"].append(
+                        {
+                            "idx": line_no,
+                            "timestamp": ts,
+                            "output_tokens": output_tokens,
+                            "tool_request_count": tool_request_count,
+                        }
+                    )
+                else:
+                    stats["model_events_truncated"] = True
+
+            line_no += 1
+
+    entries = [_build_subagent_internal_row(agents[key]) for key in agent_order if key in agents]
+    return {
+        "total_agents_seen": total_starts_seen,
+        "returned": len(entries),
+        "cap": _SUBAGENT_MAX_ROWS,
+        "truncated": bool(truncated or total_starts_seen > len(entries)),
+        "dropped_pending_starts": dropped_pending_starts,
+        "skill_correlation_supported": False,
+        "uncorrelated_skill_invocations": uncorrelated_skill_invocations,
+        "session_skill_names": sorted(session_skill_names),
+        "entries": entries,
+    }
+
+
 def _handle_cli_session_subagent_activity(db, params, token, nonce, session_id: str = "") -> tuple:
     """Shared implementation for GET /api/session/{id}/subagent-activity.
 
@@ -1620,6 +2029,54 @@ def _handle_cli_session_subagent_activity(db, params, token, nonce, session_id: 
     # ── One-pass streaming aggregation ────────────────────────────────────────
     try:
         result = _stream_subagent_activity(events_path)
+    except OSError:
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    return json_ok(
+        {
+            "schema_version": _SCHEMA_VERSION,
+            "session_id": session_id,
+            **result,
+        }
+    )
+
+
+def _handle_cli_session_subagent_internals(db, params, token, nonce, session_id: str = "") -> tuple:
+    """Shared implementation for GET /api/session/{id}/subagent-internals.
+
+    One-pass streaming aggregation: groups subagent.started/completed/failed
+    with child tool.execution_* and assistant.message events using the proven
+    data.parentToolCallId / top-level agentId correlation.  The response is a
+    bounded, redaction-safe summary; it never emits raw toolCallId, agentId,
+    tool arguments/results, assistant content, raw paths, or agentDescription.
+    """
+    if not session_id or not _UUID4_RE.match(session_id):
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    root = _cli_session_state_root()
+    events_path = root / session_id / "events.jsonl"
+
+    try:
+        resolved = events_path.resolve()
+        root_resolved = root.resolve()
+        if not str(resolved).startswith(str(root_resolved) + os.sep) and resolved != root_resolved:
+            return json_error("debug log not found", "NOT_FOUND", 404)
+    except (OSError, ValueError):
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    try:
+        lst = events_path.lstat()
+        import stat as _stat  # noqa: PLC0415
+
+        if _stat.S_ISLNK(lst.st_mode):
+            return json_error("debug log not found", "NOT_FOUND", 404)
+        if not _stat.S_ISREG(lst.st_mode):
+            return json_error("debug log not found", "NOT_FOUND", 404)
+    except (OSError, FileNotFoundError):
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    try:
+        result = _stream_subagent_internals(events_path)
     except OSError:
         return json_error("debug log not found", "NOT_FOUND", 404)
 
@@ -1736,3 +2193,15 @@ def handle_cli_sessions_subagent_activity(db, params, token, nonce, session_id: 
     Delegates to the same handler.
     """
     return _handle_cli_session_subagent_activity(db, params, token, nonce, session_id=session_id)
+
+
+@route("/api/session/{id}/subagent-internals", methods=["GET"], debug=True)
+def handle_cli_session_subagent_internals(db, params, token, nonce, session_id: str = "") -> tuple:
+    """GET /api/session/{id}/subagent-internals — safe sub-agent internals summary."""
+    return _handle_cli_session_subagent_internals(db, params, token, nonce, session_id=session_id)
+
+
+@route("/api/sessions/{id}/subagent-internals", methods=["GET"], debug=True)
+def handle_cli_sessions_subagent_internals(db, params, token, nonce, session_id: str = "") -> tuple:
+    """GET /api/sessions/{id}/subagent-internals — plural alias."""
+    return _handle_cli_session_subagent_internals(db, params, token, nonce, session_id=session_id)

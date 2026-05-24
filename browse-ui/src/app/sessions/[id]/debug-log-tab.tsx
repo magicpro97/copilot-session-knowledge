@@ -14,7 +14,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useDebugLog, useSessionDebugLog, useSubagentActivity } from "@/lib/api/hooks";
+import {
+  useDebugLog,
+  useSessionDebugLog,
+  useSubagentActivity,
+  useSubagentInternals,
+} from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
 import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
 import {
@@ -22,6 +27,8 @@ import {
   deriveSubagentActivitySummary,
   deriveSubagentChipsFromActivity,
   deriveSubagentExecutions,
+  deriveSubagentInternalsBySpanId,
+  deriveSubagentInternalsSummary,
 } from "@/lib/flight-recorder";
 import { MissionStrip } from "@/components/data/mission-strip";
 import { SubagentActivityPanel } from "@/components/data/subagent-activity-panel";
@@ -796,6 +803,15 @@ export function DebugLogTab({
     () => deriveSubagentActivitySummary(subagentQuery.data),
     [subagentQuery.data]
   );
+  const subagentInternalsQuery = useSubagentInternals(sessionId, Boolean(sessionId), host);
+  const subagentInternalsBySpanId = useMemo(
+    () => deriveSubagentInternalsBySpanId(subagentInternalsQuery.data),
+    [subagentInternalsQuery.data]
+  );
+  const subagentInternalsSummary = useMemo(
+    () => deriveSubagentInternalsSummary(subagentInternalsQuery.data),
+    [subagentInternalsQuery.data]
+  );
 
   // Sub-agent panel ref and flash tick for MissionStrip chip interaction.
   const subagentPanelRef = useRef<HTMLDivElement>(null);
@@ -944,6 +960,12 @@ export function DebugLogTab({
           pendingFocusRef.current = { idx, targetPage };
         }}
         flashTick={subagentFlashTick}
+        internalsBySpanId={subagentInternalsBySpanId}
+        internalsSummary={subagentInternalsSummary}
+        internalsLoading={subagentInternalsQuery.isLoading}
+        internalsError={
+          subagentInternalsQuery.error instanceof Error ? subagentInternalsQuery.error : null
+        }
       />
 
       {/* View mode toggle — only shown when the dataset has span_ids */}
@@ -997,6 +1019,7 @@ export function DebugLogTab({
           onSelect={handleSelect}
           hasMore={has_more}
           totalEvents={total}
+          subagentInternals={subagentInternalsQuery.data}
         />
       ) : viewMode === "tree" ? (
         <SpanTreeView

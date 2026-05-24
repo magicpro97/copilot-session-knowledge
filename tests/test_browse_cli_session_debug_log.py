@@ -1830,6 +1830,11 @@ def _subagent_path(session_id: str, plural: bool = False) -> str:
     return f"/api/{prefix}/{session_id}/subagent-activity"
 
 
+def _subagent_internals_path(session_id: str, plural: bool = False) -> str:
+    prefix = "sessions" if plural else "session"
+    return f"/api/{prefix}/{session_id}/subagent-internals"
+
+
 def _subagent_event(
     event_type: str,
     call_id: str | None = None,
@@ -2272,6 +2277,255 @@ def test_subagent_activity_agentid_fallback():
         server.shutdown()
 
 
+# ── Subagent internals route tests ─────────────────────────────────────────────
+
+
+def test_subagent_internals_route_happy_path():
+    """SAI-HAPPY: sub-agent internals correlate child tool/model events safely."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        agent_key = "agent-parent-01"
+        tool_key = "tool-child-01"
+        events = [
+            _subagent_event(
+                "subagent.started",
+                call_id=agent_key,
+                agent_name="code-review",
+                ts="2025-01-01T00:00:00Z",
+            ),
+            {
+                "type": "tool.execution_start",
+                "timestamp": "2025-01-01T00:00:01Z",
+                "agentId": agent_key,
+                "data": {
+                    "parentToolCallId": agent_key,
+                    "toolCallId": tool_key,
+                    "toolName": "view",
+                    "args": {"path": "/Users/alice/secret.txt"},
+                },
+            },
+            {
+                "type": "tool.execution_complete",
+                "timestamp": "2025-01-01T00:00:02Z",
+                "agentId": agent_key,
+                "data": {
+                    "parentToolCallId": agent_key,
+                    "toolCallId": tool_key,
+                    "success": True,
+                    "result": "SECRET_RESULT_SHOULD_NOT_LEAK",
+                    "toolTelemetry": {
+                        "metrics": {
+                            "durationMs": 1000,
+                            "inputBytes": 12,
+                            "outputBytes": 2048,
+                        },
+                        "properties": {"file": "/Users/alice/secret.txt"},
+                    },
+                },
+            },
+            {
+                "type": "assistant.message",
+                "timestamp": "2025-01-01T00:00:03Z",
+                "agentId": agent_key,
+                "data": {
+                    "parentToolCallId": agent_key,
+                    "outputTokens": 700,
+                    "toolRequests": [{"name": "rg"}],
+                    "content": "PROMPT_OR_REASONING_SHOULD_NOT_LEAK",
+                },
+            },
+            {"type": "skill.invoked", "timestamp": "2025-01-01T00:00:04Z", "data": {"name": "code-reviewer"}},
+            _subagent_event(
+                "subagent.completed",
+                call_id=agent_key,
+                model="claude-sonnet-4.6",
+                duration_ms=5000,
+                ts="2025-01-01T00:00:05Z",
+            ),
+        ]
+        events[0]["data"]["agentDescription"] = "SECRET_AGENT_DESCRIPTION"
+        _write_events(session_dir, events)
+
+        resp = _bearer(port, _subagent_internals_path(sid))
+        body_text = resp.read().decode("utf-8", errors="replace")
+        body = json.loads(body_text)
+        entries = body.get("entries", [])
+        entry = entries[0] if entries else {}
+        internals = entry.get("internals", {})
+        tools = internals.get("tools", [])
+        models = internals.get("model_events", [])
+
+        test("SAI-HAPPY-1 status 200", resp.status == 200)
+        test("SAI-HAPPY-2 schema_version='1'", body.get("schema_version") == "1")
+        test("SAI-HAPPY-3 session_id echoed", body.get("session_id") == sid)
+        test("SAI-HAPPY-4 one entry", len(entries) == 1)
+        test("SAI-HAPPY-5 status completed", entry.get("status") == "completed")
+        test("SAI-HAPPY-6 agent_key_hash is 16 hex", len(entry.get("agent_key_hash", "")) == 16)
+        test("SAI-HAPPY-7 raw parent id absent", agent_key not in body_text)
+        test("SAI-HAPPY-8 raw tool id absent", tool_key not in body_text)
+        test("SAI-HAPPY-9 no agentDescription", "agentDescription" not in body_text)
+        test("SAI-HAPPY-10 no tool args/result leak", "SECRET_RESULT" not in body_text and "/Users/alice" not in body_text)
+        test("SAI-HAPPY-11 no assistant content leak", "PROMPT_OR_REASONING" not in body_text)
+        test("SAI-HAPPY-12 tool_call_count=1", internals.get("tool_call_count") == 1)
+        test("SAI-HAPPY-13 tool_success_count=1", internals.get("tool_success_count") == 1)
+        test("SAI-HAPPY-14 llm_turn_count=1", internals.get("llm_turn_count") == 1)
+        test("SAI-HAPPY-15 output tokens accumulated", internals.get("output_tokens_total") == 700)
+        test("SAI-HAPPY-16 tool name present", internals.get("tool_names") == ["view"])
+        test("SAI-HAPPY-17 bounded tool event emitted", len(tools) == 1 and tools[0].get("tool_name") == "view")
+        test("SAI-HAPPY-18 tool bytes are safe ints", tools and tools[0].get("output_bytes") == 2048)
+        test("SAI-HAPPY-19 model event emitted", len(models) == 1 and models[0].get("tool_request_count") == 1)
+        test("SAI-HAPPY-20 skills are session-level only", body.get("skill_correlation_supported") is False)
+        test("SAI-HAPPY-21 skill name present", body.get("session_skill_names") == ["code-reviewer"])
+        test("SAI-HAPPY-22 uncorrelated skill count", body.get("uncorrelated_skill_invocations") == 1)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_internals_skips_uncorrelated_children():
+    """SAI-CORR: child events without proven parent correlation do not create rows."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(
+            session_dir,
+            [
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "data": {"toolCallId": "tool-only", "toolName": "view"},
+                },
+                {
+                    "type": "assistant.message",
+                    "timestamp": "2025-01-01T00:00:01Z",
+                    "data": {"outputTokens": 123, "content": "UNATTRIBUTED"},
+                },
+            ],
+        )
+        resp = _bearer(port, _subagent_internals_path(sid))
+        body = json.loads(resp.read())
+        test("SAI-CORR-1 status 200", resp.status == 200)
+        test("SAI-CORR-2 no phantom rows", body.get("entries") == [])
+        test("SAI-CORR-3 total_agents_seen=0", body.get("total_agents_seen") == 0)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_internals_orphan_completion_counts_returned_agent():
+    """SAI-ORPHAN: completion without start has consistent envelope counts."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(
+            session_dir,
+            [
+                _subagent_event(
+                    "subagent.completed",
+                    call_id="orphan-agent-01",
+                    model="claude-sonnet-4.6",
+                    ts="2025-01-01T00:00:00Z",
+                )
+            ],
+        )
+        resp = _bearer(port, _subagent_internals_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        test("SAI-ORPHAN-1 status 200", resp.status == 200)
+        test("SAI-ORPHAN-2 one returned row", body.get("returned") == 1 and len(entries) == 1)
+        test("SAI-ORPHAN-3 total_agents_seen includes orphan", body.get("total_agents_seen") == 1)
+        test("SAI-ORPHAN-4 not truncated", body.get("truncated") is False)
+        test("SAI-ORPHAN-5 row completed", entries and entries[0].get("status") == "completed")
+    finally:
+        server.shutdown()
+
+
+def test_subagent_internals_pending_tool_cap_evicts_oldest_pairings():
+    """SAI-PENDING-CAP: unmatched tool starts are globally bounded."""
+    original_cap = browse.routes.debug_log._SUBAGENT_INTERNAL_PENDING_TOOL_CAP
+    browse.routes.debug_log._SUBAGENT_INTERNAL_PENDING_TOOL_CAP = 2
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        agent_key = "agent-pending-cap"
+        events = [
+            _subagent_event(
+                "subagent.started",
+                call_id=agent_key,
+                agent_name="code-review",
+                ts="2025-01-01T00:00:00Z",
+            )
+        ]
+        for i in range(3):
+            events.append(
+                {
+                    "type": "tool.execution_start",
+                    "timestamp": f"2025-01-01T00:00:0{i + 1}Z",
+                    "agentId": agent_key,
+                    "data": {
+                        "parentToolCallId": agent_key,
+                        "toolCallId": f"tool-pending-{i}",
+                        "toolName": f"tool{i}",
+                    },
+                }
+            )
+        for i in range(3):
+            events.append(
+                {
+                    "type": "tool.execution_complete",
+                    "timestamp": f"2025-01-01T00:00:1{i + 1}Z",
+                    "agentId": agent_key,
+                    "data": {
+                        "parentToolCallId": agent_key,
+                        "toolCallId": f"tool-pending-{i}",
+                        "success": True,
+                    },
+                }
+            )
+        _write_events(session_dir, events)
+
+        resp = _bearer(port, _subagent_internals_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        internals = entries[0].get("internals", {}) if entries else {}
+        tools = internals.get("tools", [])
+        statuses = {tool.get("tool_name"): tool.get("status") for tool in tools}
+
+        test("SAI-PENDING-CAP-1 status 200", resp.status == 200)
+        test("SAI-PENDING-CAP-2 one entry", len(entries) == 1)
+        test("SAI-PENDING-CAP-3 tool calls still counted", internals.get("tool_call_count") == 3)
+        test("SAI-PENDING-CAP-4 successes still counted", internals.get("tool_success_count") == 3)
+        test("SAI-PENDING-CAP-5 rows remain bounded details", len(tools) == 3)
+        test("SAI-PENDING-CAP-6 oldest pairing evicted", statuses.get("tool0") == "unknown")
+        test("SAI-PENDING-CAP-7 retained pairings complete", statuses.get("tool1") == "completed")
+        test("SAI-PENDING-CAP-8 retained newest completes", statuses.get("tool2") == "completed")
+        test("SAI-PENDING-CAP-9 truncation flagged", internals.get("tools_truncated") is True)
+    finally:
+        browse.routes.debug_log._SUBAGENT_INTERNAL_PENDING_TOOL_CAP = original_cap
+        server.shutdown()
+
+
+def test_subagent_internals_plural_alias_and_auth():
+    """SAI-ALIAS/AUTH: plural alias works; debug auth rejects unauthenticated and query-token access."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_subagent_event("subagent.started", call_id="alias-agent")])
+        path = _subagent_internals_path(sid)
+        test("SAI-AUTH-1 no auth → 401", _no_auth(port, path).status == 401)
+        test("SAI-AUTH-2 ?token= → 401", _token_qs(port, path).status == 401)
+        resp_cookie = _cookie(port, path)
+        resp_cookie.read()
+        test("SAI-AUTH-3 cookie → 200", resp_cookie.status == 200)
+
+        resp_alias = _bearer(port, _subagent_internals_path(sid, plural=True))
+        body = json.loads(resp_alias.read())
+        test("SAI-ALIAS-1 plural alias status 200", resp_alias.status == 200)
+        test("SAI-ALIAS-2 plural alias schema", body.get("schema_version") == "1")
+        test("SAI-ALIAS-3 plural alias session_id", body.get("session_id") == sid)
+    finally:
+        server.shutdown()
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
@@ -2361,6 +2615,12 @@ def _run_all() -> None:
     test_subagent_activity_auth()
     test_subagent_activity_empty_file()
     test_subagent_activity_agentid_fallback()
+    # Subagent internals route tests
+    test_subagent_internals_route_happy_path()
+    test_subagent_internals_skips_uncorrelated_children()
+    test_subagent_internals_orphan_completion_counts_returned_agent()
+    test_subagent_internals_pending_tool_cap_evicts_oldest_pairings()
+    test_subagent_internals_plural_alias_and_auth()
 
     print("=" * 70)
     total = _PASS + _FAIL

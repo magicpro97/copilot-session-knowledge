@@ -8,10 +8,11 @@ import type {
   DebugLogResponse,
   SessionDebugLogResponse,
   SubagentActivityResponse,
+  SubagentInternalsResponse,
 } from "@/lib/api/types";
 import { DebugLogTab } from "../debug-log-tab";
 
-// ── Mock useDebugLog, useSessionDebugLog, and useSubagentActivity ─────────────
+// ── Mock debug-log API hooks ──────────────────────────────────────────────────
 
 vi.mock("@/lib/api/hooks", () => ({
   useDebugLog: vi.fn(() => ({
@@ -29,15 +30,26 @@ vi.mock("@/lib/api/hooks", () => ({
     error: null,
     isLoading: false,
   })),
+  useSubagentInternals: vi.fn(() => ({
+    data: null,
+    error: null,
+    isLoading: false,
+  })),
 }));
 
-import { useDebugLog, useSessionDebugLog, useSubagentActivity } from "@/lib/api/hooks";
+import {
+  useDebugLog,
+  useSessionDebugLog,
+  useSubagentActivity,
+  useSubagentInternals,
+} from "@/lib/api/hooks";
 
 // Reset all mocks to their default no-data state before every test.
 beforeEach(() => {
   (useDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
   (useSessionDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
   (useSubagentActivity as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
+  (useSubagentInternals as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
 });
 
 // ── Mock lucide-react icons ───────────────────────────────────────────────────
@@ -1629,6 +1641,72 @@ function makeSubagentResponse(
   };
 }
 
+function makeSubagentInternalsResponse(
+  overrides?: Partial<SubagentInternalsResponse>
+): SubagentInternalsResponse {
+  return {
+    schema_version: "1",
+    session_id: "sess-1",
+    total_agents_seen: 1,
+    returned: 1,
+    cap: 1000,
+    truncated: false,
+    dropped_pending_starts: 0,
+    skill_correlation_supported: false,
+    uncorrelated_skill_invocations: 1,
+    session_skill_names: ["code-reviewer"],
+    entries: [
+      {
+        agent_key_hash: "0123456789abcdef",
+        span_id: "span-a",
+        agent_name: "code-review",
+        agent_display_name: "Code Review Agent",
+        model: "gpt-4o",
+        status: "completed",
+        started_at: "2024-01-01T10:00:00.000Z",
+        ended_at: "2024-01-01T10:00:05.000Z",
+        duration_ms: 5000,
+        start_idx: 10,
+        end_idx: 20,
+        redacted: false,
+        internals: {
+          internal_event_count: 3,
+          tool_call_count: 2,
+          tool_success_count: 1,
+          tool_failure_count: 0,
+          llm_turn_count: 1,
+          output_tokens_total: 700,
+          tool_names: ["view", "rg"],
+          tools: [
+            {
+              idx: 11,
+              end_idx: 12,
+              tool_name: "view",
+              status: "completed",
+              started_at: "2024-01-01T10:00:01.000Z",
+              ended_at: "2024-01-01T10:00:02.000Z",
+              duration_ms: 1000,
+              input_bytes: 12,
+              output_bytes: 2048,
+            },
+          ],
+          tools_truncated: false,
+          model_events: [
+            {
+              idx: 13,
+              timestamp: "2024-01-01T10:00:03.000Z",
+              output_tokens: 700,
+              tool_request_count: 1,
+            },
+          ],
+          model_events_truncated: false,
+        },
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe("DebugLogTab — SubagentActivityPanel integration", () => {
   it("renders SubagentActivityPanel when subagent activity data is available (operator path)", () => {
     (useDebugLog as Mock).mockReturnValue({
@@ -1793,6 +1871,40 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
     expect(screen.getByTestId("mission-chip-subagents")).toHaveTextContent("Sub-agents: 2");
   });
 
+  it("expands a subagent row with correlated internals and skill attribution note", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentInternals as Mock).mockReturnValue({
+      data: makeSubagentInternalsResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+
+    fireEvent.click(screen.getByTestId("subagent-activity-row-span-a"));
+
+    expect(screen.getByTestId("subagent-activity-row-span-a-trace-summary")).toHaveTextContent(
+      "2 tools"
+    );
+    expect(screen.getByTestId("subagent-activity-row-span-a-trace-tools")).toHaveTextContent(
+      "view"
+    );
+    expect(screen.getByTestId("subagent-activity-row-span-a-trace-model-events")).toHaveTextContent(
+      "assistant.message"
+    );
+    expect(screen.getByTestId("subagent-activity-row-span-a-trace-skills")).toHaveTextContent(
+      "session-level skill load"
+    );
+  });
+
   it("does not block debug log table when subagent query fails", () => {
     (useDebugLog as Mock).mockReturnValue({
       data: makeResponse([makeEntry()]),
@@ -1814,6 +1926,12 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
   it("useSubagentActivity is called with session ID regardless of run path", () => {
     render(<DebugLogTab sessionId="sess-xyz" runId="run-1" host={HOST} />);
     const calls = (useSubagentActivity as Mock).mock.calls;
+    expect(calls.at(-1)?.[0]).toBe("sess-xyz");
+  });
+
+  it("useSubagentInternals is called with session ID regardless of run path", () => {
+    render(<DebugLogTab sessionId="sess-xyz" runId="run-1" host={HOST} />);
+    const calls = (useSubagentInternals as Mock).mock.calls;
     expect(calls.at(-1)?.[0]).toBe("sess-xyz");
   });
 });

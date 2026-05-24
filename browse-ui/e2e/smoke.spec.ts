@@ -1506,6 +1506,121 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
     ],
   };
 
+  const FR_SUBAGENT_INTERNALS_PAYLOAD = {
+    schema_version: "1",
+    session_id: SEEDED_SESSION_ID,
+    total_agents_seen: 3,
+    returned: 3,
+    cap: 1000,
+    truncated: false,
+    dropped_pending_starts: 0,
+    skill_correlation_supported: false,
+    uncorrelated_skill_invocations: 2,
+    session_skill_names: ["code-reviewer"],
+    entries: [
+      {
+        agent_key_hash: "0123456789abcdef",
+        span_id: "subagent-code-review",
+        agent_name: "code-review",
+        agent_display_name: "Code Review",
+        model: "claude-sonnet-4.6",
+        status: "completed",
+        started_at: "2026-05-01T00:00:01.000Z",
+        ended_at: "2026-05-01T00:00:03.000Z",
+        duration_ms: 2000,
+        start_idx: 1,
+        end_idx: 3,
+        redacted: false,
+        internals: {
+          internal_event_count: 4,
+          tool_call_count: 2,
+          tool_success_count: 1,
+          tool_failure_count: 0,
+          llm_turn_count: 1,
+          output_tokens_total: 900,
+          tool_names: ["view", "rg"],
+          tools: [
+            {
+              idx: 2,
+              end_idx: 3,
+              tool_name: "view",
+              status: "completed",
+              started_at: "2026-05-01T00:00:01.500Z",
+              ended_at: "2026-05-01T00:00:01.700Z",
+              duration_ms: 200,
+              input_bytes: 100,
+              output_bytes: 2048,
+            },
+          ],
+          tools_truncated: false,
+          model_events: [
+            {
+              idx: 3,
+              timestamp: "2026-05-01T00:00:02.000Z",
+              output_tokens: 900,
+              tool_request_count: 1,
+            },
+          ],
+          model_events_truncated: false,
+        },
+      },
+      {
+        agent_key_hash: "1111111111111111",
+        span_id: "subagent-security",
+        agent_name: "browser-security-reviewer",
+        agent_display_name: "Browser Security Reviewer",
+        model: "claude-opus-4.6",
+        status: "failed",
+        started_at: "2026-05-01T00:00:04.000Z",
+        ended_at: "2026-05-01T00:00:04.500Z",
+        duration_ms: 500,
+        start_idx: 4,
+        end_idx: 4,
+        redacted: false,
+        internals: {
+          internal_event_count: 1,
+          tool_call_count: 1,
+          tool_success_count: 0,
+          tool_failure_count: 1,
+          llm_turn_count: 0,
+          output_tokens_total: 0,
+          tool_names: ["research"],
+          tools: [],
+          tools_truncated: false,
+          model_events: [],
+          model_events_truncated: false,
+        },
+      },
+      {
+        agent_key_hash: "2222222222222222",
+        span_id: "subagent-research",
+        agent_name: "research-planner",
+        agent_display_name: "Research Planner",
+        model: "claude-haiku-4.5",
+        status: "running",
+        started_at: "2026-05-01T00:00:05.000Z",
+        ended_at: null,
+        duration_ms: null,
+        start_idx: 5,
+        end_idx: null,
+        redacted: false,
+        internals: {
+          internal_event_count: 0,
+          tool_call_count: 0,
+          tool_success_count: 0,
+          tool_failure_count: 0,
+          llm_turn_count: 0,
+          output_tokens_total: 0,
+          tool_names: [],
+          tools: [],
+          tools_truncated: false,
+          model_events: [],
+          model_events_truncated: false,
+        },
+      },
+    ],
+  };
+
   // ── Route stubs ──────────────────────────────────────────────────────────
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
     const url = new URL(route.request().url());
@@ -1539,6 +1654,12 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
       body: JSON.stringify(FR_SUBAGENT_ACTIVITY_PAYLOAD),
     });
   });
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/subagent-internals`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(FR_SUBAGENT_INTERNALS_PAYLOAD),
+    });
+  });
 
   // ── #timeline assertions ────────────────────────────────────────────────
   await page.goto(`/sessions/${SEEDED_SESSION_ID}/#timeline`);
@@ -1562,6 +1683,16 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   await expect(page.getByTestId("subagent-activity-row-subagent-security-outcome")).toHaveText(
     "Failed: rate_limited"
   );
+  await page.getByTestId("subagent-activity-row-subagent-code-review").click();
+  await expect(page.getByTestId("subagent-activity-row-subagent-code-review-trace")).toContainText(
+    "2 tools"
+  );
+  await expect(
+    page.getByTestId("subagent-activity-row-subagent-code-review-trace-tools")
+  ).toContainText("view");
+  await expect(
+    page.getByTestId("subagent-activity-row-subagent-code-review-trace-skills")
+  ).toContainText("session-level skill load");
   await page.getByTestId("subagent-filter-failed").click();
   await expect(page.getByTestId("subagent-activity-row-subagent-security")).toBeVisible();
   await expect(page.getByTestId("subagent-activity-row-subagent-code-review")).toBeHidden();
@@ -1634,6 +1765,7 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   await expect(page.getByTestId("mission-chip-subagents")).toHaveText("Sub-agents: 3");
   await expect(page.getByTestId("mission-chip-compactions")).toBeVisible();
   await expect(page.getByTestId("mission-chip-errors")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-subagent-internals")).toContainText("3 agents");
 
   const debugSubagentPanel = page.getByTestId("subagent-activity-panel");
   await expect(debugSubagentPanel).toBeVisible();

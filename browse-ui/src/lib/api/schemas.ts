@@ -1314,6 +1314,79 @@ export const subagentActivityResponseSchema = z
   })
   .strict();
 
+export const subagentInternalToolEventSchema = z
+  .object({
+    idx: z.number().int().nonnegative(),
+    end_idx: z.number().int().nonnegative().nullable(),
+    tool_name: z.string().nullable(),
+    status: z.enum(["running", "completed", "failed", "unknown"]),
+    started_at: z.string().nullable(),
+    ended_at: z.string().nullable(),
+    duration_ms: z.number().nullable(),
+    input_bytes: z.number().int().nonnegative().nullable(),
+    output_bytes: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+export const subagentInternalModelEventSchema = z
+  .object({
+    idx: z.number().int().nonnegative(),
+    timestamp: z.string().nullable(),
+    output_tokens: z.number().int().nonnegative().nullable(),
+    tool_request_count: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+export const subagentInternalsSchema = z
+  .object({
+    tool_call_count: z.number().int().nonnegative(),
+    tool_success_count: z.number().int().nonnegative(),
+    tool_failure_count: z.number().int().nonnegative(),
+    llm_turn_count: z.number().int().nonnegative(),
+    output_tokens_total: z.number().int().nonnegative(),
+    internal_event_count: z.number().int().nonnegative(),
+    tool_names: z.array(z.string()),
+    tools: z.array(subagentInternalToolEventSchema),
+    tools_truncated: z.boolean(),
+    model_events: z.array(subagentInternalModelEventSchema),
+    model_events_truncated: z.boolean(),
+  })
+  .strict();
+
+export const subagentInternalsEntrySchema = z
+  .object({
+    agent_key_hash: z.string().regex(/^[0-9a-f]{16}$/),
+    span_id: z.string().nullable(),
+    agent_name: z.string().nullable(),
+    agent_display_name: z.string().nullable(),
+    model: z.string().nullable(),
+    status: subagentStatusSchema,
+    started_at: z.string().nullable(),
+    ended_at: z.string().nullable(),
+    duration_ms: z.number().nullable(),
+    start_idx: z.number().int().nonnegative().nullable(),
+    end_idx: z.number().int().nonnegative().nullable(),
+    redacted: z.boolean(),
+    internals: subagentInternalsSchema,
+  })
+  .strict();
+
+export const subagentInternalsResponseSchema = z
+  .object({
+    schema_version: z.literal("1"),
+    session_id: z.string(),
+    total_agents_seen: z.number().int().nonnegative(),
+    returned: z.number().int().nonnegative(),
+    cap: z.number().int().positive(),
+    truncated: z.boolean(),
+    dropped_pending_starts: z.number().int().nonnegative(),
+    skill_correlation_supported: z.boolean(),
+    uncorrelated_skill_invocations: z.number().int().nonnegative(),
+    session_skill_names: z.array(z.string()),
+    entries: z.array(subagentInternalsEntrySchema),
+  })
+  .strict();
+
 // ── Host Profiles (client-side multi-host support) ─────────────────────
 
 /** Permissive CLI family schema — any non-empty string is accepted. */

@@ -60,6 +60,25 @@ export async function stubEmptyFlightRecorderRoutes(
       }),
     });
   });
+
+  await page.route(`**/api/session/${sessionId}/subagent-internals`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "1",
+        session_id: sessionId,
+        total_agents_seen: 0,
+        returned: 0,
+        cap: 1000,
+        truncated: false,
+        dropped_pending_starts: 0,
+        skill_correlation_supported: false,
+        uncorrelated_skill_invocations: 0,
+        session_skill_names: [],
+        entries: [],
+      }),
+    });
+  });
 }
 
 async function proxyToSessionId(route: Route, sessionId: string): Promise<void> {

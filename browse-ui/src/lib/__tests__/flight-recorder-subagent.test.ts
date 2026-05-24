@@ -6,11 +6,18 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { SubagentActivityEntry, SubagentActivityResponse } from "@/lib/api/types";
+import type {
+  SubagentActivityEntry,
+  SubagentActivityResponse,
+  SubagentInternalsEntry,
+  SubagentInternalsResponse,
+} from "@/lib/api/types";
 import {
   deriveSubagentActivitySummary,
   deriveSubagentChipsFromActivity,
   deriveSubagentExecutions,
+  deriveSubagentInternalsBySpanId,
+  deriveSubagentInternalsSummary,
   filterSubagentExecutions,
 } from "@/lib/flight-recorder";
 
@@ -50,6 +57,59 @@ function makeResponse(
     cap: overrides.cap ?? 1000,
     truncated: overrides.truncated ?? false,
     dropped_pending_starts: overrides.dropped_pending_starts ?? 0,
+    entries,
+  };
+}
+
+function makeInternalsEntry(
+  overrides: Partial<SubagentInternalsEntry> = {}
+): SubagentInternalsEntry {
+  return {
+    agent_key_hash: overrides.agent_key_hash ?? "0123456789abcdef",
+    span_id: overrides.span_id !== undefined ? overrides.span_id : "span-001",
+    agent_name: overrides.agent_name !== undefined ? overrides.agent_name : "my-agent",
+    agent_display_name:
+      overrides.agent_display_name !== undefined ? overrides.agent_display_name : "My Agent",
+    model: overrides.model !== undefined ? overrides.model : "gpt-4o",
+    status: overrides.status ?? "completed",
+    started_at:
+      overrides.started_at !== undefined ? overrides.started_at : "2024-01-01T10:00:00.000Z",
+    ended_at: overrides.ended_at !== undefined ? overrides.ended_at : "2024-01-01T10:00:05.000Z",
+    duration_ms: overrides.duration_ms !== undefined ? overrides.duration_ms : 5000,
+    start_idx: overrides.start_idx !== undefined ? overrides.start_idx : 10,
+    end_idx: overrides.end_idx !== undefined ? overrides.end_idx : 25,
+    redacted: overrides.redacted ?? false,
+    internals: overrides.internals ?? {
+      internal_event_count: 3,
+      tool_call_count: 1,
+      tool_success_count: 1,
+      tool_failure_count: 0,
+      llm_turn_count: 1,
+      output_tokens_total: 700,
+      tool_names: ["view"],
+      tools: [],
+      tools_truncated: false,
+      model_events: [],
+      model_events_truncated: false,
+    },
+  };
+}
+
+function makeInternalsResponse(
+  entries: SubagentInternalsEntry[],
+  overrides: Partial<Omit<SubagentInternalsResponse, "entries" | "schema_version">> = {}
+): SubagentInternalsResponse {
+  return {
+    schema_version: "1",
+    session_id: "test-session",
+    total_agents_seen: overrides.total_agents_seen ?? entries.length,
+    returned: overrides.returned ?? entries.length,
+    cap: overrides.cap ?? 1000,
+    truncated: overrides.truncated ?? false,
+    dropped_pending_starts: overrides.dropped_pending_starts ?? 0,
+    skill_correlation_supported: overrides.skill_correlation_supported ?? false,
+    uncorrelated_skill_invocations: overrides.uncorrelated_skill_invocations ?? 0,
+    session_skill_names: overrides.session_skill_names ?? [],
     entries,
   };
 }
@@ -492,5 +552,65 @@ describe("deriveSubagentChipsFromActivity", () => {
     expect(chips[0].count).toBe(2);
     expect(chips[1].name).toBe("Bravo");
     expect(chips[1].count).toBe(1);
+  });
+});
+
+// ── deriveSubagentInternalsBySpanId / Summary ────────────────────────────────
+
+describe("deriveSubagentInternalsBySpanId", () => {
+  it("returns an empty map for nullish input", () => {
+    expect(deriveSubagentInternalsBySpanId(undefined).size).toBe(0);
+    expect(deriveSubagentInternalsBySpanId(null).size).toBe(0);
+  });
+
+  it("indexes rows by non-empty span_id and skips unjoinable rows", () => {
+    const response = makeInternalsResponse([
+      makeInternalsEntry({ span_id: "span-a" }),
+      makeInternalsEntry({ span_id: null }),
+      makeInternalsEntry({ span_id: "" }),
+    ]);
+
+    const bySpan = deriveSubagentInternalsBySpanId(response);
+
+    expect(bySpan.size).toBe(1);
+    expect(bySpan.get("span-a")?.agent_key_hash).toBe("0123456789abcdef");
+  });
+});
+
+describe("deriveSubagentInternalsSummary", () => {
+  it("returns zero-values for nullish input", () => {
+    expect(deriveSubagentInternalsSummary(undefined)).toMatchObject({
+      totalAgentsSeen: 0,
+      returned: 0,
+      cap: 0,
+      truncated: false,
+      droppedPendingStarts: 0,
+      skillCorrelationSupported: false,
+      uncorrelatedSkillInvocations: 0,
+      sessionSkillNames: [],
+    });
+  });
+
+  it("preserves envelope metadata, including session-level skill visibility", () => {
+    const summary = deriveSubagentInternalsSummary(
+      makeInternalsResponse([makeInternalsEntry()], {
+        total_agents_seen: 10,
+        returned: 1,
+        cap: 1000,
+        truncated: true,
+        dropped_pending_starts: 2,
+        skill_correlation_supported: false,
+        uncorrelated_skill_invocations: 3,
+        session_skill_names: ["code-reviewer"],
+      })
+    );
+
+    expect(summary.totalAgentsSeen).toBe(10);
+    expect(summary.returned).toBe(1);
+    expect(summary.truncated).toBe(true);
+    expect(summary.droppedPendingStarts).toBe(2);
+    expect(summary.skillCorrelationSupported).toBe(false);
+    expect(summary.uncorrelatedSkillInvocations).toBe(3);
+    expect(summary.sessionSkillNames).toEqual(["code-reviewer"]);
   });
 });

@@ -9,9 +9,15 @@ import {
   useSessionDebugLogSkeleton,
   useSessionRewindSnapshots,
   useSubagentActivity,
+  useSubagentInternals,
 } from "@/lib/api/hooks";
 import type { HostProfile } from "@/lib/api/types";
-import { deriveSubagentActivitySummary, deriveSubagentExecutions } from "@/lib/flight-recorder";
+import {
+  deriveSubagentActivitySummary,
+  deriveSubagentExecutions,
+  deriveSubagentInternalsBySpanId,
+  deriveSubagentInternalsSummary,
+} from "@/lib/flight-recorder";
 
 type TimelineTabProps = {
   sessionId: string;
@@ -43,6 +49,15 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
     () => deriveSubagentActivitySummary(subagentQuery.data),
     [subagentQuery.data]
   );
+  const subagentInternalsQuery = useSubagentInternals(sessionId, Boolean(sessionId), host);
+  const subagentInternalsBySpanId = useMemo(
+    () => deriveSubagentInternalsBySpanId(subagentInternalsQuery.data),
+    [subagentInternalsQuery.data]
+  );
+  const subagentInternalsSummary = useMemo(
+    () => deriveSubagentInternalsSummary(subagentInternalsQuery.data),
+    [subagentInternalsQuery.data]
+  );
 
   if (query.isLoading) {
     return (
@@ -68,6 +83,12 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
             loading={subagentQuery.isLoading}
             error={subagentQuery.error instanceof Error ? subagentQuery.error : null}
             onOpenDebugLog={onOpenDebugLog}
+            internalsBySpanId={subagentInternalsBySpanId}
+            internalsSummary={subagentInternalsSummary}
+            internalsLoading={subagentInternalsQuery.isLoading}
+            internalsError={
+              subagentInternalsQuery.error instanceof Error ? subagentInternalsQuery.error : null
+            }
           />
         )}
       </div>
@@ -93,6 +114,12 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
         loading={subagentQuery.isLoading}
         error={subagentQuery.error instanceof Error ? subagentQuery.error : null}
         onOpenDebugLog={onOpenDebugLog}
+        internalsBySpanId={subagentInternalsBySpanId}
+        internalsSummary={subagentInternalsSummary}
+        internalsLoading={subagentInternalsQuery.isLoading}
+        internalsError={
+          subagentInternalsQuery.error instanceof Error ? subagentInternalsQuery.error : null
+        }
       />
 
       <TimelinePlayer

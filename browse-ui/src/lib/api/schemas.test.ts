@@ -2472,7 +2472,12 @@ describe("Flight Recorder v3 — browseRewindSnapshotsResponseSchema", () => {
 
 // ── Subagent Activity schemas ─────────────────────────────────────────────
 
-import { subagentActivityEntrySchema, subagentActivityResponseSchema } from "./schemas";
+import {
+  subagentActivityEntrySchema,
+  subagentActivityResponseSchema,
+  subagentInternalsEntrySchema,
+  subagentInternalsResponseSchema,
+} from "./schemas";
 
 describe("subagentActivityEntrySchema", () => {
   const happyEntry = {
@@ -2625,5 +2630,152 @@ describe("subagentActivityResponseSchema", () => {
   it("rejects cap <= 0", () => {
     const bad = { ...happyResponse, cap: 0 };
     expect(() => subagentActivityResponseSchema.parse(bad)).toThrow();
+  });
+});
+
+// ── Subagent Internals schemas ───────────────────────────────────────────────
+
+describe("subagentInternalsResponseSchema", () => {
+  const happyEntry = {
+    agent_key_hash: "0123456789abcdef",
+    span_id: "span-a",
+    agent_name: "code-review",
+    agent_display_name: "Code Review",
+    model: "claude-sonnet-4.6",
+    status: "completed" as const,
+    started_at: "2025-01-01T00:00:00Z",
+    ended_at: "2025-01-01T00:00:05Z",
+    duration_ms: 5000,
+    start_idx: 0,
+    end_idx: 5,
+    redacted: false,
+    internals: {
+      internal_event_count: 3,
+      tool_call_count: 1,
+      tool_success_count: 1,
+      tool_failure_count: 0,
+      llm_turn_count: 1,
+      output_tokens_total: 700,
+      tool_names: ["view"],
+      tools: [
+        {
+          idx: 1,
+          end_idx: 2,
+          tool_name: "view",
+          status: "completed" as const,
+          started_at: "2025-01-01T00:00:01Z",
+          ended_at: "2025-01-01T00:00:02Z",
+          duration_ms: 1000,
+          input_bytes: 12,
+          output_bytes: 2048,
+        },
+      ],
+      tools_truncated: false,
+      model_events: [
+        {
+          idx: 3,
+          timestamp: "2025-01-01T00:00:03Z",
+          output_tokens: 700,
+          tool_request_count: 1,
+        },
+      ],
+      model_events_truncated: false,
+    },
+  };
+
+  const happyResponse = {
+    schema_version: "1" as const,
+    session_id: "33169957-0dc1-4998-86c0-d2beba02e8b4",
+    total_agents_seen: 1,
+    returned: 1,
+    cap: 1000,
+    truncated: false,
+    dropped_pending_starts: 0,
+    skill_correlation_supported: false,
+    uncorrelated_skill_invocations: 1,
+    session_skill_names: ["code-reviewer"],
+    entries: [happyEntry],
+  };
+
+  it("parses a happy-path response", () => {
+    expect(() => subagentInternalsResponseSchema.parse(happyResponse)).not.toThrow();
+  });
+
+  it("parses a running row with nullable end fields", () => {
+    const running = {
+      ...happyEntry,
+      status: "running" as const,
+      ended_at: null,
+      duration_ms: null,
+      end_idx: null,
+      internals: {
+        ...happyEntry.internals,
+        tools: [
+          {
+            ...happyEntry.internals.tools[0],
+            end_idx: null,
+            status: "running" as const,
+            ended_at: null,
+            duration_ms: null,
+            input_bytes: null,
+            output_bytes: null,
+          },
+        ],
+      },
+    };
+    expect(() => subagentInternalsEntrySchema.parse(running)).not.toThrow();
+  });
+
+  it("rejects raw id leakage and agentDescription via strict schema", () => {
+    expect(() =>
+      subagentInternalsEntrySchema.parse({ ...happyEntry, toolCallId: "raw" })
+    ).toThrow();
+    expect(() =>
+      subagentInternalsEntrySchema.parse({ ...happyEntry, agentDescription: "SECRET" })
+    ).toThrow();
+  });
+
+  it("requires opaque 16-hex agent_key_hash", () => {
+    expect(() =>
+      subagentInternalsEntrySchema.parse({ ...happyEntry, agent_key_hash: "raw-id" })
+    ).toThrow();
+  });
+
+  it("rejects extra fields on nested tool and model events", () => {
+    const badTool = {
+      ...happyEntry,
+      internals: {
+        ...happyEntry.internals,
+        tools: [{ ...happyEntry.internals.tools[0], args: { path: "/secret" } }],
+      },
+    };
+    const badModel = {
+      ...happyEntry,
+      internals: {
+        ...happyEntry.internals,
+        model_events: [{ ...happyEntry.internals.model_events[0], content: "secret" }],
+      },
+    };
+    expect(() => subagentInternalsEntrySchema.parse(badTool)).toThrow();
+    expect(() => subagentInternalsEntrySchema.parse(badModel)).toThrow();
+  });
+
+  it("rejects extra fields on response envelope", () => {
+    expect(() =>
+      subagentInternalsResponseSchema.parse({ ...happyResponse, raw_agent_ids: [] })
+    ).toThrow();
+  });
+
+  it("rejects negative counters", () => {
+    const bad = {
+      ...happyResponse,
+      entries: [
+        {
+          ...happyEntry,
+          internals: { ...happyEntry.internals, tool_call_count: -1 },
+        },
+      ],
+    };
+    expect(() => subagentInternalsResponseSchema.parse(bad)).toThrow();
   });
 });

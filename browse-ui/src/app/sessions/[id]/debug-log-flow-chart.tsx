@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { BrowseDebugEntry } from "@/lib/api/types";
+import type { BrowseDebugEntry, SubagentInternalsResponse } from "@/lib/api/types";
 import {
   computeFlowLayout,
   computeTraceLayout,
@@ -70,6 +70,8 @@ export type DebugLogFlowChartProps = {
   hasMore?: boolean;
   /** Total number of events on the server (across all pages). */
   totalEvents?: number;
+  /** Full-session safe internals summary for sub-agent flow context. */
+  subagentInternals?: SubagentInternalsResponse | null;
 };
 
 export function DebugLogFlowChart({
@@ -78,6 +80,7 @@ export function DebugLogFlowChart({
   onSelect,
   hasMore = false,
   totalEvents,
+  subagentInternals,
 }: DebugLogFlowChartProps) {
   // P4 (perf): memoize the heavy layout so it isn't rebuilt on every
   // pan/zoom/state change. Only the entry list drives geometry.
@@ -239,6 +242,7 @@ export function DebugLogFlowChart({
           </button>
         </div>
       </div>
+      <SubagentFlowInternalsStrip data={subagentInternals} />
       <TraceOverviewStrip entries={entries} selectedEntry={selectedEntry} onSelect={onSelect} />
       <TraceInspectorPanel selectedEntry={selectedEntry} entries={entries} />
       <svg
@@ -421,6 +425,84 @@ export function DebugLogFlowChart({
             ? `More events available — showing ${layout.nodes.length} of ${totalEvents}. Use Next below to load more.`
             : "More events available — use Next below to load more."}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Sub-agent internals strip ─────────────────────────────────────────────────
+
+function SubagentFlowInternalsStrip({ data }: { data?: SubagentInternalsResponse | null }) {
+  if (!data || data.entries.length === 0) return null;
+
+  const top = data.entries
+    .slice()
+    .sort((a, b) => b.internals.internal_event_count - a.internals.internal_event_count)
+    .slice(0, 6);
+
+  return (
+    <div
+      className="border-border bg-card/40 border-b px-3 py-2 text-xs"
+      data-testid="debug-log-flow-subagent-internals"
+      aria-label="Sub-agent internals overview"
+    >
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="font-medium">Sub-agent internals</span>
+        <span className="text-muted-foreground">
+          {data.returned} agent{data.returned === 1 ? "" : "s"} ·{" "}
+          {data.entries.reduce((sum, entry) => sum + entry.internals.tool_call_count, 0)} tools ·{" "}
+          {data.entries.reduce((sum, entry) => sum + entry.internals.llm_turn_count, 0)} model
+          messages
+        </span>
+        {!data.skill_correlation_supported && data.uncorrelated_skill_invocations > 0 ? (
+          <span className="text-muted-foreground" data-testid="debug-log-flow-skills-note">
+            Skills are session-level only ({data.uncorrelated_skill_invocations} loads)
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {top.map((entry) => {
+          const label = entry.agent_display_name ?? entry.agent_name ?? "Sub-agent";
+          const toolNames = entry.internals.tool_names.slice(0, 5);
+          return (
+            <div
+              key={entry.agent_key_hash}
+              className="border-border bg-background/70 rounded border px-2 py-1.5"
+              data-testid={`debug-log-flow-subagent-${entry.agent_key_hash}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{truncate(label, 34)}</span>
+                <span
+                  className={
+                    entry.status === "failed"
+                      ? "text-red-600 dark:text-red-400"
+                      : "text-muted-foreground"
+                  }
+                >
+                  {entry.status}
+                </span>
+              </div>
+              <div className="text-muted-foreground mt-1">
+                {entry.internals.tool_call_count} tools · {entry.internals.llm_turn_count} model ·{" "}
+                {entry.internals.output_tokens_total.toLocaleString()} tok
+              </div>
+              {toolNames.length > 0 ? (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {toolNames.map((tool) => (
+                    <span key={tool} className="border-border rounded border px-1 py-0.5">
+                      {tool}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {data.session_skill_names.length > 0 ? (
+        <p className="text-muted-foreground mt-2" data-testid="debug-log-flow-session-skills">
+          Session skills: {data.session_skill_names.join(", ")}
+        </p>
       ) : null}
     </div>
   );

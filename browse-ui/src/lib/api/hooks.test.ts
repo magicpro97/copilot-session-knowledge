@@ -1171,4 +1171,15 @@ describe("subagentActivity queryKeys", () => {
     const k2 = JSON.stringify(qk2.subagentActivity("sess-2"));
     expect(k1).not.toEqual(k2);
   });
+
+  it("subagentInternals key is stable and host-scoped", () => {
+    expect(qk2.subagentInternals(SID)).toEqual(["subagent-internals", "local", SID]);
+    expect(qk2.subagentInternals(SID, "remote-1")).toEqual(["subagent-internals", "remote-1", SID]);
+  });
+
+  it("subagentInternals key differs from activity and debug-log keys", () => {
+    const internals = JSON.stringify(qk2.subagentInternals(SID));
+    expect(internals).not.toEqual(JSON.stringify(qk2.subagentActivity(SID)));
+    expect(internals).not.toEqual(JSON.stringify(qk2.sessionDebugLog(SID, {}, "local")));
+  });
 });
