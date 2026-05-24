@@ -1,3 +1,5 @@
+import type { Page } from "@playwright/test";
+
 import { expect, test } from "./fixtures";
 import { aliasPlaceholderSession } from "./session-detail-alias";
 
@@ -21,6 +23,14 @@ const KNOWLEDGE_INSIGHTS_FIXTURE = {
   hot_files: [],
   entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
 };
+
+async function pressGlobalChord(page: Page, key: string) {
+  await page.keyboard.press("g");
+  // The chord state is stored in React state; give the capture listener one
+  // paint to commit before sending the second key in headless CI.
+  await page.waitForTimeout(50);
+  await page.keyboard.press(key);
+}
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/knowledge/insights*", async (route) => {
@@ -49,19 +59,16 @@ test("global shortcuts route to shipped pages", async ({ page }) => {
     timeout: 20_000,
   });
 
-  await page.keyboard.press("g");
-  await page.keyboard.press("i");
+  await pressGlobalChord(page, "i");
   await expect(page).toHaveURL(/\/insights\/?(#overview)?$/);
   await expect(page.getByRole("heading", { level: 1, name: "Insights" })).toBeVisible();
 
-  await page.keyboard.press("g");
-  await page.keyboard.press("/");
+  await pressGlobalChord(page, "/");
   await expect(page).toHaveURL(/\/search\/?$/);
   await expect(page.getByRole("heading", { level: 1, name: "Search" })).toBeVisible();
   await page.getByRole("heading", { level: 1, name: "Search" }).click();
 
-  await page.keyboard.press("g");
-  await page.keyboard.press("g");
+  await pressGlobalChord(page, "g");
   await expect(page).toHaveURL(/\/graph\/?#insight$/);
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Insight" })).toHaveAttribute("aria-selected", "true");
@@ -92,8 +99,7 @@ test("global shortcuts route to shipped pages", async ({ page }) => {
     "true"
   );
 
-  await page.keyboard.press("g");
-  await page.keyboard.press(",");
+  await pressGlobalChord(page, ",");
   await expect(page).toHaveURL(/\/settings\/?$/);
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
 
