@@ -25,11 +25,19 @@ const KNOWLEDGE_INSIGHTS_FIXTURE = {
 };
 
 async function pressGlobalChord(page: Page, key: string) {
-  await page.keyboard.press("g");
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "g", bubbles: true, cancelable: true })
+    );
+  });
   // The chord state is stored in React state; give the capture listener one
   // paint to commit before sending the second key in headless CI.
   await page.waitForTimeout(50);
-  await page.keyboard.press(key);
+  await page.evaluate((nextKey) => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: nextKey, bubbles: true, cancelable: true })
+    );
+  }, key);
 }
 
 test.beforeEach(async ({ page }) => {
