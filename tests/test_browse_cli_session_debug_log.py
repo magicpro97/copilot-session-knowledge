@@ -1436,7 +1436,7 @@ def test_unsafe_top_level_keys_dropped():
                     "properties": {
                         "file": "/Users/alice/x",
                         "filePaths": ["/Users/alice/y"],
-                        "large_output_file": "/tmp/out",
+                        "large_output_file": str(Path(tempfile.gettempdir()) / "out"),
                         "inputs": "secret",
                         "options": "--token=abc",
                         "codeBlocks": "leak",
