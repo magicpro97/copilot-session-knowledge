@@ -105,6 +105,31 @@ _ATTRS_ALLOWLIST = frozenset(
         "error_category",
         "latency_ms",
         "queue_depth",
+        # ── Issue #533 rich-metadata additions ────────────────────────────────
+        # All values are scalar-only (str/int/float/bool). String fields are
+        # short, regex-validated by the producer in _extract_cli_attrs;
+        # nested dicts/lists are still rejected by _redact_attrs.
+        "event_type",  # CLI event type string (e.g. "hook.start"); short enum-like
+        "event_phase",  # derived phase: start/end/complete/started/completed/failed
+        "hook_type",  # e.g. preToolUse/postToolUse (short, regex)
+        "hook_status",  # "ok" | "error" (derived from data.success)
+        "tool_success",  # bool from data.success
+        "tool_status",  # "ok" | "error" | "cancelled"
+        "tool_result_type",  # short enum-like (e.g. text/json/error)
+        "output_tokens",  # int (assistant.message data.outputTokens)
+        "tool_request_count",  # int len(data.toolRequests)
+        "skill_name",  # short regex (^[a-zA-Z0-9._-]{1,64}$)
+        "skill_path_category",  # "absolute_user" | "skill_pkg" | "relative" | "other"
+        "skill_content_bytes",  # int length of data.content if string
+        "notification_kind",  # finite enum (see _NOTIF_KIND_ENUM)
+        "notification_status",  # short enum (ok/error/cancelled/running/unknown)
+        "notification_exit_code",  # int from kind.exitCode
+        "compaction_kind",  # short enum (e.g. auto/manual)
+        "mode",  # short enum (e.g. yolo/normal/plan)
+        # toolTelemetry.metrics (integer telemetry, explicit allowlist)
+        "tool_metric_duration_ms",
+        "tool_metric_input_bytes",
+        "tool_metric_output_bytes",
     }
 )
 

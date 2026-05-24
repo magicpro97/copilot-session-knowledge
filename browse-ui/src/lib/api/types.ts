@@ -1267,6 +1267,46 @@ export interface BrowseDebugEntry {
 }
 
 /**
+ * Allowlisted, redaction-safe scalar/enum keys promoted into
+ * `BrowseDebugEntry.attrs` by the backend (`_extract_cli_attrs`).
+ *
+ * See docs/DEBUG-LOG-CONTRACT.md §Rich-metadata Attrs (issue #533).
+ *
+ * Every field is optional — the contract is default-deny: if a value
+ * fails enum/regex/range validation it is dropped silently. Frontend
+ * consumers must therefore degrade gracefully when any subset is
+ * missing. None of these fields carry raw user content.
+ */
+export interface DebugSafeAttrs {
+  event_type?: string;
+  event_phase?: "start" | "end" | "complete" | "started" | "completed" | "failed";
+  hook_type?: string;
+  hook_status?: "ok" | "error";
+  tool_success?: boolean;
+  tool_status?: "ok" | "error" | "cancelled";
+  tool_result_type?: string;
+  tool_metric_duration_ms?: number;
+  tool_metric_input_bytes?: number;
+  tool_metric_output_bytes?: number;
+  output_tokens?: number;
+  tool_request_count?: number;
+  skill_name?: string;
+  skill_path_category?: "skill_pkg" | "absolute_user" | "relative" | "other";
+  skill_content_bytes?: number;
+  notification_kind?: "agent_completed" | "shell_completed" | "shell_detached_completed";
+  notification_status?: string;
+  notification_exit_code?: number;
+  compaction_kind?: string;
+  mode?: string;
+  /** Generic redaction-pass markers (already defined in the base contract). */
+  truncated?: boolean;
+  bytes_in?: number;
+  /** Generic error metadata used by `kind === "error"` entries. */
+  exit_code?: number;
+  error_category?: string;
+}
+
+/**
  * HTTP response envelope for GET /api/operator/sessions/{sid}/runs/{rid}/debug.
  * See docs/DEBUG-LOG-CONTRACT.md §WBS-104 Response Shape.
  */

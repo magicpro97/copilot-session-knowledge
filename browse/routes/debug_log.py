@@ -81,6 +81,41 @@ _DEBUG_LEVEL_ENUM = frozenset({"debug", "info", "warn", "error"})
 
 # ── CLI event-type → kind taxonomy ────────────────────────────────────────────
 
+# Short-enum regex for safe scalar string attrs (event_type / hook_type /
+# resultType / skill_name / notification status / mode / compactionKind).
+# Constrained alphabet rejects whitespace, slashes, and embedded paths.
+_SHORT_ENUM_RE = re.compile(r"^[a-zA-Z0-9._-]{1,64}$")
+
+# Finite enum of safe `system.notification.data.kind.type` values.
+# Default-deny: any other value is dropped, not echoed.
+_NOTIF_KIND_ENUM = frozenset({"agent_completed", "shell_completed", "shell_detached_completed"})
+
+
+def _classify_path_category(raw: object) -> "str | None":
+    """Classify a raw skill/event path into a coarse safe category.
+
+    Returns one of:
+      - "skill_pkg"     — appears under a `.copilot/.../skills/` directory
+      - "absolute_user" — absolute path under /Users, /home, or Windows users
+      - "relative"      — non-empty relative path
+      - None            — input is not a non-empty string
+
+    The raw path itself is NEVER returned or stored anywhere — only the
+    coarse category. This matches the issue #533 research decision that
+    `skill.invoked.data.path` must never be exposed raw.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    low = raw.replace("\\", "/").lower()
+    if "/skills/" in low or low.endswith("/skill.md"):
+        return "skill_pkg"
+    if low.startswith("/users/") or low.startswith("/home/") or re.match(r"^[a-z]:/users/", low):
+        return "absolute_user"
+    if low.startswith("/") or re.match(r"^[a-z]:/", low):
+        return "other"
+    return "relative"
+
+
 # Exact-match table for well-known CLI event type strings.
 _CLI_EVENT_EXACT_KIND: dict = {
     # session lifecycle
@@ -299,25 +334,77 @@ def _coerce_duration_ms(raw: object) -> "float | None":
 def _build_cli_message(event: dict, event_type: str, kind: str) -> str:
     """Build a <=200 char human-readable preview for a CLI event.
 
-    Uses safe scalar data fields: type, data.message, data.toolName,
-    data.infoType, data.success, data.status, data.newModel.
-    Never includes nested objects or long content.
+    Uses safe scalar data fields only.  For event types known to carry
+    nested unsafe payloads (skill.invoked.path/content,
+    system.notification.data.kind.{prompt,description}, tool arguments/result),
+    the corresponding raw fields are *never* read here — only short
+    enum/identifier summaries.
     """
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
 
+    # hook.* — surface hookType + success/error (no `input` or `description`)
+    if kind == "hook":
+        hook_type = data.get("hookType")
+        parts = [event_type]
+        if isinstance(hook_type, str) and _SHORT_ENUM_RE.match(hook_type):
+            parts.append(f"hookType={hook_type}")
+        success = data.get("success")
+        if isinstance(success, bool):
+            parts.append("ok" if success else "error")
+        return " ".join(parts)[:_DEBUG_MSG_MAX]
+
     if kind == "tool_call":
         tool = data.get("toolName") or data.get("tool_name") or data.get("name") or data.get("tool") or event_type
-        return str(tool)[:_DEBUG_MSG_MAX]
+        suffix_parts: list[str] = []
+        success = data.get("success")
+        if isinstance(success, bool):
+            suffix_parts.append("ok" if success else "error")
+        result_type = data.get("resultType")
+        if isinstance(result_type, str) and _SHORT_ENUM_RE.match(result_type):
+            suffix_parts.append(f"resultType={result_type}")
+        msg = str(tool)
+        if suffix_parts:
+            msg = msg + " " + " ".join(suffix_parts)
+        return msg[:_DEBUG_MSG_MAX]
+
+    # skill.* — only short skill name + path category; never raw path/content
+    if event_type.startswith("skill."):
+        name = data.get("name")
+        parts = [event_type]
+        if isinstance(name, str) and _SHORT_ENUM_RE.match(name):
+            parts.append(f"name={name}")
+        cat = _classify_path_category(data.get("path"))
+        if cat:
+            parts.append(f"path_category={cat}")
+        return " ".join(parts)[:_DEBUG_MSG_MAX]
+
+    # system.notification — only kind.type / kind.status enums
+    if event_type.startswith("system.notification"):
+        raw_kind = data.get("kind") if isinstance(data.get("kind"), dict) else {}
+        kind_type = raw_kind.get("type")
+        kind_status = raw_kind.get("status")
+        parts = [event_type]
+        if kind_type in _NOTIF_KIND_ENUM:
+            parts.append(f"kind={kind_type}")
+        if isinstance(kind_status, str) and _SHORT_ENUM_RE.match(kind_status):
+            parts.append(f"status={kind_status}")
+        return " ".join(parts)[:_DEBUG_MSG_MAX]
 
     if kind == "agent_response":
+        # Prefer a short summary line that does NOT include nested
+        # reasoningText/transformedContent.  data.message is the assistant's
+        # final user-facing message preview; redaction will scrub secrets.
         content = data.get("message") or data.get("content") or data.get("deltaContent") or event_type
+        if isinstance(content, (dict, list)):
+            content = event_type
         return str(content)[:_DEBUG_MSG_MAX]
 
     if kind in ("session_start", "generic"):
-        # For session.info, include infoType; for session.model_change include newModel.
         info_type = data.get("infoType")
         new_model = data.get("newModel")
         msg_field = data.get("message")
+        mode = data.get("mode")
+        comp_kind = data.get("compactionKind")
         if info_type:
             parts = [event_type, f"infoType={info_type}"]
             if msg_field:
@@ -325,12 +412,18 @@ def _build_cli_message(event: dict, event_type: str, kind: str) -> str:
             return " ".join(parts)[:_DEBUG_MSG_MAX]
         if new_model:
             return f"{event_type} newModel={new_model}"[:_DEBUG_MSG_MAX]
-        if msg_field:
+        if isinstance(mode, str) and _SHORT_ENUM_RE.match(mode):
+            return f"{event_type} mode={mode}"[:_DEBUG_MSG_MAX]
+        if isinstance(comp_kind, str) and _SHORT_ENUM_RE.match(comp_kind):
+            return f"{event_type} compactionKind={comp_kind}"[:_DEBUG_MSG_MAX]
+        if msg_field and not isinstance(msg_field, (dict, list)):
             return f"{event_type}: {str(msg_field)[:120]}"[:_DEBUG_MSG_MAX]
 
-    # Default: use generic text/message/content or fall back to event_type.
-    text = data.get("text") or data.get("message") or data.get("content") or event_type
-    # Scalars only — skip dicts/lists.
+    # Default: use generic text/message fall back to event_type.
+    # Note: `content` is intentionally NOT consulted at default level because
+    # many event types (skill.invoked, etc.) put raw payload there; explicit
+    # branches above handle the safe ones.
+    text = data.get("text") or data.get("message") or event_type
     if isinstance(text, (dict, list)):
         text = event_type
     return str(text)[:_DEBUG_MSG_MAX]
@@ -355,19 +448,29 @@ def _extract_tool_name(event: dict) -> "str | None":
 def _extract_cli_attrs(event: dict) -> dict:
     """Extract safe, redaction-allowlisted scalar attrs from a CLI event.
 
-    Only extracts fields listed in the attrs allowlist:
-      session_uuid, model, status_code, exit_code, event_count,
-      bytes_in, bytes_out, tokens_in, tokens_out, attempt,
-      latency_ms, truncated, error_category.
-    Never includes nested objects or raw CWD paths.
+    Issue #533: default-deny rich metadata.  Strings are constrained by
+    _SHORT_ENUM_RE; nested structures (toolTelemetry.properties, kind dict
+    body) are never copied through — only a strict scalar allowlist applies.
+    Unsafe fields (arguments, result, content, reasoningText,
+    transformedContent, raw paths, prompt, description, restrictedProperties,
+    agent_name, etc.) are *not* extracted.
     """
+    import math as _math  # noqa: PLC0415
+
     attrs: dict = {}
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    event_type = event.get("type")
+
+    # event_type / event_phase — short enums
+    if isinstance(event_type, str) and _SHORT_ENUM_RE.match(event_type):
+        attrs["event_type"] = event_type
+        phase = _derive_event_phase(event_type)
+        if phase is not None:
+            attrs["event_phase"] = phase
 
     # session_uuid from data.sessionId
     sid = data.get("sessionId")
     if sid and isinstance(sid, str):
-        # Validate UUID shape before including.
         _SID_RE = re.compile(
             r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
             re.IGNORECASE,
@@ -379,6 +482,92 @@ def _extract_cli_attrs(event: dict) -> dict:
     model = data.get("newModel") or data.get("model")
     if model and isinstance(model, str) and len(model) <= 64:
         attrs["model"] = model
+
+    # ── Hook metadata (hook.start / hook.end) ─────────────────────────────────
+    hook_type = data.get("hookType")
+    if isinstance(hook_type, str) and _SHORT_ENUM_RE.match(hook_type):
+        attrs["hook_type"] = hook_type
+    if isinstance(event_type, str) and event_type.startswith("hook."):
+        succ = data.get("success")
+        if isinstance(succ, bool):
+            attrs["hook_status"] = "ok" if succ else "error"
+
+    # ── Tool metadata (tool.execution_*) ──────────────────────────────────────
+    if isinstance(event_type, str) and (event_type.startswith("tool.") or event_type.startswith("tool_")):
+        succ = data.get("success")
+        if isinstance(succ, bool):
+            attrs["tool_success"] = succ
+        status = data.get("status")
+        if isinstance(status, str) and status in ("ok", "error", "cancelled"):
+            attrs["tool_status"] = status
+        elif isinstance(succ, bool) and "tool_status" not in attrs:
+            attrs["tool_status"] = "ok" if succ else "error"
+        result_type = data.get("resultType")
+        if isinstance(result_type, str) and _SHORT_ENUM_RE.match(result_type):
+            attrs["tool_result_type"] = result_type
+        # toolTelemetry.metrics — integers only, strict allowlist
+        telem = data.get("toolTelemetry")
+        if isinstance(telem, dict):
+            metrics = telem.get("metrics")
+            if isinstance(metrics, dict):
+                for src_key, attr_key in (
+                    ("durationMs", "tool_metric_duration_ms"),
+                    ("inputBytes", "tool_metric_input_bytes"),
+                    ("outputBytes", "tool_metric_output_bytes"),
+                ):
+                    v = metrics.get(src_key)
+                    if not isinstance(v, bool) and isinstance(v, (int, float)) and _math.isfinite(v) and v >= 0:
+                        attrs[attr_key] = v
+            # toolTelemetry.properties is INTENTIONALLY NOT consumed here —
+            # research decision: properties may carry path/file/inputs/options/
+            # pattern/query/error/skillName/agent_name and must default-deny.
+
+    # ── Assistant metadata (assistant.message etc.) ───────────────────────────
+    if isinstance(event_type, str) and event_type.startswith("assistant."):
+        out_toks = data.get("outputTokens")
+        if (
+            not isinstance(out_toks, bool)
+            and isinstance(out_toks, (int, float))
+            and _math.isfinite(out_toks)
+            and out_toks >= 0
+        ):
+            attrs["output_tokens"] = out_toks
+        tool_reqs = data.get("toolRequests")
+        if isinstance(tool_reqs, list):
+            attrs["tool_request_count"] = len(tool_reqs)
+
+    # ── Skill metadata (skill.invoked etc.) ───────────────────────────────────
+    if isinstance(event_type, str) and event_type.startswith("skill."):
+        name = data.get("name")
+        if isinstance(name, str) and _SHORT_ENUM_RE.match(name):
+            attrs["skill_name"] = name
+        cat = _classify_path_category(data.get("path"))
+        if cat:
+            attrs["skill_path_category"] = cat
+        content = data.get("content")
+        if isinstance(content, str):
+            attrs["skill_content_bytes"] = len(content.encode("utf-8", errors="replace"))
+
+    # ── system.notification metadata ──────────────────────────────────────────
+    if isinstance(event_type, str) and event_type.startswith("system.notification"):
+        raw_kind = data.get("kind") if isinstance(data.get("kind"), dict) else {}
+        kt = raw_kind.get("type")
+        if isinstance(kt, str) and kt in _NOTIF_KIND_ENUM:
+            attrs["notification_kind"] = kt
+        ks = raw_kind.get("status")
+        if isinstance(ks, str) and _SHORT_ENUM_RE.match(ks):
+            attrs["notification_status"] = ks
+        ec = raw_kind.get("exitCode")
+        if not isinstance(ec, bool) and isinstance(ec, (int, float)) and _math.isfinite(ec):
+            attrs["notification_exit_code"] = ec
+
+    # ── Compaction / mode metadata ────────────────────────────────────────────
+    comp_kind = data.get("compactionKind")
+    if isinstance(comp_kind, str) and _SHORT_ENUM_RE.match(comp_kind):
+        attrs["compaction_kind"] = comp_kind
+    mode = data.get("mode")
+    if isinstance(mode, str) and _SHORT_ENUM_RE.match(mode):
+        attrs["mode"] = mode
 
     # Numeric safety fields — only include finite ints/floats.
     for src_key, attr_key in (
@@ -401,22 +590,20 @@ def _extract_cli_attrs(event: dict) -> dict:
         ("latency_ms", "latency_ms"),
     ):
         if attr_key in attrs:
-            continue  # already set from an earlier alias
+            continue
         raw = data.get(src_key)
         if raw is None:
             continue
         if isinstance(raw, bool):
             continue
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            import math as _math  # noqa: PLC0415
-
             if _math.isfinite(raw):
                 attrs[attr_key] = raw
 
     # Boolean safety fields
     for src_key, attr_key in (
         ("truncated", "truncated"),
-        ("success", None),  # not in allowlist; skip
+        ("success", None),  # not in allowlist directly; surfaced as hook/tool_status
     ):
         if attr_key is None:
             continue
@@ -430,6 +617,29 @@ def _extract_cli_attrs(event: dict) -> dict:
         attrs["error_category"] = ec
 
     return attrs
+
+
+def _derive_event_phase(event_type: str) -> "str | None":
+    """Derive a coarse phase enum from a raw CLI event type string.
+
+    Returns one of: "start", "end", "complete", "started", "completed",
+    "failed", or None when the event_type does not carry an obvious phase
+    suffix.  Default-deny: future/unknown phases are not echoed.
+    """
+    et = event_type.lower()
+    if et.endswith(".start") or et.endswith("_start"):
+        return "start"
+    if et.endswith(".end") or et.endswith("_end"):
+        return "end"
+    if et.endswith(".execution_complete") or et.endswith(".complete") or et.endswith("_complete"):
+        return "complete"
+    if et.endswith(".started"):
+        return "started"
+    if et.endswith(".completed"):
+        return "completed"
+    if et.endswith(".failed") or et.endswith("_failed"):
+        return "failed"
+    return None
 
 
 # ── Line mapper ───────────────────────────────────────────────────────────────

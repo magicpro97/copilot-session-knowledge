@@ -258,6 +258,247 @@ test("session debug log renders flow chart from CLI hierarchy data", async ({ pa
   await expect(page.getByLabel("Debug log flow chart")).toContainText("Post tool hook completed");
 });
 
+// Issue #536: Browse debug-log Playwright proof for zoom safety + rich Flow content.
+//
+// Acceptance:
+//   * Fixture covers tool/hook/skill/assistant(model)/subagent rich Flow content
+//     with `has_more: true` so the renderer shows its "More events available" hint.
+//   * Console is captured; the test fails if Chrome ever logs the
+//     "Unable to preventDefault inside passive event listener invocation" warning
+//     (regression signal for the non-passive wheel-listener fix).
+//   * Mouse wheel over the SVG updates the zoom percentage text rendered by
+//     `data-testid="debug-log-flow-zoom"` — proves the wheel listener actually
+//     drives zoom (and is therefore non-passive).
+//   * Rich labels / sublabels / timestamps from `node.render` are visible.
+test("session debug log flow chart: zoom safety + rich content (issue #536)", async ({ page }) => {
+  await assertSeededSessionAvailable(page);
+
+  // Capture all console messages so we can assert no passive-listener warning
+  // is ever emitted. We must register BEFORE navigation.
+  const consoleMessages: { type: string; text: string }[] = [];
+  page.on("console", (msg) => {
+    consoleMessages.push({ type: msg.type(), text: msg.text() });
+  });
+  // Capture uncaught page errors as well — a thrown wheel handler would
+  // be a separate regression mode.
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+
+  // Synthetic, redaction-safe debug-log payload covering the full rich-Flow
+  // contract surface: turn, tool, hook, skill, assistant (agent_response /
+  // model), subagent. has_more=true exercises the "More events available"
+  // affordance the renderer exposes via data-testid="debug-log-flow-has-more".
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "debug-log/1",
+        session_id: SEEDED_SESSION_ID,
+        from: 0,
+        limit: 100,
+        total: 12,
+        has_more: true,
+        entries: [
+          {
+            idx: 0,
+            timestamp: "2026-05-01T01:02:03.000Z",
+            kind: "turn_start",
+            level: "info",
+            source: "copilot-cli",
+            message: "Turn started",
+            tool_name: null,
+            duration_ms: 240,
+            span_id: "turn-root",
+            parent_span_id: null,
+            status: "ok",
+            attrs: { mode: "agent" },
+            redacted: false,
+          },
+          {
+            idx: 1,
+            timestamp: "2026-05-01T01:02:03.100Z",
+            kind: "tool_call",
+            level: "debug",
+            source: "tool",
+            message: "Read debug event file",
+            tool_name: "view",
+            duration_ms: 120,
+            span_id: "tool-view",
+            parent_span_id: "turn-root",
+            status: "ok",
+            attrs: {
+              tool_status: "ok",
+              tool_result_type: "text",
+              tool_metric_duration_ms: 120,
+            },
+            redacted: false,
+          },
+          {
+            idx: 2,
+            timestamp: "2026-05-01T01:02:03.200Z",
+            kind: "hook",
+            level: "info",
+            source: "hook",
+            message: "Post tool hook completed",
+            tool_name: null,
+            duration_ms: 30,
+            span_id: "hook-post",
+            parent_span_id: "tool-view",
+            status: "ok",
+            attrs: {
+              hook_type: "post-tool-use",
+              hook_status: "ok",
+              event_phase: "complete",
+            },
+            redacted: false,
+          },
+          {
+            idx: 3,
+            timestamp: "2026-05-01T01:02:03.300Z",
+            kind: "skill_run",
+            level: "info",
+            source: "skill",
+            message: "Skill executed",
+            tool_name: null,
+            duration_ms: 75,
+            span_id: "skill-cr",
+            parent_span_id: "turn-root",
+            status: "ok",
+            attrs: {
+              skill_name: "code-reviewer",
+              skill_path_category: "skill_pkg",
+              skill_content_bytes: 4096,
+            },
+            redacted: false,
+          },
+          {
+            idx: 4,
+            timestamp: "2026-05-01T01:02:03.400Z",
+            kind: "agent_response",
+            level: "info",
+            source: "copilot-cli",
+            message: "Assistant produced a response",
+            tool_name: null,
+            duration_ms: 200,
+            span_id: "model-assistant",
+            parent_span_id: "turn-root",
+            status: "ok",
+            attrs: {
+              output_tokens: 42,
+              tool_request_count: 1,
+            },
+            redacted: false,
+          },
+          {
+            idx: 5,
+            timestamp: "2026-05-01T01:02:03.500Z",
+            kind: "subagent",
+            level: "info",
+            source: "copilot-cli",
+            message: "research subagent",
+            tool_name: null,
+            duration_ms: 60,
+            span_id: "subagent-research",
+            parent_span_id: "turn-root",
+            status: "ok",
+            attrs: null,
+            redacted: false,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/#debug-log`);
+  await expect(page.getByRole("tab", { name: "Debug Log" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("debug-log-view-flow")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("debug-log-view-flow").click();
+
+  const chart = page.getByTestId("debug-log-flow-chart");
+  await expect(chart).toBeVisible();
+
+  // -- Rich Flow content from node.render -------------------------------
+  // Primary labels (truncated to 28 chars by the renderer — all our
+  // fixture labels fit comfortably under that limit).
+  const flow = page.getByLabel("Debug log flow chart");
+  await expect(flow).toContainText("Turn started"); // turn (message fallback)
+  await expect(flow).toContainText("view"); // tool (tool_name)
+  await expect(flow).toContainText("post-tool-use"); // hook (hook_type)
+  await expect(flow).toContainText("code-reviewer"); // skill (skill_name)
+  await expect(flow).toContainText("agent_response"); // model (assistant)
+  await expect(flow).toContainText("research subagent"); // subagent (message)
+
+  // Sublabels (status / duration / tokens / path category).
+  await expect(flow).toContainText("ok · text"); // tool sublabel prefix
+  await expect(flow).toContainText("ok · complete"); // hook sublabel
+  await expect(flow).toContainText("skill_pkg"); // skill sublabel
+  await expect(flow).toContainText("42 tok"); // model sublabel
+
+  // Timestamp label (HH:MM:SS UTC) is rendered per-node.
+  await expect(flow).toContainText("01:02:03");
+
+  // Per-entry rich testids prove the render model fed every category.
+  await expect(page.getByTestId("debug-log-flow-node-1-label")).toContainText("view");
+  await expect(page.getByTestId("debug-log-flow-node-1-sublabel")).toContainText("ok");
+  await expect(page.getByTestId("debug-log-flow-node-1-timestamp")).toContainText("01:02:03");
+  await expect(page.getByTestId("debug-log-flow-node-2-label")).toContainText("post-tool-use");
+  await expect(page.getByTestId("debug-log-flow-node-3-label")).toContainText("code-reviewer");
+  await expect(page.getByTestId("debug-log-flow-node-4-label")).toContainText("agent_response");
+  await expect(page.getByTestId("debug-log-flow-node-5-label")).toContainText("research subagent");
+
+  // data-flow-status attribute is present on every rendered node.
+  await expect(page.getByTestId("debug-log-flow-node-1")).toHaveAttribute("data-flow-status", "ok");
+  await expect(page.getByTestId("debug-log-flow-node-2")).toHaveAttribute("data-flow-status", "ok");
+
+  // SVG <title> tooltip body is reachable for the tool node.
+  const toolNodeTitle = page.locator('[data-testid="debug-log-flow-node-1"] > title');
+  await expect(toolNodeTitle).toHaveText(/kind: tool_call/);
+  await expect(toolNodeTitle).toHaveText(/tool: view/);
+
+  // -- has_more affordance ----------------------------------------------
+  await expect(page.getByTestId("debug-log-flow-has-more")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-has-more")).toContainText(/More events available/);
+
+  // -- Zoom safety: wheel listener must be non-passive ------------------
+  const zoom = page.getByTestId("debug-log-flow-zoom");
+  await expect(zoom).toBeVisible();
+  await expect(zoom).toHaveText("100%");
+
+  // Position the cursor over the SVG so the wheel event targets the chart.
+  const svg = page.locator('svg[aria-label="Debug log flow chart"]');
+  const box = await svg.boundingBox();
+  expect(box, "Flow chart SVG must have a layout box").not.toBeNull();
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // Two zoom-out wheel ticks; each: factor = 2^(-200 * 0.002) ≈ 0.758.
+    // Combined ≈ 0.575, which rounds to "57%" — distinct from "100%".
+    await page.mouse.wheel(0, 200);
+    await page.mouse.wheel(0, 200);
+  }
+
+  // The zoom indicator must visibly change. If the listener regresses to
+  // passive (or the handler stops calling setScale), this stays "100%".
+  await expect(zoom).not.toHaveText("100%", { timeout: 5_000 });
+
+  // Zoom in afterwards to prove both directions still work.
+  if (box) {
+    await page.mouse.wheel(0, -400);
+  }
+  await expect(zoom).toHaveText(/\d+%/);
+
+  // -- Console must be clean of the passive-listener warning ------------
+  const passiveErrors = consoleMessages.filter((m) =>
+    /Unable to preventDefault inside passive event listener invocation/i.test(m.text)
+  );
+  expect(
+    passiveErrors,
+    `Expected no passive-listener warnings, got: ${JSON.stringify(passiveErrors)}`
+  ).toEqual([]);
+  expect(pageErrors, `Unexpected page errors: ${JSON.stringify(pageErrors)}`).toEqual([]);
+});
+
 test("sessions list click-through opens real UUID session detail", async ({ page }) => {
   await assertSeededSessionAvailable(page);
   await page.goto("/sessions/");

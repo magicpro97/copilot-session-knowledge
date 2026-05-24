@@ -1,40 +1,51 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { BrowseDebugEntry } from "@/lib/api/types";
-import { computeFlowLayout } from "@/lib/debug-span-flow";
+import {
+  computeFlowLayout,
+  type FlowNodeCategory,
+  type FlowNodeStatus,
+} from "@/lib/debug-span-flow";
 
 /**
  * Flow-chart view of the debug log — modeled on VS Code's Agent Debug
- * "flow chart" (visual event hierarchy). Renders a top-down SVG tree built
- * from span_id / parent_span_id relationships. Pan via mouse drag, zoom via
- * mouse wheel or the toolbar buttons. Click a node to open the existing
- * DetailDrawer (the parent owns selection state).
+ * "flow chart" view. Renders a top-down SVG tree built from span_id /
+ * parent_span_id relationships using the pure render model produced by
+ * `debug-span-flow.ts`. The renderer never inspects raw `attrs`; it
+ * consumes only `node.render` + safe public `BrowseDebugEntry` fields.
+ *
+ * Pan via mouse drag, zoom via mouse wheel (native non-passive listener
+ * so `preventDefault` is honoured in modern browsers) or toolbar
+ * buttons. Click a node to open the existing DetailDrawer (the parent
+ * owns selection state).
  */
 
 const PADDING = 24;
-const MIN_SCALE = 0.25;
-const MAX_SCALE = 4;
+// VS Code Agent Debug clamps and wheel factor (see chatDebugFlowChartView.ts).
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 5;
+const WHEEL_ZOOM_FACTOR = 0.002;
 const ZOOM_STEP = 1.2;
 
-/** Kind → accent colour for the left node border and kind label. */
-const KIND_COLORS: Record<string, string> = {
-  user_message: "#60a5fa",
-  agent_response: "#a78bfa",
-  tool_call: "#34d399",
-  turn_start: "#fbbf24",
-  subagent: "#f472b6",
+/** Category → accent colour for the left gutter and category label. */
+const CATEGORY_COLORS: Record<FlowNodeCategory, string> = {
+  session: "#94a3b8",
+  turn: "#fbbf24",
+  model: "#22d3ee",
+  tool: "#34d399",
   hook: "#fb923c",
-  llm_request: "#22d3ee",
-  session_start: "#94a3b8",
+  skill: "#c084fc",
+  subagent: "#f472b6",
+  notification: "#60a5fa",
+  compaction: "#a3e635",
   error: "#ef4444",
   generic: "#9ca3af",
-  raw: "#9ca3af",
 };
 
-function kindColor(kind: string): string {
-  return KIND_COLORS[kind] ?? "#9ca3af";
+function categoryColor(c: FlowNodeCategory): string {
+  return CATEGORY_COLORS[c] ?? "#9ca3af";
 }
 
 function truncate(s: string, n: number): string {
@@ -42,21 +53,83 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-function formatMs(ms: number): string {
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
 }
 
 export type DebugLogFlowChartProps = {
   entries: BrowseDebugEntry[];
   selectedEntry: BrowseDebugEntry | null;
   onSelect: (entry: BrowseDebugEntry) => void;
+  /** True when more events are available beyond the currently-loaded page. */
+  hasMore?: boolean;
+  /** Total number of events on the server (across all pages). */
+  totalEvents?: number;
 };
 
-export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLogFlowChartProps) {
+export function DebugLogFlowChart({
+  entries,
+  selectedEntry,
+  onSelect,
+  hasMore = false,
+  totalEvents,
+}: DebugLogFlowChartProps) {
   const layout = computeFlowLayout(entries);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number } | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const contentWidth = layout.width + PADDING * 2;
+  const contentHeight = layout.height + PADDING * 2;
+
+  // Native non-passive wheel listener. Using React's onWheel attaches a
+  // passive listener in modern browsers; calling `preventDefault()` then
+  // logs "Unable to preventDefault inside passive event listener" and the
+  // page scrolls instead of zooming. We add the listener ourselves with
+  // `{ passive: false }` and clean it up on unmount.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const hasRect = rect.width > 0 && rect.height > 0;
+
+      // Cursor position normalised to 0..1 inside the SVG viewport. When
+      // the SVG has no laid-out box (e.g. jsdom in unit tests), default
+      // to the top-left so zoom still applies.
+      const ratioX = hasRect ? clamp((e.clientX - rect.left) / rect.width, 0, 1) : 0;
+      const ratioY = hasRect ? clamp((e.clientY - rect.top) / rect.height, 0, 1) : 0;
+
+      setScale((prevScale) => {
+        const factor = Math.pow(2, -e.deltaY * WHEEL_ZOOM_FACTOR);
+        const nextScale = clamp(prevScale * factor, MIN_SCALE, MAX_SCALE);
+        if (nextScale === prevScale) return prevScale;
+
+        if (hasRect) {
+          // Keep the tree point under the cursor stable across the zoom step.
+          const viewWidthPrev = contentWidth / prevScale;
+          const viewHeightPrev = contentHeight / prevScale;
+          const viewWidthNext = contentWidth / nextScale;
+          const viewHeightNext = contentHeight / nextScale;
+          setPan((prevPan) => {
+            const pointX = prevPan.x + ratioX * viewWidthPrev;
+            const pointY = prevPan.y + ratioY * viewHeightPrev;
+            return {
+              x: pointX - ratioX * viewWidthNext,
+              y: pointY - ratioY * viewHeightNext,
+            };
+          });
+        }
+        return nextScale;
+      });
+    };
+    svg.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      svg.removeEventListener("wheel", handleWheel);
+    };
+  }, [contentWidth, contentHeight]);
 
   if (layout.nodes.length === 0) {
     return (
@@ -69,20 +142,10 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
     );
   }
 
-  const contentWidth = layout.width + PADDING * 2;
-  const contentHeight = layout.height + PADDING * 2;
   const viewWidth = contentWidth / scale;
   const viewHeight = contentHeight / scale;
 
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    // Use passive=false implicit; React provides cancelable wheel event.
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP;
-    setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s * factor)));
-  };
-
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
-    // Ignore drags that start on a node — those are clicks.
     if ((e.target as Element).closest("[data-flow-node]")) return;
     dragRef.current = { x: e.clientX, y: e.clientY };
   };
@@ -99,20 +162,42 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
     dragRef.current = null;
   };
 
-  const zoomIn = () => setScale((s) => Math.min(MAX_SCALE, s * ZOOM_STEP));
-  const zoomOut = () => setScale((s) => Math.max(MIN_SCALE, s / ZOOM_STEP));
+  const zoomIn = () => setScale((s) => clamp(s * ZOOM_STEP, MIN_SCALE, MAX_SCALE));
+  const zoomOut = () => setScale((s) => clamp(s / ZOOM_STEP, MIN_SCALE, MAX_SCALE));
   const reset = () => {
     setScale(1);
     setPan({ x: 0, y: 0 });
   };
 
+  // Group visible (non-synthetic) nodes by render.layer for subgraph
+  // headers. Stable insertion order. A null layer means "no header".
+  const layerGroups = new Map<string, number>();
+  for (const node of layout.nodes) {
+    if (node.isSynthetic) continue;
+    const layer = node.render.layer;
+    if (!layer) continue;
+    layerGroups.set(layer, (layerGroups.get(layer) ?? 0) + 1);
+  }
+  const layerEntries = Array.from(layerGroups.entries());
+
   return (
     <div className="border-border rounded-xl border" data-testid="debug-log-flow-chart">
-      <div className="border-border bg-muted/30 flex items-center justify-between border-b px-3 py-1.5 text-xs">
-        <p className="text-muted-foreground">
-          {layout.nodes.length} node{layout.nodes.length === 1 ? "" : "s"} · {layout.edges.length}{" "}
-          edge{layout.edges.length === 1 ? "" : "s"}
-        </p>
+      <div className="border-border bg-muted/30 flex flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 text-xs">
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-muted-foreground" data-testid="debug-log-flow-counts">
+            {layout.nodes.length} node{layout.nodes.length === 1 ? "" : "s"} · {layout.edges.length}{" "}
+            edge{layout.edges.length === 1 ? "" : "s"}
+          </p>
+          {layerEntries.length > 0 && (
+            <p
+              className="text-muted-foreground"
+              data-testid="debug-log-flow-layers"
+              aria-label="Flow layers"
+            >
+              Layers: {layerEntries.map(([layer, count]) => `${layer} (${count})`).join(" · ")}
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -125,6 +210,7 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
           <span
             className="text-muted-foreground w-12 text-center font-mono"
             aria-label="Current zoom level"
+            data-testid="debug-log-flow-zoom"
           >
             {Math.round(scale * 100)}%
           </span>
@@ -147,13 +233,13 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
         </div>
       </div>
       <svg
+        ref={svgRef}
         role="img"
         aria-label="Debug log flow chart"
         className="block w-full cursor-grab select-none active:cursor-grabbing"
         style={{ height: 480 }}
         viewBox={`${pan.x} ${pan.y} ${viewWidth} ${viewHeight}`}
         preserveAspectRatio="xMidYMin meet"
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={endDrag}
@@ -182,16 +268,21 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
           })}
 
           {layout.nodes.map((node) => {
-            const isSelected = selectedEntry?.idx === node.entry.idx;
-            const isError = node.entry.status === "error" || node.entry.kind === "error";
-            const accent = kindColor(String(node.entry.kind));
+            const render = node.render;
+            const isSelected = selectedEntry?.idx === node.entry.idx && !node.isSynthetic;
+            const status: FlowNodeStatus = render.status;
+            const isError = status === "error";
+            const accent = categoryColor(render.category);
             const strokeColor = isError ? "#ef4444" : isSelected ? "#3b82f6" : accent;
             const strokeWidth = isSelected || isError ? 2.5 : 1.25;
+            const clickable = !node.isSynthetic;
+
             const ariaLabel = node.isSynthetic
               ? "Orphans group"
-              : `Debug event ${node.entry.idx}: ${node.entry.kind} from ${node.entry.source}`;
-
-            const clickable = !node.isSynthetic;
+              : `Debug event ${node.entry.idx}: ${render.label}${
+                  render.sublabel ? ` — ${render.sublabel}` : ""
+                }`;
+            const tooltip = render.tooltipLines.join("\n");
 
             return (
               <g
@@ -202,6 +293,9 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
                     ? "debug-log-flow-node-orphan"
                     : `debug-log-flow-node-${node.entry.idx}`
                 }
+                data-flow-category={render.category}
+                data-flow-status={status}
+                data-flow-layer={render.layer ?? ""}
                 transform={`translate(${node.x},${node.y})`}
                 className={clickable ? "cursor-pointer" : "cursor-default opacity-70"}
                 role={clickable ? "button" : "group"}
@@ -219,6 +313,8 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
                   }
                 }}
               >
+                {/* Native SVG tooltip — shows all render.tooltipLines. */}
+                <title>{tooltip}</title>
                 <rect
                   width={node.width}
                   height={node.height}
@@ -229,35 +325,94 @@ export function DebugLogFlowChart({ entries, selectedEntry, onSelect }: DebugLog
                   strokeWidth={strokeWidth}
                   strokeDasharray={node.isSynthetic ? "4 3" : undefined}
                 />
-                {/* Kind accent stripe */}
+                {/* Category accent gutter */}
                 <rect width={4} height={node.height} fill={accent} rx={2} ry={2} />
+                {/* Layer / category header */}
                 <text
                   x={12}
-                  y={16}
-                  fontSize={10}
+                  y={14}
+                  fontSize={9}
                   fontFamily="ui-monospace, SFMono-Regular, monospace"
                   className="fill-muted-foreground"
+                  data-testid={
+                    node.isSynthetic ? undefined : `debug-log-flow-node-${node.entry.idx}-layer`
+                  }
                 >
-                  {String(node.entry.kind)}
+                  {truncate(render.layer ?? render.category, 28)}
                 </text>
-                <text x={12} y={34} fontSize={11} className="fill-foreground">
-                  {truncate(node.entry.message, 28)}
+                {/* Primary label */}
+                <text
+                  x={12}
+                  y={28}
+                  fontSize={11}
+                  fontWeight={600}
+                  className="fill-foreground"
+                  data-testid={
+                    node.isSynthetic ? undefined : `debug-log-flow-node-${node.entry.idx}-label`
+                  }
+                >
+                  {truncate(render.label, 28)}
                 </text>
-                <text x={12} y={50} fontSize={9} className="fill-muted-foreground">
-                  {[
-                    node.entry.source,
-                    node.entry.tool_name ?? null,
-                    node.entry.duration_ms !== null ? formatMs(node.entry.duration_ms) : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </text>
-                {isError ? <circle cx={node.width - 10} cy={10} r={4} fill="#ef4444" /> : null}
+                {/* Sublabel (status / metrics / duration) */}
+                {render.sublabel ? (
+                  <text
+                    x={12}
+                    y={42}
+                    fontSize={10}
+                    className={isError ? "fill-red-500" : "fill-muted-foreground"}
+                    data-testid={
+                      node.isSynthetic
+                        ? undefined
+                        : `debug-log-flow-node-${node.entry.idx}-sublabel`
+                    }
+                  >
+                    {truncate(render.sublabel, 32)}
+                  </text>
+                ) : null}
+                {/* Timestamp (HH:MM:SS UTC) */}
+                {render.timestampLabel ? (
+                  <text
+                    x={node.width - 8}
+                    y={node.height - 8}
+                    fontSize={9}
+                    textAnchor="end"
+                    className="fill-muted-foreground"
+                    data-testid={
+                      node.isSynthetic
+                        ? undefined
+                        : `debug-log-flow-node-${node.entry.idx}-timestamp`
+                    }
+                  >
+                    {render.timestampLabel}
+                  </text>
+                ) : null}
+                {/* Error dot top-right */}
+                {isError ? (
+                  <circle
+                    cx={node.width - 10}
+                    cy={10}
+                    r={4}
+                    fill="#ef4444"
+                    data-testid={
+                      node.isSynthetic ? undefined : `debug-log-flow-node-${node.entry.idx}-error`
+                    }
+                  />
+                ) : null}
               </g>
             );
           })}
         </g>
       </svg>
+      {hasMore ? (
+        <div
+          className="border-border text-muted-foreground border-t px-3 py-1.5 text-xs"
+          data-testid="debug-log-flow-has-more"
+        >
+          {typeof totalEvents === "number"
+            ? `More events available — showing ${layout.nodes.length} of ${totalEvents}. Use Next below to load more.`
+            : "More events available — use Next below to load more."}
+        </div>
+      ) : null}
     </div>
   );
 }

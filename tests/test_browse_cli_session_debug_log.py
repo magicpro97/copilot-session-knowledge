@@ -1076,6 +1076,386 @@ def test_api_returns_paired_span_and_duration():
         server.shutdown()
 
 
+# ── Rich-metadata extraction tests (issue #533) ────────────────────────────────
+#
+# Each test below proves that safe scalar/enum metadata flows through
+# _map_cli_event_line + redact_entry into the API payload, and that the
+# corresponding *unsafe* raw fields (arguments, result, content, paths,
+# prompts, descriptions, raw skillName/agentName when not allowlisted)
+# never leak into the redacted entry.
+
+
+def _safe_attrs(line: str) -> dict:
+    """Run _map_cli_event_line + redact_entry and return resulting attrs dict."""
+    from browse.routes.debug_log import _map_cli_event_line  # noqa: PLC0415
+    from browse.core.redaction import redact_entry  # noqa: PLC0415
+
+    entry = _map_cli_event_line(line, 0)
+    return redact_entry(entry).get("attrs", {}) or {}
+
+
+def _safe_entry(line: str) -> dict:
+    from browse.routes.debug_log import _map_cli_event_line  # noqa: PLC0415
+    from browse.core.redaction import redact_entry  # noqa: PLC0415
+
+    entry = _map_cli_event_line(line, 0)
+    return redact_entry(entry)
+
+
+def test_hook_rich_metadata():
+    """CSD-rich-hook: hook.start/end emit hook_type, hook_status, event_type/phase;
+    raw `input`/`description`/`prompt` are never present."""
+    start_line = json.dumps(
+        {
+            "type": "hook.start",
+            "id": "abc",
+            "timestamp": _now_iso(),
+            "data": {
+                "hookType": "preToolUse",
+                "hookInvocationId": "H-1",
+                "input": {"command": "rm -rf /Users/alice/secret"},
+                "description": "do not expose this",
+            },
+        }
+    )
+    a = _safe_attrs(start_line)
+    test("rich-hook hook_type=preToolUse", a.get("hook_type") == "preToolUse")
+    test("rich-hook event_type=hook.start", a.get("event_type") == "hook.start")
+    test("rich-hook event_phase=start", a.get("event_phase") == "start")
+    test("rich-hook no raw input field", "input" not in a)
+    test("rich-hook no raw command field", "command" not in a)
+    test("rich-hook no raw description field", "description" not in a)
+
+    end_ok = json.dumps(
+        {
+            "type": "hook.end",
+            "id": "def",
+            "timestamp": _now_iso(),
+            "data": {"hookType": "preToolUse", "hookInvocationId": "H-1", "success": True},
+        }
+    )
+    a2 = _safe_attrs(end_ok)
+    test("rich-hook end event_phase=end", a2.get("event_phase") == "end")
+    test("rich-hook end hook_status=ok", a2.get("hook_status") == "ok")
+
+    end_err = json.dumps(
+        {
+            "type": "hook.end",
+            "id": "ghi",
+            "timestamp": _now_iso(),
+            "data": {"hookType": "postToolUse", "hookInvocationId": "H-2", "success": False},
+        }
+    )
+    a3 = _safe_attrs(end_err)
+    test("rich-hook end hook_status=error on success=false", a3.get("hook_status") == "error")
+
+
+def test_tool_rich_metadata():
+    """CSD-rich-tool: tool.execution_complete exposes tool_success/tool_status/
+    tool_result_type and safe telemetry metrics; arguments/result/content/
+    toolTelemetry.properties values never leak."""
+    line = json.dumps(
+        {
+            "type": "tool.execution_complete",
+            "id": "tc-1",
+            "timestamp": _now_iso(),
+            "data": {
+                "toolName": "read_file",
+                "toolCallId": "TC-9",
+                "success": True,
+                "status": "ok",
+                "resultType": "text",
+                "arguments": {"path": "/Users/alice/secret.txt"},
+                "result": "SECRET-CONTENT-DO-NOT-LEAK",
+                "content": "SECRET-BODY",
+                "toolTelemetry": {
+                    "metrics": {
+                        "durationMs": 42,
+                        "inputBytes": 100,
+                        "outputBytes": 250,
+                    },
+                    "properties": {
+                        "path": "/Users/alice/secret.txt",
+                        "skillName": "raw-skill",
+                        "pattern": "TODO",
+                        "query": "secret",
+                    },
+                },
+            },
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-tool tool_success=True", a.get("tool_success") is True)
+    test("rich-tool tool_status=ok", a.get("tool_status") == "ok")
+    test("rich-tool tool_result_type=text", a.get("tool_result_type") == "text")
+    test("rich-tool event_type=tool.execution_complete", a.get("event_type") == "tool.execution_complete")
+    test("rich-tool event_phase=complete", a.get("event_phase") == "complete")
+    test("rich-tool metric duration_ms set", a.get("tool_metric_duration_ms") == 42)
+    test("rich-tool metric input_bytes set", a.get("tool_metric_input_bytes") == 100)
+    test("rich-tool metric output_bytes set", a.get("tool_metric_output_bytes") == 250)
+    # Unsafe fields must be absent
+    test("rich-tool no arguments leaked", "arguments" not in a)
+    test("rich-tool no result leaked", "result" not in a)
+    test("rich-tool no content leaked", "content" not in a)
+    test("rich-tool no telemetry.properties leaked", "properties" not in a)
+    test("rich-tool no path leaked", "path" not in a)
+    test("rich-tool no pattern leaked", "pattern" not in a)
+    test("rich-tool no query leaked", "query" not in a)
+    test("rich-tool no raw skillName from telemetry", a.get("skill_name") != "raw-skill")
+    # Confirm SECRET strings did not survive into the redacted JSON
+    raw_dump = json.dumps(_safe_entry(line))
+    test("rich-tool SECRET-CONTENT not in payload", "SECRET-CONTENT" not in raw_dump)
+    test("rich-tool SECRET-BODY not in payload", "SECRET-BODY" not in raw_dump)
+    test("rich-tool absolute path not in payload", "/Users/alice/secret" not in raw_dump)
+
+
+def test_assistant_rich_metadata():
+    """CSD-rich-assistant: assistant.message exposes model, output_tokens,
+    tool_request_count; reasoningText/transformedContent never leak."""
+    line = json.dumps(
+        {
+            "type": "assistant.message",
+            "id": "am-1",
+            "timestamp": _now_iso(),
+            "data": {
+                "model": "claude-opus-4.5",
+                "outputTokens": 123,
+                "toolRequests": [{"id": "r1"}, {"id": "r2"}, {"id": "r3"}],
+                "messageId": "M-1",
+                "reasoningText": "INTERNAL-CHAIN-OF-THOUGHT",
+                "transformedContent": "TRANSFORMED-BODY",
+                "content": "Hello!",
+            },
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-asst model=claude-opus-4.5", a.get("model") == "claude-opus-4.5")
+    test("rich-asst output_tokens=123", a.get("output_tokens") == 123)
+    test("rich-asst tool_request_count=3", a.get("tool_request_count") == 3)
+    test("rich-asst no reasoningText", "reasoningText" not in a)
+    test("rich-asst no transformedContent", "transformedContent" not in a)
+    raw_dump = json.dumps(_safe_entry(line))
+    test("rich-asst INTERNAL-CHAIN not in payload", "INTERNAL-CHAIN" not in raw_dump)
+    test("rich-asst TRANSFORMED-BODY not in payload", "TRANSFORMED-BODY" not in raw_dump)
+
+
+def test_skill_rich_metadata():
+    """CSD-rich-skill: skill.invoked exposes skill_name (validated regex),
+    skill_path_category, skill_content_bytes; raw path never appears."""
+    line = json.dumps(
+        {
+            "type": "skill.invoked",
+            "id": "sk-1",
+            "timestamp": _now_iso(),
+            "data": {
+                "name": "code-reviewer",
+                "path": "/Users/alice/.copilot/tools/skills/code-reviewer/SKILL.md",
+                "content": "SKILL-BODY-DO-NOT-LEAK-" + ("x" * 100),
+            },
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-skill skill_name=code-reviewer", a.get("skill_name") == "code-reviewer")
+    test(
+        "rich-skill skill_path_category is a known enum",
+        a.get("skill_path_category") in ("absolute_user", "skill_pkg", "other", "relative"),
+    )
+    test("rich-skill skill_content_bytes is positive int", isinstance(a.get("skill_content_bytes"), int) and a.get("skill_content_bytes", 0) > 0)
+    raw_dump = json.dumps(_safe_entry(line))
+    test("rich-skill no absolute path leaked", "/Users/alice" not in raw_dump)
+    test("rich-skill no SKILL-BODY leaked", "SKILL-BODY" not in raw_dump)
+    test("rich-skill no raw 'path' attr", "path" not in a)
+    test("rich-skill no raw 'content' attr", "content" not in a)
+
+
+def test_skill_invalid_name_dropped():
+    """Skill names that fail the strict regex must be dropped."""
+    line = json.dumps(
+        {
+            "type": "skill.invoked",
+            "id": "sk-2",
+            "timestamp": _now_iso(),
+            "data": {
+                "name": "weird name with spaces and /Users/alice/secret",
+                "path": "relative/path",
+                "content": "abc",
+            },
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-skill invalid skill_name dropped", "skill_name" not in a)
+
+
+def test_notification_rich_metadata():
+    """CSD-rich-notif: system.notification surfaces notification_kind enum,
+    notification_status, notification_exit_code; prompt/description never leak."""
+    line = json.dumps(
+        {
+            "type": "system.notification",
+            "id": "n-1",
+            "timestamp": _now_iso(),
+            "data": {
+                "kind": {
+                    "type": "shell_completed",
+                    "status": "ok",
+                    "exitCode": 0,
+                    "prompt": "DO NOT LEAK PROMPT TEXT",
+                    "description": "DO NOT LEAK DESCRIPTION",
+                    "shellId": "shell-abc-123",
+                },
+            },
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-notif notification_kind=shell_completed", a.get("notification_kind") == "shell_completed")
+    test("rich-notif notification_status=ok", a.get("notification_status") == "ok")
+    test("rich-notif notification_exit_code=0", a.get("notification_exit_code") == 0)
+    raw_dump = json.dumps(_safe_entry(line))
+    test("rich-notif no prompt text leaked", "DO NOT LEAK PROMPT" not in raw_dump)
+    test("rich-notif no description leaked", "DO NOT LEAK DESCRIPTION" not in raw_dump)
+
+
+def test_notification_unknown_kind_dropped():
+    """notification kind values outside the known enum are dropped, not echoed."""
+    line = json.dumps(
+        {
+            "type": "system.notification",
+            "id": "n-2",
+            "timestamp": _now_iso(),
+            "data": {"kind": {"type": "unknown_future_kind", "status": "ok"}},
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-notif unknown kind dropped", "notification_kind" not in a)
+
+
+def test_compaction_and_mode_metadata():
+    """session.compaction.* and session.mode_change populate compaction_kind / mode."""
+    cl1 = json.dumps(
+        {
+            "type": "session.compaction.start",
+            "id": "c-1",
+            "timestamp": _now_iso(),
+            "data": {"compactionKind": "auto"},
+        }
+    )
+    a1 = _safe_attrs(cl1)
+    test("rich-compact compaction_kind=auto", a1.get("compaction_kind") == "auto")
+    test("rich-compact event_phase=start", a1.get("event_phase") == "start")
+
+    cl2 = json.dumps(
+        {
+            "type": "session.mode_change",
+            "id": "m-1",
+            "timestamp": _now_iso(),
+            "data": {"mode": "yolo"},
+        }
+    )
+    a2 = _safe_attrs(cl2)
+    test("rich-mode mode=yolo", a2.get("mode") == "yolo")
+
+
+def test_session_summary_metadata():
+    """session.start surfaces session_uuid/model and event_type/phase."""
+    sid = "3a1b2c3d-0000-4000-8000-0000000000aa"
+    line = json.dumps(
+        {
+            "type": "session.start",
+            "id": "ss-1",
+            "timestamp": _now_iso(),
+            "data": {"sessionId": sid, "newModel": "claude-opus-4.5"},
+        }
+    )
+    a = _safe_attrs(line)
+    test("rich-session session_uuid", a.get("session_uuid") == sid.lower())
+    test("rich-session model", a.get("model") == "claude-opus-4.5")
+    test("rich-session event_type=session.start", a.get("event_type") == "session.start")
+    test("rich-session event_phase=start", a.get("event_phase") == "start")
+
+
+def test_message_builder_includes_safe_summaries():
+    """_build_cli_message should produce richer previews for hook/tool/skill/notification."""
+    hook = _safe_entry(
+        json.dumps(
+            {
+                "type": "hook.start",
+                "id": "h",
+                "timestamp": _now_iso(),
+                "data": {"hookType": "preToolUse", "hookInvocationId": "H-A"},
+            }
+        )
+    )
+    test("msg-hook contains hook type", "preToolUse" in (hook.get("message") or ""))
+
+    skill = _safe_entry(
+        json.dumps(
+            {
+                "type": "skill.invoked",
+                "id": "s",
+                "timestamp": _now_iso(),
+                "data": {
+                    "name": "code-reviewer",
+                    "path": "/Users/alice/.copilot/tools/skills/code-reviewer/SKILL.md",
+                    "content": "x" * 50,
+                },
+            }
+        )
+    )
+    msg = skill.get("message") or ""
+    test("msg-skill contains skill name", "code-reviewer" in msg)
+    test("msg-skill omits absolute user path", "/Users/alice" not in msg)
+
+    notif = _safe_entry(
+        json.dumps(
+            {
+                "type": "system.notification",
+                "id": "n",
+                "timestamp": _now_iso(),
+                "data": {"kind": {"type": "shell_completed", "status": "ok", "prompt": "LEAK"}},
+            }
+        )
+    )
+    nm = notif.get("message") or ""
+    test("msg-notif contains kind", "shell_completed" in nm)
+    test("msg-notif omits prompt text", "LEAK" not in nm)
+
+
+def test_unsafe_top_level_keys_dropped():
+    """toolTelemetry.properties' dangerous keys must never appear in attrs."""
+    line = json.dumps(
+        {
+            "type": "tool.execution_complete",
+            "id": "tu",
+            "timestamp": _now_iso(),
+            "data": {
+                "toolName": "search",
+                "toolCallId": "TC-Z",
+                "success": True,
+                "toolTelemetry": {
+                    "metrics": {"durationMs": 5},
+                    "properties": {
+                        "file": "/Users/alice/x",
+                        "filePaths": ["/Users/alice/y"],
+                        "large_output_file": "/tmp/out",
+                        "inputs": "secret",
+                        "options": "--token=abc",
+                        "codeBlocks": "leak",
+                        "error": "leak",
+                        "agent_name": "raw-agent",
+                    },
+                },
+            },
+        }
+    )
+    a = _safe_attrs(line)
+    forbidden = (
+        "file", "filePaths", "large_output_file", "inputs", "options",
+        "pattern", "query", "codeBlocks", "error", "agent_name", "skillName",
+    )
+    for k in forbidden:
+        test(f"rich-tool forbidden key '{k}' absent", k not in a)
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
@@ -1121,6 +1501,17 @@ def _run_all() -> None:
     test_subagent_failed_falls_back_to_timestamp_delta()
     test_unmatched_end_event_has_null_duration()
     test_api_returns_paired_span_and_duration()
+    test_hook_rich_metadata()
+    test_tool_rich_metadata()
+    test_assistant_rich_metadata()
+    test_skill_rich_metadata()
+    test_skill_invalid_name_dropped()
+    test_notification_rich_metadata()
+    test_notification_unknown_kind_dropped()
+    test_compaction_and_mode_metadata()
+    test_session_summary_metadata()
+    test_message_builder_includes_safe_summaries()
+    test_unsafe_top_level_keys_dropped()
 
     print("=" * 70)
     total = _PASS + _FAIL

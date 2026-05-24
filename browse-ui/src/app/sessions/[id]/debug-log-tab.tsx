@@ -854,6 +854,8 @@ export function DebugLogTab({
           entries={filteredEvents}
           selectedEntry={selectedEntry}
           onSelect={handleSelect}
+          hasMore={has_more}
+          totalEvents={total}
         />
       ) : viewMode === "tree" ? (
         <SpanTreeView

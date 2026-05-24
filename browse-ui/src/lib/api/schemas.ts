@@ -1147,6 +1147,46 @@ export const browseDebugEntrySchema = z.object({
 });
 
 /**
+ * Optional, allowlisted scalar/enum subset of `attrs` defined by the
+ * backend's rich-metadata contract (issue #533). Used by the Flow
+ * render-model helpers — never as the canonical wire schema, since the
+ * backend's `attrs` envelope remains an open `record` to accommodate
+ * future safe additions without a version bump.
+ *
+ * See docs/DEBUG-LOG-CONTRACT.md §Rich-metadata Attrs.
+ */
+export const debugSafeAttrsSchema = z
+  .object({
+    event_type: z.string().optional(),
+    event_phase: z.enum(["start", "end", "complete", "started", "completed", "failed"]).optional(),
+    hook_type: z.string().optional(),
+    hook_status: z.enum(["ok", "error"]).optional(),
+    tool_success: z.boolean().optional(),
+    tool_status: z.enum(["ok", "error", "cancelled"]).optional(),
+    tool_result_type: z.string().optional(),
+    tool_metric_duration_ms: z.number().nonnegative().optional(),
+    tool_metric_input_bytes: z.number().nonnegative().optional(),
+    tool_metric_output_bytes: z.number().nonnegative().optional(),
+    output_tokens: z.number().nonnegative().optional(),
+    tool_request_count: z.number().int().nonnegative().optional(),
+    skill_name: z.string().optional(),
+    skill_path_category: z.enum(["skill_pkg", "absolute_user", "relative", "other"]).optional(),
+    skill_content_bytes: z.number().int().nonnegative().optional(),
+    notification_kind: z
+      .enum(["agent_completed", "shell_completed", "shell_detached_completed"])
+      .optional(),
+    notification_status: z.string().optional(),
+    notification_exit_code: z.number().optional(),
+    compaction_kind: z.string().optional(),
+    mode: z.string().optional(),
+    truncated: z.boolean().optional(),
+    bytes_in: z.number().nonnegative().optional(),
+    exit_code: z.number().optional(),
+    error_category: z.string().optional(),
+  })
+  .passthrough();
+
+/**
  * HTTP response envelope for GET /api/operator/sessions/{sid}/runs/{rid}/debug.
  * See docs/DEBUG-LOG-CONTRACT.md §WBS-104 Response Shape.
  */

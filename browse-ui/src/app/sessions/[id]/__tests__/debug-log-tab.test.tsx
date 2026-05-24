@@ -1095,3 +1095,178 @@ describe("DebugLogTab – flow chart view", () => {
     expect(screen.getByTestId("debug-log-flow-node-orphan")).toBeInTheDocument();
   });
 });
+
+// ── Flow chart view: rich render model & wheel zoom ───────────────────────────
+
+describe("DebugLogTab – flow chart rich render", () => {
+  const richEntries: BrowseDebugEntry[] = [
+    makeEntry({
+      idx: 0,
+      span_id: "rootaaaaaaaaaaaa",
+      parent_span_id: null,
+      kind: "turn_start",
+      message: "Turn 1",
+      tool_name: null,
+      duration_ms: null,
+      timestamp: "2024-01-01T12:00:00.000Z",
+      attrs: { event_type: "turn", mode: "agent" },
+    }),
+    makeEntry({
+      idx: 1,
+      span_id: "toolbbbbbbbbbbbb",
+      parent_span_id: "rootaaaaaaaaaaaa",
+      kind: "tool_call",
+      message: "ran bash",
+      tool_name: "bash",
+      duration_ms: 1234,
+      timestamp: "2024-01-01T12:00:05.000Z",
+      status: "ok",
+      attrs: {
+        event_type: "tool_call",
+        tool_status: "ok",
+        tool_result_type: "stdout",
+        tool_metric_duration_ms: 1234,
+      },
+    }),
+    makeEntry({
+      idx: 2,
+      span_id: "hookcccccccccccc",
+      parent_span_id: "rootaaaaaaaaaaaa",
+      kind: "hook",
+      message: "preToolUse",
+      tool_name: null,
+      duration_ms: 8,
+      timestamp: "2024-01-01T12:00:06.000Z",
+      status: "error",
+      attrs: {
+        event_type: "hook",
+        hook_type: "preToolUse",
+        hook_status: "error",
+        event_phase: "complete",
+      },
+    }),
+  ];
+
+  beforeEach(() => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(richEntries),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("renders rich label, sublabel, timestamp, and layer from render model", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    // Tool node: label = tool_name, sublabel includes status / result_type / duration.
+    expect(screen.getByTestId("debug-log-flow-node-1-label")).toHaveTextContent("bash");
+    expect(screen.getByTestId("debug-log-flow-node-1-sublabel")).toHaveTextContent(/ok/);
+    expect(screen.getByTestId("debug-log-flow-node-1-sublabel")).toHaveTextContent(/stdout/);
+    expect(screen.getByTestId("debug-log-flow-node-1-sublabel")).toHaveTextContent(/1\.23s/);
+    expect(screen.getByTestId("debug-log-flow-node-1-timestamp")).toHaveTextContent("12:00:05");
+    // Hook node: label = hook_type.
+    expect(screen.getByTestId("debug-log-flow-node-2-label")).toHaveTextContent("preToolUse");
+    // Turn node carries the safe `mode` as layer header.
+    expect(screen.getByTestId("debug-log-flow-node-0-layer")).toHaveTextContent("agent");
+  });
+
+  it("shows error indicator and error-tinted sublabel on error nodes", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const errorNode = screen.getByTestId("debug-log-flow-node-2");
+    expect(errorNode).toHaveAttribute("data-flow-status", "error");
+    expect(screen.getByTestId("debug-log-flow-node-2-error")).toBeInTheDocument();
+  });
+
+  it("renders the tooltip body (multi-line) from render.tooltipLines", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const toolNode = screen.getByTestId("debug-log-flow-node-1");
+    const title = toolNode.querySelector("title");
+    expect(title).not.toBeNull();
+    const text = title?.textContent ?? "";
+    expect(text).toMatch(/kind: tool_call/);
+    expect(text).toMatch(/tool: bash/);
+    expect(text).toMatch(/status: ok/);
+    expect(text).toMatch(/duration: 1\.23s/);
+    expect(text).toMatch(/time: 12:00:05/);
+  });
+
+  it("exposes safe layer info in the toolbar layers summary", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const layers = screen.getByTestId("debug-log-flow-layers");
+    // Turn carries mode=agent; the operator_console source becomes the layer
+    // for the tool/hook entries (deriveLayer falls back to entry.source).
+    expect(layers).toHaveTextContent(/agent/);
+  });
+
+  it("shows the has_more hint when more events are available", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(richEntries, { has_more: true, total: 123 }),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const hint = screen.getByTestId("debug-log-flow-has-more");
+    expect(hint).toHaveTextContent(/More events available/);
+    expect(hint).toHaveTextContent(/123/);
+  });
+
+  it("does not render the has_more hint when has_more is false", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+    expect(screen.queryByTestId("debug-log-flow-has-more")).not.toBeInTheDocument();
+  });
+
+  it("clicking a rich flow node still opens the detail drawer", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    fireEvent.click(screen.getByTestId("debug-log-flow-node-1"));
+    expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
+  });
+
+  it("attaches a non-passive wheel listener that zooms and updates the level", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const svg = screen.getByRole("img", { name: /debug log flow chart/i });
+    const zoom = screen.getByTestId("debug-log-flow-zoom");
+    expect(zoom).toHaveTextContent("100%");
+
+    // Dispatch a native, cancelable wheel event so the non-passive listener
+    // runs `preventDefault` without the jsdom passive-listener warning.
+    // fireEvent wraps dispatch in act() so React state flushes synchronously.
+    const wheelDown = new WheelEvent("wheel", {
+      deltaY: 500,
+      clientX: 10,
+      clientY: 10,
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(svg, wheelDown);
+
+    // preventDefault must have been honoured (non-passive listener).
+    expect(wheelDown.defaultPrevented).toBe(true);
+
+    // Zooming out → scale < 100%. The percentage label must change.
+    expect(zoom).not.toHaveTextContent("100%");
+  });
+
+  it("removes the wheel listener on unmount (no leaks)", () => {
+    const { unmount } = render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+    const svg = screen.getByRole("img", { name: /debug log flow chart/i });
+    const removeSpy = vi.spyOn(svg, "removeEventListener");
+    unmount();
+    const calls = removeSpy.mock.calls.map((c) => c[0]);
+    expect(calls).toContain("wheel");
+  });
+});

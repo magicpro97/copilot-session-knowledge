@@ -7,13 +7,35 @@ const hostedProof = Boolean(process.env.HOSTED_PROOF);
 const hostedUrl = process.env.HOSTED_URL ?? "https://agents.linhngo.dev";
 // Cross-platform: Windows ships `python`, Unix ships `python3`.
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
+
+// BROWSE_E2E_PORT allows overriding the local backend port when 8765 is busy
+// (e.g. a hosted-bootstrap LaunchAgent owns it). Strictly validated as a
+// digits-only integer in the safe user-port range to prevent shell injection
+// into buildCmd. Defaults to 8765 to preserve CI behavior.
+const DEFAULT_E2E_PORT = 8765;
+function resolveE2EPort(): number {
+  const raw = process.env.BROWSE_E2E_PORT;
+  if (!raw) return DEFAULT_E2E_PORT;
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(`BROWSE_E2E_PORT must be digits only; got ${JSON.stringify(raw)}`);
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+    throw new Error(`BROWSE_E2E_PORT must be an integer in [1024, 65535]; got ${raw}`);
+  }
+  return n;
+}
+const e2ePort = resolveE2EPort();
+
 // Cross-platform build command: bypass `pnpm build` (which requires pnpm
 // allowBuilds approval) and invoke Next.js and post-build directly via node.
+// --no-tls forces plain HTTP even when mkcert certs exist under ~/.copilot/certs,
+// keeping Playwright's HTTP baseURL valid.
 const buildCmd = [
   "node ./node_modules/next/dist/bin/next build",
   "node scripts/post-build.mjs",
   `${pythonCmd} ./scripts/create-e2e-db.py`,
-  `${pythonCmd} ../browse.py --port 8765 --db ./e2e/.fixtures/playwright.db`,
+  `${pythonCmd} ../browse.py --no-tls --port ${e2ePort} --db ./e2e/.fixtures/playwright.db`,
 ].join(" && ");
 
 // NOTE (#58 / Edge+mobile proof): The 'edge-desktop' and 'mobile-chrome'
@@ -37,7 +59,7 @@ export default defineConfig({
     timeout: 15_000,
   },
   use: {
-    baseURL: "http://127.0.0.1:8765",
+    baseURL: `http://127.0.0.1:${e2ePort}`,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -107,12 +129,13 @@ export default defineConfig({
       : []),
   ],
   // Do not start the local webServer for release or hosted proof runs.
-  webServer: releaseProof || hostedProof
-    ? undefined
-    : {
-        command: buildCmd,
-        port: 8765,
-        reuseExistingServer: false,
-        timeout: 180_000,
-      },
+  webServer:
+    releaseProof || hostedProof
+      ? undefined
+      : {
+          command: buildCmd,
+          port: e2ePort,
+          reuseExistingServer: false,
+          timeout: 180_000,
+        },
 });

@@ -822,6 +822,76 @@ single request — the backend never loads the whole stream into memory.
 - **`browse-ui/src/lib/api/types.ts`** — `SessionDebugLogResponse` (TypeScript interface).
 - **`browse-ui/src/app/sessions/[id]/debug-log-tab.tsx`** — frontend panel (`useSessionDebugLog` hook, session-scoped tab path).
 
+### Rich-metadata Attrs (issue #533)
+
+To support the VS Code-style Flow renderer without exposing user content,
+the backend allowlists the following additional **scalar / finite-enum**
+fields in `attrs`. All values are validated by the producer
+(`_extract_cli_attrs` in `browse/routes/debug_log.py`) and pass through the
+allowlist-first `redact_entry` pass. Strings are constrained to
+`^[a-zA-Z0-9._-]{1,64}$` unless noted; nested dicts/lists are never copied.
+
+| `attrs` key | Type | Source field(s) | Notes |
+|---|---|---|---|
+| `event_type` | string (short enum) | top-level `type` | Short-enum-validated; `null` when source `type` is not present or fails regex. |
+| `event_phase` | string enum | derived from `event_type` suffix | One of `start`, `end`, `complete`, `started`, `completed`, `failed`. Default-deny — unknown phase → field absent. |
+| `hook_type` | string (short enum) | `hook.*` `data.hookType` | e.g. `preToolUse`, `postToolUse`. |
+| `hook_status` | string enum | `hook.end` `data.success` | `ok` when `success === true`, `error` when `success === false`. |
+| `tool_success` | bool | `tool.*` `data.success` | |
+| `tool_status` | string enum | `tool.*` `data.status` | One of `ok`, `error`, `cancelled`. Falls back to derived value from `data.success` when source omits status. |
+| `tool_result_type` | string (short enum) | `tool.*` `data.resultType` | |
+| `tool_metric_duration_ms` | number ≥ 0 | `tool.*` `data.toolTelemetry.metrics.durationMs` | Integer telemetry; nested `properties` are NEVER consumed. |
+| `tool_metric_input_bytes` | number ≥ 0 | `tool.*` `data.toolTelemetry.metrics.inputBytes` | |
+| `tool_metric_output_bytes` | number ≥ 0 | `tool.*` `data.toolTelemetry.metrics.outputBytes` | |
+| `output_tokens` | number ≥ 0 | `assistant.*` `data.outputTokens` | |
+| `tool_request_count` | integer ≥ 0 | `assistant.*` `len(data.toolRequests)` | Length only — request bodies are never read. |
+| `skill_name` | string (short enum) | `skill.*` `data.name` | Validated by short-enum regex; non-conforming names are dropped, not coerced. |
+| `skill_path_category` | string enum | derived from `skill.*` `data.path` | One of `skill_pkg`, `absolute_user`, `relative`, `other`. The raw path is **never** stored or echoed. |
+| `skill_content_bytes` | integer ≥ 0 | `len(data.content.encode("utf-8"))` | Length only; the body is never copied. |
+| `notification_kind` | string enum | `system.notification.data.kind.type` | One of `agent_completed`, `shell_completed`, `shell_detached_completed`. Unknown future kinds are dropped. |
+| `notification_status` | string (short enum) | `system.notification.data.kind.status` | |
+| `notification_exit_code` | number | `system.notification.data.kind.exitCode` | Integer/finite number only. |
+| `compaction_kind` | string (short enum) | `data.compactionKind` | |
+| `mode` | string (short enum) | `data.mode` | |
+
+#### Default-deny non-goals (unsafe fields never emitted)
+
+The following raw fields are **explicitly excluded** from `attrs`,
+`message`, and all other output surfaces. They appear in the source
+`events.jsonl` stream but must never reach the API consumer:
+
+- `data.arguments`, `data.result`, `data.content`, `data.deltaContent`,
+  `data.reasoningText`, `data.transformedContent`,
+  `data.summaryContent`, `data.attachments`
+- `hook.*` `data.input`, `data.description`, `data.command`,
+  `data.prompt`
+- `skill.*` `data.path` (raw absolute path), `data.content` (raw body)
+- `system.notification.data.kind.prompt`,
+  `system.notification.data.kind.description`
+- `toolTelemetry.properties` keys: `path`, `file`, `filePaths`,
+  `large_output_file`, `inputs`, `options`, `pattern`, `query`,
+  `codeBlocks`, `error`, raw `skillName`, raw `agent_name`,
+  `restrictedProperties`
+- Raw correlation identifiers (`toolCallId`, `hookInvocationId`,
+  `turnId`, `interactionId`, `messageId`, `requestId`, `agentId`) —
+  these are reflected into `span_id` / `parent_span_id` via the
+  [Synthetic Span-ID Rule](#synthetic-span-id-rule) and are not
+  duplicated as raw values in `attrs`.
+
+#### Message preview semantics for rich event types
+
+`_build_cli_message` produces a short, redaction-safe preview for the
+following event families. The preview never includes raw payload from
+the excluded fields above:
+
+- `hook.*` — `event_type` + `hookType=<short>` + `ok|error` when present.
+- `tool.*` — `toolName` + `ok|error` + `resultType=<short>` when present.
+- `skill.*` — `event_type` + `name=<short>` + `path_category=<enum>`.
+- `system.notification*` — `event_type` + `kind=<enum>` + `status=<short>`.
+
+For all other event types the preview falls back to `data.text`,
+`data.message`, or the event type string, capped at 200 characters.
+
 ---
 
 ## Acceptance Evidence Commands
