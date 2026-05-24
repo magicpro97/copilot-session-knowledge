@@ -1135,3 +1135,40 @@ describe("Flight Recorder v3 queryKeys", () => {
     expect(local).not.toEqual(remote);
   });
 });
+
+// ── Subagent Activity queryKey tests ──────────────────────────────────────
+
+import { queryKeys as qk2 } from "./hooks";
+
+describe("subagentActivity queryKeys", () => {
+  const SID = "33169957-0dc1-4998-86c0-d2beba02e8b4";
+
+  it("subagentActivity key is stable and host-scoped", () => {
+    expect(qk2.subagentActivity(SID)).toEqual(["subagent-activity", "local", SID]);
+    expect(qk2.subagentActivity(SID, "remote-1")).toEqual(["subagent-activity", "remote-1", SID]);
+  });
+
+  it("subagentActivity key differs from sessionDebugLog key", () => {
+    const a = JSON.stringify(qk2.subagentActivity(SID));
+    const b = JSON.stringify(qk2.sessionDebugLog(SID, {}, "local"));
+    expect(a).not.toEqual(b);
+  });
+
+  it("subagentActivity key differs from sessionRewindSnapshots key", () => {
+    const a = JSON.stringify(qk2.subagentActivity(SID));
+    const b = JSON.stringify(qk2.sessionRewindSnapshots(SID));
+    expect(a).not.toEqual(b);
+  });
+
+  it("host-scoping isolates caches across hosts", () => {
+    const local = JSON.stringify(qk2.subagentActivity(SID, "local"));
+    const remote = JSON.stringify(qk2.subagentActivity(SID, "remote-1"));
+    expect(local).not.toEqual(remote);
+  });
+
+  it("sessionId is included in the key", () => {
+    const k1 = JSON.stringify(qk2.subagentActivity("sess-1"));
+    const k2 = JSON.stringify(qk2.subagentActivity("sess-2"));
+    expect(k1).not.toEqual(k2);
+  });
+});

@@ -1443,6 +1443,69 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
     snapshots: FR_REWIND_SNAPSHOTS,
   };
 
+  const FR_SUBAGENT_ACTIVITY_PAYLOAD = {
+    schema_version: "1",
+    session_id: SEEDED_SESSION_ID,
+    total_subagents_seen: 3,
+    returned: 3,
+    cap: 1000,
+    truncated: false,
+    dropped_pending_starts: 0,
+    entries: [
+      {
+        span_id: "subagent-code-review",
+        agent_name: "code-review",
+        agent_display_name: "Code Review",
+        model: "claude-sonnet-4.6",
+        status: "completed",
+        started_at: "2026-05-01T00:00:01.000Z",
+        ended_at: "2026-05-01T00:00:03.000Z",
+        duration_ms: 2000,
+        total_tool_calls: 4,
+        total_tokens: 12000,
+        error_category: null,
+        error_preview: null,
+        start_idx: 1,
+        end_idx: 3,
+        redacted: false,
+      },
+      {
+        span_id: "subagent-security",
+        agent_name: "browser-security-reviewer",
+        agent_display_name: "Browser Security Reviewer",
+        model: "claude-opus-4.6",
+        status: "failed",
+        started_at: "2026-05-01T00:00:04.000Z",
+        ended_at: "2026-05-01T00:00:04.500Z",
+        duration_ms: 500,
+        total_tool_calls: 1,
+        total_tokens: 4096,
+        error_category: "rate_limited",
+        error_preview: null,
+        start_idx: 4,
+        end_idx: 4,
+        redacted: false,
+      },
+      {
+        span_id: "subagent-research",
+        agent_name: "research-planner",
+        agent_display_name: "Research Planner",
+        model: "claude-haiku-4.5",
+        status: "running",
+        started_at: "2026-05-01T00:00:05.000Z",
+        ended_at: null,
+        duration_ms: null,
+        total_tool_calls: 0,
+        total_tokens: null,
+        error_category: null,
+        error_preview: null,
+        start_idx: 5,
+        end_idx: null,
+        redacted: false,
+      },
+    ],
+  };
+
   // ── Route stubs ──────────────────────────────────────────────────────────
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
     const url = new URL(route.request().url());
@@ -1470,6 +1533,12 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
       });
     }
   );
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/subagent-activity`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(FR_SUBAGENT_ACTIVITY_PAYLOAD),
+    });
+  });
 
   // ── #timeline assertions ────────────────────────────────────────────────
   await page.goto(`/sessions/${SEEDED_SESSION_ID}/#timeline`);
@@ -1483,6 +1552,20 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   await expect(header).toBeVisible({ timeout: 20_000 });
   // Header shows ERROR (1) because one skeleton entry has status="error".
   await expect(page.getByTestId("flight-recorder-status")).toContainText(/ERROR/);
+
+  const subagentPanel = page.getByTestId("subagent-activity-panel");
+  await expect(subagentPanel).toBeVisible();
+  await expect(page.getByTestId("subagent-summary-total")).toHaveText("3 runs");
+  await expect(page.getByTestId("subagent-summary-failed")).toHaveText("1 failed");
+  await expect(page.getByTestId("subagent-summary-running")).toHaveText("1 running");
+  await expect(page.getByTestId("subagent-activity-row-subagent-code-review")).toBeVisible();
+  await expect(page.getByTestId("subagent-activity-row-subagent-security-outcome")).toHaveText(
+    "Failed: rate_limited"
+  );
+  await page.getByTestId("subagent-filter-failed").click();
+  await expect(page.getByTestId("subagent-activity-row-subagent-security")).toBeVisible();
+  await expect(page.getByTestId("subagent-activity-row-subagent-code-review")).toBeHidden();
+  await page.getByTestId("subagent-filter-all").click();
 
   const rail = page.getByTestId("chapter-rail");
   await expect(rail).toBeVisible();
@@ -1548,9 +1631,21 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   await expect(page.getByTestId("mission-chip-tools")).toBeVisible();
   await expect(page.getByTestId("mission-chip-hooks")).toBeVisible();
   await expect(page.getByTestId("mission-chip-skills")).toBeVisible();
-  await expect(page.getByTestId("mission-chip-subagents")).toBeVisible();
+  await expect(page.getByTestId("mission-chip-subagents")).toHaveText("Sub-agents: 3");
   await expect(page.getByTestId("mission-chip-compactions")).toBeVisible();
   await expect(page.getByTestId("mission-chip-errors")).toBeVisible();
+
+  const debugSubagentPanel = page.getByTestId("subagent-activity-panel");
+  await expect(debugSubagentPanel).toBeVisible();
+  await page.getByTestId("subagent-filter-failed").click();
+  await expect(page.getByTestId("subagent-filter-failed")).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("mission-chip-subagents").click();
+  await expect(page.getByTestId("subagent-filter-all")).toHaveAttribute("aria-pressed", "true");
+  await expect(debugSubagentPanel).toHaveAttribute("data-flash", "true");
+  await page.getByTestId("subagent-activity-row-subagent-code-review-jump").click();
+  await expect(page.getByRole("dialog", { name: "Debug event detail" })).toBeVisible();
+  await expect(page.locator("#detail-1")).toContainText("idx");
+  await expect(page.locator("#detail-1")).toContainText("1");
 
   // Existing Debug Flow v2 selectors must still render.
   await expect(page.getByTestId("debug-log-flow-chart")).toBeVisible();

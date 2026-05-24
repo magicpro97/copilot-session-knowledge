@@ -1,12 +1,17 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Mock } from "vitest";
-import type { BrowseDebugEntry, DebugLogResponse, SessionDebugLogResponse } from "@/lib/api/types";
+import type {
+  BrowseDebugEntry,
+  DebugLogResponse,
+  SessionDebugLogResponse,
+  SubagentActivityResponse,
+} from "@/lib/api/types";
 import { DebugLogTab } from "../debug-log-tab";
 
-// ── Mock useDebugLog and useSessionDebugLog ───────────────────────────────────
+// ── Mock useDebugLog, useSessionDebugLog, and useSubagentActivity ─────────────
 
 vi.mock("@/lib/api/hooks", () => ({
   useDebugLog: vi.fn(() => ({
@@ -19,15 +24,20 @@ vi.mock("@/lib/api/hooks", () => ({
     error: null,
     isLoading: false,
   })),
+  useSubagentActivity: vi.fn(() => ({
+    data: null,
+    error: null,
+    isLoading: false,
+  })),
 }));
 
-import { useDebugLog, useSessionDebugLog } from "@/lib/api/hooks";
+import { useDebugLog, useSessionDebugLog, useSubagentActivity } from "@/lib/api/hooks";
 
-// Reset both mocks to their default no-data state before every test so that
-// mock state set inside individual `it` blocks does not leak to later tests.
+// Reset all mocks to their default no-data state before every test.
 beforeEach(() => {
   (useDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
   (useSessionDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
+  (useSubagentActivity as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
 });
 
 // ── Mock lucide-react icons ───────────────────────────────────────────────────
@@ -1563,5 +1573,247 @@ describe("DebugLogTab – flow chart v2 trace inspector", () => {
     expect(screen.getByTestId("debug-log-flow-node-0")).toBeInTheDocument();
     expect(screen.getByTestId("debug-log-flow-node-1")).toBeInTheDocument();
     expect(screen.getByTestId("debug-log-flow-node-2")).toBeInTheDocument();
+  });
+});
+
+// ── SubagentActivityPanel integration tests ───────────────────────────────────
+
+function makeSubagentResponse(
+  overrides?: Partial<SubagentActivityResponse>
+): SubagentActivityResponse {
+  return {
+    schema_version: "1",
+    session_id: "sess-1",
+    total_subagents_seen: 2,
+    returned: 2,
+    cap: 1000,
+    truncated: false,
+    dropped_pending_starts: 0,
+    entries: [
+      {
+        span_id: "span-a",
+        agent_name: "code-review",
+        agent_display_name: "Code Review Agent",
+        model: "gpt-4o",
+        status: "completed",
+        started_at: "2024-01-01T10:00:00.000Z",
+        ended_at: "2024-01-01T10:00:05.000Z",
+        duration_ms: 5000,
+        total_tool_calls: 3,
+        total_tokens: 900,
+        error_category: null,
+        error_preview: null,
+        start_idx: 10,
+        end_idx: 20,
+        redacted: false,
+      },
+      {
+        span_id: "span-b",
+        agent_name: "explore",
+        agent_display_name: "Explore Agent",
+        model: "claude-3-haiku",
+        status: "failed",
+        started_at: "2024-01-01T10:01:00.000Z",
+        ended_at: "2024-01-01T10:01:02.000Z",
+        duration_ms: 2000,
+        total_tool_calls: 1,
+        total_tokens: 200,
+        error_category: "rate_limited",
+        error_preview: null,
+        start_idx: 50,
+        end_idx: 55,
+        redacted: false,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("DebugLogTab — SubagentActivityPanel integration", () => {
+  it("renders SubagentActivityPanel when subagent activity data is available (operator path)", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByTestId("subagent-activity-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("subagent-summary-total")).toHaveTextContent("2 runs");
+  });
+
+  it("renders SubagentActivityPanel when subagent activity data is available (session path)", () => {
+    (useSessionDebugLog as Mock).mockReturnValue({
+      data: makeSessionResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
+    expect(screen.getByTestId("subagent-activity-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("subagent-activity-row-span-a")).toBeInTheDocument();
+    expect(screen.getByTestId("subagent-activity-row-span-b")).toBeInTheDocument();
+  });
+
+  it("shows completed row with data-status=ok", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByTestId("subagent-activity-row-span-a")).toHaveAttribute("data-status", "ok");
+  });
+
+  it("shows failed row with data-status=error and correct outcome text", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByTestId("subagent-activity-row-span-b")).toHaveAttribute(
+      "data-status",
+      "error"
+    );
+    expect(screen.getByTestId("subagent-activity-row-span-b-outcome")).toHaveTextContent(
+      "Failed: rate_limited"
+    );
+  });
+
+  it("SubagentActivityPanel shows loading state when subagent query is loading", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: null,
+      error: null,
+      isLoading: true,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByTestId("subagent-activity-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("subagent-loading")).toBeInTheDocument();
+  });
+
+  it("SubagentActivityPanel shows empty state when no subagent data", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: null,
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    expect(screen.getByTestId("subagent-activity-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("subagent-empty")).toBeInTheDocument();
+  });
+
+  it("MissionStrip subagent chip click triggers flash on SubagentActivityPanel", async () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Panel must be visible before chip click
+    expect(screen.getByTestId("subagent-activity-panel")).toBeInTheDocument();
+    // Click the sub-agents chip
+    fireEvent.click(screen.getByTestId("mission-chip-subagents"));
+    // Panel should now have data-flash=true after effects flush
+    await waitFor(() => {
+      expect(screen.getByTestId("subagent-activity-panel")).toHaveAttribute("data-flash", "true");
+    });
+  });
+
+  it("MissionStrip subagent chip resets filter to all when activated", async () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Set filter to failed first
+    fireEvent.click(screen.getByTestId("subagent-filter-failed"));
+    expect(screen.getByTestId("subagent-filter-failed")).toHaveAttribute("aria-pressed", "true");
+    // Now click the MissionStrip chip
+    fireEvent.click(screen.getByTestId("mission-chip-subagents"));
+    // Filter should reset to all after effects flush
+    await waitFor(() => {
+      expect(screen.getByTestId("subagent-filter-all")).toHaveAttribute("aria-pressed", "true");
+    });
+  });
+
+  it("mission-chip-subagents shows correct count from dedicated activity route", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: makeSubagentResponse(),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // MissionStrip chip should show count from dedicated route (2 entries),
+    // not from the 100-event paginated debug log window.
+    expect(screen.getByTestId("mission-chip-subagents")).toHaveTextContent("Sub-agents: 2");
+  });
+
+  it("does not block debug log table when subagent query fails", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSubagentActivity as Mock).mockReturnValue({
+      data: null,
+      error: new Error("API unavailable"),
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Debug log table must still render
+    expect(screen.getByRole("grid", { name: /debug log events/i })).toBeInTheDocument();
+    // Sub-agent panel shows error state
+    expect(screen.getByTestId("subagent-error")).toBeInTheDocument();
+  });
+
+  it("useSubagentActivity is called with session ID regardless of run path", () => {
+    render(<DebugLogTab sessionId="sess-xyz" runId="run-1" host={HOST} />);
+    const calls = (useSubagentActivity as Mock).mock.calls;
+    expect(calls.at(-1)?.[0]).toBe("sess-xyz");
   });
 });

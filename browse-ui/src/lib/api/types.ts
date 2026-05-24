@@ -1485,3 +1485,60 @@ export interface BrowseRewindSnapshotsResponse {
   total: number;
   snapshots: BrowseRewindSnapshotSummary[];
 }
+
+// ── Subagent Activity (GET /api/session/{id}/subagent-activity) ────────────
+
+/** Status for a single subagent span. */
+export type SubagentStatus = "running" | "completed" | "failed";
+
+/** Error category enum — only categorised values, never raw error text. */
+export type SubagentErrorCategory =
+  | "rate_limited"
+  | "api_error"
+  | "timeout"
+  | "internal_error"
+  | "cancelled"
+  | "unknown";
+
+/**
+ * A single aggregated subagent activity row returned by
+ * GET /api/session/{id}/subagent-activity.
+ *
+ * Raw identifiers (toolCallId, agentId), agentDescription, and raw error
+ * messages are never included.  `redacted` is `true` when any string field
+ * was sanitised via _redact_text.
+ */
+export interface SubagentActivityEntry {
+  span_id: string | null;
+  agent_name: string | null;
+  agent_display_name: string | null;
+  model: string | null;
+  status: SubagentStatus;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  total_tool_calls: number | null;
+  total_tokens: number | null;
+  error_category: SubagentErrorCategory | null;
+  error_preview: string | null;
+  start_idx: number | null;
+  end_idx: number | null;
+  redacted: boolean;
+}
+
+/**
+ * HTTP response envelope for GET /api/session/{id}/subagent-activity.
+ * One-pass aggregation of subagent.started / subagent.completed /
+ * subagent.failed events, paired by toolCallId (primary) or agentId
+ * (fallback).
+ */
+export interface SubagentActivityResponse {
+  schema_version: "1";
+  session_id: string;
+  total_subagents_seen: number;
+  returned: number;
+  cap: number;
+  truncated: boolean;
+  dropped_pending_starts: number;
+  entries: SubagentActivityEntry[];
+}

@@ -1252,6 +1252,70 @@ export const sessionDebugSkeletonResponseSchema = z.object({
 
 // ── Host Profiles (client-side multi-host support) ─────────────────────
 
+// ── Subagent Activity (GET /api/session/{id}/subagent-activity) ────────────
+
+/** Status for a single subagent span. */
+export const subagentStatusSchema = z.enum(["running", "completed", "failed"]);
+
+/** Error category enum — only safe categorised values, never raw error text. */
+export const subagentErrorCategorySchema = z.enum([
+  "rate_limited",
+  "api_error",
+  "timeout",
+  "internal_error",
+  "cancelled",
+  "unknown",
+]);
+
+/**
+ * A single aggregated subagent activity row returned by
+ * GET /api/session/{id}/subagent-activity.
+ *
+ * Raw identifiers (toolCallId, agentId), agentDescription, and raw error
+ * messages are never included.  All string fields are bounded and redacted.
+ * `redacted` is `true` when any field was sanitised via _redact_text.
+ */
+export const subagentActivityEntrySchema = z
+  .object({
+    span_id: z.string().nullable(),
+    agent_name: z.string().nullable(),
+    agent_display_name: z.string().nullable(),
+    model: z.string().nullable(),
+    status: subagentStatusSchema,
+    started_at: z.string().nullable(),
+    ended_at: z.string().nullable(),
+    duration_ms: z.number().nullable(),
+    total_tool_calls: z.number().int().nonnegative().nullable(),
+    total_tokens: z.number().int().nonnegative().nullable(),
+    error_category: subagentErrorCategorySchema.nullable(),
+    error_preview: z.string().max(120).nullable(),
+    start_idx: z.number().int().nonnegative().nullable(),
+    end_idx: z.number().int().nonnegative().nullable(),
+    redacted: z.boolean(),
+  })
+  .strict();
+
+/**
+ * HTTP response envelope for GET /api/session/{id}/subagent-activity.
+ * One-pass aggregation of subagent.started / subagent.completed /
+ * subagent.failed events, paired by toolCallId (primary) or agentId
+ * (fallback).
+ */
+export const subagentActivityResponseSchema = z
+  .object({
+    schema_version: z.literal("1"),
+    session_id: z.string(),
+    total_subagents_seen: z.number().int().nonnegative(),
+    returned: z.number().int().nonnegative(),
+    cap: z.number().int().positive(),
+    truncated: z.boolean(),
+    dropped_pending_starts: z.number().int().nonnegative(),
+    entries: z.array(subagentActivityEntrySchema),
+  })
+  .strict();
+
+// ── Host Profiles (client-side multi-host support) ─────────────────────
+
 /** Permissive CLI family schema — any non-empty string is accepted. */
 export const cliKindSchema = z.string().min(1);
 

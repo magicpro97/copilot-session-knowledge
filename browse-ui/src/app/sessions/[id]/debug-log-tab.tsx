@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Check, Filter, Loader2, Terminal } from "lucide-react";
 
 import { Banner } from "@/components/data/banner";
@@ -14,11 +14,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useDebugLog, useSessionDebugLog } from "@/lib/api/hooks";
+import { useDebugLog, useSessionDebugLog, useSubagentActivity } from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
 import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
-import { deriveMissionRollup } from "@/lib/flight-recorder";
+import {
+  deriveMissionRollup,
+  deriveSubagentActivitySummary,
+  deriveSubagentChipsFromActivity,
+  deriveSubagentExecutions,
+} from "@/lib/flight-recorder";
 import { MissionStrip } from "@/components/data/mission-strip";
+import { SubagentActivityPanel } from "@/components/data/subagent-activity-panel";
 
 import { DebugLogFlowChart } from "./debug-log-flow-chart";
 
@@ -779,14 +785,44 @@ export function DebugLogTab({
   // Show tree toggle only when any raw event has a span_id.
   const hasSpanIds = Boolean(normalizedData?.events.some((e) => e.span_id !== null));
 
+  // Sub-agent activity — dedicated bounded route, non-fatal if unavailable.
+  // Always fetched by session ID regardless of operator run path.
+  const subagentQuery = useSubagentActivity(sessionId, Boolean(sessionId), host);
+  const subagentExecutions = useMemo(
+    () => deriveSubagentExecutions(subagentQuery.data),
+    [subagentQuery.data]
+  );
+  const subagentSummary = useMemo(
+    () => deriveSubagentActivitySummary(subagentQuery.data),
+    [subagentQuery.data]
+  );
+
+  // Sub-agent panel ref and flash tick for MissionStrip chip interaction.
+  const subagentPanelRef = useRef<HTMLDivElement>(null);
+  const [subagentFlashTick, setSubagentFlashTick] = useState(0);
+
+  // Scroll panel into view, reset filter to all, and flash.
+  const handleSubagentCategorySelect = useCallback(() => {
+    if (subagentPanelRef.current && typeof subagentPanelRef.current.scrollIntoView === "function") {
+      subagentPanelRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    setSubagentFlashTick((t) => t + 1);
+  }, []);
+
   // Flight Recorder v3 P2: mission-strip must be visible in List / Tree /
   // Flow views (previously was nested inside the Flow chart only). Memoize
   // the rollup so it doesn't recompute on every render. Hook must live
   // above any conditional returns to satisfy the rules-of-hooks.
-  const missionRollup = useMemo(
-    () => deriveMissionRollup(normalizedData?.events ?? []),
-    [normalizedData?.events]
-  );
+  // Override missionRollup.subagents with per-execution chips from the
+  // dedicated activity route when available (avoids page-window aggregation).
+  const missionRollup = useMemo(() => {
+    const base = deriveMissionRollup(normalizedData?.events ?? []);
+    if (subagentQuery.data) {
+      const chips = deriveSubagentChipsFromActivity(subagentQuery.data);
+      return { ...base, subagents: chips };
+    }
+    return base;
+  }, [normalizedData?.events, subagentQuery.data]);
 
   const handleSelect = (entry: BrowseDebugEntry) => {
     setSelectedEntry((prev) => (prev?.idx === entry.idx ? null : entry));
@@ -882,8 +918,33 @@ export function DebugLogTab({
         totalCount={normalizedData.events.length}
       />
 
-      {/* Flight Recorder v3 mission strip — visible across all view modes. */}
-      <MissionStrip rollup={missionRollup} />
+      {/* Flight Recorder v3 mission strip — visible across all view modes.
+          Sub-agents chip wired to scroll and flash the SubagentActivityPanel. */}
+      <MissionStrip
+        rollup={missionRollup}
+        onSelectCategory={(cat) => {
+          if (cat === "subagent") handleSubagentCategorySelect();
+        }}
+      />
+
+      {/* Sub-agent activity panel — below MissionStrip, before view toggle.
+          Non-fatal: does not block the debug log table when unavailable. */}
+      <SubagentActivityPanel
+        ref={subagentPanelRef}
+        executions={subagentExecutions}
+        summary={subagentSummary}
+        loading={subagentQuery.isLoading}
+        error={subagentQuery.error instanceof Error ? subagentQuery.error : null}
+        onOpenDebugLog={(idx) => {
+          // Jump: navigate to the page containing this entry idx and focus it.
+          const targetPage = Math.floor(idx / PAGE_SIZE);
+          setFilters({ text: "", kind: "", level: "", status: "" });
+          setSelectedEntry(null);
+          setPage(targetPage);
+          pendingFocusRef.current = { idx, targetPage };
+        }}
+        flashTick={subagentFlashTick}
+      />
 
       {/* View mode toggle — only shown when the dataset has span_ids */}
       {hasSpanIds && (

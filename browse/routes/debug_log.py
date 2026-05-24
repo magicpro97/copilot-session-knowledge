@@ -16,6 +16,16 @@ Routes registered here:
                        has_more, entries: [BrowseDebugEntry, ...]}
       (WBS-428)
 
+  GET /api/session/{id}/subagent-activity
+  GET /api/sessions/{id}/subagent-activity   (plural alias)
+      One-pass bounded aggregation of subagent.started / subagent.completed /
+      subagent.failed events into activity rows.  Pairs events by
+      data.toolCallId (primary) or top-level agentId (fallback).  Never
+      exposes raw agentDescription, raw data.error, or raw identifiers.
+      Response shape: {schema_version, session_id, total_subagents_seen,
+                       returned, cap, truncated, dropped_pending_starts,
+                       entries: [SubagentActivityRow, ...]}
+
       Issue #538 additive query parameters:
         projection  "full" (default) | "skeleton"
             full     — existing shape + limit 1..100
@@ -78,6 +88,37 @@ _SKELETON_LIMIT_MAX = 5000  # high-limit for timeline playback skeleton
 # source, redacted, level, raw event ids/types, paths, usernames) is omitted.
 _SKELETON_FIELDS = frozenset({"idx", "timestamp", "kind", "duration_ms", "status", "span_id", "parent_span_id"})
 
+# ── Subagent activity route constants ─────────────────────────────────────────
+
+_SUBAGENT_MAX_ROWS = 1000  # hard cap on returned activity rows per call
+_SUBAGENT_PENDING_CAP = 2048  # max in-flight starts before FIFO eviction
+_SUBAGENT_STR_MAX = 64  # max chars for agent_name / display_name / model
+_SUBAGENT_ERROR_PREVIEW_MAX = 120  # max chars for redacted error_preview field
+
+# Opaque pairing-key validation: safe alphabet, bounded length.
+# Rejects path-like values (/etc/passwd), newlines, and embedded JWTs.
+_SUBAGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+# Ordered list of (lowercase_needle, category) for subagent.failed classification.
+# First match wins; unrecognised errors map to "unknown".
+_SUBAGENT_ERROR_CATEGORY_MAP: "list[tuple[str, str]]" = [
+    ("rate_limit", "rate_limited"),
+    ("user_global_rate_limited", "rate_limited"),
+    ("ratelimited", "rate_limited"),
+    ("429", "rate_limited"),
+    ("timeout", "timeout"),
+    ("timed out", "timeout"),
+    ("deadline", "timeout"),
+    ("cancel", "cancelled"),
+    ("capierror: 500", "api_error"),
+    ("capierror: 502", "api_error"),
+    ("capierror: 503", "api_error"),
+    ("capierror:", "api_error"),
+    ("api error", "api_error"),
+    ("internal error", "internal_error"),
+    ("internal_error", "internal_error"),
+]
+
 # ── Skeleton projection helper ────────────────────────────────────────────────
 
 
@@ -120,9 +161,46 @@ def _project_skeleton(entry: dict) -> dict:
 
 # Strict 16-lowercase-hex span_id pattern (mirrors browse.core.redaction._SPAN_ID_RE).
 _SPAN_ID_HEX_RE = re.compile(r"^[0-9a-f]{16}$")
-
-# Strict lowercase UUID4 — matches the same pattern used by operator_console.py.
 _UUID4_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
+
+
+def _safe_subagent_str(raw: object, max_len: int = _SUBAGENT_STR_MAX) -> "tuple[str | None, bool]":
+    """Validate and sanitize a subagent string field (agent_name / display_name).
+
+    Returns (value, was_redacted):
+      - raw passes _SHORT_ENUM_RE: (raw[:max_len], False)
+      - raw is a non-empty string failing _SHORT_ENUM_RE: apply _redact_text,
+        truncate to max_len; return (result, True) or (None, True) when empty
+      - otherwise (non-string or empty): (None, False)
+
+    Never returns the raw string when it fails regex validation; ensures any
+    embedded Bearer token / JWT / path is scrubbed before emission.
+    """
+    from browse.core.redaction import _redact_text  # noqa: PLC0415
+
+    if not isinstance(raw, str) or not raw:
+        return None, False
+    if _SHORT_ENUM_RE.match(raw):
+        return raw[:max_len], False
+    # Fail regex: run through redaction and truncate
+    redacted_val = _redact_text(raw)[:max_len]
+    return (redacted_val or None), True
+
+
+def _derive_error_category(raw_error: object) -> str:
+    """Classify a raw error string into a safe error category enum value.
+
+    Returns one of: "rate_limited", "api_error", "timeout", "internal_error",
+    "cancelled", or "unknown".  Never returns the raw error text.
+    """
+    if not isinstance(raw_error, str) or not raw_error:
+        return "unknown"
+    low = raw_error.lower()
+    for needle, category in _SUBAGENT_ERROR_CATEGORY_MAP:
+        if needle in low:
+            return category
+    return "unknown"
+
 
 # ── Kind / level allowlists (mirrors redaction.py) ────────────────────────────
 
@@ -462,6 +540,18 @@ def _build_cli_message(event: dict, event_type: str, kind: str) -> str:
             content = event_type
         return str(content)[:_DEBUG_MSG_MAX]
 
+    # subagent.* — safe scalar summary: event_type + agent name + model enum only.
+    # Never includes agentDescription, toolCallId, agentId, raw error, or free text.
+    if kind == "subagent":
+        parts = [event_type]
+        raw_name = data.get("agentName") or data.get("agentDisplayName")
+        if isinstance(raw_name, str) and _SHORT_ENUM_RE.match(raw_name):
+            parts.append(f"name={raw_name}")
+        model = data.get("model")
+        if isinstance(model, str) and model and len(model) <= _SUBAGENT_STR_MAX:
+            parts.append(f"model={model}")
+        return " ".join(parts)[:_DEBUG_MSG_MAX]
+
     if kind in ("session_start", "generic"):
         info_type = data.get("infoType")
         new_model = data.get("newModel")
@@ -623,6 +713,47 @@ def _extract_cli_attrs(event: dict) -> dict:
         ec = raw_kind.get("exitCode")
         if not isinstance(ec, bool) and isinstance(ec, (int, float)) and _math.isfinite(ec):
             attrs["notification_exit_code"] = ec
+
+    # ── Subagent metadata (subagent.started / subagent.completed / subagent.failed) ──
+    # Safe scalar attrs only.  Never expose agentDescription, raw error, or raw IDs.
+    # Does NOT widen _ATTRS_ALLOWLIST in browse/core/redaction.py.
+    if isinstance(event_type, str) and (event_type.lower().startswith("subagent.") or event_type.lower() == "subagent"):
+        # agent_name — constrained + redacted; never agentDescription
+        raw_name = data.get("agentName")
+        if isinstance(raw_name, str) and raw_name:
+            safe_name, was_name_redacted = _safe_subagent_str(raw_name)
+            if safe_name:
+                attrs["subagent_name"] = safe_name
+                if was_name_redacted:
+                    attrs["subagent_name_redacted"] = True
+        # agent_display_name — same treatment
+        raw_display = data.get("agentDisplayName")
+        if isinstance(raw_display, str) and raw_display:
+            safe_display, _ = _safe_subagent_str(raw_display)
+            if safe_display:
+                attrs["subagent_display_name"] = safe_display
+        # model — safe 64-char scalar
+        raw_model_sa = data.get("model")
+        if isinstance(raw_model_sa, str) and raw_model_sa and len(raw_model_sa) <= _SUBAGENT_STR_MAX:
+            if "model" not in attrs:
+                attrs["subagent_model"] = raw_model_sa
+        # totalToolCalls, totalTokens — safe non-negative integers
+        for raw_key_sa, attr_key_sa in (("totalToolCalls", "subagent_tool_calls"), ("totalTokens", "subagent_tokens")):
+            v_sa = data.get(raw_key_sa)
+            if not isinstance(v_sa, bool) and isinstance(v_sa, (int, float)) and _math.isfinite(v_sa) and v_sa >= 0:
+                attrs[attr_key_sa] = int(v_sa)
+        # durationMs — via existing coerce helper
+        dms_sa = _coerce_duration_ms(data.get("durationMs"))
+        if dms_sa is not None:
+            attrs["subagent_duration_ms"] = dms_sa
+        # subagent_status — derived from event phase
+        phase_sa = _derive_event_phase(event_type)
+        if phase_sa == "started":
+            attrs["subagent_status"] = "running"
+        elif phase_sa == "completed":
+            attrs["subagent_status"] = "completed"
+        elif phase_sa == "failed":
+            attrs["subagent_status"] = "failed"
 
     # ── Compaction / mode metadata ────────────────────────────────────────────
     comp_kind = data.get("compactionKind")
@@ -1121,6 +1252,386 @@ def _handle_cli_session_debug_log(db, params, token, nonce, session_id: str = ""
     )
 
 
+# ── Subagent activity aggregator ──────────────────────────────────────────────
+
+
+def _build_subagent_activity_row(
+    *,
+    span_id: "str | None",
+    agent_name: "str | None",
+    redacted: bool,
+    agent_display_name: "str | None",
+    model: "str | None",
+    status: str,
+    started_at: "str | None",
+    ended_at: "str | None",
+    duration_ms: "float | None",
+    total_tool_calls: "int | None",
+    total_tokens: "int | None",
+    error_category: "str | None",
+    error_preview: "str | None",
+    start_idx: "int | None",
+    end_idx: "int | None",
+) -> dict:
+    """Build a strict subagent activity row dict.
+
+    Only safe, allowlisted fields are emitted.  Raw identifiers (toolCallId,
+    agentId, parentId), agentDescription, and raw error messages are never
+    included.  The `redacted` flag is True when any string field was sanitised
+    via _redact_text instead of passing regex validation.
+    """
+    return {
+        "span_id": span_id,
+        "agent_name": agent_name,
+        "agent_display_name": agent_display_name,
+        "model": model,
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_ms": duration_ms,
+        "total_tool_calls": total_tool_calls,
+        "total_tokens": total_tokens,
+        "error_category": error_category,
+        "error_preview": error_preview,
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+        "redacted": redacted,
+    }
+
+
+def _stream_subagent_activity(path: Path) -> dict:
+    """One-pass streaming aggregator for subagent activity rows.
+
+    Reads events.jsonl line-by-line (never fully loaded).  Pairs
+    subagent.started events with their subagent.completed / subagent.failed
+    counterparts using data.toolCallId (primary) or top-level agentId
+    (fallback) as the pairing key.
+
+    Caps:
+      - Returned rows: hard cap _SUBAGENT_MAX_ROWS (1000).
+      - In-flight pending starts: FIFO eviction at _SUBAGENT_PENDING_CAP (2048).
+      - All string fields: bounded to _SUBAGENT_STR_MAX (64) chars.
+      - error_preview: bounded to _SUBAGENT_ERROR_PREVIEW_MAX (120) chars after
+        _redact_text.
+
+    Returns a dict ready for JSON serialisation (session_id not included here):
+      total_subagents_seen, returned, cap, truncated, dropped_pending_starts,
+      entries.
+    """
+    import math as _math  # noqa: PLC0415
+
+    from browse.core.redaction import _redact_text  # noqa: PLC0415
+
+    entries: list[dict] = []
+    total_starts_seen: int = 0  # count of all subagent.started events in the file
+    rows_would_emit: int = 0  # rows we'd emit without the cap
+    dropped_pending_starts: int = 0
+
+    # pending: pairing_key -> start_info dict (insertion-ordered, Python 3.7+)
+    pending: dict = {}
+    pending_order: list = []  # FIFO queue of keys for eviction
+
+    line_no = 0
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            raw_line = raw_line.rstrip("\r\n")
+            if not raw_line:
+                line_no += 1
+                continue
+
+            # Skip lines that exceed the truncation threshold — we cannot
+            # safely extract fields from them.
+            raw_bytes = len(raw_line.encode("utf-8", errors="replace"))
+            if raw_bytes > _TRUNCATION_BYTES:
+                line_no += 1
+                continue
+
+            try:
+                event = json.loads(raw_line)
+            except (json.JSONDecodeError, ValueError):
+                line_no += 1
+                continue
+
+            if not isinstance(event, dict):
+                line_no += 1
+                continue
+
+            event_type = event.get("type")
+            if not isinstance(event_type, str):
+                line_no += 1
+                continue
+
+            et = event_type.lower()
+            is_start = et in ("subagent.started", "subagent.start")
+            is_complete = et == "subagent.completed"
+            is_failed = et == "subagent.failed"
+
+            if not (is_start or is_complete or is_failed):
+                line_no += 1
+                continue
+
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+            # ── Derive pairing key: data.toolCallId primary, agentId fallback ──
+            raw_call_id = data.get("toolCallId")
+            raw_agent_id = event.get("agentId")
+            pair_key: str | None = None
+            if isinstance(raw_call_id, str) and _SUBAGENT_ID_RE.match(raw_call_id):
+                pair_key = raw_call_id
+            elif isinstance(raw_agent_id, str) and _SUBAGENT_ID_RE.match(raw_agent_id):
+                pair_key = raw_agent_id
+
+            ts = event.get("timestamp")
+            if not isinstance(ts, str) or not ts:
+                ts = None
+
+            span_id = _span_id_from_raw(event.get("id"), _CLI_SOURCE, line_no)
+
+            # Safe agent name / display name
+            safe_agent_name, agent_name_redacted = _safe_subagent_str(data.get("agentName"))
+            safe_display_name, display_name_redacted = _safe_subagent_str(data.get("agentDisplayName"))
+
+            if is_start:
+                total_starts_seen += 1
+
+                if pair_key:
+                    # FIFO eviction when pending cap is reached. Only evict
+                    # for starts that will actually enter the pending map.
+                    if pair_key not in pending and len(pending) >= _SUBAGENT_PENDING_CAP:
+                        evict_key = pending_order.pop(0)
+                        pending.pop(evict_key, None)
+                        dropped_pending_starts += 1
+
+                    is_new_pair = pair_key not in pending
+                    pending[pair_key] = {
+                        "started_at": ts,
+                        "span_id": span_id,
+                        "agent_name": safe_agent_name,
+                        "agent_name_redacted": agent_name_redacted,
+                        "agent_display_name": safe_display_name,
+                        "agent_display_name_redacted": display_name_redacted,
+                        "start_idx": line_no,
+                    }
+                    if is_new_pair:
+                        pending_order.append(pair_key)
+                else:
+                    # No valid pairing key: emit immediately as running
+                    rows_would_emit += 1
+                    if len(entries) < _SUBAGENT_MAX_ROWS:
+                        entries.append(
+                            _build_subagent_activity_row(
+                                span_id=span_id,
+                                agent_name=safe_agent_name,
+                                redacted=agent_name_redacted or display_name_redacted,
+                                agent_display_name=safe_display_name,
+                                model=None,
+                                status="running",
+                                started_at=ts,
+                                ended_at=None,
+                                duration_ms=None,
+                                total_tool_calls=None,
+                                total_tokens=None,
+                                error_category=None,
+                                error_preview=None,
+                                start_idx=line_no,
+                                end_idx=None,
+                            )
+                        )
+
+            elif is_complete or is_failed:
+                # Look up paired start
+                start_info: dict | None = None
+                if pair_key:
+                    start_info = pending.pop(pair_key, None)
+                    if start_info is not None and pair_key in pending_order:
+                        pending_order.remove(pair_key)
+
+                if start_info is not None:
+                    row_span = start_info["span_id"]
+                    row_started_at = start_info["started_at"]
+                    row_start_idx = start_info["start_idx"]
+                    # Prefer name from start event; fall back to completion event
+                    row_agent_name = start_info["agent_name"] or safe_agent_name
+                    row_agent_name_redacted = start_info["agent_name_redacted"] or agent_name_redacted
+                    row_display_name = start_info["agent_display_name"] or safe_display_name
+                    row_display_name_redacted = start_info.get("agent_display_name_redacted") or display_name_redacted
+                else:
+                    # Unmatched completion — emit with null start fields
+                    row_span = span_id
+                    row_started_at = None
+                    row_start_idx = None
+                    row_agent_name = safe_agent_name
+                    row_agent_name_redacted = agent_name_redacted
+                    row_display_name = safe_display_name
+                    row_display_name_redacted = display_name_redacted
+
+                # model — safe 64-char scalar, redacted if it fails the short enum pattern
+                raw_model = data.get("model")
+                safe_model, model_redacted = _safe_subagent_str(raw_model)
+
+                # duration — prefer explicit durationMs from the event
+                dms = _coerce_duration_ms(data.get("durationMs"))
+                if dms is None and row_started_at is not None and ts is not None:
+                    start_ms = _parse_ts_ms(row_started_at)
+                    end_ms = _parse_ts_ms(ts)
+                    if start_ms is not None and end_ms is not None and end_ms >= start_ms:
+                        dms = end_ms - start_ms
+
+                # totalToolCalls, totalTokens — safe non-negative integers
+                raw_tc = data.get("totalToolCalls")
+                total_tool_calls: int | None = None
+                if (
+                    not isinstance(raw_tc, bool)
+                    and isinstance(raw_tc, (int, float))
+                    and _math.isfinite(raw_tc)
+                    and raw_tc >= 0
+                ):
+                    total_tool_calls = int(raw_tc)
+
+                raw_tok = data.get("totalTokens")
+                total_tokens: int | None = None
+                if (
+                    not isinstance(raw_tok, bool)
+                    and isinstance(raw_tok, (int, float))
+                    and _math.isfinite(raw_tok)
+                    and raw_tok >= 0
+                ):
+                    total_tokens = int(raw_tok)
+
+                # error_category + error_preview (failed only; never raw)
+                error_category: str | None = None
+                error_preview: str | None = None
+                if is_failed:
+                    raw_error = data.get("error")
+                    error_category = _derive_error_category(raw_error)
+                    if isinstance(raw_error, str) and raw_error:
+                        error_preview = _redact_text(raw_error)[:_SUBAGENT_ERROR_PREVIEW_MAX]
+
+                rows_would_emit += 1
+                if len(entries) < _SUBAGENT_MAX_ROWS:
+                    entries.append(
+                        _build_subagent_activity_row(
+                            span_id=row_span,
+                            agent_name=row_agent_name,
+                            redacted=(row_agent_name_redacted or row_display_name_redacted or model_redacted),
+                            agent_display_name=row_display_name,
+                            model=safe_model,
+                            status="completed" if is_complete else "failed",
+                            started_at=row_started_at,
+                            ended_at=ts,
+                            duration_ms=dms,
+                            total_tool_calls=total_tool_calls,
+                            total_tokens=total_tokens,
+                            error_category=error_category,
+                            error_preview=error_preview,
+                            start_idx=row_start_idx,
+                            end_idx=line_no,
+                        )
+                    )
+
+            line_no += 1
+
+    # Emit remaining in-flight (running) starters at end of file
+    for start_info in pending.values():
+        rows_would_emit += 1
+        if len(entries) < _SUBAGENT_MAX_ROWS:
+            entries.append(
+                _build_subagent_activity_row(
+                    span_id=start_info["span_id"],
+                    agent_name=start_info["agent_name"],
+                    redacted=(
+                        start_info["agent_name_redacted"] or start_info.get("agent_display_name_redacted", False)
+                    ),
+                    agent_display_name=start_info["agent_display_name"],
+                    model=None,
+                    status="running",
+                    started_at=start_info["started_at"],
+                    ended_at=None,
+                    duration_ms=None,
+                    total_tool_calls=None,
+                    total_tokens=None,
+                    error_category=None,
+                    error_preview=None,
+                    start_idx=start_info["start_idx"],
+                    end_idx=None,
+                )
+            )
+
+    return {
+        "total_subagents_seen": total_starts_seen,
+        "returned": len(entries),
+        "cap": _SUBAGENT_MAX_ROWS,
+        "truncated": rows_would_emit > len(entries),
+        "dropped_pending_starts": dropped_pending_starts,
+        "entries": entries,
+    }
+
+
+def _handle_cli_session_subagent_activity(db, params, token, nonce, session_id: str = "") -> tuple:
+    """Shared implementation for GET /api/session/{id}/subagent-activity.
+
+    One-pass streaming aggregator: groups subagent.started/completed/failed
+    events from events.jsonl into bounded, redaction-safe activity rows.
+    Reuses path security from _handle_cli_session_debug_log (UUID4 validation,
+    path containment via resolve(), lstat symlink rejection, uniform 404).
+
+    Response shape:
+      {
+        "schema_version": "1",
+        "session_id": "<uuid>",
+        "total_subagents_seen": N,
+        "returned": M,
+        "cap": 1000,
+        "truncated": false,
+        "dropped_pending_starts": 0,
+        "entries": [SubagentActivityRow, ...]
+      }
+
+    Auth: Bearer or cookie only (debug=True; ?token= rejected by dispatcher).
+    """
+    # ── Validate session_id (no path leakage on bad input) ────────────────────
+    if not session_id or not _UUID4_RE.match(session_id):
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    # ── Resolve and confine path ───────────────────────────────────────────────
+    root = _cli_session_state_root()
+    events_path = root / session_id / "events.jsonl"
+
+    try:
+        resolved = events_path.resolve()
+        root_resolved = root.resolve()
+        if not str(resolved).startswith(str(root_resolved) + os.sep) and resolved != root_resolved:
+            return json_error("debug log not found", "NOT_FOUND", 404)
+    except (OSError, ValueError):
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    # ── Reject symlinks (lstat check) ─────────────────────────────────────────
+    try:
+        lst = events_path.lstat()
+        import stat as _stat  # noqa: PLC0415
+
+        if _stat.S_ISLNK(lst.st_mode):
+            return json_error("debug log not found", "NOT_FOUND", 404)
+        if not _stat.S_ISREG(lst.st_mode):
+            return json_error("debug log not found", "NOT_FOUND", 404)
+    except (OSError, FileNotFoundError):
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    # ── One-pass streaming aggregation ────────────────────────────────────────
+    try:
+        result = _stream_subagent_activity(events_path)
+    except OSError:
+        return json_error("debug log not found", "NOT_FOUND", 404)
+
+    return json_ok(
+        {
+            "schema_version": _SCHEMA_VERSION,
+            "session_id": session_id,
+            **result,
+        }
+    )
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 
@@ -1190,3 +1701,38 @@ def handle_cli_sessions_debug_log(db, params, token, nonce, session_id: str = ""
     plural-path conventions used elsewhere in the operator API.
     """
     return _handle_cli_session_debug_log(db, params, token, nonce, session_id=session_id)
+
+
+@route("/api/session/{id}/subagent-activity", methods=["GET"], debug=True)
+def handle_cli_session_subagent_activity(db, params, token, nonce, session_id: str = "") -> tuple:
+    """GET /api/session/{id}/subagent-activity — bounded subagent activity summary.
+
+    One-pass streaming aggregation of subagent.started / subagent.completed /
+    subagent.failed events into pre-paired activity rows.  Events are paired by
+    data.toolCallId (primary) or top-level agentId (fallback).
+
+    Response shape:
+      {
+        "schema_version": "1",
+        "session_id": "<uuid>",
+        "total_subagents_seen": N,
+        "returned": M,
+        "cap": 1000,
+        "truncated": false,
+        "dropped_pending_starts": 0,
+        "entries": [SubagentActivityRow, ...]
+      }
+
+    Auth: Bearer or cookie only (debug=True; ?token= rejected by dispatcher).
+    Unknown/invalid session → 404 with no UUID or path leakage.
+    """
+    return _handle_cli_session_subagent_activity(db, params, token, nonce, session_id=session_id)
+
+
+@route("/api/sessions/{id}/subagent-activity", methods=["GET"], debug=True)
+def handle_cli_sessions_subagent_activity(db, params, token, nonce, session_id: str = "") -> tuple:
+    """GET /api/sessions/{id}/subagent-activity — plural alias.
+
+    Delegates to the same handler.
+    """
+    return _handle_cli_session_subagent_activity(db, params, token, nonce, session_id=session_id)

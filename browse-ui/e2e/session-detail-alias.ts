@@ -44,6 +44,22 @@ export async function stubEmptyFlightRecorderRoutes(
       }),
     });
   });
+
+  await page.route(`**/api/session/${sessionId}/subagent-activity`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "1",
+        session_id: sessionId,
+        total_subagents_seen: 0,
+        returned: 0,
+        cap: 1000,
+        truncated: false,
+        dropped_pending_starts: 0,
+        entries: [],
+      }),
+    });
+  });
 }
 
 async function proxyToSessionId(route: Route, sessionId: string): Promise<void> {

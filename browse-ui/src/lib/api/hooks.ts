@@ -50,6 +50,7 @@ import {
   sessionDebugSkeletonResponseSchema,
   browseCheckpointsResponseSchema,
   browseRewindSnapshotsResponseSchema,
+  subagentActivityResponseSchema,
   cliSessionListResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
@@ -101,6 +102,7 @@ import type {
   SessionDebugSkeletonResponse,
   BrowseCheckpointsResponse,
   BrowseRewindSnapshotsResponse,
+  SubagentActivityResponse,
   CliSession,
   CliSessionListResponse,
   AdoptCliSessionRequest,
@@ -205,6 +207,8 @@ export const queryKeys = {
     ["session-checkpoints", hostId, sessionId] as const,
   sessionRewindSnapshots: (sessionId: string, hostId = LOCAL_HOST_ID) =>
     ["session-rewind-snapshots", hostId, sessionId] as const,
+  subagentActivity: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["subagent-activity", hostId, sessionId] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1249,6 +1253,42 @@ export function useSessionDebugLogSkeleton(
       const path = withLeadingSlash(`/api/session/${encodeURIComponent(sessionId)}/debug-log${qs}`);
       const data = await hostFetch<SessionDebugSkeletonResponse>(path, host);
       return sessionDebugSkeletonResponseSchema.parse(data);
+    },
+  });
+}
+
+// ── Subagent Activity ────────────────────────────────────────────────────────
+
+/**
+ * Returns aggregated subagent activity rows for a CLI session.
+ *
+ * Fetches GET /api/session/{id}/subagent-activity, which performs a one-pass
+ * streaming aggregation of subagent.started / subagent.completed /
+ * subagent.failed events paired by toolCallId (primary) or agentId (fallback).
+ *
+ * - Query key is scoped by (hostId, sessionId) — no pagination params because
+ *   the endpoint returns a single bounded response (cap 1000).
+ * - Uses sessionDetail stale/gc times (same as useSessionDebugLog).
+ * - Disabled when sessionId is empty.
+ * - Response is parsed and validated against subagentActivityResponseSchema
+ *   (strict z.object, no passthrough).
+ */
+export function useSubagentActivity(
+  sessionId: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.subagentActivity(sessionId, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<SubagentActivityResponse> => {
+      const path = withLeadingSlash(
+        `/api/session/${encodeURIComponent(sessionId)}/subagent-activity`
+      );
+      const data = await hostFetch<SubagentActivityResponse>(path, host);
+      return subagentActivityResponseSchema.parse(data);
     },
   });
 }

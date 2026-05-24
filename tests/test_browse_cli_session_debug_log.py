@@ -1825,6 +1825,456 @@ def test_full_mode_unchanged_shape():
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
+def _subagent_path(session_id: str, plural: bool = False) -> str:
+    prefix = "sessions" if plural else "session"
+    return f"/api/{prefix}/{session_id}/subagent-activity"
+
+
+def _subagent_event(
+    event_type: str,
+    call_id: str | None = None,
+    agent_name: str | None = None,
+    model: str | None = None,
+    tool_calls: int | None = None,
+    tokens: int | None = None,
+    duration_ms: float | None = None,
+    error: str | None = None,
+    ts: str | None = None,
+) -> dict:
+    """Build a minimal subagent event dict for tests."""
+    data: dict = {}
+    if call_id is not None:
+        data["toolCallId"] = call_id
+    if agent_name is not None:
+        data["agentName"] = agent_name
+    if model is not None:
+        data["model"] = model
+    if tool_calls is not None:
+        data["totalToolCalls"] = tool_calls
+    if tokens is not None:
+        data["totalTokens"] = tokens
+    if duration_ms is not None:
+        data["durationMs"] = duration_ms
+    if error is not None:
+        data["error"] = error
+    return {
+        "type": event_type,
+        "data": data,
+        "id": str(uuid.uuid4()),
+        "timestamp": ts or _now_iso(),
+    }
+
+
+# ── Subagent activity route tests ─────────────────────────────────────────────
+
+
+def test_subagent_activity_route_envelope():
+    """SA-ENV: Basic response envelope shape and schema_version."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [
+            _subagent_event("subagent.started", call_id="call-01", agent_name="coder"),
+            _subagent_event("subagent.completed", call_id="call-01", tool_calls=2, tokens=100),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        test("SA-ENV-1 status 200", resp.status == 200)
+        test("SA-ENV-2 schema_version='1'", body.get("schema_version") == "1")
+        test("SA-ENV-3 session_id echoed", body.get("session_id") == sid)
+        test("SA-ENV-4 has total_subagents_seen", "total_subagents_seen" in body)
+        test("SA-ENV-5 has returned", "returned" in body)
+        test("SA-ENV-6 has cap", body.get("cap") == 1000)
+        test("SA-ENV-7 has truncated", "truncated" in body)
+        test("SA-ENV-8 has dropped_pending_starts", "dropped_pending_starts" in body)
+        test("SA-ENV-9 has entries list", isinstance(body.get("entries"), list))
+        test("SA-ENV-10 content-type json", "application/json" in resp.getheader("Content-Type", ""))
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_completed_pair():
+    """SA-PAIR: start+complete pair → row with correct fields."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [
+            _subagent_event("subagent.started", call_id="tcid-1", agent_name="coder", ts="2025-01-01T00:00:00Z"),
+            _subagent_event(
+                "subagent.completed",
+                call_id="tcid-1",
+                model="gpt-4",
+                tool_calls=3,
+                tokens=500,
+                duration_ms=1234.0,
+                ts="2025-01-01T00:00:01Z",
+            ),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        test("SA-PAIR-1 exactly 1 entry", len(body.get("entries", [])) == 1)
+        test("SA-PAIR-2 total_subagents_seen=1", body.get("total_subagents_seen") == 1)
+        e = body["entries"][0] if body.get("entries") else {}
+        test("SA-PAIR-3 status=completed", e.get("status") == "completed")
+        test("SA-PAIR-4 model=gpt-4", e.get("model") == "gpt-4")
+        test("SA-PAIR-5 total_tool_calls=3", e.get("total_tool_calls") == 3)
+        test("SA-PAIR-6 total_tokens=500", e.get("total_tokens") == 500)
+        test("SA-PAIR-7 duration_ms non-null", e.get("duration_ms") is not None)
+        test("SA-PAIR-8 agent_name=coder", e.get("agent_name") == "coder")
+        test("SA-PAIR-9 started_at non-null", e.get("started_at") is not None)
+        test("SA-PAIR-10 ended_at non-null", e.get("ended_at") is not None)
+        test("SA-PAIR-11 span_id present", bool(e.get("span_id")))
+        test("SA-PAIR-12 has redacted field", "redacted" in e)
+        test("SA-PAIR-13 no agentDescription key", "agentDescription" not in e and "agent_description" not in e)
+        test("SA-PAIR-14 no raw toolCallId key", "toolCallId" not in e and "tool_call_id" not in e)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_failed_category_redaction():
+    """SA-SEC: T-SEC-2/T-SEC-3: bearer token and path in error → redacted, category set."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        bearer_error = "Authentication failed: Bearer ghp_ABCDEF1234567890ABCDEF1234567890XY extra"
+        path_error = "File not found: /Users/alice/secret-project/config.json"
+        _write_events(session_dir, [
+            _subagent_event("subagent.started", call_id="e1"),
+            _subagent_event("subagent.failed", call_id="e1", error=bearer_error),
+            _subagent_event("subagent.started", call_id="e2"),
+            _subagent_event("subagent.failed", call_id="e2", error=path_error),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        test("SA-SEC2/3-1 two failed entries", len(entries) == 2)
+        for e in entries:
+            raw = e.get("error_preview", "") or ""
+            # Bearer token must be scrubbed
+            test(
+                "SA-SEC2 no raw bearer in error_preview",
+                "ghp_" not in raw and "ABCDEF1234567890" not in raw,
+            )
+            # Path must be scrubbed
+            test(
+                "SA-SEC3 no raw path in error_preview",
+                "/Users/alice" not in raw,
+            )
+            test("SA-SEC status=failed", e.get("status") == "failed")
+            test("SA-SEC error_category not null", e.get("error_category") is not None)
+            test("SA-SEC no raw error key", "error" not in e)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_no_agent_description():
+    """SA-SEC1 (T-SEC-1): agentDescription must never appear in any response field."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        ev = _subagent_event("subagent.started", call_id="d1", agent_name="safe-agent")
+        ev["data"]["agentDescription"] = "SECRET: API_KEY=abc123 password=hunter2"
+        _write_events(session_dir, [
+            ev,
+            _subagent_event("subagent.completed", call_id="d1"),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body_bytes = resp.read()
+        body_text = body_bytes.decode("utf-8", errors="replace")
+        test("SA-SEC1-1 status 200", resp.status == 200)
+        test("SA-SEC1-2 'agentDescription' key absent from JSON", "agentDescription" not in body_text)
+        test("SA-SEC1-3 'agent_description' key absent from JSON", "agent_description" not in body_text)
+        test("SA-SEC1-4 raw secret absent", "API_KEY=abc123" not in body_text)
+        test("SA-SEC1-5 hunter2 absent", "hunter2" not in body_text)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_orphan_running():
+    """SA-PAIRING2 (T-PAIRING-2): unmatched start → running status entry."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [
+            _subagent_event("subagent.started", call_id="orphan-1", agent_name="runner"),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        test("SA-PAIR2-1 one running entry", len(entries) == 1)
+        test("SA-PAIR2-2 status=running", entries[0].get("status") == "running")
+        test("SA-PAIR2-3 ended_at null", entries[0].get("ended_at") is None)
+        test("SA-PAIR2-4 duration_ms null", entries[0].get("duration_ms") is None)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_unmatched_completion():
+    """SA-PAIRING1 (T-PAIRING-1): completion without a prior start still produces a row."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [
+            _subagent_event("subagent.completed", call_id="ghost-1", model="gpt-4"),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        test("SA-PAIR1-1 one entry returned", len(entries) == 1)
+        test("SA-PAIR1-2 status=completed", entries[0].get("status") == "completed")
+        test("SA-PAIR1-3 started_at null", entries[0].get("started_at") is None)
+        test("SA-PAIR1-4 total_subagents_seen=0", body.get("total_subagents_seen") == 0)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_cap_truncated():
+    """SA-PERF1 (T-PERF-1): cap enforcement → truncated=True when events exceed cap."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        # Write 1010 completed pairs — more than cap 1000
+        events: list[dict] = []
+        for i in range(1010):
+            cid = f"cap-{i:04d}"
+            events.append(_subagent_event("subagent.started", call_id=cid))
+            events.append(_subagent_event("subagent.completed", call_id=cid, tool_calls=1))
+        _write_events(session_dir, events)
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        test("SA-PERF1-1 returned <= 1000", body.get("returned", 9999) <= 1000)
+        test("SA-PERF1-2 truncated=True", body.get("truncated") is True)
+        test("SA-PERF1-3 total_subagents_seen=1010", body.get("total_subagents_seen") == 1010)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_pending_drop():
+    """SA-PERF2 (T-PERF-2): FIFO eviction when pending starts > 2048."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        # Write 2100 starts with no completions → triggers eviction
+        events: list[dict] = []
+        for i in range(2100):
+            events.append(_subagent_event("subagent.started", call_id=f"p-{i:04d}"))
+        _write_events(session_dir, events)
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        test("SA-PERF2-1 status 200", resp.status == 200)
+        test("SA-PERF2-2 dropped_pending_starts > 0", body.get("dropped_pending_starts", 0) > 0)
+        test("SA-PERF2-3 total_subagents_seen=2100", body.get("total_subagents_seen") == 2100)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_invalid_start_does_not_evict_pending():
+    """SA-REVIEW1: invalid unpairable start must not evict a valid pending start."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        events: list[dict] = []
+        for i in range(2048):
+            events.append(_subagent_event("subagent.started", call_id=f"valid-{i:04d}"))
+
+        invalid = _subagent_event("subagent.started")
+        invalid["data"]["toolCallId"] = "../../etc/passwd"
+        events.append(invalid)
+        events.append(_subagent_event("subagent.completed", call_id="valid-0000", model="gpt-4"))
+
+        _write_events(session_dir, events)
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        completed = [e for e in entries if e.get("status") == "completed"]
+        test("SA-REVIEW1-1 status 200", resp.status == 200)
+        test("SA-REVIEW1-2 no pending drop for invalid start", body.get("dropped_pending_starts") == 0)
+        test("SA-REVIEW1-3 completed row present", len(completed) == 1)
+        if completed:
+            test("SA-REVIEW1-4 valid pending start preserved", completed[0].get("start_idx") == 0)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_duplicate_start_deduplicates_pending_order():
+    """SA-REVIEW2: duplicate starts must not leave ghost keys in FIFO order."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        events: list[dict] = [
+            _subagent_event("subagent.started", call_id="dup"),
+            _subagent_event("subagent.started", call_id="dup"),
+            _subagent_event("subagent.completed", call_id="dup"),
+        ]
+        for i in range(2049):
+            events.append(_subagent_event("subagent.started", call_id=f"p-{i:04d}"))
+        events.append(_subagent_event("subagent.completed", call_id="p-0000", model="gpt-4"))
+
+        _write_events(session_dir, events)
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        completed = [e for e in body.get("entries", []) if e.get("status") == "completed"]
+        p0 = next((e for e in completed if e.get("model") == "gpt-4"), None)
+        test("SA-REVIEW2-1 status 200", resp.status == 200)
+        test("SA-REVIEW2-2 exactly one real pending drop", body.get("dropped_pending_starts") == 1)
+        test("SA-REVIEW2-3 p-0000 completion present", p0 is not None)
+        if p0 is not None:
+            test("SA-REVIEW2-4 p-0000 was really evicted", p0.get("start_idx") is None)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_model_is_redacted():
+    """SA-REVIEW3: poisoned model strings are redacted before being emitted."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        poisoned_model = "Bearer abc.def.ghi /Users/alice/secret-model"
+        _write_events(session_dir, [
+            _subagent_event("subagent.started", call_id="model-1"),
+            _subagent_event("subagent.completed", call_id="model-1", model=poisoned_model),
+        ])
+        resp = _bearer(port, _subagent_path(sid))
+        body_text = resp.read().decode("utf-8", errors="replace")
+        body = json.loads(body_text)
+        entry = body.get("entries", [{}])[0]
+        test("SA-REVIEW3-1 status 200", resp.status == 200)
+        test("SA-REVIEW3-2 raw bearer absent", "abc.def.ghi" not in body_text)
+        test("SA-REVIEW3-3 raw user path absent", "/Users/alice" not in body_text)
+        test("SA-REVIEW3-4 model changed", entry.get("model") != poisoned_model)
+        test("SA-REVIEW3-5 redacted flag set", entry.get("redacted") is True)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_path_security():
+    """SA-PATH (T-PATH-1..3): invalid UUID / path traversal → 404 no leakage."""
+    server, port = _make_test_server()
+    try:
+        # T-PATH-1: invalid UUID format
+        resp1 = _bearer(port, _subagent_path("not-a-uuid"))
+        test("SA-PATH-1 invalid UUID → 404", resp1.status == 404)
+        body1 = resp1.read().decode("utf-8", errors="replace")
+        test("SA-PATH-1 no UUID echo in body", "not-a-uuid" not in body1)
+
+        # T-PATH-2: valid UUID but session doesn't exist
+        fake_sid = str(uuid.uuid4())
+        resp2 = _bearer(port, _subagent_path(fake_sid))
+        test("SA-PATH-2 missing session → 404", resp2.status == 404)
+        body2 = resp2.read().decode("utf-8", errors="replace")
+        test("SA-PATH-2 code=NOT_FOUND", '"NOT_FOUND"' in body2)
+
+        # T-PATH-3: path traversal attempt
+        resp3 = _bearer(port, _subagent_path("../../../etc/passwd"))
+        test("SA-PATH-3 traversal → 404", resp3.status == 404)
+        resp3.read()
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_no_raw_ids():
+    """SA-SEC6 (T-SEC-6): path-like or long IDs are rejected from pairing."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        # Inject an event with a path-like toolCallId — should not pair / not leak
+        ev_start = _subagent_event("subagent.started")
+        ev_start["data"]["toolCallId"] = "../../etc/passwd"  # invalid, rejected
+        ev_end = _subagent_event("subagent.completed")
+        ev_end["data"]["toolCallId"] = "../../etc/passwd"
+        _write_events(session_dir, [ev_start, ev_end])
+        resp = _bearer(port, _subagent_path(sid))
+        body_text = resp.read().decode("utf-8", errors="replace")
+        test("SA-SEC6-1 status 200", resp.status == 200)
+        test("SA-SEC6-2 path-like id not in body", "../../etc" not in body_text)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_plural_alias():
+    """SA-ALIAS: /api/sessions/{id}/subagent-activity returns same shape."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [
+            _subagent_event("subagent.started", call_id="alias-1"),
+            _subagent_event("subagent.completed", call_id="alias-1"),
+        ])
+        resp = _bearer(port, _subagent_path(sid, plural=True))
+        body = json.loads(resp.read())
+        test("SA-ALIAS-1 status 200", resp.status == 200)
+        test("SA-ALIAS-2 schema_version present", body.get("schema_version") == "1")
+        test("SA-ALIAS-3 session_id echoed", body.get("session_id") == sid)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_auth():
+    """SA-AUTH: no auth → 401; ?token= → 401; cookie → 200."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_subagent_event("subagent.started", call_id="auth-1")])
+        path = _subagent_path(sid)
+        test("SA-AUTH-1 no auth → 401", _no_auth(port, path).status == 401)
+        test("SA-AUTH-2 ?token= → 401", _token_qs(port, path).status == 401)
+        resp_cookie = _cookie(port, path)
+        resp_cookie.read()
+        test("SA-AUTH-3 cookie → 200", resp_cookie.status == 200)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_empty_file():
+    """SA-EMPTY: events.jsonl with no subagent events → empty entries."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        _write_events(session_dir, [_cli_event("session.start")])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        test("SA-EMPTY-1 status 200", resp.status == 200)
+        test("SA-EMPTY-2 entries=[]", body.get("entries") == [])
+        test("SA-EMPTY-3 total_subagents_seen=0", body.get("total_subagents_seen") == 0)
+        test("SA-EMPTY-4 truncated=False", body.get("truncated") is False)
+    finally:
+        server.shutdown()
+
+
+def test_subagent_activity_agentid_fallback():
+    """SA-AGENTID: pairing falls back to top-level agentId when toolCallId absent."""
+    server, port = _make_test_server()
+    try:
+        sid, session_dir = _make_session_dir()
+        aid = "agent-fallback-id"
+        ev_start = {
+            "type": "subagent.started",
+            "data": {"agentName": "fallback-agent"},
+            "agentId": aid,
+            "id": str(uuid.uuid4()),
+            "timestamp": _now_iso(),
+        }
+        ev_end = {
+            "type": "subagent.completed",
+            "data": {"totalToolCalls": 1},
+            "agentId": aid,
+            "id": str(uuid.uuid4()),
+            "timestamp": _now_iso(),
+        }
+        _write_events(session_dir, [ev_start, ev_end])
+        resp = _bearer(port, _subagent_path(sid))
+        body = json.loads(resp.read())
+        entries = body.get("entries", [])
+        test("SA-AGENTID-1 one entry", len(entries) == 1)
+        test("SA-AGENTID-2 status=completed", entries[0].get("status") == "completed")
+        test("SA-AGENTID-3 agent_name=fallback-agent", entries[0].get("agent_name") == "fallback-agent")
+    finally:
+        server.shutdown()
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+
+
 def _run_all() -> None:
     print("=" * 70)
     print("test_browse_cli_session_debug_log.py — WBS-428")
@@ -1893,6 +2343,24 @@ def _run_all() -> None:
     test_to_idx_invalid_400()
     test_full_mode_unchanged_shape()
     test_skeleton_high_limit_scale()
+    # Subagent activity route tests
+    test_subagent_activity_route_envelope()
+    test_subagent_activity_completed_pair()
+    test_subagent_activity_failed_category_redaction()
+    test_subagent_activity_no_agent_description()
+    test_subagent_activity_orphan_running()
+    test_subagent_activity_unmatched_completion()
+    test_subagent_activity_cap_truncated()
+    test_subagent_activity_pending_drop()
+    test_subagent_activity_invalid_start_does_not_evict_pending()
+    test_subagent_activity_duplicate_start_deduplicates_pending_order()
+    test_subagent_activity_model_is_redacted()
+    test_subagent_activity_path_security()
+    test_subagent_activity_no_raw_ids()
+    test_subagent_activity_plural_alias()
+    test_subagent_activity_auth()
+    test_subagent_activity_empty_file()
+    test_subagent_activity_agentid_fallback()
 
     print("=" * 70)
     total = _PASS + _FAIL

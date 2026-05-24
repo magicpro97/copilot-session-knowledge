@@ -13,6 +13,9 @@ import type {
   BrowseCheckpointSummary,
   BrowseDebugEntry,
   BrowseRewindSnapshotSummary,
+  SubagentActivityEntry,
+  SubagentActivityResponse,
+  SubagentErrorCategory,
 } from "@/lib/api/types";
 import {
   normalizeAndSortEntries,
@@ -729,4 +732,213 @@ export function deriveResumeAnchors<T extends PlaybackBaseEntry>(
     return a.snapshotId.localeCompare(b.snapshotId);
   });
   return anchors;
+}
+
+// ── Sub-agent Activity Model Helpers ──────────────────────────────────────────
+
+/**
+ * UI-friendly projection of a single `SubagentActivityEntry`.
+ *
+ * All nullable string fields default to `null` (never the string `"null"`).
+ * `displayName` is always a non-empty string — it is the first non-empty of:
+ *   agentDisplayName → agentName → "Sub-agent".
+ */
+export interface SubagentExecution {
+  /** Stable identifier: `span_id` when available, else deterministic fallback. */
+  id: string;
+  /** Machine name of the agent (`agent_name` from the API). */
+  agentName: string | null;
+  /** Human-readable display name (`agent_display_name` from the API). */
+  agentDisplayName: string | null;
+  /**
+   * Best available display label: `agentDisplayName` → `agentName` → "Sub-agent".
+   * Always a non-empty string; never `"null"`.
+   */
+  displayName: string;
+  /** Model identifier (null when unknown). */
+  model: string | null;
+  /** Execution outcome. */
+  status: "running" | "completed" | "failed";
+  /** Error category — non-null only when `status === "failed"`. */
+  errorCategory: SubagentErrorCategory | null;
+  /** ISO 8601 string when execution started (null when unknown). */
+  startedAt: string | null;
+  /** ISO 8601 string when execution ended (null when still running or unknown). */
+  endedAt: string | null;
+  /** `startedAt` parsed as ms since epoch (null when not parseable). */
+  startedAtMs: number | null;
+  /** `endedAt` parsed as ms since epoch (null when not parseable). */
+  endedAtMs: number | null;
+  /** Clamped finite non-negative duration in ms (null when not available). */
+  durationMs: number | null;
+  /** Total tool call count (null when unknown). */
+  totalToolCalls: number | null;
+  /** Total token count (null when unknown). */
+  totalTokens: number | null;
+  /**
+   * Debug-log entry index of the `subagent.started` event.
+   * Use for jump-to-event behavior in the debug log tab.
+   */
+  startIdx: number | null;
+  /**
+   * Debug-log entry index of the `subagent.completed` / `subagent.failed` event.
+   * Use for jump-to-event behavior in the debug log tab.
+   */
+  endIdx: number | null;
+  /** `true` when any string field was sanitised server-side. */
+  redacted: boolean;
+}
+
+/**
+ * Envelope-level metadata preserved from a `SubagentActivityResponse`
+ * for cap/truncation display.  Never hides `truncated`.
+ */
+export interface SubagentActivitySummary {
+  totalSeen: number;
+  returned: number;
+  cap: number;
+  truncated: boolean;
+  droppedPendingStarts: number;
+}
+
+/** Filter token for `filterSubagentExecutions`. */
+export type SubagentFilter = "all" | "failed" | "running";
+
+// ── Internal helpers for sub-agent model ─────────────────────────────────────
+
+/**
+ * Build a stable unique id for a sub-agent execution.
+ * Preference order: span_id → start_idx → end_idx → positional fallback.
+ */
+function deriveSubagentId(entry: SubagentActivityEntry, index: number): string {
+  if (entry.span_id !== null) return entry.span_id;
+  if (entry.start_idx !== null) return `subagent-sidx-${entry.start_idx}`;
+  if (entry.end_idx !== null) return `subagent-eidx-${entry.end_idx}`;
+  return `subagent-pos-${index}`;
+}
+
+/**
+ * Compute the best human-readable label for an agent entry.
+ * Precedence: agent_display_name → agent_name → "Sub-agent".
+ * Rejects strings that are empty after stripping control chars.
+ */
+function deriveSubagentDisplayName(entry: SubagentActivityEntry): string {
+  const candidates = [entry.agent_display_name, entry.agent_name];
+  for (const c of candidates) {
+    if (typeof c !== "string") continue;
+    const clean = c.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    if (clean.length > 0) return clean.length > 120 ? clean.slice(0, 120) : clean;
+  }
+  return "Sub-agent";
+}
+
+// ── deriveSubagentExecutions ──────────────────────────────────────────────────
+
+/**
+ * Map a `SubagentActivityResponse` to an array of UI-friendly `SubagentExecution`
+ * rows.  Empty/null/undefined input returns an empty array without throwing.
+ *
+ * Data source: the dedicated `/api/session/{id}/subagent-activity` route —
+ * **not** paginated debug-log entries.
+ */
+export function deriveSubagentExecutions(
+  response?: SubagentActivityResponse | null
+): SubagentExecution[] {
+  if (!response?.entries?.length) return [];
+
+  return response.entries.map((entry, index): SubagentExecution => {
+    const startedAtMs = parseMs(entry.started_at);
+    const endedAtMs = parseMs(entry.ended_at);
+
+    // Prefer server-provided duration_ms; fall back to wall-clock diff when both
+    // timestamps are available and server value is absent.
+    let durationMs: number | null = clampDurationMs(entry.duration_ms);
+    if (durationMs === null && startedAtMs !== null && endedAtMs !== null) {
+      durationMs = clampDurationMs(endedAtMs - startedAtMs);
+    }
+
+    const agentName = typeof entry.agent_name === "string" ? entry.agent_name || null : null;
+    const agentDisplayName =
+      typeof entry.agent_display_name === "string" ? entry.agent_display_name || null : null;
+
+    return {
+      id: deriveSubagentId(entry, index),
+      agentName,
+      agentDisplayName,
+      displayName: deriveSubagentDisplayName(entry),
+      model: typeof entry.model === "string" ? entry.model || null : null,
+      status: entry.status,
+      errorCategory: entry.error_category,
+      startedAt: entry.started_at,
+      endedAt: entry.ended_at,
+      startedAtMs,
+      endedAtMs,
+      durationMs,
+      totalToolCalls: entry.total_tool_calls,
+      totalTokens: entry.total_tokens,
+      startIdx: entry.start_idx,
+      endIdx: entry.end_idx,
+      redacted: entry.redacted,
+    };
+  });
+}
+
+// ── deriveSubagentActivitySummary ─────────────────────────────────────────────
+
+/**
+ * Extract envelope-level cap/truncation metadata from a
+ * `SubagentActivityResponse`.  Returns zero-values on empty/null input.
+ */
+export function deriveSubagentActivitySummary(
+  response?: SubagentActivityResponse | null
+): SubagentActivitySummary {
+  if (!response) {
+    return { totalSeen: 0, returned: 0, cap: 0, truncated: false, droppedPendingStarts: 0 };
+  }
+  return {
+    totalSeen: response.total_subagents_seen,
+    returned: response.returned,
+    cap: response.cap,
+    truncated: response.truncated,
+    droppedPendingStarts: response.dropped_pending_starts,
+  };
+}
+
+// ── filterSubagentExecutions ──────────────────────────────────────────────────
+
+/**
+ * Filter a pre-derived `SubagentExecution[]` by outcome.
+ *
+ * - `"all"`     — returns the full array unchanged.
+ * - `"failed"`  — only `status === "failed"`.
+ * - `"running"` — only `status === "running"`.
+ */
+export function filterSubagentExecutions(
+  executions: SubagentExecution[],
+  filter: SubagentFilter = "all"
+): SubagentExecution[] {
+  if (filter === "all") return executions;
+  return executions.filter((e) => e.status === filter);
+}
+
+// ── deriveSubagentChipsFromActivity ───────────────────────────────────────────
+
+/**
+ * Build `MissionChip[]` for the `MissionRollup.subagents` field from a
+ * dedicated `SubagentActivityResponse` so labels use agent identity
+ * (`displayName`) rather than raw event_type strings from debug-log entries.
+ *
+ * Safe to use in parallel with `deriveMissionRollup`; the caller decides
+ * which source wins for the subagents array.
+ */
+export function deriveSubagentChipsFromActivity(
+  response?: SubagentActivityResponse | null
+): MissionChip[] {
+  if (!response?.entries?.length) return [];
+  const counts = new Map<string, number>();
+  for (const entry of response.entries) {
+    const label = deriveSubagentDisplayName(entry);
+    bumpChip(counts, label);
+  }
+  return chipsFromMap(counts);
 }

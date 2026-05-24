@@ -2469,3 +2469,161 @@ describe("Flight Recorder v3 — browseRewindSnapshotsResponseSchema", () => {
     expect(() => browseRewindSnapshotsResponseSchema.parse(bad)).toThrow();
   });
 });
+
+// ── Subagent Activity schemas ─────────────────────────────────────────────
+
+import { subagentActivityEntrySchema, subagentActivityResponseSchema } from "./schemas";
+
+describe("subagentActivityEntrySchema", () => {
+  const happyEntry = {
+    span_id: "0123456789abcdef",
+    agent_name: "coder",
+    agent_display_name: "Coder Agent",
+    model: "gpt-4",
+    status: "completed" as const,
+    started_at: "2025-01-01T00:00:00Z",
+    ended_at: "2025-01-01T00:00:01Z",
+    duration_ms: 1234.0,
+    total_tool_calls: 3,
+    total_tokens: 500,
+    error_category: null,
+    error_preview: null,
+    start_idx: 0,
+    end_idx: 1,
+    redacted: false,
+  };
+
+  it("parses a valid completed entry", () => {
+    expect(() => subagentActivityEntrySchema.parse(happyEntry)).not.toThrow();
+  });
+
+  it("parses a running entry with many null fields", () => {
+    const running = {
+      ...happyEntry,
+      status: "running" as const,
+      ended_at: null,
+      duration_ms: null,
+      total_tool_calls: null,
+      total_tokens: null,
+      error_category: null,
+      error_preview: null,
+      end_idx: null,
+    };
+    expect(() => subagentActivityEntrySchema.parse(running)).not.toThrow();
+  });
+
+  it("parses a failed entry with error_category and error_preview", () => {
+    const failed = {
+      ...happyEntry,
+      status: "failed" as const,
+      error_category: "rate_limited" as const,
+      error_preview: "Authentication failed: [REDACTED]",
+    };
+    expect(() => subagentActivityEntrySchema.parse(failed)).not.toThrow();
+  });
+
+  it("rejects unknown status value", () => {
+    const bad = { ...happyEntry, status: "unknown_status" };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("rejects unknown error_category value", () => {
+    const bad = { ...happyEntry, status: "failed", error_category: "raw_vendor_code" };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("rejects extra fields (strict schema — no passthrough)", () => {
+    const bad = { ...happyEntry, agentDescription: "SECRET" };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("rejects toolCallId leakage (strict schema)", () => {
+    const bad = { ...happyEntry, toolCallId: "tcid-123" };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("rejects agentId leakage (strict schema)", () => {
+    const bad = { ...happyEntry, agentId: "agent-abc" };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("rejects error_preview longer than 120 chars", () => {
+    const bad = { ...happyEntry, error_preview: "x".repeat(121) };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("accepts error_preview of exactly 120 chars", () => {
+    const ok = { ...happyEntry, error_preview: "x".repeat(120) };
+    expect(() => subagentActivityEntrySchema.parse(ok)).not.toThrow();
+  });
+
+  it("rejects negative total_tool_calls", () => {
+    const bad = { ...happyEntry, total_tool_calls: -1 };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+
+  it("rejects negative total_tokens", () => {
+    const bad = { ...happyEntry, total_tokens: -1 };
+    expect(() => subagentActivityEntrySchema.parse(bad)).toThrow();
+  });
+});
+
+describe("subagentActivityResponseSchema", () => {
+  const happyResponse = {
+    schema_version: "1" as const,
+    session_id: "33169957-0dc1-4998-86c0-d2beba02e8b4",
+    total_subagents_seen: 2,
+    returned: 2,
+    cap: 1000,
+    truncated: false,
+    dropped_pending_starts: 0,
+    entries: [
+      {
+        span_id: "0123456789abcdef",
+        agent_name: "coder",
+        agent_display_name: null,
+        model: "gpt-4",
+        status: "completed" as const,
+        started_at: "2025-01-01T00:00:00Z",
+        ended_at: "2025-01-01T00:00:01Z",
+        duration_ms: 1000,
+        total_tool_calls: 1,
+        total_tokens: 200,
+        error_category: null,
+        error_preview: null,
+        start_idx: 0,
+        end_idx: 1,
+        redacted: false,
+      },
+    ],
+  };
+
+  it("parses a happy-path response", () => {
+    expect(() => subagentActivityResponseSchema.parse(happyResponse)).not.toThrow();
+  });
+
+  it("rejects schema_version other than '1'", () => {
+    const bad = { ...happyResponse, schema_version: "2" };
+    expect(() => subagentActivityResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects extra fields on response envelope (strict)", () => {
+    const bad = { ...happyResponse, extra_field: "leak" };
+    expect(() => subagentActivityResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("parses empty entries list", () => {
+    const empty = { ...happyResponse, entries: [], returned: 0, total_subagents_seen: 0 };
+    expect(() => subagentActivityResponseSchema.parse(empty)).not.toThrow();
+  });
+
+  it("rejects truncated not boolean", () => {
+    const bad = { ...happyResponse, truncated: 0 };
+    expect(() => subagentActivityResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects cap <= 0", () => {
+    const bad = { ...happyResponse, cap: 0 };
+    expect(() => subagentActivityResponseSchema.parse(bad)).toThrow();
+  });
+});
