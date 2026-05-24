@@ -1095,3 +1095,43 @@ describe("debug log params and query keys (projection, until, to_idx)", () => {
     expect(qs).toBe("");
   });
 });
+
+// ── Flight Recorder v3 (synthesis §4b / §6b) ───────────────────────────────
+
+describe("Flight Recorder v3 queryKeys", () => {
+  const SID = "33169957-0dc1-4998-86c0-d2beba02e8b4";
+
+  it("sessionCheckpoints key is stable and host-scoped", () => {
+    expect(queryKeys.sessionCheckpoints(SID)).toEqual(["session-checkpoints", "local", SID]);
+    expect(queryKeys.sessionCheckpoints(SID, "remote-1")).toEqual([
+      "session-checkpoints",
+      "remote-1",
+      SID,
+    ]);
+  });
+
+  it("sessionRewindSnapshots key is stable and host-scoped", () => {
+    expect(queryKeys.sessionRewindSnapshots(SID)).toEqual([
+      "session-rewind-snapshots",
+      "local",
+      SID,
+    ]);
+    expect(queryKeys.sessionRewindSnapshots(SID, "remote-1")).toEqual([
+      "session-rewind-snapshots",
+      "remote-1",
+      SID,
+    ]);
+  });
+
+  it("checkpoints and rewind-snapshots keys are disjoint", () => {
+    const a = JSON.stringify(queryKeys.sessionCheckpoints(SID));
+    const b = JSON.stringify(queryKeys.sessionRewindSnapshots(SID));
+    expect(a).not.toEqual(b);
+  });
+
+  it("host-scoping isolates caches across hosts", () => {
+    const local = JSON.stringify(queryKeys.sessionCheckpoints(SID, "local"));
+    const remote = JSON.stringify(queryKeys.sessionCheckpoints(SID, "remote-1"));
+    expect(local).not.toEqual(remote);
+  });
+});

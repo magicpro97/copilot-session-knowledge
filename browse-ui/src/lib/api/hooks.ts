@@ -48,6 +48,8 @@ import {
   debugLogResponseSchema,
   sessionDebugLogResponseSchema,
   sessionDebugSkeletonResponseSchema,
+  browseCheckpointsResponseSchema,
+  browseRewindSnapshotsResponseSchema,
   cliSessionListResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
@@ -97,6 +99,8 @@ import type {
   DebugLogParams,
   SessionDebugLogResponse,
   SessionDebugSkeletonResponse,
+  BrowseCheckpointsResponse,
+  BrowseRewindSnapshotsResponse,
   CliSession,
   CliSessionListResponse,
   AdoptCliSessionRequest,
@@ -196,6 +200,11 @@ export const queryKeys = {
     params: Omit<DebugLogParams, "projection"> = {},
     hostId = LOCAL_HOST_ID
   ) => ["session-debug-log-skeleton", hostId, sessionId, params] as const,
+  // Flight Recorder v3 (synthesis §4b) — bounded summary envelopes.
+  sessionCheckpoints: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["session-checkpoints", hostId, sessionId] as const,
+  sessionRewindSnapshots: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["session-rewind-snapshots", hostId, sessionId] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1413,6 +1422,61 @@ export function useConfirmAdoptedSession(sessionId: string, host: HostProfile = 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
+    },
+  });
+}
+
+// ── Flight Recorder v3 (synthesis §4b) ─────────────────────────────────────
+
+/**
+ * GET /api/session/{id}/checkpoints — bounded summary list.
+ *
+ * Backend returns only section presence booleans, sanitized titles, safe
+ * basenames, and byte sizes; never raw checkpoint bodies.  Cache lifetimes
+ * match `sessionDetail` so navigating between timeline tabs is instant.
+ */
+export function useSessionCheckpoints(
+  sessionId: string,
+  host: HostProfile = LOCAL_HOST,
+  enabled = true
+) {
+  return useQuery({
+    queryKey: queryKeys.sessionCheckpoints(sessionId, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<BrowseCheckpointsResponse> => {
+      const path = withLeadingSlash(`/api/session/${encodeURIComponent(sessionId)}/checkpoints`);
+      const data = await hostFetch<BrowseCheckpointsResponse>(path, host);
+      return browseCheckpointsResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * GET /api/session/{id}/rewind-snapshots — bounded summary list.
+ *
+ * Backend exposes only sanitized commit/branch strings, byte-size counters,
+ * and the hashed `event_span_id` for joining against debug-log spans.  The
+ * raw `userMessage`, `eventId`, `files{}`, and `backupHashes` fields are
+ * never returned.
+ */
+export function useSessionRewindSnapshots(
+  sessionId: string,
+  host: HostProfile = LOCAL_HOST,
+  enabled = true
+) {
+  return useQuery({
+    queryKey: queryKeys.sessionRewindSnapshots(sessionId, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<BrowseRewindSnapshotsResponse> => {
+      const path = withLeadingSlash(
+        `/api/session/${encodeURIComponent(sessionId)}/rewind-snapshots`
+      );
+      const data = await hostFetch<BrowseRewindSnapshotsResponse>(path, host);
+      return browseRewindSnapshotsResponseSchema.parse(data);
     },
   });
 }

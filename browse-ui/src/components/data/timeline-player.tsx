@@ -32,6 +32,17 @@ import type {
 } from "@/lib/debug-event-playback";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import type { BrowseCheckpointSummary, BrowseRewindSnapshotSummary } from "@/lib/api/types";
+import {
+  deriveChapters,
+  deriveHotspots,
+  deriveResumeAnchors,
+  type Chapter,
+} from "@/lib/flight-recorder";
+import { FlightRecorderHeader } from "@/components/data/flight-recorder-header";
+import { ChapterRail } from "@/components/data/chapter-rail";
+import { HotspotDrawer } from "@/components/data/hotspot-drawer";
+import { ResumeDrawer } from "@/components/data/resume-drawer";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -158,6 +169,17 @@ type TimelinePlayerProps = {
   active?: boolean;
   /** Called when the user clicks "Open in Debug Log" for the current event. */
   onOpenDebugLog?: (entryIdx: number) => void;
+  /**
+   * Optional Flight Recorder v3 checkpoints (synthesis §4d). When supplied
+   * and non-empty, the chapter rail switches to "checkpoint" mode; otherwise
+   * the rail falls back to turn-derived chapters.
+   */
+  checkpoints?: BrowseCheckpointSummary[];
+  /**
+   * Optional Flight Recorder v3 rewind snapshots (synthesis §4d). When
+   * supplied (even empty), the ResumeDrawer renders.
+   */
+  rewindSnapshots?: BrowseRewindSnapshotSummary[];
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -168,6 +190,8 @@ export function TimelinePlayer({
   hasMore,
   active = false,
   onOpenDebugLog,
+  checkpoints,
+  rewindSnapshots,
 }: TimelinePlayerProps) {
   // ── Reduce-motion ─────────────────────────────────────────────────────────
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -190,6 +214,33 @@ export function TimelinePlayer({
   const { normalized, mode } = useMemo(() => normalizeAndSortEntries(entries), [entries]);
 
   const markers = useMemo(() => deriveMarkersFromEntries(normalized), [normalized]);
+
+  // ── Flight Recorder v3 derived data (synthesis §4d) ────────────────────────
+  const taskCompleteEntries = useMemo(
+    () => entries.filter((e) => e.kind === "session.task_complete" || e.kind === "task_complete"),
+    [entries]
+  );
+  const chapters = useMemo<Chapter[]>(
+    () =>
+      deriveChapters({
+        checkpoints,
+        taskCompletes: taskCompleteEntries,
+        entries,
+      }),
+    [checkpoints, taskCompleteEntries, entries]
+  );
+  const hotspots = useMemo(() => deriveHotspots(entries), [entries]);
+  const resumeAnchors = useMemo(
+    () => (rewindSnapshots ? deriveResumeAnchors(rewindSnapshots, taskCompleteEntries) : []),
+    [rewindSnapshots, taskCompleteEntries]
+  );
+
+  // Map from anchor's task_complete entry idx → sortedIndex (so Jump can seek).
+  const entryIdxToSorted = useMemo(() => {
+    const m = new Map<number, number>();
+    for (let i = 0; i < normalized.length; i++) m.set(normalized[i].entry.idx, i);
+    return m;
+  }, [normalized]);
 
   // Clamp index on entry changes
   useEffect(() => {
@@ -464,6 +515,21 @@ export function TimelinePlayer({
 
   return (
     <div className="space-y-3 font-mono text-xs" data-testid="timeline-player">
+      {/* ── Flight Recorder v3 header (synthesis §4d) ────────────────────── */}
+      <FlightRecorderHeader
+        entries={entries}
+        total={total}
+        hasMore={hasMore}
+        onJumpToError={(sortedIndex) => {
+          setPlayheadIndex(sortedIndex);
+          setIsPlaying(false);
+        }}
+        onJumpToLastResponse={(sortedIndex) => {
+          setPlayheadIndex(sortedIndex);
+          setIsPlaying(false);
+        }}
+      />
+
       {/* ── Control bar ──────────────────────────────────────────────────── */}
       <div className="border-border bg-card flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
         {/* Play/Pause */}
@@ -618,6 +684,22 @@ export function TimelinePlayer({
             ))}
           </div>
         </div>
+      )}
+
+      {/* ── Chapter rail (synthesis §4d) ─────────────────────────────────── */}
+      {chapters.length > 0 && (
+        <ChapterRail
+          chapters={chapters}
+          playheadSortedIndex={playheadIndex}
+          onSelectChapter={(sortedIndex) => {
+            setPlayheadIndex(sortedIndex);
+            setIsPlaying(false);
+          }}
+          onSelectTaskComplete={(sortedIndex) => {
+            setPlayheadIndex(sortedIndex);
+            setIsPlaying(false);
+          }}
+        />
       )}
 
       {/* ── Scrubber ─────────────────────────────────────────────────────── */}
@@ -888,6 +970,30 @@ export function TimelinePlayer({
             </span>
           ))}
         </div>
+      )}
+
+      {/* ── Flight Recorder v3 drawers (synthesis §4d) ───────────────────── */}
+      {entries.length > 0 && (
+        <HotspotDrawer
+          hotspots={hotspots}
+          onSeek={(sortedIndex) => {
+            setPlayheadIndex(sortedIndex);
+            setIsPlaying(false);
+          }}
+        />
+      )}
+      {rewindSnapshots !== undefined && (
+        <ResumeDrawer
+          anchors={resumeAnchors}
+          onSeek={(anchor) => {
+            if (anchor.taskCompleteEntryIdx === null) return;
+            const s = entryIdxToSorted.get(anchor.taskCompleteEntryIdx);
+            if (typeof s === "number") {
+              setPlayheadIndex(s);
+              setIsPlaying(false);
+            }
+          }}
+        />
       )}
     </div>
   );

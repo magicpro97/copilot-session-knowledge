@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { BrowseDebugEntry } from "@/lib/api/types";
 import {
@@ -79,7 +79,9 @@ export function DebugLogFlowChart({
   hasMore = false,
   totalEvents,
 }: DebugLogFlowChartProps) {
-  const layout = computeFlowLayout(entries);
+  // P4 (perf): memoize the heavy layout so it isn't rebuilt on every
+  // pan/zoom/state change. Only the entry list drives geometry.
+  const layout = useMemo(() => computeFlowLayout(entries), [entries]);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number } | null>(null);

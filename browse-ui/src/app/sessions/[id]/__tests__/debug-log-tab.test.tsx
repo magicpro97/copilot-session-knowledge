@@ -242,7 +242,10 @@ describe("DebugLogTab – populated state", () => {
 
   it("renders tool name when present", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
-    expect(screen.getByText("bash")).toBeInTheDocument();
+    // Scope to the event-table grid so the mission-strip "bash" chip
+    // (introduced for FR v3 P2) doesn't ambiguate the assertion.
+    const table = screen.getByRole("grid", { name: /debug log events/i });
+    expect(within(table).getByText("bash")).toBeInTheDocument();
   });
 
   it("marks redacted entries with [redacted] label", () => {
@@ -1025,6 +1028,24 @@ describe("DebugLogTab – flow chart view", () => {
   it("Flow toggle is visible when entries have span_ids", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     expect(screen.getByTestId("debug-log-view-flow")).toBeInTheDocument();
+  });
+
+  it("renders the Flight Recorder mission strip in List view (P2)", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Default view is "list" — mission strip must already be present.
+    expect(screen.getByTestId("flight-recorder-mission-strip")).toBeInTheDocument();
+  });
+
+  it("keeps the mission strip visible after switching to Tree and Flow views (P2)", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Switch to Tree.
+    const tree = screen.getByRole("button", { name: /^tree$/i });
+    fireEvent.click(tree);
+    expect(screen.getByTestId("flight-recorder-mission-strip")).toBeInTheDocument();
+    // Switch to Flow.
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+    // Mission strip must still be visible exactly once (no duplicate in flow chart).
+    expect(screen.getAllByTestId("flight-recorder-mission-strip")).toHaveLength(1);
   });
 
   it("renders a flow chart with one node per entry (plus parent edges)", () => {

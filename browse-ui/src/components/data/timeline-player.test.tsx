@@ -126,7 +126,7 @@ describe("TimelinePlayer render", () => {
 
   it("shows hasMore hint when hasMore=true", () => {
     render(<TimelinePlayer entries={FIXTURE} total={100} hasMore={true} />);
-    expect(screen.getByText(/\+90 more/)).toBeInTheDocument();
+    expect(screen.getAllByText(/\+90 more/).length).toBeGreaterThan(0);
   });
 
   it("shows marker navigation buttons when markers are present", () => {

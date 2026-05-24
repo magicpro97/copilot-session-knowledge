@@ -1323,3 +1323,61 @@ export const hostCapabilitiesSchema = z.object({
   /** Present on modern backends (e.g. "v2"). Absent on legacy backends. */
   protocol: z.string().nullable().optional(),
 });
+
+// ── Flight Recorder v3 (synthesis §4b) ─────────────────────────────────────
+// All four schemas are `.strict()` so the parser rejects any unexpected key.
+// This catches both contract drift (new field shipped without UI update) and
+// supply-chain tampering (extra fields injected by a malicious intermediary).
+
+export const browseCheckpointSectionsSchema = z
+  .object({
+    overview: z.boolean(),
+    history: z.boolean(),
+    work_done: z.boolean(),
+    technical_details: z.boolean(),
+    important_files: z.boolean(),
+    next_steps: z.boolean(),
+  })
+  .strict();
+
+export const browseCheckpointSummarySchema = z
+  .object({
+    seq: z.number().int().nonnegative(),
+    title: z.string(),
+    file_basename: z.string(),
+    byte_size: z.number().int().nonnegative(),
+    mtime_iso: z.string().nullable(),
+    sections: browseCheckpointSectionsSchema,
+  })
+  .strict();
+
+export const browseCheckpointsResponseSchema = z
+  .object({
+    schema_version: z.string(),
+    session_id: z.string(),
+    total: z.number().int().nonnegative(),
+    checkpoints: z.array(browseCheckpointSummarySchema),
+  })
+  .strict();
+
+export const browseRewindSnapshotSummarySchema = z
+  .object({
+    snapshot_id: z.string(),
+    timestamp: z.string().nullable(),
+    git_commit: z.string().nullable(),
+    git_branch: z.string().nullable(),
+    file_count: z.number().int().nonnegative(),
+    user_message_present: z.boolean(),
+    user_message_byte_size: z.number().int().nonnegative(),
+    event_span_id: z.string().nullable(),
+  })
+  .strict();
+
+export const browseRewindSnapshotsResponseSchema = z
+  .object({
+    schema_version: z.string(),
+    session_id: z.string(),
+    total: z.number().int().nonnegative(),
+    snapshots: z.array(browseRewindSnapshotSummarySchema),
+  })
+  .strict();

@@ -2292,3 +2292,180 @@ describe("browseDebugEntrySchema (full — unchanged by skeleton addition)", () 
     ).toThrow();
   });
 });
+
+// ── Flight Recorder v3 (synthesis §4b / §6b) ───────────────────────────────
+
+import {
+  browseCheckpointSummarySchema,
+  browseCheckpointsResponseSchema,
+  browseRewindSnapshotSummarySchema,
+  browseRewindSnapshotsResponseSchema,
+} from "./schemas";
+
+describe("Flight Recorder v3 — browseCheckpointsResponseSchema", () => {
+  const happy = {
+    schema_version: "1",
+    session_id: "33169957-0dc1-4998-86c0-d2beba02e8b4",
+    total: 1,
+    checkpoints: [
+      {
+        seq: 1,
+        title: "Wave 1 shipped",
+        file_basename: "001-wave1.md",
+        byte_size: 4096,
+        mtime_iso: "2026-05-21T17:08:31.421Z",
+        sections: {
+          overview: true,
+          history: true,
+          work_done: true,
+          technical_details: false,
+          important_files: false,
+          next_steps: true,
+        },
+      },
+    ],
+  };
+
+  it("parses a happy-path response", () => {
+    expect(() => browseCheckpointsResponseSchema.parse(happy)).not.toThrow();
+  });
+
+  it("rejects extra top-level keys (.strict)", () => {
+    expect(() => browseCheckpointsResponseSchema.parse({ ...happy, extra: "leak" })).toThrow();
+  });
+
+  it("rejects extra summary keys (.strict)", () => {
+    const bad = {
+      ...happy,
+      checkpoints: [{ ...happy.checkpoints[0], evil: 1 }],
+    };
+    expect(() => browseCheckpointsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects extra section flags (.strict)", () => {
+    const bad = {
+      ...happy,
+      checkpoints: [
+        {
+          ...happy.checkpoints[0],
+          sections: { ...happy.checkpoints[0].sections, secret: true },
+        },
+      ],
+    };
+    expect(() => browseCheckpointsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects negative byte_size", () => {
+    const bad = {
+      ...happy,
+      checkpoints: [{ ...happy.checkpoints[0], byte_size: -1 }],
+    };
+    expect(() => browseCheckpointsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("summary schema rejects missing sections", () => {
+    const { sections, ...rest } = happy.checkpoints[0];
+    void sections;
+    expect(() => browseCheckpointSummarySchema.parse(rest)).toThrow();
+  });
+
+  it("accepts null mtime_iso (backend could not stat file)", () => {
+    const withNullMtime = {
+      ...happy,
+      checkpoints: [{ ...happy.checkpoints[0], mtime_iso: null }],
+    };
+    expect(() => browseCheckpointsResponseSchema.parse(withNullMtime)).not.toThrow();
+  });
+
+  it("rejects missing mtime_iso field (.strict)", () => {
+    const { mtime_iso, ...rest } = happy.checkpoints[0];
+    void mtime_iso;
+    expect(() => browseCheckpointSummarySchema.parse(rest)).toThrow();
+  });
+});
+
+describe("Flight Recorder v3 — browseRewindSnapshotsResponseSchema", () => {
+  const happy = {
+    schema_version: "1",
+    session_id: "33169957-0dc1-4998-86c0-d2beba02e8b4",
+    total: 1,
+    snapshots: [
+      {
+        snapshot_id: "ed7b1d8a-72d5-4c5d-9b71-1e0e3a3e1234",
+        timestamp: "2026-05-21T16:39:31.728Z",
+        git_commit: "0".repeat(40),
+        git_branch: "main",
+        file_count: 3,
+        user_message_present: true,
+        user_message_byte_size: 11,
+        event_span_id: "0123456789abcdef",
+      },
+    ],
+  };
+
+  it("parses a happy-path response", () => {
+    expect(() => browseRewindSnapshotsResponseSchema.parse(happy)).not.toThrow();
+  });
+
+  it("allows nullable commit/branch/timestamp/event_span_id", () => {
+    const nulls = {
+      ...happy,
+      snapshots: [
+        {
+          ...happy.snapshots[0],
+          timestamp: null,
+          git_commit: null,
+          git_branch: null,
+          event_span_id: null,
+        },
+      ],
+    };
+    expect(() => browseRewindSnapshotsResponseSchema.parse(nulls)).not.toThrow();
+  });
+
+  it("rejects userMessage text leak (.strict)", () => {
+    const bad = {
+      ...happy,
+      snapshots: [{ ...happy.snapshots[0], userMessage: "leak" }],
+    };
+    expect(() => browseRewindSnapshotsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects files{} leak (.strict)", () => {
+    const bad = {
+      ...happy,
+      snapshots: [{ ...happy.snapshots[0], files: { a: {} } }],
+    };
+    expect(() => browseRewindSnapshotsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects raw eventId leak (.strict)", () => {
+    const bad = {
+      ...happy,
+      snapshots: [{ ...happy.snapshots[0], eventId: "33169957-0dc1-4998-86c0-d2beba02e8b4" }],
+    };
+    expect(() => browseRewindSnapshotsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects backupHashes leak (.strict)", () => {
+    const bad = {
+      ...happy,
+      snapshots: [{ ...happy.snapshots[0], backupHashes: ["x"] }],
+    };
+    expect(() => browseRewindSnapshotsResponseSchema.parse(bad)).toThrow();
+  });
+
+  it("summary schema requires snapshot_id", () => {
+    const { snapshot_id, ...rest } = happy.snapshots[0];
+    void snapshot_id;
+    expect(() => browseRewindSnapshotSummarySchema.parse(rest)).toThrow();
+  });
+
+  it("rejects negative file_count", () => {
+    const bad = {
+      ...happy,
+      snapshots: [{ ...happy.snapshots[0], file_count: -1 }],
+    };
+    expect(() => browseRewindSnapshotsResponseSchema.parse(bad)).toThrow();
+  });
+});

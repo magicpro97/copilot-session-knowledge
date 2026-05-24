@@ -1416,3 +1416,72 @@ export interface HostCapabilities {
   /** Present on modern backends (e.g. "v2"). Absent on legacy backends. */
   protocol?: string | null;
 }
+
+// ── Flight Recorder v3 (synthesis §4a) ─────────────────────────────────────
+// Bounded, read-only summary envelopes for the timeline/debug-log UI.
+// Backend never returns raw checkpoint bodies, userMessage text, raw eventIds,
+// `files{}` blobs, or backupHashes — only the contracted fields below.
+
+/** Section presence flags for a single checkpoint file. */
+export interface BrowseCheckpointSections {
+  overview: boolean;
+  history: boolean;
+  work_done: boolean;
+  technical_details: boolean;
+  important_files: boolean;
+  next_steps: boolean;
+}
+
+/**
+ * One checkpoint summary row. `byte_size` is the on-disk file size (clamped),
+ * `title` is run through the project redaction filter, and `file_basename` is
+ * a sanitized leaf name (no slashes, no traversal).
+ */
+export interface BrowseCheckpointSummary {
+  seq: number;
+  title: string;
+  file_basename: string;
+  byte_size: number;
+  /**
+   * UTC ISO-8601 modification time of the underlying checkpoint file
+   * (e.g. "2026-05-21T17:08:31.421Z"). May be `null` when the backend
+   * cannot stat the file. Used by the timeline chapter rail to anchor
+   * checkpoint boundaries to real time instead of arbitrary equal slices.
+   * Carries no path or body content.
+   */
+  mtime_iso: string | null;
+  sections: BrowseCheckpointSections;
+}
+
+/** HTTP response envelope for GET /api/session/{id}/checkpoints. */
+export interface BrowseCheckpointsResponse {
+  schema_version: string;
+  session_id: string;
+  total: number;
+  checkpoints: BrowseCheckpointSummary[];
+}
+
+/**
+ * One rewind-snapshot summary row. `event_span_id` is the same 16-hex hash
+ * `_span_id_from_raw(eventId, "rewind", idx)` used by the debug-log timeline,
+ * so snapshots can be aligned with debug spans.  `user_message_byte_size`
+ * is the UTF-8 size only — the raw text is NEVER returned.
+ */
+export interface BrowseRewindSnapshotSummary {
+  snapshot_id: string;
+  timestamp: string | null;
+  git_commit: string | null;
+  git_branch: string | null;
+  file_count: number;
+  user_message_present: boolean;
+  user_message_byte_size: number;
+  event_span_id: string | null;
+}
+
+/** HTTP response envelope for GET /api/session/{id}/rewind-snapshots. */
+export interface BrowseRewindSnapshotsResponse {
+  schema_version: string;
+  session_id: string;
+  total: number;
+  snapshots: BrowseRewindSnapshotSummary[];
+}

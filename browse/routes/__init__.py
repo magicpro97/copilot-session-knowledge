@@ -17,6 +17,7 @@ import browse.api  # noqa: F401
 # removing downstream imports first.
 from browse.routes import (
     agents,  # noqa: F401
+    checkpoints,  # noqa: F401 — Flight Recorder v3 (synthesis §4a)
     dashboard,  # noqa: F401
     diff,  # noqa: F401
     discovery,  # noqa: F401
@@ -27,6 +28,7 @@ from browse.routes import (
     live,  # noqa: F401
     mindmap,  # noqa: F401
     retro,  # noqa: F401
+    rewind_snapshots,  # noqa: F401 — Flight Recorder v3 (synthesis §4a)
     search,  # noqa: F401
     search_api,  # noqa: F401
     session_compare,  # noqa: F401

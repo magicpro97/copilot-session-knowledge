@@ -1227,6 +1227,334 @@ test("settings page operator-actions panels are display-only", async ({ page }) 
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Flight Recorder v3 — local Playwright proof (synthesis §4d/§4e).
+//
+// Acceptance:
+//   * #timeline renders flight-recorder-header, chapter-rail, hotspot-drawer-toggle,
+//     resume-drawer-toggle.
+//   * Chapter rail uses data-chapter-mode="checkpoint" when the checkpoints API
+//     returns ≥1 entry; chapter count equals the API total.
+//   * task_complete ticks render once per session.task_complete / task_complete
+//     skeleton entry mapped into a chapter span.
+//   * Resume anchors render one row per snapshot returned by the rewind-snapshots
+//     API; aria-expanded toggles on the drawer.
+//   * Jump buttons (flight-recorder-jump-error, flight-recorder-jump-last-response)
+//     seek without producing console.error / pageerror / API 4xx (enforced by
+//     runtimeErrorGuard).
+//   * #debug-log renders the flight-recorder-mission-strip alongside existing
+//     Debug Flow v2 selectors (debug-log-flow-chart, debug-log-flow-trace).
+//
+// Hosted parity: hosted agents.linhngo.dev currently serves buildHash 70ab6f1
+// (Debug Flow v2 only). The v3 selectors below are absent on hosted until the
+// `flight-recorder-v3-ui` PR lands and Firebase redeploys; hosted proof is
+// recorded as BLOCKED in the tentacle handoff rather than weakening the
+// selectors here.
+test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission strip", async ({
+  page,
+}) => {
+  await assertSeededSessionAvailable(page);
+
+  // ── Skeleton entries used by the Timeline projection ─────────────────────
+  // 6 entries spanning turn_start → tool_call → task_complete → agent_response
+  // → error → task_complete. Two task_completes prove the rail tick rendering
+  // and resume anchor span_id matching.
+  const FR_SKELETON_ENTRIES = [
+    {
+      idx: 0,
+      timestamp: "2026-05-01T00:00:00.000Z",
+      kind: "turn_start",
+      duration_ms: 100,
+      status: "ok",
+      span_id: "span-turn-0",
+      parent_span_id: null,
+    },
+    {
+      idx: 1,
+      timestamp: "2026-05-01T00:00:01.000Z",
+      kind: "tool_call",
+      duration_ms: 50,
+      status: "ok",
+      span_id: "span-tool-1",
+      parent_span_id: "span-turn-0",
+    },
+    {
+      idx: 2,
+      timestamp: "2026-05-01T00:00:02.000Z",
+      kind: "task_complete",
+      duration_ms: 0,
+      status: "ok",
+      span_id: "span-tc-1",
+      parent_span_id: "span-turn-0",
+    },
+    {
+      idx: 3,
+      timestamp: "2026-05-01T00:00:03.000Z",
+      kind: "agent_response",
+      duration_ms: 200,
+      status: "ok",
+      span_id: "span-resp-3",
+      parent_span_id: "span-turn-0",
+    },
+    {
+      idx: 4,
+      timestamp: "2026-05-01T00:00:04.000Z",
+      kind: "tool_call",
+      duration_ms: 75,
+      status: "error",
+      span_id: "span-err-4",
+      parent_span_id: "span-turn-0",
+    },
+    {
+      idx: 5,
+      timestamp: "2026-05-01T00:00:05.000Z",
+      kind: "task_complete",
+      duration_ms: 0,
+      status: "ok",
+      span_id: "span-tc-2",
+      parent_span_id: "span-turn-0",
+    },
+  ];
+
+  const FR_SKELETON_PAYLOAD = {
+    schema_version: "debug-log/1",
+    session_id: SEEDED_SESSION_ID,
+    from: 0,
+    limit: 5000,
+    total: FR_SKELETON_ENTRIES.length,
+    has_more: false,
+    entries: FR_SKELETON_ENTRIES,
+  };
+
+  // Full payload (no projection) — must include `message`, `level`, `source`,
+  // `tool_name`, and `attrs:null` so deriveMissionRollup populates tool chips.
+  const FR_FULL_PAYLOAD = {
+    schema_version: "debug-log/1",
+    session_id: SEEDED_SESSION_ID,
+    from: 0,
+    limit: 50,
+    total: FR_SKELETON_ENTRIES.length,
+    has_more: false,
+    entries: FR_SKELETON_ENTRIES.map((e) => ({
+      ...e,
+      level: e.status === "error" ? "error" : "info",
+      source: e.kind === "tool_call" ? "tool" : "copilot-cli",
+      // Stable, redaction-safe message text (no user prompts / file paths).
+      message:
+        e.kind === "tool_call"
+          ? "Tool call completed"
+          : e.kind === "task_complete"
+            ? "Task complete marker"
+            : e.kind === "agent_response"
+              ? "Assistant produced response"
+              : e.kind === "turn_start"
+                ? "Turn started"
+                : "event",
+      tool_name: e.kind === "tool_call" ? "view" : null,
+      attrs: null,
+      redacted: false,
+    })),
+  };
+
+  const FR_CHECKPOINTS = [
+    {
+      seq: 1,
+      title: "Phase A",
+      file_basename: "checkpoint_001.md",
+      byte_size: 1024,
+      mtime_iso: "2026-05-01T00:00:01.500Z",
+      sections: {
+        overview: true,
+        history: false,
+        work_done: true,
+        technical_details: false,
+        important_files: false,
+        next_steps: true,
+      },
+    },
+    {
+      seq: 2,
+      title: "Phase B",
+      file_basename: "checkpoint_002.md",
+      byte_size: 1024,
+      mtime_iso: "2026-05-01T00:00:03.000Z",
+      sections: {
+        overview: true,
+        history: true,
+        work_done: true,
+        technical_details: false,
+        important_files: false,
+        next_steps: false,
+      },
+    },
+    {
+      seq: 3,
+      title: "Phase C",
+      file_basename: "checkpoint_003.md",
+      byte_size: 1024,
+      mtime_iso: "2026-05-01T00:00:04.500Z",
+      sections: {
+        overview: true,
+        history: false,
+        work_done: true,
+        technical_details: true,
+        important_files: false,
+        next_steps: true,
+      },
+    },
+  ];
+
+  const FR_CHECKPOINTS_PAYLOAD = {
+    schema_version: "checkpoints/1",
+    session_id: SEEDED_SESSION_ID,
+    total: FR_CHECKPOINTS.length,
+    checkpoints: FR_CHECKPOINTS,
+  };
+
+  const FR_REWIND_SNAPSHOTS = [
+    {
+      snapshot_id: "snap-a",
+      timestamp: "2026-05-01T00:00:02.000Z",
+      git_commit: "0000000000000000000000000000000000000001",
+      git_branch: "main",
+      file_count: 2,
+      user_message_present: true,
+      user_message_byte_size: 64,
+      event_span_id: "span-tc-1",
+    },
+    {
+      snapshot_id: "snap-b",
+      timestamp: "2026-05-01T00:00:05.000Z",
+      git_commit: "0000000000000000000000000000000000000002",
+      git_branch: "main",
+      file_count: 1,
+      user_message_present: false,
+      user_message_byte_size: 0,
+      event_span_id: "span-tc-2",
+    },
+  ];
+
+  const FR_REWIND_PAYLOAD = {
+    schema_version: "rewind-snapshots/1",
+    session_id: SEEDED_SESSION_ID,
+    total: FR_REWIND_SNAPSHOTS.length,
+    snapshots: FR_REWIND_SNAPSHOTS,
+  };
+
+  // ── Route stubs ──────────────────────────────────────────────────────────
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+    const url = new URL(route.request().url());
+    const isSkeleton = url.searchParams.get("projection") === "skeleton";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(isSkeleton ? FR_SKELETON_PAYLOAD : FR_FULL_PAYLOAD),
+    });
+  });
+  await page.route(
+    `**/api/session/${SEEDED_SESSION_ID}/checkpoints`,
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(FR_CHECKPOINTS_PAYLOAD),
+      });
+    }
+  );
+  await page.route(
+    `**/api/session/${SEEDED_SESSION_ID}/rewind-snapshots`,
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(FR_REWIND_PAYLOAD),
+      });
+    }
+  );
+
+  // ── #timeline assertions ────────────────────────────────────────────────
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/#timeline`);
+  await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+    { timeout: 20_000 }
+  );
+
+  const header = page.getByTestId("flight-recorder-header");
+  await expect(header).toBeVisible({ timeout: 20_000 });
+  // Header shows ERROR (1) because one skeleton entry has status="error".
+  await expect(page.getByTestId("flight-recorder-status")).toContainText(/ERROR/);
+
+  const rail = page.getByTestId("chapter-rail");
+  await expect(rail).toBeVisible();
+
+  // Checkpoint mode: one chapter per checkpoint, all data-chapter-mode="checkpoint".
+  const chapterButtons = page.locator(
+    '[data-testid^="chapter-rail-chapter-"][data-chapter-mode="checkpoint"]'
+  );
+  await expect(chapterButtons).toHaveCount(FR_CHECKPOINTS.length);
+  for (const cp of FR_CHECKPOINTS) {
+    await expect(
+      page.locator(
+        `[data-testid="chapter-rail-chapter-${cp.seq}"][data-chapter-mode="checkpoint"]`
+      )
+    ).toHaveCount(1);
+  }
+
+  // task_complete ticks: one per task_complete skeleton entry.
+  const expectedTaskCompletes = FR_SKELETON_ENTRIES.filter(
+    (e) => e.kind === "task_complete" || e.kind === "session.task_complete"
+  ).length;
+  await expect(page.locator('[data-testid^="chapter-rail-task-complete-"]')).toHaveCount(
+    expectedTaskCompletes
+  );
+
+  // Hotspot drawer: toggle expands.
+  const hotspotToggle = page.getByTestId("hotspot-drawer-toggle");
+  await expect(hotspotToggle).toBeVisible();
+  await expect(hotspotToggle).toHaveAttribute("aria-expanded", "false");
+  await hotspotToggle.click();
+  await expect(hotspotToggle).toHaveAttribute("aria-expanded", "true");
+
+  // Resume drawer: toggle expands, anchors match API total.
+  const resumeToggle = page.getByTestId("resume-drawer-toggle");
+  await expect(resumeToggle).toBeVisible();
+  await expect(resumeToggle).toHaveAttribute("aria-expanded", "false");
+  await resumeToggle.click();
+  await expect(resumeToggle).toHaveAttribute("aria-expanded", "true");
+  const anchorRows = page.locator('[data-testid^="resume-anchor-"]');
+  await expect(anchorRows).toHaveCount(FR_REWIND_SNAPSHOTS.length);
+  for (const snap of FR_REWIND_SNAPSHOTS) {
+    await expect(page.getByTestId(`resume-anchor-${snap.snapshot_id}`)).toBeVisible();
+  }
+
+  // Jump buttons must not produce runtime errors (runtimeErrorGuard enforces).
+  const jumpError = page.getByTestId("flight-recorder-jump-error");
+  await expect(jumpError).toBeVisible();
+  await jumpError.click();
+  const jumpLast = page.getByTestId("flight-recorder-jump-last-response");
+  await expect(jumpLast).toBeVisible();
+  await jumpLast.click();
+
+  // ── #debug-log assertions ────────────────────────────────────────────────
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/#debug-log`);
+  await expect(page.getByRole("tab", { name: "Debug Log" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("debug-log-view-flow")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("debug-log-view-flow").click();
+
+  // Flight Recorder v3 mission strip + chips (Tools/Hooks/Skills/Sub-agents/
+  // Compactions/Errors).  The strip is rendered inside the flow view.
+  const missionStrip = page.getByTestId("flight-recorder-mission-strip");
+  await expect(missionStrip).toBeVisible();
+  await expect(page.getByTestId("mission-chip-tools")).toBeVisible();
+  await expect(page.getByTestId("mission-chip-hooks")).toBeVisible();
+  await expect(page.getByTestId("mission-chip-skills")).toBeVisible();
+  await expect(page.getByTestId("mission-chip-subagents")).toBeVisible();
+  await expect(page.getByTestId("mission-chip-compactions")).toBeVisible();
+  await expect(page.getByTestId("mission-chip-errors")).toBeVisible();
+
+  // Existing Debug Flow v2 selectors must still render.
+  await expect(page.getByTestId("debug-log-flow-chart")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-trace")).toBeVisible();
+});
+
 test("search feedback submits and resets when the query changes", async ({ page }) => {
   await page.goto("/search/?q=deterministic");
   const searchInput = page.getByRole("searchbox", { name: "Search sessions and knowledge" });

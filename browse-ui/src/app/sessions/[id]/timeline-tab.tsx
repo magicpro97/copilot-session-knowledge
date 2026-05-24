@@ -1,7 +1,11 @@
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
 import { TimelinePlayer } from "@/components/data/timeline-player";
-import { useSessionDebugLogSkeleton } from "@/lib/api/hooks";
+import {
+  useSessionCheckpoints,
+  useSessionDebugLogSkeleton,
+  useSessionRewindSnapshots,
+} from "@/lib/api/hooks";
 import type { HostProfile } from "@/lib/api/types";
 
 type TimelineTabProps = {
@@ -18,6 +22,11 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
     Boolean(sessionId),
     host
   );
+  // Flight Recorder v3: additive bounded routes. Hook failures are non-fatal
+  // — when the response is unavailable the chapter rail falls back to
+  // turn-derived chapters and ResumeDrawer is suppressed.
+  const checkpointsQuery = useSessionCheckpoints(sessionId, host, Boolean(sessionId));
+  const rewindQuery = useSessionRewindSnapshots(sessionId, host, Boolean(sessionId));
 
   if (query.isLoading) {
     return (
@@ -53,6 +62,8 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
       hasMore={query.data.has_more}
       active={active}
       onOpenDebugLog={onOpenDebugLog}
+      checkpoints={checkpointsQuery.data?.checkpoints}
+      rewindSnapshots={rewindQuery.data?.snapshots}
     />
   );
 }

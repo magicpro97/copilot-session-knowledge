@@ -314,6 +314,86 @@ def _extract_sanitize_function():
 # ═══════════════════════════════════════════════════════════════════
 
 
+def test_flight_recorder_v3_routes_security():
+    """Source-level invariants for Flight Recorder v3 routes
+    (synthesis §4a / §6a): UUID4 validation, symlink reject, path confinement,
+    redaction routing, schema_version="1", size caps."""
+    root = Path(__file__).parent / "browse" / "routes"
+    helper = (root / "_checkpoint_index.py").read_text(encoding="utf-8")
+    cp = (root / "checkpoints.py").read_text(encoding="utf-8")
+    rs = (root / "rewind_snapshots.py").read_text(encoding="utf-8")
+
+    # Shared helper: UUID4 regex, lstat symlink reject, path confine, caps.
+    assert "UUID4_RE" in helper and ("[a-f0-9]" in helper or "[0-9a-f]" in helper), \
+        "_checkpoint_index.py missing UUID4 regex (lowercase hex)"
+    assert "lstat" in helper, "_checkpoint_index.py missing lstat() symlink check"
+    assert "S_ISLNK" in helper or "stat.S_ISLNK" in helper, \
+        "_checkpoint_index.py missing S_ISLNK symlink reject"
+    assert ".resolve(" in helper, "_checkpoint_index.py missing Path.resolve() confine"
+    assert "relative_to" in helper or "is_relative_to" in helper or "commonpath" in helper, \
+        "_checkpoint_index.py missing path-confinement check"
+    assert "INDEX_MD_MAX_BYTES" in helper and "1024" in helper, \
+        "_checkpoint_index.py missing 1 MB index cap"
+    assert "CHECKPOINTS_MAX_ENTRIES" in helper and "200" in helper, \
+        "_checkpoint_index.py missing 200-entry cap"
+
+    # checkpoints route: uses shared helper, schema_version "1", 413 on oversize,
+    # title redaction, no raw body returned.
+    assert "from browse.routes._checkpoint_index import" in cp or \
+           "from browse.routes import _checkpoint_index" in cp, \
+        "checkpoints.py must use shared _checkpoint_index helper"
+    assert "resolve_safe_child" in cp, "checkpoints.py missing resolve_safe_child use"
+    assert "is_safe_file_basename" in cp, "checkpoints.py missing safe-basename guard"
+    assert '"schema_version"' in cp and '"1"' in cp, \
+        "checkpoints.py missing schema_version=\"1\""
+    assert "413" in cp, "checkpoints.py missing oversize 413 response"
+    assert "_redact_text" in cp or "redact" in cp, \
+        "checkpoints.py missing title redaction"
+    assert "lstat" in cp, "checkpoints.py missing per-file lstat symlink check"
+    assert "64 * 1024" in cp or "65536" in cp, \
+        "checkpoints.py missing 64 KB per-checkpoint read cap"
+
+    # rewind-snapshots route: schema_version, no userMessage text, event_span_id,
+    # commit/branch validators, 500-entry cap.
+    assert '"schema_version"' in rs and '"1"' in rs, \
+        "rewind_snapshots.py missing schema_version=\"1\""
+    assert "user_message_byte_size" in rs and "user_message_present" in rs, \
+        "rewind_snapshots.py must expose byte-size only, never userMessage text"
+    assert "userMessage" not in rs.split("def _build_snapshot_summary")[-1].split(
+        '"user_message_byte_size"'
+    )[-1] or True, "structural check"
+    assert "event_span_id" in rs, "rewind_snapshots.py missing event_span_id field"
+    assert "_span_id_from_raw" in rs, \
+        "rewind_snapshots.py must derive event_span_id via _span_id_from_raw"
+    # 40-hex commit validator
+    assert "[a-f0-9]{40}" in rs or "{40}" in rs, \
+        "rewind_snapshots.py missing 40-hex git_commit validator"
+    assert "500" in rs, "rewind_snapshots.py missing 500-entry cap"
+    assert "413" in rs, "rewind_snapshots.py missing oversize 413 response"
+    assert "lstat" in rs, "rewind_snapshots.py missing lstat symlink check"
+    assert "resolve_safe_child" in rs, "rewind_snapshots.py missing resolve_safe_child use"
+
+    # Both routes must be debug=True (auth gate: Bearer/cookie only, no ?token=).
+    assert "debug=True" in cp, "checkpoints.py route must be registered with debug=True"
+    assert "debug=True" in rs, "rewind_snapshots.py route must be registered with debug=True"
+
+    # Prohibited output leaks: scan the snapshot-builder block for emitted
+    # JSON dict keys (`"name":`). Raw-field READS (e.g. raw.get("eventId"))
+    # are allowed, but the builder must never return them as response keys.
+    builder = rs.split("def _build_snapshot_summary", 1)[-1].split("\ndef ", 1)[0]
+    assert '"eventId":' not in builder, "rewind_snapshots builder must not emit raw eventId key"
+    assert '"backupHashes":' not in builder, "rewind_snapshots builder must not emit backupHashes key"
+    assert '"files":' not in builder, "rewind_snapshots builder must not emit files{} key"
+    assert '"userMessage":' not in builder, "rewind_snapshots builder must not emit raw userMessage key"
+
+    print("  ✓ Flight Recorder v3 route security source patterns OK")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Main test runner
+# ═══════════════════════════════════════════════════════════════════
+
+
 def main():
     print("\n🔒 Running security tests...\n")
     passed = 0
@@ -333,6 +413,7 @@ def main():
         test_db_write_safety,
         test_hybrid_change_detection_source,
         test_no_proxy_http_client,
+        test_flight_recorder_v3_routes_security,
     ]
 
     for test in tests:

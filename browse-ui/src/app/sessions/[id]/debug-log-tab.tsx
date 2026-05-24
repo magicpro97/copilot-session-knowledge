@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Check, Filter, Loader2, Terminal } from "lucide-react";
 
 import { Banner } from "@/components/data/banner";
@@ -17,6 +17,8 @@ import {
 import { useDebugLog, useSessionDebugLog } from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
 import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
+import { deriveMissionRollup } from "@/lib/flight-recorder";
+import { MissionStrip } from "@/components/data/mission-strip";
 
 import { DebugLogFlowChart } from "./debug-log-flow-chart";
 
@@ -777,6 +779,15 @@ export function DebugLogTab({
   // Show tree toggle only when any raw event has a span_id.
   const hasSpanIds = Boolean(normalizedData?.events.some((e) => e.span_id !== null));
 
+  // Flight Recorder v3 P2: mission-strip must be visible in List / Tree /
+  // Flow views (previously was nested inside the Flow chart only). Memoize
+  // the rollup so it doesn't recompute on every render. Hook must live
+  // above any conditional returns to satisfy the rules-of-hooks.
+  const missionRollup = useMemo(
+    () => deriveMissionRollup(normalizedData?.events ?? []),
+    [normalizedData?.events]
+  );
+
   const handleSelect = (entry: BrowseDebugEntry) => {
     setSelectedEntry((prev) => (prev?.idx === entry.idx ? null : entry));
   };
@@ -870,6 +881,9 @@ export function DebugLogTab({
         resultCount={filteredEvents.length}
         totalCount={normalizedData.events.length}
       />
+
+      {/* Flight Recorder v3 mission strip — visible across all view modes. */}
+      <MissionStrip rollup={missionRollup} />
 
       {/* View mode toggle — only shown when the dataset has span_ids */}
       {hasSpanIds && (
