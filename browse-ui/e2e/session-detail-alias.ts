@@ -2,9 +2,56 @@ import type { Page, Route } from "@playwright/test";
 
 export const SEEDED_SESSION_ID = "e2e-session-0001-abcdef";
 
+export async function stubEmptyFlightRecorderRoutes(
+  page: Page,
+  sessionId = SEEDED_SESSION_ID
+): Promise<void> {
+  await page.route(`**/api/session/${sessionId}/debug-log*`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "debug-log/1",
+        session_id: sessionId,
+        from: 0,
+        limit: 5000,
+        total: 0,
+        has_more: false,
+        entries: [],
+      }),
+    });
+  });
+
+  await page.route(`**/api/session/${sessionId}/checkpoints`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "checkpoints/1",
+        session_id: sessionId,
+        total: 0,
+        checkpoints: [],
+      }),
+    });
+  });
+
+  await page.route(`**/api/session/${sessionId}/rewind-snapshots`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "rewind-snapshots/1",
+        session_id: sessionId,
+        total: 0,
+        snapshots: [],
+      }),
+    });
+  });
+}
+
 async function proxyToSessionId(route: Route, sessionId: string): Promise<void> {
   const requestUrl = new URL(route.request().url());
-  requestUrl.pathname = requestUrl.pathname.replace("/_placeholder", `/${encodeURIComponent(sessionId)}`);
+  requestUrl.pathname = requestUrl.pathname.replace(
+    "/_placeholder",
+    `/${encodeURIComponent(sessionId)}`
+  );
   const response = await route.fetch({ url: requestUrl.toString() });
   await route.fulfill({ response });
 }
@@ -16,6 +63,7 @@ export async function aliasPlaceholderSession(page: Page): Promise<string> {
   await page.route("**/api/session/_placeholder/**", (route) =>
     proxyToSessionId(route, SEEDED_SESSION_ID)
   );
+  await stubEmptyFlightRecorderRoutes(page, "_placeholder");
   return SEEDED_SESSION_ID;
 }
 
