@@ -1,12 +1,18 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
+import {
+  MissionAtlas,
+  MissionAtlasError,
+  MissionAtlasLoading,
+} from "@/components/data/mission-atlas";
 import { SubagentActivityPanel } from "@/components/data/subagent-activity-panel";
 import { TimelinePlayer } from "@/components/data/timeline-player";
 import {
   useSessionCheckpoints,
   useSessionDebugLogSkeleton,
+  useSessionMissionAtlas,
   useSessionRewindSnapshots,
   useSubagentActivity,
   useSubagentInternals,
@@ -38,6 +44,20 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
   // turn-derived chapters and ResumeDrawer is suppressed.
   const checkpointsQuery = useSessionCheckpoints(sessionId, host, Boolean(sessionId));
   const rewindQuery = useSessionRewindSnapshots(sessionId, host, Boolean(sessionId));
+
+  // Mission Atlas — full-session aggregate. Non-fatal; TimelinePlayer still
+  // renders if this query fails or the endpoint is not yet deployed.
+  const atlasQuery = useSessionMissionAtlas(sessionId, Boolean(sessionId), host);
+
+  // Atlas seek target: seq increments so repeated clicks on the same bucket
+  // still trigger TimelinePlayer's seek effect.
+  const [atlasSeek, setAtlasSeek] = useState<{ idx: number; seq: number } | null>(null);
+
+  /** Combined handler: opens debug log tab and seeks the timeline player. */
+  const handleAtlasSelect = (idx: number) => {
+    setAtlasSeek((prev) => ({ idx, seq: (prev?.seq ?? 0) + 1 }));
+    onOpenDebugLog?.(idx);
+  };
 
   // Sub-agent activity — dedicated bounded route; non-fatal if unavailable.
   const subagentQuery = useSubagentActivity(sessionId, Boolean(sessionId), host);
@@ -122,6 +142,19 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
         }
       />
 
+      {/* Mission Atlas — full-session aggregate visual.
+          Graceful degradation: loading/error states are non-blocking; the
+          TimelinePlayer renders regardless of atlas availability. */}
+      {atlasQuery.isLoading && <MissionAtlasLoading />}
+      {atlasQuery.error && !atlasQuery.isLoading && (
+        <MissionAtlasError
+          error={atlasQuery.error instanceof Error ? atlasQuery.error : new Error("Unknown error")}
+        />
+      )}
+      {atlasQuery.data && (
+        <MissionAtlas data={atlasQuery.data} onSelectEntryIdx={handleAtlasSelect} />
+      )}
+
       <TimelinePlayer
         entries={query.data.entries}
         total={query.data.total}
@@ -130,6 +163,8 @@ export function TimelineTab({ sessionId, active, host, onOpenDebugLog }: Timelin
         onOpenDebugLog={onOpenDebugLog}
         checkpoints={checkpointsQuery.data?.checkpoints}
         rewindSnapshots={rewindQuery.data?.snapshots}
+        seekToEntryIdx={atlasSeek?.idx ?? null}
+        seekToEntrySeq={atlasSeek?.seq ?? 0}
       />
     </div>
   );

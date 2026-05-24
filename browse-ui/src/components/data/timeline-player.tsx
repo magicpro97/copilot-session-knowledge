@@ -180,6 +180,15 @@ type TimelinePlayerProps = {
    * supplied (even empty), the ResumeDrawer renders.
    */
   rewindSnapshots?: BrowseRewindSnapshotSummary[];
+  /**
+   * Mission Atlas integration (synthesis §4g). When set, the player seeks to
+   * the sorted-array position that corresponds to this raw entry idx. Uses the
+   * existing `entryIdxToSorted` map; no-ops if the idx is not in the map.
+   * Set to `null` to clear without triggering a seek.
+   */
+  seekToEntryIdx?: number | null;
+  /** Monotonic token that lets callers repeat-seek the same entry idx. */
+  seekToEntrySeq?: number;
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -192,6 +201,8 @@ export function TimelinePlayer({
   onOpenDebugLog,
   checkpoints,
   rewindSnapshots,
+  seekToEntryIdx,
+  seekToEntrySeq = 0,
 }: TimelinePlayerProps) {
   // ── Reduce-motion ─────────────────────────────────────────────────────────
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -241,6 +252,17 @@ export function TimelinePlayer({
     for (let i = 0; i < normalized.length; i++) m.set(normalized[i].entry.idx, i);
     return m;
   }, [normalized]);
+
+  // Mission Atlas seek: when seekToEntryIdx changes to a non-null value, map
+  // the raw entry idx to the sorted playhead index and jump there.
+  useEffect(() => {
+    if (seekToEntryIdx == null) return;
+    const sortedIdx = entryIdxToSorted.get(seekToEntryIdx);
+    if (sortedIdx != null) {
+      setPlayheadIndex(Math.min(Math.max(sortedIdx, 0), normalized.length - 1));
+      setIsPlaying(false);
+    }
+  }, [seekToEntryIdx, seekToEntrySeq, entryIdxToSorted, normalized.length]);
 
   // Clamp index on entry changes
   useEffect(() => {

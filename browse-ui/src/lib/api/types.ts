@@ -1607,3 +1607,126 @@ export interface SubagentInternalsResponse {
   session_skill_names: string[];
   entries: SubagentInternalsEntry[];
 }
+
+// ── Mission Atlas (GET /api/session/{id}/mission-atlas) ──────────────────────
+
+/** A {name, count} pair used for top-tools / top-skills / top-agent-names. */
+export interface MissionAtlasNameCount {
+  name: string;
+  count: number;
+}
+
+/**
+ * One temporal bucket produced by the backend's sliding-window aggregation.
+ * Only aggregate numeric fields and safe metadata are exposed; raw entry
+ * content, paths, args, and messages are never present.
+ */
+export interface MissionAtlasBucket {
+  bucket_idx: number;
+  start_idx: number | null;
+  end_idx: number | null;
+  event_count: number;
+  /** Milliseconds relative to session start. Null when no timestamps available. */
+  start_rel_ms: number | null;
+  end_rel_ms: number | null;
+  ts_start: string | null;
+  ts_end: string | null;
+  /** Per-lane event counts keyed by lane name (tool, hook, skill, etc.). */
+  lanes: Record<string, number>;
+  dominant_lane: string | null;
+  error_count: number;
+  /** True for synthetic gap buckets with no events. */
+  is_gap: boolean;
+}
+
+/**
+ * A notable point-in-time event (checkpoint, skill, rewind, error, etc.).
+ * `idx` is the raw entry index usable for debug-log seek; null when no
+ * specific event index was recorded.
+ */
+export interface MissionAtlasMilestone {
+  idx: number | null;
+  timestamp: string | null;
+  kind: string;
+  label: string;
+  bucket_idx: number | null;
+}
+
+/** Artifact counts derived from the session's event log — safe numeric only. */
+export interface MissionAtlasArtifactCounts {
+  checkpoint_files: number;
+  rewind_snapshots: number;
+  todos_total: number;
+  todos_done: number;
+  todos_blocked: number;
+  todo_deps: number;
+  files: number;
+  compactions: number;
+}
+
+/** Per-lane totals across the full session. */
+export interface MissionAtlasLaneTotals {
+  tool: number;
+  hook: number;
+  skill: number;
+  subagent: number;
+  model: number;
+  turn: number;
+  system: number;
+  error: number;
+  generic: number;
+}
+
+/** Backend caps/limits for this response. */
+export interface MissionAtlasCaps {
+  top_n: number;
+  milestones: number;
+  error_sample: number;
+  buckets_min: number;
+  buckets_max: number;
+}
+
+export interface MissionAtlasTruncated {
+  tools: boolean;
+  skills: boolean;
+  agents: boolean;
+  milestones: boolean;
+}
+
+export interface MissionAtlasErrorSample {
+  idx: number;
+  timestamp: string | null;
+  event_type: string;
+  error_category: string;
+}
+
+/**
+ * HTTP response envelope for GET /api/session/{id}/mission-atlas (and plural
+ * alias /api/sessions/{id}/mission-atlas).
+ *
+ * Contains only safe aggregate fields — no raw entry content, no file paths,
+ * no tool args, no error messages beyond error_count. error_sample contains
+ * safe short category labels only (safe fields set by the backend).
+ */
+export interface SessionMissionAtlasResponse {
+  schema_version: "1";
+  session_id: string;
+  total_events: number;
+  event_file_bytes: number | null;
+  first_event_at: string | null;
+  last_event_at: string | null;
+  duration_ms: number | null;
+  bucket_count: number;
+  buckets: MissionAtlasBucket[];
+  lane_totals: MissionAtlasLaneTotals;
+  top_tools: MissionAtlasNameCount[];
+  top_skills: MissionAtlasNameCount[];
+  top_agent_names: MissionAtlasNameCount[];
+  milestones: MissionAtlasMilestone[];
+  artifact_counts: MissionAtlasArtifactCounts;
+  error_count: number;
+  /** Safe category samples only — never raw error messages or paths. */
+  error_sample: MissionAtlasErrorSample[];
+  caps: MissionAtlasCaps;
+  truncated: MissionAtlasTruncated;
+}

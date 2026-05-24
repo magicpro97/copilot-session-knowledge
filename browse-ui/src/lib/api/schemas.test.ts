@@ -52,6 +52,10 @@ import {
   sessionDebugSkeletonResponseSchema,
   sessionDebugLogResponseSchema,
   browseDebugEntrySchema,
+  sessionMissionAtlasResponseSchema,
+  missionAtlasBucketSchema,
+  missionAtlasErrorSampleSchema,
+  missionAtlasMilestoneSchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -2777,5 +2781,238 @@ describe("subagentInternalsResponseSchema", () => {
       ],
     };
     expect(() => subagentInternalsResponseSchema.parse(bad)).toThrow();
+  });
+});
+
+// ── Mission Atlas schema tests ────────────────────────────────────────────────
+
+const HAPPY_ATLAS_RESPONSE = {
+  schema_version: "1" as const,
+  session_id: "abc-123",
+  total_events: 55000,
+  event_file_bytes: 4194304,
+  first_event_at: "2025-01-01T00:00:00Z",
+  last_event_at: "2025-01-01T01:30:00Z",
+  duration_ms: 5400000,
+  bucket_count: 3,
+  buckets: [
+    {
+      bucket_idx: 0,
+      start_idx: 0,
+      end_idx: 999,
+      event_count: 1000,
+      start_rel_ms: 0,
+      end_rel_ms: 60000,
+      ts_start: "2025-01-01T00:00:00Z",
+      ts_end: "2025-01-01T00:01:00Z",
+      lanes: { tool: 400, model: 300, turn: 300 },
+      dominant_lane: "tool",
+      error_count: 0,
+      is_gap: false,
+    },
+    {
+      bucket_idx: 1,
+      start_idx: null,
+      end_idx: null,
+      event_count: 0,
+      start_rel_ms: 60000,
+      end_rel_ms: 120000,
+      ts_start: "2025-01-01T00:01:00Z",
+      ts_end: "2025-01-01T00:02:00Z",
+      lanes: {},
+      dominant_lane: null,
+      error_count: 0,
+      is_gap: true,
+    },
+    {
+      bucket_idx: 2,
+      start_idx: 2000,
+      end_idx: 2999,
+      event_count: 500,
+      start_rel_ms: 120000,
+      end_rel_ms: 180000,
+      ts_start: null,
+      ts_end: null,
+      lanes: { error: 50, tool: 450 },
+      dominant_lane: "tool",
+      error_count: 50,
+      is_gap: false,
+    },
+  ],
+  lane_totals: {
+    tool: 850,
+    hook: 10,
+    skill: 5,
+    subagent: 3,
+    model: 300,
+    turn: 300,
+    system: 20,
+    error: 50,
+    generic: 12,
+  },
+  top_tools: [
+    { name: "bash", count: 300 },
+    { name: "view", count: 200 },
+  ],
+  top_skills: [{ name: "code-reviewer", count: 5 }],
+  top_agent_names: [{ name: "general-purpose", count: 3 }],
+  milestones: [
+    {
+      idx: 42,
+      timestamp: "2025-01-01T00:00:30Z",
+      kind: "checkpoint",
+      label: "Checkpoint 1",
+      bucket_idx: 0,
+    },
+    {
+      idx: null,
+      timestamp: null,
+      kind: "task_complete",
+      label: "Task done",
+      bucket_idx: 2,
+    },
+  ],
+  artifact_counts: {
+    checkpoint_files: 2,
+    rewind_snapshots: 1,
+    todos_total: 10,
+    todos_done: 8,
+    todos_blocked: 1,
+    todo_deps: 5,
+    files: 42,
+    compactions: 3,
+  },
+  error_count: 50,
+  error_sample: [
+    {
+      idx: 12,
+      timestamp: "2025-01-01T00:00:12Z",
+      event_type: "error",
+      error_category: "rate_limited",
+    },
+    { idx: 13, timestamp: null, event_type: "error", error_category: "tool_failure" },
+  ],
+  caps: { top_n: 20, milestones: 200, error_sample: 5, buckets_min: 8, buckets_max: 200 },
+  truncated: { tools: false, skills: false, agents: false, milestones: false },
+};
+
+describe("sessionMissionAtlasResponseSchema", () => {
+  it("parses a complete valid response", () => {
+    const result = sessionMissionAtlasResponseSchema.parse(HAPPY_ATLAS_RESPONSE);
+    expect(result.schema_version).toBe("1");
+    expect(result.total_events).toBe(55000);
+    expect(result.buckets).toHaveLength(3);
+    expect(result.buckets[1].is_gap).toBe(true);
+    expect(result.milestones[0].idx).toBe(42);
+    expect(result.milestones[1].idx).toBeNull();
+    expect(result.artifact_counts.checkpoint_files).toBe(2);
+    expect(result.lane_totals.tool).toBe(850);
+    expect(result.top_tools[0].name).toBe("bash");
+  });
+
+  it("accepts nullable optional fields (timestamps, file bytes)", () => {
+    const nulled = {
+      ...HAPPY_ATLAS_RESPONSE,
+      event_file_bytes: null,
+      first_event_at: null,
+      last_event_at: null,
+      duration_ms: null,
+    };
+    const result = sessionMissionAtlasResponseSchema.parse(nulled);
+    expect(result.event_file_bytes).toBeNull();
+    expect(result.duration_ms).toBeNull();
+  });
+
+  it("rejects extra fields (security: prevents raw content leaking through)", () => {
+    expect(() =>
+      sessionMissionAtlasResponseSchema.parse({
+        ...HAPPY_ATLAS_RESPONSE,
+        raw_events: [{ content: "secret" }],
+      })
+    ).toThrow();
+  });
+
+  it("rejects wrong schema_version", () => {
+    expect(() =>
+      sessionMissionAtlasResponseSchema.parse({ ...HAPPY_ATLAS_RESPONSE, schema_version: "2" })
+    ).toThrow();
+  });
+
+  it("rejects negative event counts", () => {
+    expect(() =>
+      sessionMissionAtlasResponseSchema.parse({ ...HAPPY_ATLAS_RESPONSE, total_events: -1 })
+    ).toThrow();
+  });
+
+  it("rejects negative lane totals", () => {
+    expect(() =>
+      sessionMissionAtlasResponseSchema.parse({
+        ...HAPPY_ATLAS_RESPONSE,
+        lane_totals: { ...HAPPY_ATLAS_RESPONSE.lane_totals, tool: -1 },
+      })
+    ).toThrow();
+  });
+
+  it("rejects caps with non-positive values", () => {
+    expect(() =>
+      sessionMissionAtlasResponseSchema.parse({
+        ...HAPPY_ATLAS_RESPONSE,
+        caps: { top_n: 0, milestones: 200, error_sample: 5, buckets_min: 8, buckets_max: 200 },
+      })
+    ).toThrow();
+  });
+});
+
+describe("missionAtlasBucketSchema", () => {
+  it("parses a gap bucket", () => {
+    const result = missionAtlasBucketSchema.parse(HAPPY_ATLAS_RESPONSE.buckets[1]);
+    expect(result.is_gap).toBe(true);
+    expect(result.event_count).toBe(0);
+    expect(result.dominant_lane).toBeNull();
+  });
+
+  it("rejects extra fields", () => {
+    expect(() =>
+      missionAtlasBucketSchema.parse({ ...HAPPY_ATLAS_RESPONSE.buckets[0], raw_content: "secret" })
+    ).toThrow();
+  });
+});
+
+describe("missionAtlasMilestoneSchema", () => {
+  it("accepts milestone with null idx", () => {
+    const result = missionAtlasMilestoneSchema.parse(HAPPY_ATLAS_RESPONSE.milestones[1]);
+    expect(result.idx).toBeNull();
+    expect(result.kind).toBe("task_complete");
+  });
+
+  it("rejects extra fields", () => {
+    expect(() =>
+      missionAtlasMilestoneSchema.parse({
+        ...HAPPY_ATLAS_RESPONSE.milestones[0],
+        raw_path: "/secret",
+      })
+    ).toThrow();
+  });
+
+  it("rejects oversized timestamp strings", () => {
+    expect(() =>
+      missionAtlasMilestoneSchema.parse({
+        ...HAPPY_ATLAS_RESPONSE.milestones[0],
+        timestamp: "2025-01-01T00:00:00Z" + "X".repeat(80),
+      })
+    ).toThrow();
+  });
+});
+
+describe("missionAtlasErrorSampleSchema", () => {
+  it("rejects oversized timestamp strings", () => {
+    expect(() =>
+      missionAtlasErrorSampleSchema.parse({
+        idx: 1,
+        timestamp: "2025-01-01T00:00:00Z" + "X".repeat(80),
+        event_type: "error",
+        error_category: "unknown",
+      })
+    ).toThrow();
   });
 });

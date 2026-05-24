@@ -1387,6 +1387,140 @@ export const subagentInternalsResponseSchema = z
   })
   .strict();
 
+// ── Mission Atlas (GET /api/session/{id}/mission-atlas) ─────────────────────
+
+/** {name, count} pair for top-tools / top-skills / top-agent-names. */
+export const missionAtlasNameCountSchema = z
+  .object({
+    name: z.string(),
+    count: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/**
+ * One temporal bucket. Only aggregate numerics and safe metadata are accepted;
+ * raw content, paths, args, and error messages are never present.
+ */
+export const missionAtlasBucketSchema = z
+  .object({
+    bucket_idx: z.number().int().nonnegative(),
+    start_idx: z.number().int().nonnegative().nullable(),
+    end_idx: z.number().int().nonnegative().nullable(),
+    event_count: z.number().int().nonnegative(),
+    start_rel_ms: z.number().nullable(),
+    end_rel_ms: z.number().nullable(),
+    ts_start: z.string().nullable(),
+    ts_end: z.string().nullable(),
+    lanes: z.record(z.string(), z.number().int().nonnegative()),
+    dominant_lane: z.string().nullable(),
+    error_count: z.number().int().nonnegative(),
+    is_gap: z.boolean(),
+  })
+  .strict();
+
+/**
+ * A notable point-in-time event.
+ * `idx` is the raw debug-log entry index; null when unavailable.
+ */
+export const missionAtlasMilestoneSchema = z
+  .object({
+    idx: z.number().int().nonnegative().nullable(),
+    timestamp: z.string().max(64).nullable(),
+    kind: z.string(),
+    label: z.string(),
+    bucket_idx: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+/** Artifact counts — safe numeric only. */
+export const missionAtlasArtifactCountsSchema = z
+  .object({
+    checkpoint_files: z.number().int().nonnegative(),
+    rewind_snapshots: z.number().int().nonnegative(),
+    todos_total: z.number().int().nonnegative(),
+    todos_done: z.number().int().nonnegative(),
+    todos_blocked: z.number().int().nonnegative(),
+    todo_deps: z.number().int().nonnegative(),
+    files: z.number().int().nonnegative(),
+    compactions: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** Per-lane totals across the full session. */
+export const missionAtlasLaneTotalsSchema = z
+  .object({
+    tool: z.number().int().nonnegative(),
+    hook: z.number().int().nonnegative(),
+    skill: z.number().int().nonnegative(),
+    subagent: z.number().int().nonnegative(),
+    model: z.number().int().nonnegative(),
+    turn: z.number().int().nonnegative(),
+    system: z.number().int().nonnegative(),
+    error: z.number().int().nonnegative(),
+    generic: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** Backend response caps for this payload. */
+export const missionAtlasCapsSchema = z
+  .object({
+    top_n: z.number().int().positive(),
+    milestones: z.number().int().positive(),
+    error_sample: z.number().int().positive(),
+    buckets_min: z.number().int().positive(),
+    buckets_max: z.number().int().positive(),
+  })
+  .strict();
+
+export const missionAtlasTruncatedSchema = z
+  .object({
+    tools: z.boolean(),
+    skills: z.boolean(),
+    agents: z.boolean(),
+    milestones: z.boolean(),
+  })
+  .strict();
+
+export const missionAtlasErrorSampleSchema = z
+  .object({
+    idx: z.number().int().nonnegative(),
+    timestamp: z.string().max(64).nullable(),
+    event_type: z.string().max(120),
+    error_category: z.string().max(120),
+  })
+  .strict();
+
+/**
+ * Full envelope for GET /api/session/{id}/mission-atlas.
+ *
+ * SECURITY: `.strict()` rejects any extra fields the backend might accidentally
+ * include (e.g. raw paths, args, content). error_sample is bounded to safe
+ * category fields only — never raw error text.
+ */
+export const sessionMissionAtlasResponseSchema = z
+  .object({
+    schema_version: z.literal("1"),
+    session_id: z.string(),
+    total_events: z.number().int().nonnegative(),
+    event_file_bytes: z.number().int().nonnegative().nullable(),
+    first_event_at: z.string().nullable(),
+    last_event_at: z.string().nullable(),
+    duration_ms: z.number().nonnegative().nullable(),
+    bucket_count: z.number().int().nonnegative(),
+    buckets: z.array(missionAtlasBucketSchema),
+    lane_totals: missionAtlasLaneTotalsSchema,
+    top_tools: z.array(missionAtlasNameCountSchema),
+    top_skills: z.array(missionAtlasNameCountSchema),
+    top_agent_names: z.array(missionAtlasNameCountSchema),
+    milestones: z.array(missionAtlasMilestoneSchema),
+    artifact_counts: missionAtlasArtifactCountsSchema,
+    error_count: z.number().int().nonnegative(),
+    error_sample: z.array(missionAtlasErrorSampleSchema),
+    caps: missionAtlasCapsSchema,
+    truncated: missionAtlasTruncatedSchema,
+  })
+  .strict();
+
 // ── Host Profiles (client-side multi-host support) ─────────────────────
 
 /** Permissive CLI family schema — any non-empty string is accepted. */

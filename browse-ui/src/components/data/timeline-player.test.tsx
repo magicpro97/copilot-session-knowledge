@@ -198,6 +198,38 @@ describe("Step buttons", () => {
   });
 });
 
+// ── Mission Atlas seek integration ────────────────────────────────────────────
+
+describe("Mission Atlas seek", () => {
+  it("re-seeks the same raw entry idx when seekToEntrySeq changes", () => {
+    const { rerender } = render(
+      <TimelinePlayer
+        entries={FIXTURE}
+        total={10}
+        hasMore={false}
+        seekToEntryIdx={5}
+        seekToEntrySeq={1}
+      />
+    );
+    const scrubber = screen.getByTestId("scrubber");
+    expect(scrubber).toHaveAttribute("aria-valuenow", "5");
+
+    fireEvent.click(screen.getByTestId("btn-step-prev"));
+    expect(scrubber).toHaveAttribute("aria-valuenow", "4");
+
+    rerender(
+      <TimelinePlayer
+        entries={FIXTURE}
+        total={10}
+        hasMore={false}
+        seekToEntryIdx={5}
+        seekToEntrySeq={2}
+      />
+    );
+    expect(scrubber).toHaveAttribute("aria-valuenow", "5");
+  });
+});
+
 // ── Scrubber (range input) ────────────────────────────────────────────────────
 
 describe("Scrubber", () => {

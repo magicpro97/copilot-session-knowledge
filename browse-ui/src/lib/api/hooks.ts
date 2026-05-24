@@ -52,6 +52,7 @@ import {
   browseRewindSnapshotsResponseSchema,
   subagentActivityResponseSchema,
   subagentInternalsResponseSchema,
+  sessionMissionAtlasResponseSchema,
   cliSessionListResponseSchema,
   cliSessionSchema,
   adoptCliSessionRequestSchema,
@@ -105,6 +106,7 @@ import type {
   BrowseRewindSnapshotsResponse,
   SubagentActivityResponse,
   SubagentInternalsResponse,
+  SessionMissionAtlasResponse,
   CliSession,
   CliSessionListResponse,
   AdoptCliSessionRequest,
@@ -213,6 +215,8 @@ export const queryKeys = {
     ["subagent-activity", hostId, sessionId] as const,
   subagentInternals: (sessionId: string, hostId = LOCAL_HOST_ID) =>
     ["subagent-internals", hostId, sessionId] as const,
+  sessionMissionAtlas: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["session-mission-atlas", hostId, sessionId] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -1549,6 +1553,35 @@ export function useSessionRewindSnapshots(
       );
       const data = await hostFetch<BrowseRewindSnapshotsResponse>(path, host);
       return browseRewindSnapshotsResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * GET /api/session/{id}/mission-atlas — full-session event aggregate.
+ *
+ * Returns only safe aggregate fields (counts, timestamps, lane totals,
+ * bucketed heatmap, milestone rail). Raw entry content, file paths, tool
+ * args, and error messages are never included. The UI must not display
+ * error_sample content verbatim — treat it as an opaque category label.
+ *
+ * Non-fatal: caller should handle query.error gracefully and continue
+ * rendering the TimelinePlayer even when this query fails.
+ */
+export function useSessionMissionAtlas(
+  sessionId: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.sessionMissionAtlas(sessionId, host.id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<SessionMissionAtlasResponse> => {
+      const path = withLeadingSlash(`/api/session/${encodeURIComponent(sessionId)}/mission-atlas`);
+      const data = await hostFetch<SessionMissionAtlasResponse>(path, host);
+      return sessionMissionAtlasResponseSchema.parse(data);
     },
   });
 }

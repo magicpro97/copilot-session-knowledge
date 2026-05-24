@@ -27,6 +27,7 @@ from browse.routes import (
     home,  # noqa: F401
     live,  # noqa: F401
     mindmap,  # noqa: F401
+    mission_atlas,  # noqa: F401 — Mission Atlas aggregate visualization (issue #MA)
     retro,  # noqa: F401
     rewind_snapshots,  # noqa: F401 — Flight Recorder v3 (synthesis §4a)
     search,  # noqa: F401

@@ -1183,3 +1183,42 @@ describe("subagentActivity queryKeys", () => {
     expect(internals).not.toEqual(JSON.stringify(qk2.sessionDebugLog(SID, {}, "local")));
   });
 });
+
+// ── Mission Atlas queryKey tests ──────────────────────────────────────────────
+
+describe("sessionMissionAtlas queryKeys", () => {
+  const SID = "33169957-0dc1-4998-86c0-d2beba02e8b4";
+
+  it("sessionMissionAtlas key is stable and host-scoped", () => {
+    expect(queryKeys.sessionMissionAtlas(SID)).toEqual(["session-mission-atlas", "local", SID]);
+    expect(queryKeys.sessionMissionAtlas(SID, "remote-1")).toEqual([
+      "session-mission-atlas",
+      "remote-1",
+      SID,
+    ]);
+  });
+
+  it("sessionMissionAtlas key differs from subagentActivity key", () => {
+    const atlas = JSON.stringify(queryKeys.sessionMissionAtlas(SID));
+    const activity = JSON.stringify(queryKeys.subagentActivity(SID));
+    expect(atlas).not.toEqual(activity);
+  });
+
+  it("sessionMissionAtlas key differs from sessionCheckpoints key", () => {
+    const atlas = JSON.stringify(queryKeys.sessionMissionAtlas(SID));
+    const checkpoints = JSON.stringify(queryKeys.sessionCheckpoints(SID));
+    expect(atlas).not.toEqual(checkpoints);
+  });
+
+  it("different sessionIds produce different keys", () => {
+    const k1 = JSON.stringify(queryKeys.sessionMissionAtlas("sess-1"));
+    const k2 = JSON.stringify(queryKeys.sessionMissionAtlas("sess-2"));
+    expect(k1).not.toEqual(k2);
+  });
+
+  it("host-scoping isolates caches across hosts", () => {
+    const local = JSON.stringify(queryKeys.sessionMissionAtlas(SID, "local"));
+    const remote = JSON.stringify(queryKeys.sessionMissionAtlas(SID, "remote-1"));
+    expect(local).not.toEqual(remote);
+  });
+});
