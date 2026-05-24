@@ -1378,3 +1378,169 @@ describe("DebugLogTab – focusEntryIdx handoff", () => {
     expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
   });
 });
+
+// ── Flow chart view: v2 trace inspector (lanes, ruler, inspector card) ───────
+
+describe("DebugLogTab – flow chart v2 trace inspector", () => {
+  const v2Entries: BrowseDebugEntry[] = [
+    makeEntry({
+      idx: 0,
+      span_id: "v2rootaaaaaaaaaa",
+      parent_span_id: null,
+      kind: "turn_start",
+      message: "Turn started",
+      tool_name: null,
+      duration_ms: null,
+      timestamp: "2024-01-01T12:00:00.000Z",
+      attrs: { event_type: "turn", mode: "agent" },
+    }),
+    makeEntry({
+      idx: 1,
+      span_id: "v2toolbbbbbbbbbb",
+      parent_span_id: "v2rootaaaaaaaaaa",
+      kind: "tool_call",
+      message: "ran bash",
+      tool_name: "bash",
+      duration_ms: 1200,
+      timestamp: "2024-01-01T12:00:01.000Z",
+      status: "ok",
+      attrs: {
+        event_type: "tool_call",
+        tool_status: "ok",
+        tool_result_type: "stdout",
+        output_tokens: 42,
+      },
+    }),
+    makeEntry({
+      idx: 2,
+      span_id: "v2modelccccccccc",
+      parent_span_id: "v2rootaaaaaaaaaa",
+      kind: "agent_response",
+      message: "assistant",
+      tool_name: null,
+      duration_ms: 300,
+      timestamp: "2024-01-01T12:00:03.000Z",
+      attrs: { output_tokens: 17 },
+    }),
+  ];
+
+  beforeEach(() => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(v2Entries),
+      error: null,
+      isLoading: false,
+    });
+  });
+
+  it("renders the trace overview strip with a time ruler and lane rows", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-trace")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-time-ruler")).toBeInTheDocument();
+    // Tool/Hook/Skill and Model lanes both have entries; Turn too.
+    expect(screen.getByTestId("debug-log-flow-lane-tool-hook-skill")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-lane-model")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-lane-turn")).toBeInTheDocument();
+  });
+
+  it("shows >=2 ruler ticks with '+'-prefixed labels in time mode", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const ruler = screen.getByTestId("debug-log-flow-time-ruler");
+    const ticks = within(ruler).getAllByText(/^[+#]/);
+    expect(ticks.length).toBeGreaterThanOrEqual(2);
+    // Time mode → strip data attr.
+    expect(screen.getByTestId("debug-log-flow-trace")).toHaveAttribute("data-flow-mode", "time");
+  });
+
+  it("renders one clickable bar per visible entry inside its lane", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-bar-0")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-bar-1")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-bar-2")).toBeInTheDocument();
+  });
+
+  it("clicking a bar opens the inspector card with safe rows and the detail drawer", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    fireEvent.click(screen.getByTestId("debug-log-flow-bar-1"));
+
+    const inspector = screen.getByTestId("debug-log-flow-inspector");
+    expect(inspector).toBeInTheDocument();
+    expect(within(inspector).getAllByText("bash").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("debug-log-flow-inspector-status")).toHaveTextContent("ok");
+    expect(screen.getByTestId("debug-log-flow-inspector-row-tool")).toHaveTextContent("bash");
+    expect(screen.getByTestId("debug-log-flow-inspector-row-duration")).toHaveTextContent(/1\.20s/);
+    expect(screen.getByTestId("debug-log-flow-inspector-row-tokens")).toHaveTextContent("42");
+    // Detail drawer still opens (parent selection contract preserved).
+    expect(screen.getByRole("dialog", { name: /debug event detail/i })).toBeInTheDocument();
+  });
+
+  it("falls back to data-flow-mode='index' when most entries have null timestamps", () => {
+    const noisyEntries: BrowseDebugEntry[] = [
+      makeEntry({
+        idx: 0,
+        span_id: "ix0aaaaaaaaaaaaa",
+        parent_span_id: null,
+        kind: "tool_call",
+        tool_name: "bash",
+        message: "a",
+      }),
+      makeEntry({
+        idx: 1,
+        span_id: "ix1bbbbbbbbbbbbb",
+        parent_span_id: "ix0aaaaaaaaaaaaa",
+        kind: "tool_call",
+        tool_name: "bash",
+        message: "b",
+      }),
+      makeEntry({
+        idx: 2,
+        span_id: "ix2ccccccccccccc",
+        parent_span_id: "ix0aaaaaaaaaaaaa",
+        kind: "tool_call",
+        tool_name: "bash",
+        message: "c",
+      }),
+    ];
+    // Strip timestamps after construction (helper uses `??` so null can't be passed in).
+    noisyEntries.forEach((e) => {
+      e.timestamp = null;
+    });
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(noisyEntries),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-trace")).toHaveAttribute("data-flow-mode", "index");
+    // Ruler ticks must use "#" prefix in index mode.
+    const ruler = screen.getByTestId("debug-log-flow-time-ruler");
+    expect(within(ruler).getAllByText(/^#/).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("inspector card renders an empty placeholder until first selection", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-inspector-empty")).toBeInTheDocument();
+    expect(screen.queryByTestId("debug-log-flow-inspector")).not.toBeInTheDocument();
+  });
+
+  it("preserves the legacy node test IDs after the v2 strip is added", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    // v1 tree must still render.
+    expect(screen.getByTestId("debug-log-flow-node-0")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-node-1")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-node-2")).toBeInTheDocument();
+  });
+});

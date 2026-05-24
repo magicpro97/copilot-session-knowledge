@@ -5,8 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import type { BrowseDebugEntry } from "@/lib/api/types";
 import {
   computeFlowLayout,
+  computeTraceLayout,
+  deriveInspectorCard,
+  laneIdSlug,
   type FlowNodeCategory,
   type FlowNodeStatus,
+  type PlaybackLaneId,
+  type TraceInspectorCard,
 } from "@/lib/debug-span-flow";
 
 /**
@@ -232,6 +237,8 @@ export function DebugLogFlowChart({
           </button>
         </div>
       </div>
+      <TraceOverviewStrip entries={entries} selectedEntry={selectedEntry} onSelect={onSelect} />
+      <TraceInspectorPanel selectedEntry={selectedEntry} entries={entries} />
       <svg
         ref={svgRef}
         role="img"
@@ -412,6 +419,279 @@ export function DebugLogFlowChart({
             ? `More events available — showing ${layout.nodes.length} of ${totalEvents}. Use Next below to load more.`
             : "More events available — use Next below to load more."}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Trace overview strip (v2) ────────────────────────────────────────────────
+
+const TRACE_STRIP_VIEW_WIDTH = 1000;
+const TRACE_LANE_LABEL_WIDTH = 160;
+const TRACE_LANE_HEIGHT = 20;
+const TRACE_BAR_HEIGHT = 12;
+const TRACE_MIN_BAR_PX = 2;
+
+const LANE_LABELS: Record<PlaybackLaneId, string> = {
+  Session: "Session",
+  Turn: "Turn",
+  Model: "Model",
+  "Tool/Hook/Skill": "Tool/Hook/Skill",
+  SubAgent: "SubAgent",
+  "Notification/Compaction": "Notification/Compaction",
+  Error: "Error",
+  Generic: "Generic",
+};
+
+type TraceOverviewStripProps = {
+  entries: BrowseDebugEntry[];
+  selectedEntry: BrowseDebugEntry | null;
+  onSelect: (entry: BrowseDebugEntry) => void;
+};
+
+function TraceOverviewStrip({ entries, selectedEntry, onSelect }: TraceOverviewStripProps) {
+  const trace = computeTraceLayout(entries);
+  if (trace.lanes.length === 0) return null;
+
+  const trackWidth = TRACE_STRIP_VIEW_WIDTH - TRACE_LANE_LABEL_WIDTH;
+  const totalHeight = 26 + trace.lanes.length * TRACE_LANE_HEIGHT;
+
+  return (
+    <div
+      className="border-border bg-card/40 border-b px-3 py-2"
+      data-testid="debug-log-flow-trace"
+      data-flow-mode={trace.range.mode}
+      role="group"
+      aria-label="Debug log trace overview"
+    >
+      <svg
+        className="block w-full"
+        viewBox={`0 0 ${TRACE_STRIP_VIEW_WIDTH} ${totalHeight}`}
+        preserveAspectRatio="none"
+        style={{ height: totalHeight }}
+      >
+        {/* Time ruler row */}
+        <g
+          data-testid="debug-log-flow-time-ruler"
+          transform={`translate(${TRACE_LANE_LABEL_WIDTH},0)`}
+        >
+          <line x1={0} y1={20} x2={trackWidth} y2={20} className="stroke-border" strokeWidth={1} />
+          {trace.range.ticks.map((tick, i) => {
+            const x = tick.ratio * trackWidth;
+            return (
+              <g
+                key={`tick-${i}`}
+                data-testid={`debug-log-flow-tick-${i}`}
+                transform={`translate(${x},0)`}
+              >
+                <line y1={14} y2={20} className="stroke-border" strokeWidth={1} />
+                <text
+                  y={11}
+                  x={i === trace.range.ticks.length - 1 ? -4 : 2}
+                  textAnchor={i === trace.range.ticks.length - 1 ? "end" : "start"}
+                  fontSize={9}
+                  fontFamily="ui-monospace, SFMono-Regular, monospace"
+                  className="fill-muted-foreground"
+                >
+                  {tick.label}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+
+        {/* Lane rows */}
+        {trace.lanes.map((lane, laneIdx) => {
+          const slug = laneIdSlug(lane.id);
+          const yTop = 26 + laneIdx * TRACE_LANE_HEIGHT;
+          const yMid = yTop + TRACE_LANE_HEIGHT / 2 - TRACE_BAR_HEIGHT / 2;
+          return (
+            <g
+              key={lane.id}
+              data-testid={`debug-log-flow-lane-${slug}`}
+              data-flow-lane-count={lane.count}
+              data-flow-lane-errors={lane.errorCount}
+            >
+              <text
+                x={4}
+                y={yTop + TRACE_LANE_HEIGHT / 2 + 3}
+                fontSize={10}
+                className="fill-foreground"
+                fontFamily="ui-monospace, SFMono-Regular, monospace"
+              >
+                {`${LANE_LABELS[lane.id] ?? lane.id} · ${lane.count}`}
+              </text>
+              <line
+                x1={TRACE_LANE_LABEL_WIDTH}
+                y1={yTop + TRACE_LANE_HEIGHT - 1}
+                x2={TRACE_STRIP_VIEW_WIDTH}
+                y2={yTop + TRACE_LANE_HEIGHT - 1}
+                className="stroke-border/40"
+                strokeWidth={0.5}
+              />
+              {lane.bars.map((bar) => {
+                const entry = entries.find((e) => e.idx === bar.entryIdx);
+                if (!entry) return null;
+                const x = TRACE_LANE_LABEL_WIDTH + bar.startRatio * trackWidth;
+                const w = Math.max(TRACE_MIN_BAR_PX, bar.widthRatio * trackWidth);
+                const isSelected = selectedEntry?.idx === bar.entryIdx;
+                const isError = bar.status === "error";
+                const fill = categoryColor(bar.category);
+                const stroke = isSelected ? "#3b82f6" : isError ? "#ef4444" : fill;
+                const strokeWidth = isSelected || isError ? 2 : 0;
+                const tooltip = `${LANE_LABELS[lane.id] ?? lane.id} · ${bar.label}`;
+                return (
+                  <g
+                    key={`bar-${bar.entryIdx}`}
+                    data-testid={`debug-log-flow-bar-${bar.entryIdx}`}
+                    data-flow-category={bar.category}
+                    data-flow-status={bar.status}
+                    data-flow-lane={lane.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Debug event ${bar.entryIdx}: ${bar.label}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect(entry);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelect(entry);
+                      }
+                    }}
+                    className="cursor-pointer focus:outline-none"
+                  >
+                    <title>{tooltip}</title>
+                    <rect
+                      x={x}
+                      y={yMid}
+                      width={w}
+                      height={TRACE_BAR_HEIGHT}
+                      rx={2}
+                      ry={2}
+                      fill={fill}
+                      stroke={stroke}
+                      strokeWidth={strokeWidth}
+                      opacity={bar.isZeroWidth ? 0.55 : 0.95}
+                    />
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// ── Inspector card (v2) ──────────────────────────────────────────────────────
+
+type TraceInspectorPanelProps = {
+  selectedEntry: BrowseDebugEntry | null;
+  entries: BrowseDebugEntry[];
+};
+
+function TraceInspectorPanel({ selectedEntry, entries }: TraceInspectorPanelProps) {
+  // Local memory: once a user has selected anything in this view session,
+  // never revert to the empty placeholder (design rule on inspector card).
+  const [lastCard, setLastCard] = useState<TraceInspectorCard | null>(null);
+
+  useEffect(() => {
+    if (!selectedEntry) return;
+    // Confirm the selected entry is still present in the current page.
+    const present = entries.some((e) => e.idx === selectedEntry.idx);
+    if (!present) return;
+    setLastCard(deriveInspectorCard(selectedEntry));
+  }, [selectedEntry, entries]);
+
+  if (!lastCard) {
+    return (
+      <div
+        className="border-border bg-muted/10 text-muted-foreground border-b px-3 py-3 text-xs"
+        data-testid="debug-log-flow-inspector-empty"
+      >
+        Click a bar or node to inspect.
+      </div>
+    );
+  }
+
+  const card = lastCard;
+  const isError = card.status === "error";
+
+  return (
+    <div
+      className="border-border bg-card/30 border-b px-3 py-2"
+      data-testid="debug-log-flow-inspector"
+      role="region"
+      aria-label="Selected debug event"
+    >
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span
+          className="border-border rounded border px-1.5 py-0.5 font-mono"
+          style={{ borderColor: categoryColor(card.category), color: categoryColor(card.category) }}
+          data-testid="debug-log-flow-inspector-category"
+        >
+          {card.category}
+        </span>
+        <span className="text-foreground font-medium">{card.label}</span>
+        {card.timestampLabel ? (
+          <span
+            className="text-muted-foreground font-mono"
+            data-testid="debug-log-flow-inspector-timestamp"
+          >
+            {card.timestampLabel}
+          </span>
+        ) : null}
+        <span
+          className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+            isError ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"
+          }`}
+          data-testid="debug-log-flow-inspector-status"
+        >
+          {card.status}
+        </span>
+        {card.redacted ? (
+          <span
+            className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] text-amber-700"
+            data-testid="debug-log-flow-inspector-redacted"
+          >
+            redacted
+          </span>
+        ) : null}
+      </div>
+      {card.sublabel ? (
+        <p
+          className="text-muted-foreground mt-1 text-xs"
+          data-testid="debug-log-flow-inspector-sublabel"
+        >
+          {card.sublabel}
+        </p>
+      ) : null}
+      {card.rows.length > 0 ? (
+        <dl className="mt-2 grid grid-cols-1 gap-x-3 gap-y-0.5 text-xs sm:grid-cols-2 md:grid-cols-3">
+          {card.rows.map((row) => (
+            <div
+              key={row.key}
+              className="flex gap-1"
+              data-testid={`debug-log-flow-inspector-row-${row.key}`}
+            >
+              <dt className="text-muted-foreground font-mono">{row.key}:</dt>
+              <dd className="text-foreground truncate font-mono" title={row.value}>
+                {row.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {card.messagePreview ? (
+        <p
+          className="text-foreground/80 mt-2 line-clamp-3 font-mono text-xs"
+          data-testid="debug-log-flow-inspector-message"
+        >
+          {card.messagePreview}
+        </p>
       ) : null}
     </div>
   );

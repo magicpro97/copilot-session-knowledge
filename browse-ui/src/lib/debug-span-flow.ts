@@ -1,5 +1,11 @@
 import type { BrowseDebugEntry, DebugSafeAttrs } from "@/lib/api/types";
 
+import {
+  derivePlaybackLane,
+  normalizeAndSortEntries,
+  PLAYBACK_LANE_ORDER,
+  type PlaybackLaneId,
+} from "./debug-event-playback";
 import { deriveSpanTree, type SpanTreeNode } from "./debug-span-tree";
 
 /**
@@ -472,3 +478,367 @@ export function computeFlowLayout(entries: BrowseDebugEntry[]): FlowLayout {
 
   return { nodes, edges, width, height };
 }
+
+// ── Trace inspector model (v2) ───────────────────────────────────────────────
+
+/** Domain used to render the trace overview ruler/lanes. */
+export type TraceTimeMode = "time" | "index";
+
+/** Minimum fractional width so zero-duration bars stay clickable. */
+export const MIN_BAR_RATIO = 0.004;
+
+/** A single per-event bar placed in a lane row. */
+export interface TraceLaneBar {
+  /** Stable selector — matches `BrowseDebugEntry.idx`. */
+  entryIdx: number;
+  laneId: PlaybackLaneId;
+  category: FlowNodeCategory;
+  status: FlowNodeStatus;
+  /** Fractional [0..1] start within range. */
+  startRatio: number;
+  /** Fractional [0..1] width within range; always >= MIN_BAR_RATIO. */
+  widthRatio: number;
+  /** True when no real duration was available (rendered as a minimum-width stub). */
+  isZeroWidth: boolean;
+  /** Short label (tool / hook / skill / etc.) reused from `deriveNodeRender`. */
+  label: string;
+}
+
+/** One lane row in the trace overview (PlaybackLaneId scoped). */
+export interface TraceLane {
+  id: PlaybackLaneId;
+  count: number;
+  errorCount: number;
+  bars: TraceLaneBar[];
+}
+
+/** Time/index axis range and tick labels for the overview ruler. */
+export interface TraceTimeRange {
+  /** ms since epoch in time mode; 0-based index in index mode. */
+  startMs: number;
+  endMs: number;
+  /** Tick positions as ratios [0..1]; 4–6 ticks. */
+  ticks: { ratio: number; label: string }[];
+  mode: TraceTimeMode;
+}
+
+/** Aggregate header counts for the trace overview strip. */
+export interface TraceSummary {
+  totalCount: number;
+  errorCount: number;
+  /** Wall-clock duration in ms (endMs − startMs); null in index mode. */
+  totalDurationMs: number | null;
+  /** Per-lane totals in `PLAYBACK_LANE_ORDER`. */
+  laneTotals: { id: PlaybackLaneId; count: number; errorCount: number }[];
+}
+
+/** Pure layout consumed by the trace-overview UI. */
+export interface TraceLayout {
+  range: TraceTimeRange;
+  /** Lanes with `count > 0`, sorted by `PLAYBACK_LANE_ORDER`. */
+  lanes: TraceLane[];
+  summary: TraceSummary;
+}
+
+/** One safe key/value row rendered in the inspector card grid. */
+export interface TraceInspectorRow {
+  key: string;
+  value: string;
+}
+
+/** Pure model for the local inspector card above the SVG tree. */
+export interface TraceInspectorCard {
+  entryIdx: number;
+  label: string;
+  sublabel: string | null;
+  category: FlowNodeCategory;
+  status: FlowNodeStatus;
+  layer: string | null;
+  timestampLabel: string | null;
+  /** Up to 12 safe key/value rows. Order is fixed; absent rows are omitted. */
+  rows: TraceInspectorRow[];
+  /** Truncated message preview (backend already capped to 200 chars). */
+  messagePreview: string | null;
+  /** True when the underlying entry had any redacted field. */
+  redacted: boolean;
+}
+
+function emptyTraceLayout(): TraceLayout {
+  return {
+    range: { startMs: 0, endMs: 0, ticks: [], mode: "time" },
+    lanes: [],
+    summary: { totalCount: 0, errorCount: 0, totalDurationMs: null, laneTotals: [] },
+  };
+}
+
+function makeTicks(mode: TraceTimeMode, startMs: number, endMs: number) {
+  const span = Math.max(1, endMs - startMs);
+  const ratios = [0, 0.25, 0.5, 0.75, 1];
+  return ratios.map((ratio) => {
+    if (mode === "index") {
+      const idx = Math.round(ratio * span);
+      return { ratio, label: `#${idx}` };
+    }
+    const deltaMs = Math.round(ratio * span);
+    const label = formatDurationLabel(deltaMs) ?? "0ms";
+    return { ratio, label: `+${label}` };
+  });
+}
+
+function laneCategoryFor(entry: BrowseDebugEntry): FlowNodeCategory {
+  return entry.idx === -1 ? "generic" : deriveNodeCategory(entry);
+}
+
+/**
+ * Compute a pure trace-inspector layout (ruler + lanes + bars + summary)
+ * for a flat entry list. Reuses `normalizeAndSortEntries` and
+ * `derivePlaybackLane` from `debug-event-playback.ts` — no new data
+ * plumbing, no raw `attrs` access beyond the existing safe contract.
+ */
+export function computeTraceLayout(entries: BrowseDebugEntry[]): TraceLayout {
+  if (entries.length === 0) return emptyTraceLayout();
+
+  // Exclude synthetic orphans from the time axis (R10).
+  const real = entries.filter((e) => e.idx !== -1);
+  if (real.length === 0) return emptyTraceLayout();
+
+  const { normalized, mode } = normalizeAndSortEntries(real);
+
+  let startMs = 0;
+  let endMs = 0;
+  if (mode === "index") {
+    startMs = 0;
+    endMs = Math.max(1, normalized.length - 1);
+  } else {
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const n of normalized) {
+      if (n.timestampMs === null) continue;
+      const d = n.entry.duration_ms ?? 0;
+      const safeDuration = typeof d === "number" && Number.isFinite(d) && d >= 0 ? d : 0;
+      if (n.timestampMs < min) min = n.timestampMs;
+      if (n.timestampMs + safeDuration > max) max = n.timestampMs + safeDuration;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      // No timestamps at all in time mode (shouldn't happen because that would
+      // trigger index mode), degrade to a single-point window.
+      startMs = 0;
+      endMs = 1;
+    } else {
+      startMs = min;
+      endMs = max <= min ? min + 1 : max;
+    }
+  }
+  const totalSpan = Math.max(1, endMs - startMs);
+
+  // Build a stable per-entry idx → normalized position for index-mode ratios.
+  const positionByIdx = new Map<number, number>();
+  normalized.forEach((n, i) => positionByIdx.set(n.entry.idx, i));
+
+  // Group bars by lane.
+  const laneBars = new Map<PlaybackLaneId, TraceLaneBar[]>();
+  let errorCount = 0;
+  const laneErrors = new Map<PlaybackLaneId, number>();
+
+  for (const n of normalized) {
+    const entry = n.entry;
+    const laneId = derivePlaybackLane(entry);
+    const category = laneCategoryFor(entry);
+    const status = deriveNodeStatus(entry);
+    if (status === "error") {
+      errorCount += 1;
+      laneErrors.set(laneId, (laneErrors.get(laneId) ?? 0) + 1);
+    }
+
+    let startRatio: number;
+    let widthRatio: number;
+    let isZeroWidth = false;
+
+    if (mode === "index") {
+      const pos = positionByIdx.get(entry.idx) ?? 0;
+      startRatio = pos / totalSpan;
+      widthRatio = MIN_BAR_RATIO;
+      isZeroWidth = true;
+    } else {
+      if (n.timestampMs === null) {
+        // Time mode with missing timestamp: park the bar at the end as
+        // a zero-width marker so it's not lost but is visually de-emphasised.
+        startRatio = 1;
+        widthRatio = MIN_BAR_RATIO;
+        isZeroWidth = true;
+      } else {
+        startRatio = (n.timestampMs - startMs) / totalSpan;
+        const d = entry.duration_ms;
+        if (typeof d === "number" && Number.isFinite(d) && d > 0) {
+          widthRatio = Math.max(MIN_BAR_RATIO, d / totalSpan);
+        } else {
+          widthRatio = MIN_BAR_RATIO;
+          isZeroWidth = true;
+        }
+      }
+    }
+
+    // Clamp to [0, 1] for safety.
+    if (startRatio < 0) startRatio = 0;
+    if (startRatio > 1) startRatio = 1;
+    if (widthRatio < MIN_BAR_RATIO) widthRatio = MIN_BAR_RATIO;
+    if (widthRatio > 1) widthRatio = 1;
+    // Ensure the bar fits inside [0, 1]: shift startRatio left so that
+    // `startRatio + widthRatio <= 1`. Previously we shrank widthRatio when
+    // it overflowed, but a boundary-hugging bar (startRatio === 1) ended up
+    // rendered at the far-right edge and clipped out of the viewport. The
+    // index-mode last entry and time-mode trailing zero/null-duration events
+    // at the max timestamp both fall into this case.
+    if (startRatio + widthRatio > 1) {
+      startRatio = Math.max(0, 1 - widthRatio);
+    }
+
+    const label = deriveNodeRender(entry).label;
+
+    const bar: TraceLaneBar = {
+      entryIdx: entry.idx,
+      laneId,
+      category,
+      status,
+      startRatio,
+      widthRatio,
+      isZeroWidth,
+      label,
+    };
+    const arr = laneBars.get(laneId);
+    if (arr) arr.push(bar);
+    else laneBars.set(laneId, [bar]);
+  }
+
+  // Sort bars per lane (R6).
+  for (const bars of laneBars.values()) {
+    bars.sort((a, b) => {
+      if (a.startRatio !== b.startRatio) return a.startRatio - b.startRatio;
+      return a.entryIdx - b.entryIdx;
+    });
+  }
+
+  // Emit lanes in PLAYBACK_LANE_ORDER; drop empty lanes (R5).
+  const lanes: TraceLane[] = [];
+  const laneTotals: TraceSummary["laneTotals"] = [];
+  for (const id of PLAYBACK_LANE_ORDER) {
+    const bars = laneBars.get(id);
+    if (!bars || bars.length === 0) continue;
+    const laneErrorCount = laneErrors.get(id) ?? 0;
+    lanes.push({ id, count: bars.length, errorCount: laneErrorCount, bars });
+    laneTotals.push({ id, count: bars.length, errorCount: laneErrorCount });
+  }
+
+  const ticks = makeTicks(mode, startMs, endMs);
+
+  return {
+    range: { startMs, endMs, ticks, mode },
+    lanes,
+    summary: {
+      totalCount: normalized.length,
+      errorCount,
+      totalDurationMs: mode === "time" ? endMs - startMs : null,
+      laneTotals,
+    },
+  };
+}
+
+/**
+ * Allowlist of tooltip-line keys that `deriveTooltipLines` is permitted to
+ * emit. Restricting structured rows to this set prevents free-form messages
+ * such as `"Error: file not found"` or `"bash: command not found"` (which
+ * happen to contain `": "`) from being misclassified as `key: value` rows.
+ */
+const ALLOWED_INSPECTOR_KEYS: ReadonlySet<string> = new Set([
+  "kind",
+  "event",
+  "source",
+  "tool",
+  "hook",
+  "skill",
+  "path",
+  "status",
+  "duration",
+  "input",
+  "output",
+  "tokens",
+  "tool_requests",
+  "redacted",
+  "time",
+  "exit",
+  "exit_code",
+  "error_category",
+]);
+
+/**
+ * Map a `tooltipLines`-style key (`"kind: tool_call"`) into a structured
+ * inspector row. Only keys in `ALLOWED_INSPECTOR_KEYS` are accepted so
+ * free-form messages containing `": "` cannot synthesise arbitrary rows.
+ * Returns null for lines that are not safe `key: value` pairs.
+ */
+function parseTooltipLineToRow(line: string): TraceInspectorRow | null {
+  const idx = line.indexOf(": ");
+  if (idx <= 0) return null;
+  const key = line.slice(0, idx).trim();
+  const value = line.slice(idx + 2).trim();
+  if (!key || !value) return null;
+  if (!ALLOWED_INSPECTOR_KEYS.has(key)) return null;
+  return { key, value };
+}
+
+/**
+ * Build the inspector card payload for a single entry. Reuses the safe
+ * `tooltipLines` view (default-deny over safe attrs) so the renderer
+ * never reads raw `attrs` beyond the existing DebugSafeAttrs contract.
+ *
+ * `deriveTooltipLines` always appends `entry.message` (when non-empty)
+ * as the final line. We consume that trailing line as `messagePreview`
+ * up front and only parse earlier lines into structured rows. This keeps
+ * free-form messages like `"Error: file not found"` or
+ * `"TypeError: cannot read properties"` out of the row grid.
+ */
+export function deriveInspectorCard(entry: BrowseDebugEntry): TraceInspectorCard {
+  const render = deriveNodeRender(entry);
+  const lines = render.tooltipLines.slice();
+  let messagePreview: string | null = null;
+
+  if (
+    typeof entry.message === "string" &&
+    entry.message.length > 0 &&
+    lines.length > 0 &&
+    lines[lines.length - 1] === entry.message
+  ) {
+    messagePreview = lines.pop() ?? null;
+  }
+
+  const rows: TraceInspectorRow[] = [];
+  for (const line of lines) {
+    const row = parseTooltipLineToRow(line);
+    if (row && rows.length < 12) rows.push(row);
+  }
+
+  return {
+    entryIdx: entry.idx,
+    label: render.label,
+    sublabel: render.sublabel,
+    category: render.category,
+    status: render.status,
+    layer: render.layer,
+    timestampLabel: render.timestampLabel,
+    rows,
+    messagePreview,
+    redacted: entry.redacted === true,
+  };
+}
+
+/**
+ * Stable test-id slug for a `PlaybackLaneId` (lowercase, `/` → `-`).
+ * Exported so component/playwright tests can derive selectors without
+ * duplicating the mapping. `Tool/Hook/Skill` → `tool-hook-skill`.
+ */
+export function laneIdSlug(id: PlaybackLaneId): string {
+  return id.toLowerCase().replace(/\//g, "-");
+}
+
+/** Re-export so consumers don't need a second import. */
+export { type PlaybackLaneId };

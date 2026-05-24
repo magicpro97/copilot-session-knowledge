@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { BrowseDebugEntry, DebugSafeAttrs } from "@/lib/api/types";
 import {
   computeFlowLayout,
+  computeTraceLayout,
   deriveGroupKey,
+  deriveInspectorCard,
   deriveNodeCategory,
   deriveNodeRender,
   deriveNodeStatus,
@@ -13,6 +15,8 @@ import {
   FLOW_VERTICAL_GAP,
   formatDurationLabel,
   formatTimestampLabel,
+  laneIdSlug,
+  MIN_BAR_RATIO,
   readSafeAttrs,
 } from "@/lib/debug-span-flow";
 
@@ -429,5 +433,469 @@ describe("deriveNodeRender — label/sublabel/tooltip", () => {
     expect(r.label).toBe("nonzero_exit");
     expect(r.sublabel).toContain("exit 2");
     expect(r.status).toBe("error");
+  });
+});
+
+// ── Trace inspector model (v2) ───────────────────────────────────────────────
+
+describe("computeTraceLayout", () => {
+  it("returns an empty layout for an empty entry list", () => {
+    const layout = computeTraceLayout([]);
+    expect(layout.lanes).toEqual([]);
+    expect(layout.range).toEqual({ startMs: 0, endMs: 0, ticks: [], mode: "time" });
+    expect(layout.summary).toEqual({
+      totalCount: 0,
+      errorCount: 0,
+      totalDurationMs: null,
+      laneTotals: [],
+    });
+  });
+
+  it("emits lanes in PLAYBACK_LANE_ORDER and drops empty lanes", () => {
+    const entries = [
+      makeEntry({
+        idx: 0,
+        kind: "turn_start",
+        timestamp: "2024-01-01T12:00:00.000Z",
+        span_id: "t",
+      }),
+      withAttrs(
+        {
+          idx: 1,
+          kind: "tool_call",
+          tool_name: "bash",
+          duration_ms: 100,
+          timestamp: "2024-01-01T12:00:01.000Z",
+        },
+        { tool_status: "ok" }
+      ),
+      withAttrs(
+        {
+          idx: 2,
+          kind: "hook",
+          timestamp: "2024-01-01T12:00:02.000Z",
+        },
+        { hook_type: "preToolUse", hook_status: "ok" }
+      ),
+      withAttrs(
+        {
+          idx: 3,
+          kind: "generic",
+          timestamp: "2024-01-01T12:00:03.000Z",
+        },
+        { skill_name: "code-reviewer" }
+      ),
+      makeEntry({
+        idx: 4,
+        kind: "agent_response",
+        timestamp: "2024-01-01T12:00:04.000Z",
+      }),
+      makeEntry({
+        idx: 5,
+        kind: "error",
+        timestamp: "2024-01-01T12:00:05.000Z",
+        status: "error",
+      }),
+    ];
+    const layout = computeTraceLayout(entries);
+    const laneIds = layout.lanes.map((l) => l.id);
+    // Turn, Model, Tool/Hook/Skill, Error must appear; SubAgent/Notification absent.
+    expect(laneIds).toEqual(["Turn", "Model", "Tool/Hook/Skill", "Error"]);
+    expect(layout.summary.errorCount).toBe(1);
+    expect(layout.summary.totalCount).toBe(6);
+    // Tool/Hook/Skill lane combines tool+hook+skill entries.
+    const ths = layout.lanes.find((l) => l.id === "Tool/Hook/Skill")!;
+    expect(ths.count).toBe(3);
+  });
+
+  it("falls back to index mode when >5% of entries have null timestamps", () => {
+    const entries: BrowseDebugEntry[] = [];
+    for (let i = 0; i < 10; i++) {
+      const entry = makeEntry({ idx: i });
+      // 3 of 10 have null timestamp (30% — well above 5% threshold).
+      // makeEntry uses `??` so we have to overwrite after construction.
+      if (i < 3) entry.timestamp = null;
+      entries.push(entry);
+    }
+    const layout = computeTraceLayout(entries);
+    expect(layout.range.mode).toBe("index");
+    expect(layout.range.startMs).toBe(0);
+    expect(layout.range.endMs).toBeGreaterThanOrEqual(1);
+    // All ticks labelled with the "#" prefix.
+    expect(layout.range.ticks.every((t) => t.label.startsWith("#"))).toBe(true);
+    expect(layout.summary.totalDurationMs).toBeNull();
+  });
+
+  it("forces endMs > startMs when only a single timestamp is present", () => {
+    const layout = computeTraceLayout([
+      makeEntry({ idx: 0, timestamp: "2024-01-01T12:00:00.000Z", duration_ms: null }),
+    ]);
+    expect(layout.range.mode).toBe("time");
+    expect(layout.range.endMs).toBeGreaterThan(layout.range.startMs);
+    // Ticks must always be 5 entries with "+" prefix in time mode.
+    expect(layout.range.ticks).toHaveLength(5);
+    expect(layout.range.ticks[0].label.startsWith("+")).toBe(true);
+  });
+
+  it("assigns MIN_BAR_RATIO width and isZeroWidth=true for null duration", () => {
+    const layout = computeTraceLayout([
+      makeEntry({
+        idx: 0,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:00.000Z",
+        duration_ms: null,
+        span_id: "x",
+      }),
+      makeEntry({
+        idx: 1,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:05.000Z",
+        duration_ms: 1000,
+        span_id: "y",
+      }),
+    ]);
+    const bars = layout.lanes.find((l) => l.id === "Tool/Hook/Skill")!.bars;
+    const zero = bars.find((b) => b.entryIdx === 0)!;
+    expect(zero.isZeroWidth).toBe(true);
+    expect(zero.widthRatio).toBeCloseTo(MIN_BAR_RATIO, 6);
+    const real = bars.find((b) => b.entryIdx === 1)!;
+    expect(real.isZeroWidth).toBe(false);
+    expect(real.widthRatio).toBeGreaterThan(MIN_BAR_RATIO);
+  });
+
+  it("sorts bars within a lane by startRatio ASC then entryIdx ASC", () => {
+    const layout = computeTraceLayout([
+      makeEntry({
+        idx: 5,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:02.000Z",
+        span_id: "a",
+      }),
+      makeEntry({
+        idx: 2,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:01.000Z",
+        span_id: "b",
+      }),
+      makeEntry({
+        idx: 3,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:01.000Z",
+        span_id: "c",
+      }),
+    ]);
+    const bars = layout.lanes.find((l) => l.id === "Tool/Hook/Skill")!.bars;
+    expect(bars.map((b) => b.entryIdx)).toEqual([2, 3, 5]);
+  });
+
+  it("skips synthetic orphan entries (idx === -1)", () => {
+    const orphan = makeEntry({
+      idx: -1,
+      kind: "generic",
+      timestamp: null,
+      source: "synthetic",
+    });
+    const real = makeEntry({
+      idx: 0,
+      kind: "tool_call",
+      tool_name: "bash",
+      timestamp: "2024-01-01T12:00:00.000Z",
+      span_id: "a",
+    });
+    const layout = computeTraceLayout([orphan, real]);
+    const allBars = layout.lanes.flatMap((l) => l.bars);
+    expect(allBars.find((b) => b.entryIdx === -1)).toBeUndefined();
+    expect(allBars).toHaveLength(1);
+  });
+
+  it("does not throw and stays bounded for large pages (200 entries)", () => {
+    const entries: BrowseDebugEntry[] = [];
+    for (let i = 0; i < 200; i++) {
+      entries.push(
+        makeEntry({
+          idx: i,
+          kind: i % 3 === 0 ? "tool_call" : "agent_response",
+          tool_name: i % 3 === 0 ? "bash" : null,
+          timestamp: new Date(2024, 0, 1, 12, 0, 0, i * 50).toISOString(),
+          duration_ms: 30,
+          span_id: `s${i}`,
+        })
+      );
+    }
+    const layout = computeTraceLayout(entries);
+    expect(layout.summary.totalCount).toBe(200);
+    expect(layout.lanes.length).toBeGreaterThan(0);
+    for (const lane of layout.lanes) {
+      for (const bar of lane.bars) {
+        expect(bar.startRatio).toBeGreaterThanOrEqual(0);
+        expect(bar.startRatio).toBeLessThanOrEqual(1);
+        expect(bar.widthRatio).toBeGreaterThanOrEqual(MIN_BAR_RATIO);
+      }
+    }
+  });
+
+  it("counts errors per lane and in the summary", () => {
+    const layout = computeTraceLayout([
+      withAttrs(
+        {
+          idx: 0,
+          kind: "tool_call",
+          tool_name: "bash",
+          timestamp: "2024-01-01T12:00:00.000Z",
+          duration_ms: 50,
+        },
+        { tool_success: false }
+      ),
+      makeEntry({
+        idx: 1,
+        kind: "error",
+        timestamp: "2024-01-01T12:00:01.000Z",
+        status: "error",
+      }),
+    ]);
+    expect(layout.summary.errorCount).toBe(2);
+    const ths = layout.lanes.find((l) => l.id === "Tool/Hook/Skill")!;
+    expect(ths.errorCount).toBe(1);
+    const errLane = layout.lanes.find((l) => l.id === "Error")!;
+    expect(errLane.errorCount).toBe(1);
+  });
+});
+
+describe("deriveInspectorCard", () => {
+  it("returns safe rows derived from tooltipLines (no raw attrs leakage)", () => {
+    const entry = withAttrs(
+      {
+        idx: 1,
+        kind: "tool_call",
+        tool_name: "bash",
+        duration_ms: 250,
+        timestamp: "2024-01-01T12:00:05.000Z",
+        message: "ran bash",
+        redacted: true,
+      },
+      {
+        tool_status: "ok",
+        tool_result_type: "stdout",
+        tool_metric_input_bytes: 16,
+        tool_metric_output_bytes: 128,
+        output_tokens: 42,
+        tool_request_count: 2,
+        event_type: "tool.end",
+      }
+    );
+    const card = deriveInspectorCard(entry);
+    expect(card.entryIdx).toBe(1);
+    expect(card.label).toBe("bash");
+    expect(card.category).toBe("tool");
+    expect(card.status).toBe("ok");
+    expect(card.timestampLabel).toBe("12:00:05");
+    expect(card.redacted).toBe(true);
+    const keys = card.rows.map((r) => r.key);
+    expect(keys).toContain("kind");
+    expect(keys).toContain("tool");
+    expect(keys).toContain("duration");
+    expect(keys).toContain("status");
+    expect(keys).toContain("input");
+    expect(keys).toContain("output");
+    expect(keys).toContain("tokens");
+    expect(keys).toContain("tool_requests");
+    // Bound to 12 rows max.
+    expect(card.rows.length).toBeLessThanOrEqual(12);
+    // No unknown keys (anything not derived from DebugSafeAttrs/top-level fields).
+    const allowed = new Set([
+      "kind",
+      "event",
+      "source",
+      "tool",
+      "hook",
+      "skill",
+      "path",
+      "status",
+      "duration",
+      "input",
+      "output",
+      "tokens",
+      "tool_requests",
+      "redacted",
+      "time",
+      "exit",
+      "exit_code",
+      "error_category",
+    ]);
+    for (const r of card.rows) {
+      expect(allowed.has(r.key)).toBe(true);
+    }
+    // Message preview surfaces last (non `key: value` line).
+    expect(card.messagePreview).toBe("ran bash");
+  });
+
+  it("returns null messagePreview when entry.message is empty", () => {
+    const card = deriveInspectorCard(
+      makeEntry({ idx: 0, kind: "tool_call", tool_name: "bash", message: "" })
+    );
+    expect(card.messagePreview).toBeNull();
+  });
+
+  it("preserves skill bytes / output_tokens / exit_code metadata", () => {
+    const skillCard = deriveInspectorCard(
+      withAttrs(
+        { idx: 0, kind: "generic" },
+        {
+          skill_name: "code-reviewer",
+          skill_path_category: "skill_pkg",
+          skill_content_bytes: 1024,
+        }
+      )
+    );
+    expect(skillCard.category).toBe("skill");
+    expect(skillCard.rows.find((r) => r.key === "skill")?.value).toBe("code-reviewer");
+    expect(skillCard.rows.find((r) => r.key === "path")?.value).toBe("skill_pkg");
+  });
+
+  it.each([
+    ["Error: file not found", "Error"],
+    ["bash: command not found", "bash"],
+    ["TypeError: cannot read properties of undefined", "TypeError"],
+  ])("keeps free-form colon message %j as messagePreview, not a row", (message, forbiddenKey) => {
+    const card = deriveInspectorCard(
+      makeEntry({ idx: 0, kind: "error", status: "error", message })
+    );
+    expect(card.messagePreview).toBe(message);
+    expect(card.rows.map((r) => r.key)).not.toContain(forbiddenKey);
+  });
+
+  it("only emits rows whose keys are in the inspector allowlist", () => {
+    const allowed = new Set([
+      "kind",
+      "event",
+      "source",
+      "tool",
+      "hook",
+      "skill",
+      "path",
+      "status",
+      "duration",
+      "input",
+      "output",
+      "tokens",
+      "tool_requests",
+      "redacted",
+      "time",
+      "exit",
+      "exit_code",
+      "error_category",
+    ]);
+    const card = deriveInspectorCard(
+      withAttrs(
+        {
+          idx: 0,
+          kind: "tool_call",
+          tool_name: "bash",
+          duration_ms: 25,
+          timestamp: "2024-01-01T12:00:00.000Z",
+          message: "ok",
+        },
+        { tool_status: "ok" }
+      )
+    );
+    for (const row of card.rows) {
+      expect(allowed.has(row.key)).toBe(true);
+    }
+  });
+});
+
+describe("computeTraceLayout — boundary visibility", () => {
+  it("keeps index-mode last entry inside [0, 1] (startRatio + widthRatio <= 1)", () => {
+    const entries: BrowseDebugEntry[] = [];
+    for (let i = 0; i < 5; i++) {
+      const entry = makeEntry({
+        idx: i,
+        kind: "tool_call",
+        tool_name: "bash",
+        span_id: `s${i}`,
+      });
+      // Force index mode by nulling timestamps for >5% of the page.
+      entry.timestamp = null;
+      entries.push(entry);
+    }
+    const layout = computeTraceLayout(entries);
+    expect(layout.range.mode).toBe("index");
+    const allBars = layout.lanes.flatMap((l) => l.bars);
+    expect(allBars.length).toBeGreaterThan(0);
+    for (const bar of allBars) {
+      expect(bar.startRatio).toBeGreaterThanOrEqual(0);
+      expect(bar.startRatio + bar.widthRatio).toBeLessThanOrEqual(1 + 1e-9);
+    }
+    const last = allBars.find((b) => b.entryIdx === 4)!;
+    expect(last.startRatio + last.widthRatio).toBeLessThanOrEqual(1 + 1e-9);
+    // The last bar must still be visible (not clipped against the right edge).
+    expect(last.startRatio).toBeLessThanOrEqual(1 - MIN_BAR_RATIO + 1e-9);
+  });
+
+  it("keeps a time-mode trailing zero-duration entry at the max timestamp visible", () => {
+    const layout = computeTraceLayout([
+      makeEntry({
+        idx: 0,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:00.000Z",
+        duration_ms: 1000,
+        span_id: "a",
+      }),
+      makeEntry({
+        idx: 1,
+        kind: "tool_call",
+        tool_name: "bash",
+        timestamp: "2024-01-01T12:00:01.000Z",
+        duration_ms: null,
+        span_id: "b",
+      }),
+    ]);
+    expect(layout.range.mode).toBe("time");
+    const bars = layout.lanes.find((l) => l.id === "Tool/Hook/Skill")!.bars;
+    const trailing = bars.find((b) => b.entryIdx === 1)!;
+    expect(trailing.isZeroWidth).toBe(true);
+    expect(trailing.widthRatio).toBeCloseTo(MIN_BAR_RATIO, 6);
+    expect(trailing.startRatio + trailing.widthRatio).toBeLessThanOrEqual(1 + 1e-9);
+    // Must remain inside the viewport, not parked at the far-right edge.
+    expect(trailing.startRatio).toBeLessThanOrEqual(1 - MIN_BAR_RATIO + 1e-9);
+  });
+
+  it("keeps a time-mode null-timestamp parked stub inside the viewport", () => {
+    const real = makeEntry({
+      idx: 0,
+      kind: "tool_call",
+      tool_name: "bash",
+      timestamp: "2024-01-01T12:00:00.000Z",
+      duration_ms: 1000,
+      span_id: "a",
+    });
+    const stub = makeEntry({
+      idx: 1,
+      kind: "tool_call",
+      tool_name: "bash",
+      duration_ms: null,
+      span_id: "b",
+    });
+    stub.timestamp = null;
+    const layout = computeTraceLayout([real, stub]);
+    expect(layout.range.mode).toBe("time");
+    const bars = layout.lanes.find((l) => l.id === "Tool/Hook/Skill")!.bars;
+    const parked = bars.find((b) => b.entryIdx === 1)!;
+    expect(parked.isZeroWidth).toBe(true);
+    expect(parked.startRatio + parked.widthRatio).toBeLessThanOrEqual(1 + 1e-9);
+  });
+});
+
+describe("laneIdSlug", () => {
+  it("lowercases and replaces slashes with hyphens", () => {
+    expect(laneIdSlug("Tool/Hook/Skill")).toBe("tool-hook-skill");
+    expect(laneIdSlug("Notification/Compaction")).toBe("notification-compaction");
+    expect(laneIdSlug("Model")).toBe("model");
   });
 });

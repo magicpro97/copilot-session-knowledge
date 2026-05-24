@@ -476,6 +476,30 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   await expect(toolNodeTitle).toHaveText(/kind: tool_call/);
   await expect(toolNodeTitle).toHaveText(/tool: view/);
 
+  // -- v2 trace overview strip + inspector ------------------------------
+  // The trace strip renders above the legacy tree and must coexist with it.
+  const trace = page.getByTestId("debug-log-flow-trace");
+  await expect(trace).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-time-ruler")).toBeVisible();
+  // At least the two highest-traffic lanes for this fixture must be present.
+  await expect(page.getByTestId("debug-log-flow-lane-tool-hook-skill")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-lane-model")).toBeVisible();
+  // Ruler must have >= 2 ticks (start + end at minimum).
+  expect(await page.locator('[data-testid^="debug-log-flow-tick-"]').count()).toBeGreaterThanOrEqual(2);
+
+  // Clicking a tool bar opens the inspector card with the safe metadata rows
+  // (and ALSO opens the existing DetailDrawer — selection contract preserved).
+  await expect(page.getByTestId("debug-log-flow-inspector-empty")).toBeVisible();
+  await page.getByTestId("debug-log-flow-bar-1").click();
+  const inspector = page.getByTestId("debug-log-flow-inspector");
+  await expect(inspector).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-inspector-status")).toHaveText(/ok/);
+  await expect(page.getByTestId("debug-log-flow-bar-1")).toHaveAttribute("data-flow-status", "ok");
+  await expect(page.getByTestId("debug-log-flow-bar-1")).toHaveAttribute(
+    "data-flow-lane",
+    "Tool/Hook/Skill"
+  );
+
   // -- has_more affordance ----------------------------------------------
   await expect(page.getByTestId("debug-log-flow-has-more")).toBeVisible();
   await expect(page.getByTestId("debug-log-flow-has-more")).toContainText(/More events available/);
@@ -485,26 +509,55 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   await expect(zoom).toBeVisible();
   await expect(zoom).toHaveText("100%");
 
-  // Position the cursor over the SVG so the wheel event targets the chart.
+  // Dispatch WheelEvents directly on the SVG via the DOM. This goes through
+  // the same `addEventListener("wheel", ..., { passive: false })` path the
+  // production component installs, so the regression intent (non-passive
+  // listener actually drives zoom) is preserved. CDP's `page.mouse.wheel()`
+  // does not reliably reach native non-passive listeners in headless
+  // Chromium, which made this assertion flaky without losing the contract.
   const svg = page.locator('svg[aria-label="Debug log flow chart"]');
+  await expect(svg).toBeVisible();
   const box = await svg.boundingBox();
   expect(box, "Flow chart SVG must have a layout box").not.toBeNull();
-  if (box) {
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    // Two zoom-out wheel ticks; each: factor = 2^(-200 * 0.002) ≈ 0.758.
-    // Combined ≈ 0.575, which rounds to "57%" — distinct from "100%".
-    await page.mouse.wheel(0, 200);
-    await page.mouse.wheel(0, 200);
-  }
+
+  // Two zoom-out wheel ticks; each: factor = 2^(-200 * 0.002) ≈ 0.758.
+  // Combined ≈ 0.575, which rounds to "57%" — distinct from "100%".
+  await svg.evaluate((el, box) => {
+    const cx = box ? box.x + box.width / 2 : 0;
+    const cy = box ? box.y + box.height / 2 : 0;
+    for (let i = 0; i < 2; i += 1) {
+      el.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: 200,
+          deltaMode: 0,
+          clientX: cx,
+          clientY: cy,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    }
+  }, box);
 
   // The zoom indicator must visibly change. If the listener regresses to
   // passive (or the handler stops calling setScale), this stays "100%".
   await expect(zoom).not.toHaveText("100%", { timeout: 5_000 });
 
   // Zoom in afterwards to prove both directions still work.
-  if (box) {
-    await page.mouse.wheel(0, -400);
-  }
+  await svg.evaluate((el, box) => {
+    const cx = box ? box.x + box.width / 2 : 0;
+    const cy = box ? box.y + box.height / 2 : 0;
+    el.dispatchEvent(
+      new WheelEvent("wheel", {
+        deltaY: -400,
+        deltaMode: 0,
+        clientX: cx,
+        clientY: cy,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+  }, box);
   await expect(zoom).toHaveText(/\d+%/);
 
   // -- Console must be clean of the passive-listener warning ------------
