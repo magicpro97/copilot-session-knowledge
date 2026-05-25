@@ -209,10 +209,14 @@ describe("SessionsPage", () => {
     const fallback = screen.getByTestId("configured-browser-fallback");
     expect(fallback).toBeInTheDocument();
 
-    // Shows open-local-app CTA pointing to the loopback URL
+    // Shows HTTPS-first local app CTA plus HTTP fallback for no-TLS backends.
     const cta = screen.getByTestId("open-configured-browser-cta");
-    expect(cta).toHaveAttribute("href", "http://127.0.0.1:8765/");
+    expect(cta).toHaveAttribute("href", "https://127.0.0.1:8765/");
     expect(cta).toHaveAttribute("target", "_blank");
+    expect(screen.getByTestId("open-configured-browser-http-fallback")).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:8765/"
+    );
 
     // Chromium (Chrome/Edge) is supported — actionable LNA/PNA message
     expect(fallback).toHaveTextContent(/Chrome\/Edge/i);

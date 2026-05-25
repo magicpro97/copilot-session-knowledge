@@ -94,7 +94,8 @@ const BROWSER_LABELS: Record<BrowserKind, string> = {
   other: "Your browser",
 };
 
-const LOCAL_UI_URL = "http://127.0.0.1:8765/";
+const LOCAL_UI_URL = "https://127.0.0.1:8765/";
+const LOCAL_UI_HTTP_FALLBACK_URL = "http://127.0.0.1:8765/";
 const LOCAL_BROWSER_COMMAND = "browse --hosted-bootstrap --open-browser chrome";
 const BROWSER_SCAN_COMMAND = "browse --list-browsers";
 
@@ -208,6 +209,20 @@ function ConfiguredBrowserFallback({ browserInfo }: { browserInfo: BrowserInfo }
           <CodeSnippet copyText={BROWSER_SCAN_COMMAND}>{BROWSER_SCAN_COMMAND}</CodeSnippet>.
         </span>
       </div>
+      <p className="text-muted-foreground text-xs">
+        If your backend was started with <CodeSnippet copyText="--no-tls">--no-tls</CodeSnippet>,
+        use{" "}
+        <a
+          href={LOCAL_UI_HTTP_FALLBACK_URL}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="open-configured-browser-http-fallback"
+          className="font-mono text-blue-600 underline underline-offset-2 dark:text-blue-400"
+        >
+          {LOCAL_UI_HTTP_FALLBACK_URL}
+        </a>{" "}
+        instead.
+      </p>
       <p className="text-muted-foreground text-xs">
         To start the backend and open Chrome without installing a new browser, run{" "}
         <CodeSnippet copyText={LOCAL_BROWSER_COMMAND}>{LOCAL_BROWSER_COMMAND}</CodeSnippet>. No

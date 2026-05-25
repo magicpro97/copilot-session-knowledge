@@ -242,8 +242,12 @@ describe("DiagnosticPanel", () => {
     expect(fallback).toHaveTextContent(/browse --hosted-bootstrap --open-browser chrome/);
     expect(fallback).not.toHaveTextContent(/--disable-web-security/);
     const cta = screen.getByTestId("open-configured-browser-cta");
-    expect(cta).toHaveAttribute("href", "http://127.0.0.1:8765/");
+    expect(cta).toHaveAttribute("href", "https://127.0.0.1:8765/");
     expect(cta).toHaveAttribute("target", "_blank");
+    expect(screen.getByTestId("open-configured-browser-http-fallback")).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:8765/"
+    );
   });
 
   it("Safari fallback reports hosted-to-local recovery as unsupported", () => {
