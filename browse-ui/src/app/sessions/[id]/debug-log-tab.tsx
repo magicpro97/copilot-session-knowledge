@@ -17,10 +17,12 @@ import {
 import {
   useDebugLog,
   useSessionDebugLog,
+  useSessionMissionAtlas,
   useSubagentActivity,
   useSubagentInternals,
 } from "@/lib/api/hooks";
 import type { BrowseDebugEntry, DebugLogParams, HostProfile } from "@/lib/api/types";
+import { buildFlowAggregate, pageForIdx } from "@/lib/debug-flow-aggregate";
 import { deriveSpanTree, type SpanTreeNode } from "@/lib/debug-span-tree";
 import {
   deriveMissionRollup,
@@ -813,6 +815,34 @@ export function DebugLogTab({
     [subagentInternalsQuery.data]
   );
 
+  // Full-session Mission Atlas — fetched only when Flow view is active.
+  // Non-fatal: if the query fails, the page-level trace strip remains intact.
+  const atlasQuery = useSessionMissionAtlas(
+    sessionId,
+    viewMode === "flow" && Boolean(sessionId),
+    host
+  );
+
+  // Build the full-session aggregate model for FlowSessionCanvas.
+  // Only computed when viewMode === "flow" to avoid unnecessary work.
+  const flowAggregate = useMemo(
+    () =>
+      viewMode === "flow"
+        ? buildFlowAggregate(atlasQuery.data, subagentQuery.data, subagentInternalsQuery.data)
+        : null,
+    [viewMode, atlasQuery.data, subagentQuery.data, subagentInternalsQuery.data]
+  );
+
+  // Navigate to the page containing idx, clear filters, queue pendingFocusRef.
+  // Reuses the same pattern as the focusEntryIdx effect (lines 706-718).
+  const handleNavigateToIdx = useCallback((idx: number) => {
+    const targetPage = pageForIdx(idx, PAGE_SIZE);
+    pendingFocusRef.current = { idx, targetPage };
+    setFilters({ text: "", kind: "", level: "", status: "" });
+    setSelectedEntry(null);
+    setPage(targetPage);
+  }, []);
+
   // Sub-agent panel ref and flash tick for MissionStrip chip interaction.
   const subagentPanelRef = useRef<HTMLDivElement>(null);
   const [subagentFlashTick, setSubagentFlashTick] = useState(0);
@@ -968,8 +998,8 @@ export function DebugLogTab({
         }
       />
 
-      {/* View mode toggle — only shown when the dataset has span_ids */}
-      {hasSpanIds && (
+      {/* Flow is full-session aggregate now; only Tree still depends on span_ids. */}
+      {normalizedData.events.length > 0 && (
         <div className="flex items-center gap-1" role="group" aria-label="Debug log view mode">
           <button
             type="button"
@@ -983,18 +1013,20 @@ export function DebugLogTab({
           >
             List
           </button>
-          <button
-            type="button"
-            className={`rounded px-2 py-1 text-xs transition-colors ${
-              viewMode === "tree"
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-            aria-pressed={viewMode === "tree"}
-            onClick={() => setViewMode("tree")}
-          >
-            Tree
-          </button>
+          {hasSpanIds ? (
+            <button
+              type="button"
+              className={`rounded px-2 py-1 text-xs transition-colors ${
+                viewMode === "tree"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              aria-pressed={viewMode === "tree"}
+              onClick={() => setViewMode("tree")}
+            >
+              Tree
+            </button>
+          ) : null}
           <button
             type="button"
             data-testid="debug-log-view-flow"
@@ -1020,6 +1052,13 @@ export function DebugLogTab({
           hasMore={has_more}
           totalEvents={total}
           subagentInternals={subagentInternalsQuery.data}
+          aggregate={flowAggregate ?? undefined}
+          atlasLoading={atlasQuery.isLoading}
+          atlasError={atlasQuery.isError}
+          currentPage={page}
+          currentPageStart={page * PAGE_SIZE}
+          currentPageEnd={page * PAGE_SIZE + normalizedData.events.length - 1}
+          onNavigateToIdx={handleNavigateToIdx}
         />
       ) : viewMode === "tree" ? (
         <SpanTreeView

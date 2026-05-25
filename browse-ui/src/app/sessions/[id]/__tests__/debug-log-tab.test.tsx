@@ -7,6 +7,7 @@ import type {
   BrowseDebugEntry,
   DebugLogResponse,
   SessionDebugLogResponse,
+  SessionMissionAtlasResponse,
   SubagentActivityResponse,
   SubagentInternalsResponse,
 } from "@/lib/api/types";
@@ -35,6 +36,11 @@ vi.mock("@/lib/api/hooks", () => ({
     error: null,
     isLoading: false,
   })),
+  useSessionMissionAtlas: vi.fn(() => ({
+    data: null,
+    error: null,
+    isLoading: false,
+  })),
 }));
 
 import {
@@ -42,6 +48,7 @@ import {
   useSessionDebugLog,
   useSubagentActivity,
   useSubagentInternals,
+  useSessionMissionAtlas,
 } from "@/lib/api/hooks";
 
 // Reset all mocks to their default no-data state before every test.
@@ -50,6 +57,7 @@ beforeEach(() => {
   (useSessionDebugLog as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
   (useSubagentActivity as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
   (useSubagentInternals as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
+  (useSessionMissionAtlas as Mock).mockReturnValue({ data: null, error: null, isLoading: false });
 });
 
 // ── Mock lucide-react icons ───────────────────────────────────────────────────
@@ -706,14 +714,15 @@ describe("DebugLogTab – tree view toggle visibility", () => {
     expect(screen.getByRole("button", { name: /^tree$/i })).toBeInTheDocument();
   });
 
-  it("does NOT show toggle when all entries have span_id=null", () => {
+  it("hides Tree but keeps Flow available when all current-page entries have span_id=null", () => {
     (useDebugLog as Mock).mockReturnValue({
       data: makeResponse([makeEntry({ idx: 0, span_id: null, parent_span_id: null })]),
       error: null,
       isLoading: false,
     });
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
-    expect(screen.queryByRole("button", { name: /^list$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^list$/i })).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-view-flow")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^tree$/i })).not.toBeInTheDocument();
   });
 
@@ -1050,6 +1059,26 @@ describe("DebugLogTab – flow chart view", () => {
   it("Flow toggle is visible when entries have span_ids", () => {
     render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
     expect(screen.getByTestId("debug-log-view-flow")).toBeInTheDocument();
+  });
+
+  it("keeps Flow available even when the current page has no span_ids", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([
+        makeEntry({
+          span_id: null,
+          parent_span_id: null,
+          kind: "generic",
+          message: "Page event without span metadata",
+        }),
+      ]),
+      error: null,
+      isLoading: false,
+    });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+
+    expect(screen.getByTestId("debug-log-view-flow")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^tree$/i })).not.toBeInTheDocument();
   });
 
   it("renders the Flight Recorder mission strip in List view (P2)", () => {
@@ -1933,5 +1962,120 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
     render(<DebugLogTab sessionId="sess-xyz" runId="run-1" host={HOST} />);
     const calls = (useSubagentInternals as Mock).mock.calls;
     expect(calls.at(-1)?.[0]).toBe("sess-xyz");
+  });
+
+  it("useSessionMissionAtlas is called with enabled=false when viewMode is list", () => {
+    render(<DebugLogTab sessionId="sess-atlas" runId="run-1" host={HOST} />);
+    const calls = (useSessionMissionAtlas as Mock).mock.calls;
+    // The second argument (enabled) should be false when viewMode defaults to list.
+    expect(calls.at(-1)?.[1]).toBe(false);
+  });
+
+  it("useSessionMissionAtlas is called with enabled=true when viewMode is flow", async () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-atlas" runId="run-1" host={HOST} />);
+    // Switch to flow mode using data-testid.
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+    const calls = (useSessionMissionAtlas as Mock).mock.calls;
+    // After switching to flow, enabled should be true.
+    expect(calls.at(-1)?.[1]).toBe(true);
+  });
+
+  it("Flow view renders full-session canvas when aggregate has totalEvents > PAGE_SIZE", async () => {
+    const atlas: SessionMissionAtlasResponse = {
+      schema_version: "1",
+      session_id: "sess-atlas",
+      total_events: 1000,
+      event_file_bytes: 120000,
+      first_event_at: "2024-01-01T00:00:00.000Z",
+      last_event_at: "2024-01-01T00:10:00.000Z",
+      duration_ms: 600000,
+      bucket_count: 1,
+      buckets: [
+        {
+          bucket_idx: 0,
+          start_idx: 0,
+          end_idx: 99,
+          event_count: 100,
+          start_rel_ms: 0,
+          end_rel_ms: 60000,
+          ts_start: "2024-01-01T00:00:00.000Z",
+          ts_end: "2024-01-01T00:01:00.000Z",
+          is_gap: false,
+          error_count: 0,
+          dominant_lane: "tool",
+          lanes: { tool: 60, model: 40 },
+        },
+      ],
+      lane_totals: {
+        tool: 60,
+        hook: 0,
+        skill: 5,
+        subagent: 3,
+        model: 40,
+        turn: 1,
+        system: 0,
+        error: 0,
+        generic: 0,
+      },
+      top_tools: [{ name: "bash", count: 60 }],
+      top_skills: [{ name: "session-knowledge", count: 5 }],
+      top_agent_names: [{ name: "flow-agent", count: 3 }],
+      milestones: [
+        {
+          idx: 42,
+          timestamp: "2024-01-01T00:00:42.000Z",
+          kind: "checkpoint",
+          label: "Research checkpoint",
+          bucket_idx: 0,
+        },
+      ],
+      artifact_counts: {
+        checkpoint_files: 1,
+        rewind_snapshots: 0,
+        todos_total: 0,
+        todos_done: 0,
+        todos_blocked: 0,
+        todo_deps: 0,
+        files: 0,
+        compactions: 0,
+      },
+      error_count: 0,
+      error_sample: [],
+      caps: { top_n: 20, milestones: 200, error_sample: 5, buckets_min: 10, buckets_max: 200 },
+      truncated: { tools: false, skills: false, agents: false, milestones: false },
+    };
+
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse([makeEntry()]),
+      error: null,
+      isLoading: false,
+    });
+    (useSessionMissionAtlas as Mock).mockReturnValue({
+      data: atlas,
+      error: null,
+      isLoading: false,
+    });
+    render(<DebugLogTab sessionId="sess-atlas" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+    await waitFor(() => {
+      expect(screen.getByTestId("debug-log-flow-session-canvas")).toBeInTheDocument();
+    });
+    const canvas = screen.getByTestId("debug-log-flow-session-canvas");
+    expect(canvas.getAttribute("data-flow-total-events")).toBe("1000");
+    expect(screen.getByTestId("debug-log-flow-session-bucket-tool-0")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-session-bucket-model-0")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-session-milestone-0")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-session-tool-chip-bash")).toHaveTextContent("bash");
+    expect(
+      screen.getByTestId("debug-log-flow-session-skill-chip-session-knowledge")
+    ).toHaveTextContent("session-knowledge");
+    expect(screen.getByTestId("debug-log-flow-session-agent-chip-flow-agent")).toHaveTextContent(
+      "flow-agent"
+    );
   });
 });

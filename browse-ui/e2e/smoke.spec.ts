@@ -311,123 +311,229 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   // contract surface: turn, tool, hook, skill, assistant (agent_response /
   // model), subagent. has_more=true exercises the "More events available"
   // affordance the renderer exposes via data-testid="debug-log-flow-has-more".
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/mission-atlas*`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: "1",
+        session_id: SEEDED_SESSION_ID,
+        total_events: 550,
+        event_file_bytes: 180000,
+        first_event_at: "2026-05-01T01:02:03.000Z",
+        last_event_at: "2026-05-01T01:12:03.000Z",
+        duration_ms: 600000,
+        bucket_count: 2,
+        buckets: [
+          {
+            bucket_idx: 0,
+            start_idx: 0,
+            end_idx: 99,
+            event_count: 100,
+            start_rel_ms: 0,
+            end_rel_ms: 300000,
+            ts_start: "2026-05-01T01:02:03.000Z",
+            ts_end: "2026-05-01T01:07:03.000Z",
+            lanes: { turn: 1, tool: 40, hook: 20, skill: 10, model: 20, subagent: 9 },
+            dominant_lane: "tool",
+            error_count: 0,
+            is_gap: false,
+          },
+          {
+            bucket_idx: 1,
+            start_idx: 100,
+            end_idx: 199,
+            event_count: 100,
+            start_rel_ms: 300001,
+            end_rel_ms: 600000,
+            ts_start: "2026-05-01T01:07:03.001Z",
+            ts_end: "2026-05-01T01:12:03.000Z",
+            lanes: { tool: 30, model: 50, subagent: 20 },
+            dominant_lane: "model",
+            error_count: 0,
+            is_gap: false,
+          },
+        ],
+        lane_totals: {
+          tool: 70,
+          hook: 20,
+          skill: 10,
+          subagent: 29,
+          model: 70,
+          turn: 1,
+          system: 0,
+          error: 0,
+          generic: 0,
+        },
+        top_tools: [{ name: "view", count: 40 }],
+        top_skills: [{ name: "code-reviewer", count: 10 }],
+        top_agent_names: [{ name: "research-agent", count: 9 }],
+        milestones: [
+          {
+            idx: 100,
+            timestamp: "2026-05-01T01:07:03.001Z",
+            kind: "checkpoint",
+            label: "Cross-page checkpoint",
+            bucket_idx: 1,
+          },
+        ],
+        artifact_counts: {
+          checkpoint_files: 1,
+          rewind_snapshots: 0,
+          todos_total: 0,
+          todos_done: 0,
+          todos_blocked: 0,
+          todo_deps: 0,
+          files: 0,
+          compactions: 0,
+        },
+        error_count: 0,
+        error_sample: [],
+        caps: { top_n: 20, milestones: 200, error_sample: 5, buckets_min: 10, buckets_max: 200 },
+        truncated: { tools: false, skills: false, agents: false, milestones: false },
+      }),
+    });
+  });
+
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+    const url = new URL(route.request().url());
+    const from = Number(url.searchParams.get("from") ?? "0");
+    const entries =
+      from >= 100
+        ? [
+            {
+              idx: 100,
+              timestamp: "2026-05-01T01:07:03.001Z",
+              kind: "tool_call",
+              level: "debug",
+              source: "tool",
+              message: "Cross-page drilldown target",
+              tool_name: "bash",
+              duration_ms: 80,
+              span_id: "page-two-tool",
+              parent_span_id: null,
+              status: "ok",
+              attrs: { tool_status: "ok", tool_result_type: "text" },
+              redacted: false,
+            },
+          ]
+        : [
+            {
+              idx: 0,
+              timestamp: "2026-05-01T01:02:03.000Z",
+              kind: "turn_start",
+              level: "info",
+              source: "copilot-cli",
+              message: "Turn started",
+              tool_name: null,
+              duration_ms: 240,
+              span_id: "turn-root",
+              parent_span_id: null,
+              status: "ok",
+              attrs: { mode: "agent" },
+              redacted: false,
+            },
+            {
+              idx: 1,
+              timestamp: "2026-05-01T01:02:03.100Z",
+              kind: "tool_call",
+              level: "debug",
+              source: "tool",
+              message: "Read debug event file",
+              tool_name: "view",
+              duration_ms: 120,
+              span_id: "tool-view",
+              parent_span_id: "turn-root",
+              status: "ok",
+              attrs: {
+                tool_status: "ok",
+                tool_result_type: "text",
+                tool_metric_duration_ms: 120,
+              },
+              redacted: false,
+            },
+            {
+              idx: 2,
+              timestamp: "2026-05-01T01:02:03.200Z",
+              kind: "hook",
+              level: "info",
+              source: "hook",
+              message: "Post tool hook completed",
+              tool_name: null,
+              duration_ms: 30,
+              span_id: "hook-post",
+              parent_span_id: "tool-view",
+              status: "ok",
+              attrs: {
+                hook_type: "post-tool-use",
+                hook_status: "ok",
+                event_phase: "complete",
+              },
+              redacted: false,
+            },
+            {
+              idx: 3,
+              timestamp: "2026-05-01T01:02:03.300Z",
+              kind: "skill_run",
+              level: "info",
+              source: "skill",
+              message: "Skill executed",
+              tool_name: null,
+              duration_ms: 75,
+              span_id: "skill-cr",
+              parent_span_id: "turn-root",
+              status: "ok",
+              attrs: {
+                skill_name: "code-reviewer",
+                skill_path_category: "skill_pkg",
+                skill_content_bytes: 4096,
+              },
+              redacted: false,
+            },
+            {
+              idx: 4,
+              timestamp: "2026-05-01T01:02:03.400Z",
+              kind: "agent_response",
+              level: "info",
+              source: "copilot-cli",
+              message: "Assistant produced a response",
+              tool_name: null,
+              duration_ms: 200,
+              span_id: "model-assistant",
+              parent_span_id: "turn-root",
+              status: "ok",
+              attrs: {
+                output_tokens: 42,
+                tool_request_count: 1,
+              },
+              redacted: false,
+            },
+            {
+              idx: 5,
+              timestamp: "2026-05-01T01:02:03.500Z",
+              kind: "subagent",
+              level: "info",
+              source: "copilot-cli",
+              message: "research subagent",
+              tool_name: null,
+              duration_ms: 60,
+              span_id: "subagent-research",
+              parent_span_id: "turn-root",
+              status: "ok",
+              attrs: null,
+              redacted: false,
+            },
+          ];
+
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         schema_version: "debug-log/1",
         session_id: SEEDED_SESSION_ID,
-        from: 0,
+        from,
         limit: 100,
-        total: 12,
-        has_more: true,
-        entries: [
-          {
-            idx: 0,
-            timestamp: "2026-05-01T01:02:03.000Z",
-            kind: "turn_start",
-            level: "info",
-            source: "copilot-cli",
-            message: "Turn started",
-            tool_name: null,
-            duration_ms: 240,
-            span_id: "turn-root",
-            parent_span_id: null,
-            status: "ok",
-            attrs: { mode: "agent" },
-            redacted: false,
-          },
-          {
-            idx: 1,
-            timestamp: "2026-05-01T01:02:03.100Z",
-            kind: "tool_call",
-            level: "debug",
-            source: "tool",
-            message: "Read debug event file",
-            tool_name: "view",
-            duration_ms: 120,
-            span_id: "tool-view",
-            parent_span_id: "turn-root",
-            status: "ok",
-            attrs: {
-              tool_status: "ok",
-              tool_result_type: "text",
-              tool_metric_duration_ms: 120,
-            },
-            redacted: false,
-          },
-          {
-            idx: 2,
-            timestamp: "2026-05-01T01:02:03.200Z",
-            kind: "hook",
-            level: "info",
-            source: "hook",
-            message: "Post tool hook completed",
-            tool_name: null,
-            duration_ms: 30,
-            span_id: "hook-post",
-            parent_span_id: "tool-view",
-            status: "ok",
-            attrs: {
-              hook_type: "post-tool-use",
-              hook_status: "ok",
-              event_phase: "complete",
-            },
-            redacted: false,
-          },
-          {
-            idx: 3,
-            timestamp: "2026-05-01T01:02:03.300Z",
-            kind: "skill_run",
-            level: "info",
-            source: "skill",
-            message: "Skill executed",
-            tool_name: null,
-            duration_ms: 75,
-            span_id: "skill-cr",
-            parent_span_id: "turn-root",
-            status: "ok",
-            attrs: {
-              skill_name: "code-reviewer",
-              skill_path_category: "skill_pkg",
-              skill_content_bytes: 4096,
-            },
-            redacted: false,
-          },
-          {
-            idx: 4,
-            timestamp: "2026-05-01T01:02:03.400Z",
-            kind: "agent_response",
-            level: "info",
-            source: "copilot-cli",
-            message: "Assistant produced a response",
-            tool_name: null,
-            duration_ms: 200,
-            span_id: "model-assistant",
-            parent_span_id: "turn-root",
-            status: "ok",
-            attrs: {
-              output_tokens: 42,
-              tool_request_count: 1,
-            },
-            redacted: false,
-          },
-          {
-            idx: 5,
-            timestamp: "2026-05-01T01:02:03.500Z",
-            kind: "subagent",
-            level: "info",
-            source: "copilot-cli",
-            message: "research subagent",
-            tool_name: null,
-            duration_ms: 60,
-            span_id: "subagent-research",
-            parent_span_id: "turn-root",
-            status: "ok",
-            attrs: null,
-            redacted: false,
-          },
-        ],
+        total: 550,
+        has_more: from + entries.length < 550,
+        entries,
       }),
     });
   });
@@ -439,6 +545,18 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
 
   const chart = page.getByTestId("debug-log-flow-chart");
   await expect(chart).toBeVisible();
+
+  // -- Full-session Flow canvas (Mission Atlas aggregate) ----------------
+  const sessionCanvas = page.getByTestId("debug-log-flow-session-canvas");
+  await expect(sessionCanvas).toBeVisible();
+  await expect(sessionCanvas).toHaveAttribute("data-flow-total-events", "550");
+  await expect(page.getByTestId("debug-log-flow-session-bucket-tool-0")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-session-bucket-tool-1")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-session-bucket-model-1")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-session-milestone-0")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-session-tool-chip-view")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-session-skill-chip-code-reviewer")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-session-agent-chip-research-agent")).toBeVisible();
 
   // -- Rich Flow content from node.render -------------------------------
   // Primary labels (truncated to 28 chars by the renderer — all our
@@ -487,7 +605,9 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   await expect(page.getByTestId("debug-log-flow-lane-tool-hook-skill")).toBeVisible();
   await expect(page.getByTestId("debug-log-flow-lane-model")).toBeVisible();
   // Ruler must have >= 2 ticks (start + end at minimum).
-  expect(await page.locator('[data-testid^="debug-log-flow-tick-"]').count()).toBeGreaterThanOrEqual(2);
+  expect(
+    await page.locator('[data-testid^="debug-log-flow-tick-"]').count()
+  ).toBeGreaterThanOrEqual(2);
 
   // Clicking a tool bar opens the inspector card with the safe metadata rows
   // (and ALSO opens the existing DetailDrawer — selection contract preserved).
@@ -562,6 +682,14 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   }, box);
   await expect(zoom).toHaveText(/\d+%/);
 
+  // Aggregate click-through must navigate to the target debug-log page and
+  // render the selected page-level tree below the session canvas.
+  await page.getByLabel("Close detail panel").click();
+  await expect(page.getByRole("dialog", { name: /debug event detail/i })).toHaveCount(0);
+  await page.getByTestId("debug-log-flow-session-bucket-tool-1").click();
+  await expect(page.getByTestId("debug-log-flow-node-100")).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-node-100-label")).toContainText("bash");
+
   // -- Console must be clean of the passive-listener warning ------------
   const passiveErrors = consoleMessages.filter((m) =>
     /Unable to preventDefault inside passive event listener invocation/i.test(m.text)
@@ -587,263 +715,264 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
 //   * Waterfall bar click changes current event.
 //   * "Open in Debug Log" navigates to #debug-log and selects the matching entry.
 //   * runtimeErrorGuard (auto fixture) fails the test on any console.error/pageerror/API 4xx.
-test(
-  "Timeline playback: player, waterfall, play/pause, scrub, marker, bar, Open in Debug Log (issue #542)",
-  async ({ page }) => {
-    await assertSeededSessionAvailable(page);
+test("Timeline playback: player, waterfall, play/pause, scrub, marker, bar, Open in Debug Log (issue #542)", async ({
+  page,
+}) => {
+  await assertSeededSessionAvailable(page);
 
-    // ── Redaction-safe skeleton entries (no message/attrs/source/level/tool_name) ──
-    const TIMELINE_SKELETON_ENTRIES = [
+  // ── Redaction-safe skeleton entries (no message/attrs/source/level/tool_name) ──
+  const TIMELINE_SKELETON_ENTRIES = [
+    {
+      idx: 0,
+      timestamp: "2026-05-01T00:00:00.000Z",
+      kind: "turn_start",
+      duration_ms: 500,
+      status: "ok",
+      span_id: "span-t0",
+      parent_span_id: null,
+    },
+    {
+      idx: 1,
+      timestamp: "2026-05-01T00:00:01.000Z",
+      kind: "tool_call",
+      duration_ms: 100,
+      status: "ok",
+      span_id: "span-tl1",
+      parent_span_id: "span-t0",
+    },
+    {
+      idx: 2,
+      timestamp: "2026-05-01T00:00:02.000Z",
+      kind: "agent_response",
+      duration_ms: 200,
+      status: "ok",
+      span_id: "span-ar2",
+      parent_span_id: "span-t0",
+    },
+    {
+      idx: 3,
+      timestamp: "2026-05-01T00:00:03.000Z",
+      kind: "hook",
+      duration_ms: 50,
+      status: "ok",
+      span_id: "span-h3",
+      parent_span_id: "span-tl1",
+    },
+    {
+      idx: 4,
+      timestamp: "2026-05-01T00:00:04.000Z",
+      kind: "turn_start",
+      duration_ms: 600,
+      status: "ok",
+      span_id: "span-t4",
+      parent_span_id: null,
+    },
+  ];
+
+  const TIMELINE_SKELETON_PAYLOAD = {
+    schema_version: "debug-log/1",
+    session_id: SEEDED_SESSION_ID,
+    from: 0,
+    limit: 5000,
+    total: 5,
+    has_more: false,
+    entries: TIMELINE_SKELETON_ENTRIES,
+  };
+
+  // ── Full BrowseDebugEntry payload for the Debug Log tab (no projection param) ──
+  const TIMELINE_FULL_PAYLOAD = {
+    schema_version: "debug-log/1",
+    session_id: SEEDED_SESSION_ID,
+    from: 0,
+    limit: 50,
+    total: 5,
+    has_more: false,
+    entries: [
       {
         idx: 0,
         timestamp: "2026-05-01T00:00:00.000Z",
         kind: "turn_start",
+        level: "info",
+        source: "copilot-cli",
+        message: "Turn started",
+        tool_name: null,
         duration_ms: 500,
-        status: "ok",
         span_id: "span-t0",
         parent_span_id: null,
+        status: "ok",
+        attrs: null,
+        redacted: false,
       },
       {
         idx: 1,
         timestamp: "2026-05-01T00:00:01.000Z",
         kind: "tool_call",
+        level: "debug",
+        source: "tool",
+        message: "Read file contents",
+        tool_name: "view",
         duration_ms: 100,
-        status: "ok",
         span_id: "span-tl1",
         parent_span_id: "span-t0",
+        status: "ok",
+        attrs: null,
+        redacted: false,
       },
       {
         idx: 2,
         timestamp: "2026-05-01T00:00:02.000Z",
         kind: "agent_response",
+        level: "info",
+        source: "copilot-cli",
+        message: "Assistant produced response",
+        tool_name: null,
         duration_ms: 200,
-        status: "ok",
         span_id: "span-ar2",
         parent_span_id: "span-t0",
+        status: "ok",
+        attrs: null,
+        redacted: false,
       },
       {
         idx: 3,
         timestamp: "2026-05-01T00:00:03.000Z",
         kind: "hook",
+        level: "info",
+        source: "hook",
+        message: "Post-tool hook completed",
+        tool_name: null,
         duration_ms: 50,
-        status: "ok",
         span_id: "span-h3",
         parent_span_id: "span-tl1",
+        status: "ok",
+        attrs: null,
+        redacted: false,
       },
       {
         idx: 4,
         timestamp: "2026-05-01T00:00:04.000Z",
         kind: "turn_start",
+        level: "info",
+        source: "copilot-cli",
+        message: "Second turn started",
+        tool_name: null,
         duration_ms: 600,
-        status: "ok",
         span_id: "span-t4",
         parent_span_id: null,
+        status: "ok",
+        attrs: null,
+        redacted: false,
       },
-    ];
+    ],
+  };
 
-    const TIMELINE_SKELETON_PAYLOAD = {
-      schema_version: "debug-log/1",
-      session_id: SEEDED_SESSION_ID,
-      from: 0,
-      limit: 5000,
-      total: 5,
-      has_more: false,
-      entries: TIMELINE_SKELETON_ENTRIES,
-    };
-
-    // ── Full BrowseDebugEntry payload for the Debug Log tab (no projection param) ──
-    const TIMELINE_FULL_PAYLOAD = {
-      schema_version: "debug-log/1",
-      session_id: SEEDED_SESSION_ID,
-      from: 0,
-      limit: 50,
-      total: 5,
-      has_more: false,
-      entries: [
-        {
-          idx: 0,
-          timestamp: "2026-05-01T00:00:00.000Z",
-          kind: "turn_start",
-          level: "info",
-          source: "copilot-cli",
-          message: "Turn started",
-          tool_name: null,
-          duration_ms: 500,
-          span_id: "span-t0",
-          parent_span_id: null,
-          status: "ok",
-          attrs: null,
-          redacted: false,
-        },
-        {
-          idx: 1,
-          timestamp: "2026-05-01T00:00:01.000Z",
-          kind: "tool_call",
-          level: "debug",
-          source: "tool",
-          message: "Read file contents",
-          tool_name: "view",
-          duration_ms: 100,
-          span_id: "span-tl1",
-          parent_span_id: "span-t0",
-          status: "ok",
-          attrs: null,
-          redacted: false,
-        },
-        {
-          idx: 2,
-          timestamp: "2026-05-01T00:00:02.000Z",
-          kind: "agent_response",
-          level: "info",
-          source: "copilot-cli",
-          message: "Assistant produced response",
-          tool_name: null,
-          duration_ms: 200,
-          span_id: "span-ar2",
-          parent_span_id: "span-t0",
-          status: "ok",
-          attrs: null,
-          redacted: false,
-        },
-        {
-          idx: 3,
-          timestamp: "2026-05-01T00:00:03.000Z",
-          kind: "hook",
-          level: "info",
-          source: "hook",
-          message: "Post-tool hook completed",
-          tool_name: null,
-          duration_ms: 50,
-          span_id: "span-h3",
-          parent_span_id: "span-tl1",
-          status: "ok",
-          attrs: null,
-          redacted: false,
-        },
-        {
-          idx: 4,
-          timestamp: "2026-05-01T00:00:04.000Z",
-          kind: "turn_start",
-          level: "info",
-          source: "copilot-cli",
-          message: "Second turn started",
-          tool_name: null,
-          duration_ms: 600,
-          span_id: "span-t4",
-          parent_span_id: null,
-          status: "ok",
-          attrs: null,
-          redacted: false,
-        },
-      ],
-    };
-
-    // ── Route: skeleton projection → skeleton payload; otherwise full payload ──
-    // The Timeline tab fetches with ?projection=skeleton&from=0&limit=5000.
-    // The Debug Log tab fetches without projection (uses session-scoped path).
-    // Both share the same URL pattern; the handler discriminates on the query param.
-    await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
-      const url = new URL(route.request().url());
-      const isSkeleton = url.searchParams.get("projection") === "skeleton";
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify(isSkeleton ? TIMELINE_SKELETON_PAYLOAD : TIMELINE_FULL_PAYLOAD),
-      });
+  // ── Route: skeleton projection → skeleton payload; otherwise full payload ──
+  // The Timeline tab fetches with ?projection=skeleton&from=0&limit=5000.
+  // The Debug Log tab fetches without projection (uses session-scoped path).
+  // Both share the same URL pattern; the handler discriminates on the query param.
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
+    const url = new URL(route.request().url());
+    const isSkeleton = url.searchParams.get("projection") === "skeleton";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(isSkeleton ? TIMELINE_SKELETON_PAYLOAD : TIMELINE_FULL_PAYLOAD),
     });
+  });
 
-    // ── Navigate to #timeline ────────────────────────────────────────────────
-    await page.goto(`/sessions/${SEEDED_SESSION_ID}/#timeline`);
+  // ── Navigate to #timeline ────────────────────────────────────────────────
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/#timeline`);
 
-    // Timeline tab should be selected (hash sets activeTab on mount).
-    await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-      { timeout: 20_000 }
-    );
+  // Timeline tab should be selected (hash sets activeTab on mount).
+  await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+    { timeout: 20_000 }
+  );
 
-    // ── Player and waterfall visibility ──────────────────────────────────────
-    const player = page.getByTestId("timeline-player");
-    await expect(player).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByTestId("waterfall")).toBeVisible();
+  // ── Player and waterfall visibility ──────────────────────────────────────
+  const player = page.getByTestId("timeline-player");
+  await expect(player).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("waterfall")).toBeVisible();
 
-    // Expect lane rows for the entry kinds in our fixture:
-    //   turn_start/turn_start → "Turn" lane
-    //   tool_call/hook        → "Tool/Hook/Skill" lane
-    //   agent_response        → "Model" lane
-    await expect(page.getByTestId("lane-row-Turn")).toBeVisible();
-    await expect(page.getByTestId("lane-row-Tool/Hook/Skill")).toBeVisible();
-    await expect(page.getByTestId("lane-row-Model")).toBeVisible();
+  // Expect lane rows for the entry kinds in our fixture:
+  //   turn_start/turn_start → "Turn" lane
+  //   tool_call/hook        → "Tool/Hook/Skill" lane
+  //   agent_response        → "Model" lane
+  await expect(page.getByTestId("lane-row-Turn")).toBeVisible();
+  await expect(page.getByTestId("lane-row-Tool/Hook/Skill")).toBeVisible();
+  await expect(page.getByTestId("lane-row-Model")).toBeVisible();
 
-    // ── Initial event card shows Event 0 (turn_start) ────────────────────────
-    const card = page.getByTestId("event-card");
-    await expect(card).toBeVisible();
-    await expect(card).toContainText("Event 0");
-    await expect(card).toContainText("turn_start");
+  // ── Initial event card shows Event 0 (turn_start) ────────────────────────
+  const card = page.getByTestId("event-card");
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("Event 0");
+  await expect(card).toContainText("turn_start");
 
-    // ── Play / Pause toggle ───────────────────────────────────────────────────
-    const playPauseBtn = page.getByTestId("btn-play-pause");
-    await expect(playPauseBtn).toHaveAttribute("aria-label", "Play");
-    await playPauseBtn.click();
-    await expect(playPauseBtn).toHaveAttribute("aria-label", "Pause", { timeout: 5_000 });
-    await playPauseBtn.click();
-    await expect(playPauseBtn).toHaveAttribute("aria-label", "Play", { timeout: 5_000 });
+  // ── Play / Pause toggle ───────────────────────────────────────────────────
+  const playPauseBtn = page.getByTestId("btn-play-pause");
+  await expect(playPauseBtn).toHaveAttribute("aria-label", "Play");
+  await playPauseBtn.click();
+  await expect(playPauseBtn).toHaveAttribute("aria-label", "Pause", { timeout: 5_000 });
+  await playPauseBtn.click();
+  await expect(playPauseBtn).toHaveAttribute("aria-label", "Play", { timeout: 5_000 });
 
-    // ── Scrubber drag changes current event ──────────────────────────────────
-    // Entries sorted by timestamp: idx 0→1→2→3→4 maps to sortedIndex 0→1→2→3→4.
-    // Use keyboard ArrowRight/ArrowLeft on the focused scrubber to advance/retreat
-    // the playhead. Native keyboard events reliably fire React onChange on range inputs.
-    const scrubber = page.getByTestId("scrubber");
-    await scrubber.focus();
-    // Arrow right ×2: sortedIndex 0 → 1 → 2 (agent_response)
-    await scrubber.press("ArrowRight");
-    await scrubber.press("ArrowRight");
-    await expect(card).toContainText("Event 2", { timeout: 5_000 });
-    await expect(card).toContainText("agent_response");
+  // ── Scrubber drag changes current event ──────────────────────────────────
+  // Entries sorted by timestamp: idx 0→1→2→3→4 maps to sortedIndex 0→1→2→3→4.
+  // Use keyboard ArrowRight/ArrowLeft on the focused scrubber to advance/retreat
+  // the playhead. Native keyboard events reliably fire React onChange on range inputs.
+  const scrubber = page.getByTestId("scrubber");
+  await scrubber.focus();
+  // Arrow right ×2: sortedIndex 0 → 1 → 2 (agent_response)
+  await scrubber.press("ArrowRight");
+  await scrubber.press("ArrowRight");
+  await expect(card).toContainText("Event 2", { timeout: 5_000 });
+  await expect(card).toContainText("agent_response");
 
-    // Arrow left ×2: sortedIndex 2 → 1 → 0 (turn_start) — reset position.
-    await scrubber.press("ArrowLeft");
-    await scrubber.press("ArrowLeft");
-    await expect(card).toContainText("Event 0", { timeout: 5_000 });
+  // Arrow left ×2: sortedIndex 2 → 1 → 0 (turn_start) — reset position.
+  await scrubber.press("ArrowLeft");
+  await scrubber.press("ArrowLeft");
+  await expect(card).toContainText("Event 0", { timeout: 5_000 });
 
-    // ── Marker navigation (btn-marker-next) ──────────────────────────────────
-    // Markers are derived from entries with kind turn_start or agent_response:
-    //   sortedIdx=0 (turn_start), sortedIdx=2 (agent_response), sortedIdx=4 (turn_start).
-    // From sortedIdx=0, nextMarkerIndex should advance to sortedIdx=2 (agent_response).
-    const markerNextBtn = page.getByTestId("btn-marker-next");
-    await expect(markerNextBtn).toBeVisible();
-    await markerNextBtn.click();
-    await expect(card).toContainText("agent_response", { timeout: 5_000 });
+  // ── Marker navigation (btn-marker-next) ──────────────────────────────────
+  // Markers are derived from entries with kind turn_start or agent_response:
+  //   sortedIdx=0 (turn_start), sortedIdx=2 (agent_response), sortedIdx=4 (turn_start).
+  // From sortedIdx=0, nextMarkerIndex should advance to sortedIdx=2 (agent_response).
+  const markerNextBtn = page.getByTestId("btn-marker-next");
+  await expect(markerNextBtn).toBeVisible();
+  await markerNextBtn.click();
+  await expect(card).toContainText("agent_response", { timeout: 5_000 });
 
-    // ── Waterfall bar click changes current event ─────────────────────────────
-    // Each bar button has aria-label "Event {idx}: {kind}".
-    // Click the bar for entry idx=1 (tool_call) in the waterfall.
-    await page.getByTestId("waterfall").getByLabel("Event 1: tool_call").click();
-    await expect(card).toContainText("Event 1", { timeout: 5_000 });
-    await expect(card).toContainText("tool_call");
+  // ── Waterfall bar click changes current event ─────────────────────────────
+  // Each bar button has aria-label "Event {idx}: {kind}".
+  // Click the bar for entry idx=1 (tool_call) in the waterfall.
+  await page.getByTestId("waterfall").getByLabel("Event 1: tool_call").click();
+  await expect(card).toContainText("Event 1", { timeout: 5_000 });
+  await expect(card).toContainText("tool_call");
 
-    // ── "Open in Debug Log" navigates to #debug-log and selects entry ─────────
-    // btn-open-debug-log is in the event card when onOpenDebugLog is wired.
-    // Current event is idx=1 (tool_call).
-    const openBtn = page.getByTestId("btn-open-debug-log");
-    await expect(openBtn).toBeVisible();
-    await openBtn.click();
+  // ── "Open in Debug Log" navigates to #debug-log and selects entry ─────────
+  // btn-open-debug-log is in the event card when onOpenDebugLog is wired.
+  // Current event is idx=1 (tool_call).
+  const openBtn = page.getByTestId("btn-open-debug-log");
+  await expect(openBtn).toBeVisible();
+  await openBtn.click();
 
-    // URL hash must change to #debug-log.
-    await expect(page).toHaveURL(/#debug-log/, { timeout: 10_000 });
-    await expect(page.getByRole("tab", { name: "Debug Log" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-      { timeout: 10_000 }
-    );
+  // URL hash must change to #debug-log.
+  await expect(page).toHaveURL(/#debug-log/, { timeout: 10_000 });
+  await expect(page.getByRole("tab", { name: "Debug Log" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+    { timeout: 10_000 }
+  );
 
-    // Effect 1 (focusEntryIdx=1) → navigates debug-log to page 0, clears filters.
-    // Effect 2 → data loads (our stub fires immediately), finds idx=1, setSelectedEntry.
-    // The selected row's aria-expanded becomes "true" once the state machine completes.
-    await expect(
-      page.locator('[aria-label="Debug event 1: tool_call from tool"]')
-    ).toHaveAttribute("aria-expanded", "true", { timeout: 15_000 });
-  }
-);
+  // Effect 1 (focusEntryIdx=1) → navigates debug-log to page 0, clears filters.
+  // Effect 2 → data loads (our stub fires immediately), finds idx=1, setSelectedEntry.
+  // The selected row's aria-expanded becomes "true" once the state machine completes.
+  await expect(page.locator('[aria-label="Debug event 1: tool_call from tool"]')).toHaveAttribute(
+    "aria-expanded",
+    "true",
+    { timeout: 15_000 }
+  );
+});
 
 test("sessions list click-through opens real UUID session detail", async ({ page }) => {
   await assertSeededSessionAvailable(page);
@@ -1630,24 +1759,18 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
       body: JSON.stringify(isSkeleton ? FR_SKELETON_PAYLOAD : FR_FULL_PAYLOAD),
     });
   });
-  await page.route(
-    `**/api/session/${SEEDED_SESSION_ID}/checkpoints`,
-    async (route) => {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify(FR_CHECKPOINTS_PAYLOAD),
-      });
-    }
-  );
-  await page.route(
-    `**/api/session/${SEEDED_SESSION_ID}/rewind-snapshots`,
-    async (route) => {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify(FR_REWIND_PAYLOAD),
-      });
-    }
-  );
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/checkpoints`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(FR_CHECKPOINTS_PAYLOAD),
+    });
+  });
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/rewind-snapshots`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(FR_REWIND_PAYLOAD),
+    });
+  });
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/subagent-activity`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -1708,9 +1831,7 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   await expect(chapterButtons).toHaveCount(FR_CHECKPOINTS.length);
   for (const cp of FR_CHECKPOINTS) {
     await expect(
-      page.locator(
-        `[data-testid="chapter-rail-chapter-${cp.seq}"][data-chapter-mode="checkpoint"]`
-      )
+      page.locator(`[data-testid="chapter-rail-chapter-${cp.seq}"][data-chapter-mode="checkpoint"]`)
     ).toHaveCount(1);
   }
 

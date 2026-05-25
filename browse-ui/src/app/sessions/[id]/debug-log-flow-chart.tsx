@@ -13,6 +13,7 @@ import {
   type PlaybackLaneId,
   type TraceInspectorCard,
 } from "@/lib/debug-span-flow";
+import type { FlowAggregateModel } from "@/lib/debug-flow-aggregate";
 
 /**
  * Flow-chart view of the debug log — modeled on VS Code's Agent Debug
@@ -72,6 +73,20 @@ export type DebugLogFlowChartProps = {
   totalEvents?: number;
   /** Full-session safe internals summary for sub-agent flow context. */
   subagentInternals?: SubagentInternalsResponse | null;
+  /** Full-session aggregate model from Mission Atlas + Subagent Activity. */
+  aggregate?: FlowAggregateModel;
+  /** True while the Mission Atlas query is loading. */
+  atlasLoading?: boolean;
+  /** True when the Mission Atlas query failed. */
+  atlasError?: boolean;
+  /** Currently-loaded page index (0-based). */
+  currentPage?: number;
+  /** Raw entry idx for the first entry on the current page. */
+  currentPageStart?: number;
+  /** Raw entry idx for the last entry on the current page. */
+  currentPageEnd?: number;
+  /** Called when the user clicks a bucket/milestone/subagent bar to navigate. */
+  onNavigateToIdx?: (idx: number) => void;
 };
 
 export function DebugLogFlowChart({
@@ -81,6 +96,13 @@ export function DebugLogFlowChart({
   hasMore = false,
   totalEvents,
   subagentInternals,
+  aggregate,
+  atlasLoading = false,
+  atlasError = false,
+  currentPage = 0,
+  currentPageStart,
+  currentPageEnd,
+  onNavigateToIdx,
 }: DebugLogFlowChartProps) {
   // P4 (perf): memoize the heavy layout so it isn't rebuilt on every
   // pan/zoom/state change. Only the entry list drives geometry.
@@ -143,11 +165,22 @@ export function DebugLogFlowChart({
 
   if (layout.nodes.length === 0) {
     return (
-      <div
-        className="text-muted-foreground py-8 text-center text-sm"
-        data-testid="debug-log-flow-chart-empty"
-      >
-        No events match the current filters.
+      <div className="border-border rounded-xl border" data-testid="debug-log-flow-chart">
+        <FlowSessionCanvas
+          aggregate={aggregate}
+          atlasLoading={atlasLoading}
+          atlasError={atlasError}
+          currentPage={currentPage}
+          currentPageStart={currentPageStart}
+          currentPageEnd={currentPageEnd}
+          onNavigateToIdx={onNavigateToIdx}
+        />
+        <div
+          className="text-muted-foreground py-8 text-center text-sm"
+          data-testid="debug-log-flow-chart-empty"
+        >
+          No events match the current filters.
+        </div>
       </div>
     );
   }
@@ -192,6 +225,15 @@ export function DebugLogFlowChart({
 
   return (
     <div className="border-border rounded-xl border" data-testid="debug-log-flow-chart">
+      <FlowSessionCanvas
+        aggregate={aggregate}
+        atlasLoading={atlasLoading}
+        atlasError={atlasError}
+        currentPage={currentPage}
+        currentPageStart={currentPageStart}
+        currentPageEnd={currentPageEnd}
+        onNavigateToIdx={onNavigateToIdx}
+      />
       <div className="border-border bg-muted/30 flex flex-wrap items-center justify-between gap-2 border-b px-3 py-1.5 text-xs">
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-muted-foreground" data-testid="debug-log-flow-counts">
@@ -424,6 +466,496 @@ export function DebugLogFlowChart({
           {typeof totalEvents === "number"
             ? `More events available — showing ${layout.nodes.length} of ${totalEvents}. Use Next below to load more.`
             : "More events available — use Next below to load more."}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Flow Session Canvas (full-session aggregate) ──────────────────────────────
+
+/** Lane display names for the session canvas. */
+const SESSION_LANE_LABELS: Record<string, string> = {
+  turn: "Turn",
+  model: "Model",
+  tool: "Tool",
+  hook: "Hook",
+  skill: "Skill",
+  subagent: "SubAgent",
+  error: "Error",
+  generic: "Generic",
+  system: "System",
+};
+
+/** Lane accent colors — must match CATEGORY_COLORS above. */
+const SESSION_LANE_COLORS: Record<string, string> = {
+  turn: "#fbbf24",
+  model: "#22d3ee",
+  tool: "#34d399",
+  hook: "#fb923c",
+  skill: "#c084fc",
+  subagent: "#f472b6",
+  error: "#ef4444",
+  generic: "#9ca3af",
+  system: "#94a3b8",
+};
+
+/** Milestone kind → short glyph for the milestone rail. */
+function milestoneGlyph(kind: string): string {
+  switch (kind) {
+    case "checkpoint":
+      return "⚑";
+    case "error":
+      return "✕";
+    case "skill":
+      return "◈";
+    case "subagent":
+      return "⊕";
+    case "rewind":
+      return "↺";
+    case "task_complete":
+      return "✓";
+    default:
+      return "·";
+  }
+}
+
+/** Format milliseconds as a human-readable duration string. */
+function formatDurationMs(ms: number | null): string {
+  if (ms === null) return "";
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+}
+
+const FLOW_LANE_DISPLAY_ORDER = [
+  "turn",
+  "model",
+  "tool",
+  "hook",
+  "skill",
+  "subagent",
+  "error",
+  "generic",
+  "system",
+] as const;
+
+type FlowSessionCanvasProps = {
+  aggregate?: FlowAggregateModel;
+  atlasLoading?: boolean;
+  atlasError?: boolean;
+  currentPage?: number;
+  currentPageStart?: number;
+  currentPageEnd?: number;
+  onNavigateToIdx?: (idx: number) => void;
+};
+
+function FlowSessionCanvas({
+  aggregate,
+  atlasLoading = false,
+  atlasError = false,
+  currentPage = 0,
+  currentPageStart,
+  currentPageEnd,
+  onNavigateToIdx,
+}: FlowSessionCanvasProps) {
+  // Loading skeleton — shows while Mission Atlas is fetching.
+  if (atlasLoading) {
+    return (
+      <div
+        className="border-border bg-card/30 border-b px-3 py-2"
+        data-testid="debug-log-flow-session-canvas-loading"
+        aria-label="Loading session overview"
+      >
+        <div className="text-muted-foreground animate-pulse text-xs">
+          Loading full-session overview…
+        </div>
+      </div>
+    );
+  }
+
+  // Error or missing aggregate — graceful fallback; page-level trace still works.
+  if (atlasError) {
+    return (
+      <div
+        className="border-border bg-card/30 border-b px-3 py-1.5 text-xs"
+        data-testid="debug-log-flow-session-canvas-error"
+      >
+        <span className="text-muted-foreground">
+          Session overview unavailable — showing current page only.
+        </span>
+      </div>
+    );
+  }
+
+  // No aggregate or empty session — render nothing; page canvas operates alone.
+  if (!aggregate || aggregate.totalEvents === 0) return null;
+
+  const {
+    totalEvents,
+    durationMs,
+    errorCount,
+    buckets,
+    milestones,
+    subagentBars,
+    legend,
+    truncationWarnings,
+  } = aggregate;
+
+  // Determine which lanes are visible (non-zero total events).
+  const visibleLanes = FLOW_LANE_DISPLAY_ORDER.filter(
+    (lane) => (legend.laneTotals[lane as keyof typeof legend.laneTotals] ?? 0) > 0
+  );
+
+  // Current page bucket highlight: buckets whose [start_idx, end_idx] overlaps with
+  // [currentPageStart, currentPageEnd].
+  const currentPageStartEff = currentPageStart ?? 0;
+  const currentPageEndEff = currentPageEnd ?? currentPageStartEff + 99;
+
+  // Compute page window position as a ratio [0, 1] of the full session.
+  const pageWindowLeft =
+    totalEvents > 0 && currentPageStart !== undefined
+      ? clamp(currentPageStart / totalEvents, 0, 1)
+      : null;
+  const pageWindowWidth =
+    totalEvents > 0
+      ? clamp((currentPageEndEff - currentPageStartEff + 1) / totalEvents, 0.005, 1)
+      : null;
+
+  // Map a bucket to its horizontal position as a ratio [0, 1].
+  const bucketCount = buckets.length;
+  function bucketLeft(bIdx: number): number {
+    return bucketCount > 0 ? bIdx / bucketCount : 0;
+  }
+  function bucketWidth(): number {
+    return bucketCount > 0 ? 1 / bucketCount : 1;
+  }
+
+  return (
+    <div
+      className="border-border bg-card/30 border-b"
+      data-testid="debug-log-flow-session-canvas"
+      data-flow-total-events={totalEvents}
+      aria-label="Full-session flow overview"
+      role="region"
+    >
+      {/* ── Session header ─────────────────────────────────────────────── */}
+      <div className="border-border flex flex-wrap items-center gap-3 border-b px-3 py-1.5 text-xs">
+        <span className="text-foreground font-medium" data-testid="debug-log-flow-session-total">
+          {totalEvents.toLocaleString()} events
+        </span>
+        {durationMs !== null ? (
+          <span className="text-muted-foreground">{formatDurationMs(durationMs)}</span>
+        ) : null}
+        {errorCount > 0 ? (
+          <span
+            className="text-red-600 dark:text-red-400"
+            data-testid="debug-log-flow-session-errors"
+          >
+            {errorCount} error{errorCount === 1 ? "" : "s"}
+          </span>
+        ) : null}
+        <span className="text-muted-foreground ml-auto" data-testid="debug-log-flow-session-window">
+          {currentPage !== undefined
+            ? `Page ${currentPage + 1} · events ${currentPageStartEff}–${currentPageEndEff}`
+            : null}
+        </span>
+      </div>
+
+      {/* ── Swimlane density chart ─────────────────────────────────────── */}
+      {visibleLanes.length > 0 ? (
+        <div className="px-3 py-2" aria-label="Lane density chart">
+          {visibleLanes.map((lane) => (
+            <div key={lane} className="mb-0.5 flex items-center gap-1.5">
+              {/* Lane label */}
+              <span
+                className="w-20 shrink-0 text-right font-mono text-[10px]"
+                style={{ color: SESSION_LANE_COLORS[lane] ?? "#9ca3af" }}
+                aria-label={SESSION_LANE_LABELS[lane] ?? lane}
+              >
+                {SESSION_LANE_LABELS[lane] ?? lane}
+              </span>
+              {/* Bucket density bar */}
+              <div
+                className="relative flex h-3 flex-1 overflow-hidden rounded"
+                style={{ background: "rgba(128,128,128,0.08)" }}
+              >
+                {/* Page window indicator overlay */}
+                {pageWindowLeft !== null && pageWindowWidth !== null ? (
+                  <div
+                    className="border-primary absolute top-0 h-full rounded border"
+                    style={{
+                      left: `${pageWindowLeft * 100}%`,
+                      width: `${pageWindowWidth * 100}%`,
+                      background: "rgba(59,130,246,0.12)",
+                      zIndex: 1,
+                    }}
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {/* Bucket cells */}
+                {buckets.map((bucket) => {
+                  const intensity = bucket.laneIntensities[lane] ?? 0;
+                  if (intensity === 0 && !bucket.is_gap) return null;
+                  const left = bucketLeft(bucket.bucket_idx) * 100;
+                  const width = bucketWidth() * 100;
+                  const hasIdx = bucket.start_idx !== null;
+                  const color = SESSION_LANE_COLORS[lane] ?? "#9ca3af";
+                  const isInCurrentPage =
+                    bucket.start_idx !== null &&
+                    bucket.end_idx !== null &&
+                    bucket.start_idx <= currentPageEndEff &&
+                    bucket.end_idx >= currentPageStartEff;
+                  return (
+                    <div
+                      key={`${lane}-${bucket.bucket_idx}`}
+                      className={hasIdx ? "cursor-pointer" : "cursor-default"}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: `${left}%`,
+                        width: `${Math.max(width, 0.3)}%`,
+                        height: "100%",
+                        background: bucket.is_gap
+                          ? "repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(128,128,128,0.12) 2px, rgba(128,128,128,0.12) 4px)"
+                          : color,
+                        opacity: bucket.is_gap ? 0.4 : intensity,
+                        outline: isInCurrentPage ? `1px solid ${color}` : undefined,
+                        zIndex: isInCurrentPage ? 2 : undefined,
+                      }}
+                      role={hasIdx ? "button" : undefined}
+                      tabIndex={hasIdx ? 0 : undefined}
+                      aria-label={
+                        hasIdx
+                          ? `${SESSION_LANE_LABELS[lane] ?? lane} bucket ${bucket.bucket_idx}: ${bucket.event_count} events`
+                          : undefined
+                      }
+                      data-testid={`debug-log-flow-session-bucket-${lane}-${bucket.bucket_idx}`}
+                      onClick={
+                        hasIdx && onNavigateToIdx
+                          ? () => onNavigateToIdx(bucket.start_idx!)
+                          : undefined
+                      }
+                      onKeyDown={
+                        hasIdx && onNavigateToIdx
+                          ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                onNavigateToIdx(bucket.start_idx!);
+                              }
+                            }
+                          : undefined
+                      }
+                    />
+                  );
+                })}
+              </div>
+              {/* Lane total count */}
+              <span className="text-muted-foreground w-10 text-right font-mono text-[10px]">
+                {(legend.laneTotals[lane as keyof typeof legend.laneTotals] ?? 0).toLocaleString()}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* ── Milestone rail ────────────────────────────────────────────── */}
+      {milestones.length > 0 ? (
+        <div
+          className="border-border border-t px-3 py-1"
+          aria-label="Milestone rail"
+          data-testid="debug-log-flow-session-milestones"
+        >
+          <div className="relative flex h-4 flex-1 overflow-hidden">
+            {milestones.map((m, i) => {
+              // Position by bucket_idx if available, else by idx ratio.
+              let leftRatio = 0;
+              if (m.bucket_idx !== null && bucketCount > 0) {
+                leftRatio = m.bucket_idx / bucketCount;
+              } else if (m.idx !== null && totalEvents > 0) {
+                leftRatio = m.idx / totalEvents;
+              }
+              const hasIdx = m.idx !== null;
+              const glyph = milestoneGlyph(m.kind);
+              return (
+                <span
+                  key={`ms-${i}`}
+                  className={`absolute text-[10px] leading-none ${
+                    m.kind === "error"
+                      ? "text-red-500"
+                      : m.kind === "task_complete"
+                        ? "text-green-500"
+                        : "text-muted-foreground"
+                  } ${hasIdx ? "hover:text-foreground cursor-pointer" : ""}`}
+                  style={{ left: `${clamp(leftRatio, 0, 0.99) * 100}%`, top: 2 }}
+                  title={`${m.kind}: ${m.label}`}
+                  role={hasIdx ? "button" : undefined}
+                  tabIndex={hasIdx ? 0 : undefined}
+                  aria-label={hasIdx ? `${m.kind}: ${m.label}` : undefined}
+                  data-testid={`debug-log-flow-session-milestone-${i}`}
+                  onClick={hasIdx && onNavigateToIdx ? () => onNavigateToIdx(m.idx!) : undefined}
+                  onKeyDown={
+                    hasIdx && onNavigateToIdx
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onNavigateToIdx(m.idx!);
+                          }
+                        }
+                      : undefined
+                  }
+                >
+                  {glyph}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Subagent bars ─────────────────────────────────────────────── */}
+      {subagentBars.length > 0 ? (
+        <div
+          className="border-border border-t px-3 py-1.5"
+          aria-label="Sub-agent activity bars"
+          data-testid="debug-log-flow-session-subagents"
+        >
+          <div className="text-muted-foreground mb-1 text-[10px] font-medium">Sub-agents</div>
+          {subagentBars.slice(0, 8).map((bar) => {
+            const left =
+              bar.start_idx !== null && totalEvents > 0
+                ? clamp(bar.start_idx / totalEvents, 0, 1) * 100
+                : 0;
+            const right =
+              bar.end_idx !== null && totalEvents > 0
+                ? clamp(bar.end_idx / totalEvents, 0, 1) * 100
+                : left + 1;
+            const widthPct = Math.max(right - left, 0.5);
+            const hasIdx = bar.start_idx !== null;
+            return (
+              <div key={bar.key} className="mb-0.5 flex items-center gap-1.5">
+                <span
+                  className="w-20 shrink-0 truncate text-right font-mono text-[10px]"
+                  title={bar.label}
+                  style={{ color: "#f472b6" }}
+                >
+                  {bar.label.length > 10 ? `${bar.label.slice(0, 10)}…` : bar.label}
+                </span>
+                <div
+                  className="relative flex h-2.5 flex-1 overflow-hidden rounded"
+                  style={{ background: "rgba(128,128,128,0.08)" }}
+                >
+                  <div
+                    className={`absolute h-full rounded ${
+                      bar.status === "failed"
+                        ? "bg-red-500/70"
+                        : bar.status === "completed"
+                          ? "bg-pink-400/70"
+                          : "bg-pink-300/50"
+                    } ${hasIdx ? "cursor-pointer" : ""}`}
+                    style={{ left: `${left}%`, width: `${widthPct}%` }}
+                    role={hasIdx ? "button" : undefined}
+                    tabIndex={hasIdx ? 0 : undefined}
+                    aria-label={
+                      hasIdx
+                        ? `Sub-agent ${bar.label}: ${bar.status}${bar.durationMs !== null ? ` · ${formatDurationMs(bar.durationMs)}` : ""}`
+                        : undefined
+                    }
+                    data-testid={`debug-log-flow-session-subagent-${bar.key}`}
+                    onClick={
+                      hasIdx && onNavigateToIdx ? () => onNavigateToIdx(bar.start_idx!) : undefined
+                    }
+                    onKeyDown={
+                      hasIdx && onNavigateToIdx
+                        ? (e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              onNavigateToIdx(bar.start_idx!);
+                            }
+                          }
+                        : undefined
+                    }
+                  />
+                </div>
+                <span
+                  className={`w-12 text-right font-mono text-[10px] ${
+                    bar.status === "failed" ? "text-red-500" : "text-muted-foreground"
+                  }`}
+                >
+                  {bar.status}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {/* ── Top entities (chip rows) ───────────────────────────────────── */}
+      {legend.topTools.length > 0 || legend.topSkills.length > 0 || legend.topAgents.length > 0 ? (
+        <div
+          className="border-border border-t px-3 py-1.5"
+          aria-label="Top tools, skills, and agents"
+          data-testid="debug-log-flow-session-legend"
+        >
+          {legend.topTools.length > 0 ? (
+            <div className="mb-1 flex flex-wrap items-center gap-1">
+              <span className="text-muted-foreground mr-1 text-[10px]">Tools:</span>
+              {legend.topTools.map((t) => (
+                <span
+                  key={t.name}
+                  className="border-border bg-background rounded border px-1 py-0.5 font-mono text-[10px]"
+                  style={{ borderColor: "#34d399" }}
+                  data-testid={`debug-log-flow-session-tool-chip-${t.name}`}
+                >
+                  {t.name} ·{" "}
+                  <span className="text-muted-foreground">{t.count.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {legend.topSkills.length > 0 ? (
+            <div className="mb-1 flex flex-wrap items-center gap-1">
+              <span className="text-muted-foreground mr-1 text-[10px]">Skills:</span>
+              {legend.topSkills.map((s) => (
+                <span
+                  key={s.name}
+                  className="border-border bg-background rounded border px-1 py-0.5 font-mono text-[10px]"
+                  style={{ borderColor: "#c084fc" }}
+                  data-testid={`debug-log-flow-session-skill-chip-${s.name}`}
+                >
+                  {s.name} ·{" "}
+                  <span className="text-muted-foreground">{s.count.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {legend.topAgents.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-muted-foreground mr-1 text-[10px]">Agents:</span>
+              {legend.topAgents.map((a) => (
+                <span
+                  key={a.name}
+                  className="border-border bg-background rounded border px-1 py-0.5 font-mono text-[10px]"
+                  style={{ borderColor: "#f472b6" }}
+                  data-testid={`debug-log-flow-session-agent-chip-${a.name}`}
+                >
+                  {a.name} ·{" "}
+                  <span className="text-muted-foreground">{a.count.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* ── Truncation warning ─────────────────────────────────────────── */}
+      {truncationWarnings.length > 0 ? (
+        <div
+          className="border-border text-muted-foreground border-t px-3 py-1 text-[10px]"
+          data-testid="debug-log-flow-session-truncation"
+          aria-live="polite"
+        >
+          ⚠ {truncationWarnings.join(" · ")}
         </div>
       ) : null}
     </div>
