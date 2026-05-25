@@ -30,8 +30,10 @@ import { useSessions } from "@/lib/api/hooks";
 import type { SessionRow } from "@/lib/api/types";
 import { formatNumber } from "@/lib/formatters";
 import { useHostFeature } from "@/lib/hosts";
+import { isLocalOrigin } from "@/lib/host-profiles";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHostState } from "@/providers/host-provider";
+import { DiagnosticPanel } from "@/components/DiagnosticPanel";
 
 type TimeRange = "all" | "today" | "7d" | "30d";
 type SummaryFilter = "all" | "yes" | "no";
@@ -58,7 +60,13 @@ function inTimeRange(timestamp: number | null, timeRange: TimeRange, nowMs: numb
 
 export default function SessionsPage() {
   const router = useRouter();
-  const { host, diagnosticsEnabled } = useHostState();
+  const { host, diagnosticsEnabled, probeResult } = useHostState();
+  const [isHosted, setIsHosted] = useState(false);
+
+  useEffect(() => {
+    setIsHosted(!isLocalOrigin(window.location.origin));
+    // Run once on mount — window.location is stable for the component lifecycle.
+  }, []);
   const { supported: sessionsSupported, loading: sessionsCapabilityLoading } = useHostFeature(
     host,
     "sessions",
@@ -335,6 +343,8 @@ export default function SessionsPage() {
           title="No agent host selected"
           description="Run the browse server locally or select a remote agent host in the header to load sessions."
         />
+
+        <DiagnosticPanel compat={null} probeResult={probeResult} isHosted={isHosted} />
       </div>
     );
   }
