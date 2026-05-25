@@ -587,12 +587,15 @@ def run_browser_fallback_tests() -> None:
                 shell_true = True
     test("BR-SEC3: operator_console has no subprocess shell=True keyword", not shell_true)
 
+    import tempfile
+
+    temp_root = Path(tempfile.gettempdir())
     env_keys = {
         "DISPLAY": ":99",
         "WAYLAND_DISPLAY": "wayland-99",
-        "XAUTHORITY": "/tmp/test-xauthority",
-        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/test-bus",
-        "XDG_RUNTIME_DIR": "/tmp/test-runtime",
+        "XAUTHORITY": str(temp_root / "test-xauthority"),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={temp_root / 'test-bus'}",
+        "XDG_RUNTIME_DIR": str(temp_root / "test-runtime"),
         "SECRET_BROWSER_TOKEN": "must-not-leak",
     }
     original_env = {key: os.environ.get(key) for key in env_keys}
@@ -609,13 +612,16 @@ def run_browser_fallback_tests() -> None:
     try:
         for key, value in env_keys.items():
             os.environ[key] = value
-        oc._browser_path = lambda _candidate: "/usr/bin/true"
+        oc._browser_path = lambda _candidate: str(temp_root / "fake-browser")
         oc.subprocess.Popen = FakePopen
         launch_local_browser("chrome", "http://127.0.0.1:8765/")
         launch_env = captured.get("env", {})
         test("BR-SEC4: browser launch preserves DISPLAY", launch_env.get("DISPLAY") == ":99")
         test("BR-SEC4: browser launch preserves Wayland display", launch_env.get("WAYLAND_DISPLAY") == "wayland-99")
-        test("BR-SEC4: browser launch preserves DBus address", launch_env.get("DBUS_SESSION_BUS_ADDRESS") == "unix:path=/tmp/test-bus")
+        test(
+            "BR-SEC4: browser launch preserves DBus address",
+            launch_env.get("DBUS_SESSION_BUS_ADDRESS") == env_keys["DBUS_SESSION_BUS_ADDRESS"],
+        )
         test("BR-SEC4: browser launch does not forward arbitrary secrets", "SECRET_BROWSER_TOKEN" not in launch_env)
         test("BR-SEC4: generic subprocess env still strips DISPLAY", "DISPLAY" not in oc._build_env())
         test("BR-SEC4: browser launch remains shell-free", captured.get("shell") is False)
