@@ -1,3 +1,5 @@
+import type { Page } from "@playwright/test";
+
 import { expect, test } from "./fixtures";
 import {
   aliasPlaceholderSession,
@@ -68,6 +70,53 @@ const KNOWLEDGE_INSIGHTS_FIXTURE = {
   hot_files: [],
   entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
 };
+
+const EMPTY_MISSION_ATLAS_PAYLOAD = JSON.stringify({
+  schema_version: "1",
+  session_id: SEEDED_SESSION_ID,
+  total_events: 0,
+  event_file_bytes: null,
+  first_event_at: null,
+  last_event_at: null,
+  duration_ms: null,
+  bucket_count: 0,
+  buckets: [],
+  lane_totals: {
+    tool: 0,
+    hook: 0,
+    skill: 0,
+    subagent: 0,
+    model: 0,
+    turn: 0,
+    system: 0,
+    error: 0,
+    generic: 0,
+  },
+  top_tools: [],
+  top_skills: [],
+  top_agent_names: [],
+  milestones: [],
+  artifact_counts: {
+    checkpoint_files: 0,
+    rewind_snapshots: 0,
+    todos_total: 0,
+    todos_done: 0,
+    todos_blocked: 0,
+    todo_deps: 0,
+    files: 0,
+    compactions: 0,
+  },
+  error_count: 0,
+  error_sample: [],
+  caps: { top_n: 20, milestones: 200, error_sample: 5, buckets_min: 10, buckets_max: 200 },
+  truncated: { tools: false, skills: false, agents: false, milestones: false },
+});
+
+async function stubEmptyMissionAtlas(page: Page): Promise<void> {
+  await page.route(`**/api/session/${SEEDED_SESSION_ID}/mission-atlas*`, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: EMPTY_MISSION_ATLAS_PAYLOAD });
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await stubEmptyFlightRecorderRoutes(page);
@@ -141,9 +190,11 @@ test("session detail route renders tabbed UI", async ({ page }) => {
 test("direct real UUID session detail route renders tabbed UI", async ({ page }) => {
   await assertSeededSessionAvailable(page);
 
-  // Stub the debug-log endpoint (skeleton + full) so runtimeErrorGuard does not
-  // catch a 404 when the Timeline tab fires useSessionDebugLogSkeleton.
-  // The e2e session has no events.jsonl on disk → the backend returns 404 by design.
+  // Stub debug-log and mission-atlas so runtimeErrorGuard does not catch a 404
+  // when the Timeline tab loads event-derived panels. The e2e session has no
+  // events.jsonl on disk, so these endpoints return 404 by design.
+  await stubEmptyMissionAtlas(page);
+
   // Returning an empty-entries 200 keeps the Timeline smoke test honest (shows empty
   // state) without suppressing real regressions.
   const emptyDebugLogPayload = JSON.stringify({
@@ -205,6 +256,8 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
 
 test("session debug log renders flow chart from CLI hierarchy data", async ({ page }) => {
   await assertSeededSessionAvailable(page);
+  await stubEmptyMissionAtlas(page);
+
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -737,6 +790,7 @@ test("Timeline playback: player, waterfall, play/pause, scrub, marker, bar, Open
   page,
 }) => {
   await assertSeededSessionAvailable(page);
+  await stubEmptyMissionAtlas(page);
 
   // ── Redaction-safe skeleton entries (no message/attrs/source/level/tool_name) ──
   const TIMELINE_SKELETON_ENTRIES = [
@@ -1403,6 +1457,7 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   page,
 }) => {
   await assertSeededSessionAvailable(page);
+  await stubEmptyMissionAtlas(page);
 
   // ── Skeleton entries used by the Timeline projection ─────────────────────
   // 6 entries spanning turn_start → tool_call → task_complete → agent_response
