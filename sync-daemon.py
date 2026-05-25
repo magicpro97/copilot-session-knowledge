@@ -732,7 +732,7 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
             (replica_id or "", replica_id or ""),
         )
         db.execute(
-            f"""
+            """
             CREATE TEMP TABLE sync_compact_keep_ops AS
             SELECT id
             FROM (

@@ -261,7 +261,7 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
 /// Fails open when:
 /// - `stable_id` is empty
 /// - `sync_table_policies` table is absent or the table's scope is not "canonical"
-/// - `sync_state` does not contain a valid `local_replica_id`
+/// - a `local_replica_id` cannot be read or created in `sync_state`
 /// - any SQLite operation fails
 pub fn enqueue_sync_op_fail_open(
     conn: &Connection,
@@ -293,18 +293,11 @@ fn try_enqueue_sync_op(
         return Ok(());
     }
 
-    // Read (but do not create) the local replica ID.
-    let replica_id: Option<String> = conn
-        .query_row(
-            "SELECT value FROM sync_state WHERE key = 'local_replica_id'",
-            [],
-            |r| r.get(0),
-        )
-        .ok();
-    let replica_id = match replica_id {
-        Some(id) if !id.is_empty() && id != "local" => id,
-        _ => return Ok(()),
-    };
+    let replica_id = crate::sync::db::get_or_create_replica_id(conn)?;
+    if replica_id.is_empty() {
+        return Ok(());
+    }
+    let payload_json = canonical_payload_json(payload_json);
 
     let now = chrono_now();
     let ns = SystemTime::now()
@@ -320,7 +313,7 @@ fn try_enqueue_sync_op(
     // code that is already inside a larger transaction.
     conn.execute_batch(&format!("SAVEPOINT {savepoint}"))?;
     let result = (|| -> Result<()> {
-        if pending_upsert_already_queued(conn, &replica_id, table_name, stable_id, payload_json)? {
+        if pending_upsert_already_queued(conn, &replica_id, table_name, stable_id, &payload_json)? {
             return Ok(());
         }
         coalesce_pending_upserts(conn, &replica_id, table_name, stable_id)?;
@@ -348,6 +341,12 @@ fn try_enqueue_sync_op(
         }
     }
     Ok(())
+}
+
+fn canonical_payload_json(payload_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .and_then(|value| serde_json::to_string(&value))
+        .unwrap_or_else(|_| payload_json.to_string())
 }
 
 fn pending_upsert_already_queued(
@@ -564,6 +563,32 @@ mod tests {
             .unwrap();
         assert_eq!(txn_count, 1);
         assert_eq!(payload, r#"{"k":"new"}"#);
+    }
+
+    #[test]
+    fn enqueue_sync_op_canonicalizes_payload_json_for_dedup() {
+        let conn = sync_enqueue_db();
+
+        enqueue_sync_op_fail_open(
+            &conn,
+            "knowledge_entries",
+            "stable-1",
+            r#"{"b": 2, "a": 1}"#,
+        );
+        enqueue_sync_op_fail_open(&conn, "knowledge_entries", "stable-1", r#"{"a":1,"b":2}"#);
+
+        let txn_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_txns WHERE status='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let payload: String = conn
+            .query_row("SELECT row_payload FROM sync_ops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(txn_count, 1);
+        assert_eq!(payload, r#"{"a":1,"b":2}"#);
     }
 
     #[test]
