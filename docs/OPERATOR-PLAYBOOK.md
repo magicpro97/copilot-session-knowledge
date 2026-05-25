@@ -788,6 +788,20 @@ Then open `https://agents.linhngo.dev` (or double-click `Browse UI.lnk` on the D
 Alternatively, double-click `Browse Backend.lnk` on the Desktop to start the backend in a
 console window.
 
+#### Local browser fallback
+
+If the hosted page cannot reach the local backend, use the local browser fallback commands:
+
+```bash
+python3 browse.py --list-browsers
+python3 browse.py --hosted-bootstrap --open-browser chrome
+```
+
+`--list-browsers` reports allowlisted Chrome, Edge, Firefox, and Safari candidates. Safari is
+reported as unsupported for hosted-to-local recovery; Chrome/Edge are preferred, and Firefox is
+usable only through the direct local app path (`http://127.0.0.1:8765/`). `--open-browser` only
+opens loopback URLs and never appends token query strings.
+
 **Security note:** The launcher does **not** use any browser security-bypass flags
 (`--disable-web-security`, `--allow-insecure-localhost`, etc.). Use `--hosted-bootstrap` for
 proper CORS / PNA configuration.
@@ -891,7 +905,8 @@ auto-activating. The user supplies the token; the frontend never invents a blank
 |---|---|---|
 | Chromium / Edge 104+ (pre-Chrome 142) | Requires PNA preflight headers and may show a local-network permission prompt. | Use `--hosted-bootstrap`; accept the browser prompt if shown. Do **not** use `--disable-web-security` for normal operation. |
 | **Chromium / Edge Chrome 142+** | LNA (Local Network Access) is enforced. The first probe triggers a permission dialog. | Accept the permission prompt once; use `LocalNetworkAccessAllowedByOrigins` enterprise policy to suppress for managed fleets. See [CONNECTIVITY-TROUBLESHOOTING.md §Chrome LNA](CONNECTIVITY-TROUBLESHOOTING.md#chrome-138-local-network-access-lna-permission-model). |
-| Safari / Firefox | Does not use Chromium's PNA/LNA header flow; outcome depends on CORS/browser policy. | Try `--hosted-bootstrap`; use HTTPS tunnel if blocked. |
+| Firefox | Does not implement Chromium's PNA/LNA header flow. | Prefer Chrome/Edge for hosted detection, or open the direct local app at `http://127.0.0.1:8765/`. |
+| Safari | Unsupported for hosted-to-local recovery. | Use Chrome/Edge, an HTTPS tunnel, or the direct local app. |
 | Strict enterprise browsers | May block local-network access regardless of headers. | Use HTTPS tunnel if available; otherwise see outbound control-bus guidance. |
 
 **Non-loopback HTTP hosts** (`http://192.168.x.x`, `http://custom.host`) are **not reachable**

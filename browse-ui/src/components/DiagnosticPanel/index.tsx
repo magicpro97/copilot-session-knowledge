@@ -94,6 +94,10 @@ const BROWSER_LABELS: Record<BrowserKind, string> = {
   other: "Your browser",
 };
 
+const LOCAL_UI_URL = "http://127.0.0.1:8765/";
+const LOCAL_BROWSER_COMMAND = "browse --hosted-bootstrap --open-browser chrome";
+const BROWSER_SCAN_COMMAND = "browse --list-browsers";
+
 // ── CopyButton ────────────────────────────────────────────────────────────────
 
 /**
@@ -151,6 +155,68 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
   );
 }
 
+function LocalUiLink({ children }: { children: React.ReactNode }) {
+  return (
+    <a
+      href={LOCAL_UI_URL}
+      className="font-mono text-blue-600 underline underline-offset-2 dark:text-blue-400"
+      target="_blank"
+      rel="noreferrer"
+    >
+      {children}
+    </a>
+  );
+}
+
+function ConfiguredBrowserFallback({ browserInfo }: { browserInfo: BrowserInfo }) {
+  const label = BROWSER_LABELS[browserInfo.kind];
+  const message =
+    browserInfo.kind === "chromium"
+      ? "Chrome/Edge can use Local Network Access prompts, but opening the local app directly avoids hosted-to-local browser blocking."
+      : browserInfo.kind === "firefox"
+        ? "Firefox does not implement Chromium PNA/LNA; use Chrome/Edge for hosted detection, or open the local app directly."
+        : browserInfo.kind === "safari"
+          ? "Safari is not supported for hosted-to-local connection recovery. Use Chrome/Edge, or open the local app directly."
+          : "This browser may block hosted-to-local requests. Use Chrome/Edge when possible, or open the local app directly.";
+
+  return (
+    <div
+      className="mb-3 space-y-2 rounded-lg border border-blue-500/30 bg-blue-500/5 p-3"
+      data-testid="configured-browser-fallback"
+      role="status"
+      aria-label="Configured browser fallback"
+    >
+      <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">
+        Open a browser that can use the local backend
+      </p>
+      <p className="text-muted-foreground text-xs">
+        Current browser: <span className="font-medium">{label}</span>. {message}
+      </p>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <a
+          href={LOCAL_UI_URL}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="open-configured-browser-cta"
+          className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 font-medium"
+        >
+          Open local app
+          <ExternalLink className="size-3" aria-hidden="true" />
+        </a>
+        <span className="text-muted-foreground">
+          Scan installed Chrome/Edge/Firefox locally with{" "}
+          <CodeSnippet copyText={BROWSER_SCAN_COMMAND}>{BROWSER_SCAN_COMMAND}</CodeSnippet>.
+        </span>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        To start the backend and open Chrome without installing a new browser, run{" "}
+        <CodeSnippet copyText={LOCAL_BROWSER_COMMAND}>{LOCAL_BROWSER_COMMAND}</CodeSnippet>. No
+        browser security-bypass flags are used.
+      </p>
+    </div>
+  );
+}
+
 // ── Panel variants ────────────────────────────────────────────────────────────
 
 /** Hard incompatibility: HTTPS origin → non-loopback HTTP host (mixed content). */
@@ -176,9 +242,8 @@ function MixedContentPanel({ hostUrl }: { hostUrl: string }) {
           URL as a host in Settings → Hosts.
         </Step>
         <Step n={2}>
-          Or open the browse UI directly at{" "}
-          <CodeSnippet copyText="http://localhost:8765">http://localhost:8765</CodeSnippet> to stay
-          fully same-origin without mixed content restrictions.
+          Or open the browse UI directly at <LocalUiLink>{LOCAL_UI_URL}</LocalUiLink> to stay fully
+          same-origin without mixed content restrictions.
         </Step>
       </ol>
     </div>
@@ -302,9 +367,8 @@ function DaemonNotRunningPanel() {
           <strong>Settings → Hosts</strong> and add the tunnel URL as a remote agent host.
         </Step>
         <Step n={3}>
-          Or open the local browse app at{" "}
-          <CodeSnippet copyText="http://localhost:8765">http://localhost:8765</CodeSnippet> directly
-          (no hosted shell needed).
+          Or open the local browse app at <LocalUiLink>{LOCAL_UI_URL}</LocalUiLink> directly (no
+          hosted shell needed).
         </Step>
       </ol>
     </div>
@@ -396,16 +460,8 @@ function HostedHttpsUnknownPanel() {
           , then restart with the generated cert paths. (Native HTTPS backend tracked in issue #36.)
         </Step>
         <Step n={3}>
-          Or open the local browse UI directly at{" "}
-          <a
-            href="http://127.0.0.1:8765/"
-            className="font-mono text-blue-600 underline underline-offset-2 dark:text-blue-400"
-            target="_blank"
-            rel="noreferrer"
-          >
-            http://127.0.0.1:8765/
-          </a>{" "}
-          — all features work from that origin without HTTPS restrictions.
+          Or open the local browse UI directly at <LocalUiLink>{LOCAL_UI_URL}</LocalUiLink> — all
+          features work from that origin without HTTPS restrictions.
         </Step>
       </ol>
     </div>
@@ -437,16 +493,8 @@ function PnaBlockedPanel() {
       <p className="text-foreground text-xs font-medium">Recommended:</p>
       <ol className="list-none space-y-1.5">
         <Step n={1}>
-          Open the local browse UI directly at{" "}
-          <a
-            href="http://127.0.0.1:8765/"
-            className="font-mono text-blue-600 underline underline-offset-2 dark:text-blue-400"
-            target="_blank"
-            rel="noreferrer"
-          >
-            http://127.0.0.1:8765/
-          </a>{" "}
-          — all features work without PNA restrictions.
+          Open the local browse UI directly at <LocalUiLink>{LOCAL_UI_URL}</LocalUiLink> — all
+          features work without PNA restrictions.
         </Step>
         <Step n={2}>
           Or use a tunnel: <CodeSnippet copyText="ngrok http 8765">ngrok http 8765</CodeSnippet>,
@@ -486,9 +534,8 @@ function NoHostConfiguredPanel() {
           Go to <strong>Settings → Hosts</strong> and add the tunnel URL as a remote agent host.
         </Step>
         <Step n={4}>
-          Or open the local browse app at{" "}
-          <CodeSnippet copyText="http://localhost:8765">http://localhost:8765</CodeSnippet> directly
-          (no hosted shell needed).
+          Or open the local browse app at <LocalUiLink>{LOCAL_UI_URL}</LocalUiLink> directly (no
+          hosted shell needed).
         </Step>
       </ol>
     </div>
@@ -570,19 +617,26 @@ export function DiagnosticPanel({
     setBrowserInfo(detectBrowserInfo());
   }, []);
 
+  const withBrowserFallback = (panel: React.ReactNode) => (
+    <>
+      {isHosted ? <ConfiguredBrowserFallback browserInfo={browserInfo} /> : null}
+      {panel}
+    </>
+  );
+
   // Hard incompatibility: mixed-content from HTTPS to non-loopback HTTP.
   if (compat && !compat.compatible && compat.code === "mixed-content-http") {
-    return <MixedContentPanel hostUrl={hostUrl} />;
+    return withBrowserFallback(<MixedContentPanel hostUrl={hostUrl} />);
   }
 
   // PNA-required: HTTPS → HTTP loopback, needs browser PNA support.
   if (compat?.compatible && compat.code === "pna-required") {
-    return <PnaRequiredPanel hostUrl={hostUrl} browserInfo={browserInfo} />;
+    return withBrowserFallback(<PnaRequiredPanel hostUrl={hostUrl} browserInfo={browserInfo} />);
   }
 
   // Backend probed but requires auth token (daemon is running, just needs pairing).
   if (probeResult?.status === "auth-required") {
-    return <AuthRequiredPanel hostUrl={probeResult.url} />;
+    return withBrowserFallback(<AuthRequiredPanel hostUrl={probeResult.url} />);
   }
 
   // Probe ran and returned unavailable — surface daemon-specific guidance.
@@ -593,11 +647,11 @@ export function DiagnosticPanel({
 
     if (daemonStates.has("running-no-pna")) {
       // At least one candidate had a server listening but no PNA headers.
-      return <DaemonNoPnaPanel />;
+      return withBrowserFallback(<DaemonNoPnaPanel />);
     }
     if (daemonStates.has("not-running") && !daemonStates.has("unknown")) {
       // All candidates with a daemon state concluded "not running".
-      return <DaemonNotRunningPanel />;
+      return withBrowserFallback(<DaemonNotRunningPanel />);
     }
     // All probes returned "unknown" daemon state.
     // Distinguish by candidate URL scheme:
@@ -608,16 +662,16 @@ export function DiagnosticPanel({
       const allHttpsCandidates =
         unknownReasons.length > 0 && unknownReasons.every((r) => r.url.startsWith("https://"));
       if (allHttpsCandidates) {
-        return <HostedHttpsUnknownPanel />;
+        return withBrowserFallback(<HostedHttpsUnknownPanel />);
       }
-      return <PnaBlockedPanel />;
+      return withBrowserFallback(<PnaBlockedPanel />);
     }
     // Inconclusive daemon state — fall through to NoHostConfiguredPanel below.
   }
 
   // Hosted origin with no hard compat issue but no remote host configured.
   if (isHosted) {
-    return <NoHostConfiguredPanel />;
+    return withBrowserFallback(<NoHostConfiguredPanel />);
   }
 
   // Local origin with no compat issue — nothing actionable to show.

@@ -20,6 +20,7 @@ _DISCOVERY_SCHEMA = "browse-host/1"
 
 # Capability string that signals QR / browse:// ticket pairing support.
 _CAP_PAIRING = "pairing"
+_CAP_BROWSER_SCAN = "browser-scan"
 
 # Demo-mode badge label — surface in the UI when static pairing is active.
 _DEMO_MODE_BADGE = "Demo mode"
@@ -55,7 +56,7 @@ def handle_discovery(db, params, token, nonce) -> tuple:
     auth = _auth_mode(token)
     static_slot = get_static_slot()
     static_mode_active = static_slot is not None
-    capabilities = ["discovery", "healthz", "api", _CAP_PAIRING]
+    capabilities = ["discovery", "healthz", "api", _CAP_PAIRING, _CAP_BROWSER_SCAN]
 
     payload = {
         "schema": _DISCOVERY_SCHEMA,

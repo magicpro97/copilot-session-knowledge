@@ -15,6 +15,7 @@ Endpoints:
   GET   /api/operator/suggest               → path suggestions under ~/
   GET   /api/operator/preview               → file content under ~/
   GET   /api/operator/diff                  → unified diff of two files under ~/
+  GET   /api/operator/browsers              → installed browser scan (allowlisted)
   GET   /api/operator/sessions/{session_id}/runs/{run_id}/debug
         → paginated BrowseDebugEntry list (debug=True; Bearer/cookie auth only)
 
@@ -54,6 +55,7 @@ from browse.core.operator_console import (
     make_stream_generator,
     preview_diff,
     preview_file,
+    scan_installed_browsers,
     start_run,
     suggest_paths,
     update_session,
@@ -209,9 +211,18 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "preview",
                 "diff",
                 "cli_adopt",
+                "browser_scan",
+                "local_browser_fallback",
             ],
         }
     )
+
+
+@route("/api/operator/browsers", methods=["GET"])
+def handle_list_browsers(db, params, token, nonce) -> tuple:
+    """GET /api/operator/browsers — scan allowlisted installed browsers."""
+    browsers = scan_installed_browsers()
+    return json_ok({"browsers": browsers, "count": len(browsers)})
 
 
 # ── Session CRUD ──────────────────────────────────────────────────────────────

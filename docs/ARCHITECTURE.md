@@ -186,6 +186,7 @@ POST /api/operator/sessions/{id}/confirm     → confirm adopted session → ena
 GET  /api/operator/suggest                   → path/workspace suggestions under ~/
 GET  /api/operator/preview                   → file preview under ~/
 GET  /api/operator/diff                      → unified diff for two files under ~/
+GET  /api/operator/browsers                  → read-only scan of allowlisted local browser candidates
 GET  /api/operator/cli-sessions              → list real CLI sessions (Bearer/cookie; debug=True; read-only)
 GET  /api/operator/cli-sessions/{id}         → single CLI session by UUID (Bearer/cookie; debug=True; read-only)
 GET  /api/session/{id}/debug-log             → paginated session-scoped debug log; preserves CLI event hierarchy via span_id/parent_span_id (CLI id/parentId → SHA-1 16-hex), derives duration_ms for paired start/completion events; limit 100 (Bearer/cookie; debug=True; read-only)

@@ -225,6 +225,49 @@ describe("DiagnosticPanel", () => {
     expect(link.getAttribute("href")).toContain("developer.chrome.com");
   });
 
+  it("hosted failures show configured browser fallback with local CTA and scan command", () => {
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 Chrome/130.0.0.0 Safari/537.36",
+    });
+    render(
+      <DiagnosticPanel
+        compat={{ compatible: true, code: "pna-required", reason: "needs PNA" }}
+        isHosted={true}
+        hostUrl="http://localhost:8765"
+      />
+    );
+    const fallback = screen.getByTestId("configured-browser-fallback");
+    expect(fallback).toHaveTextContent(/Chrome\/Edge can use Local Network Access/i);
+    expect(fallback).toHaveTextContent(/browse --list-browsers/);
+    expect(fallback).toHaveTextContent(/browse --hosted-bootstrap --open-browser chrome/);
+    expect(fallback).not.toHaveTextContent(/--disable-web-security/);
+    const cta = screen.getByTestId("open-configured-browser-cta");
+    expect(cta).toHaveAttribute("href", "http://127.0.0.1:8765/");
+    expect(cta).toHaveAttribute("target", "_blank");
+  });
+
+  it("Safari fallback reports hosted-to-local recovery as unsupported", () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.0 Safari/537.36",
+    });
+    render(
+      <DiagnosticPanel
+        compat={null}
+        probeResult={{
+          status: "unavailable",
+          reasons: [
+            { url: "https://127.0.0.1:8765", reason: "network-error", daemonState: "unknown" },
+          ],
+        }}
+        isHosted={true}
+      />
+    );
+    const fallback = screen.getByTestId("configured-browser-fallback");
+    expect(fallback).toHaveTextContent(/Safari is not supported/i);
+    expect(fallback).toHaveTextContent(/Use Chrome\/Edge/i);
+  });
+
   it("renders pna-required panel (safari — PNA not supported)", () => {
     vi.stubGlobal("navigator", {
       userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Version/17.0 Safari/537.36",

@@ -550,6 +550,85 @@ def run_active_runs_tests() -> None:
             oc._ACTIVE_RUNS.clear()
 
 
+def run_browser_fallback_tests() -> None:
+    print("\n=== Browser fallback safety ===")
+    import browse.core.operator_console as oc
+    from browse.core.operator_console import launch_local_browser, scan_installed_browsers
+
+    browsers = scan_installed_browsers()
+    test("BR-SEC1: browser scan returns list", isinstance(browsers, list))
+    safari = next((item for item in browsers if item.get("id") == "safari"), None)
+    test("BR-SEC1: safari is reported unsupported", safari is not None and safari.get("supported") is False)
+
+    for url in (
+        "https://evil.example.com/",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "http://127.0.0.1:8765/?token=secret",
+    ):
+        try:
+            launch_local_browser("chrome", url)
+            test(f"BR-SEC2: rejects unsafe launch URL {url[:20]}", False)
+        except ValueError:
+            test(f"BR-SEC2: rejects unsafe launch URL {url[:20]}", True)
+        except Exception as exc:
+            test(f"BR-SEC2: rejects unsafe URL before subprocess {url[:20]}", False, str(exc))
+
+    import ast
+
+    source = (Path(__file__).parent.parent / "browse" / "core" / "operator_console.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    shell_true = False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Call,)):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "shell" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
+                shell_true = True
+    test("BR-SEC3: operator_console has no subprocess shell=True keyword", not shell_true)
+
+    env_keys = {
+        "DISPLAY": ":99",
+        "WAYLAND_DISPLAY": "wayland-99",
+        "XAUTHORITY": "/tmp/test-xauthority",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/test-bus",
+        "XDG_RUNTIME_DIR": "/tmp/test-runtime",
+        "SECRET_BROWSER_TOKEN": "must-not-leak",
+    }
+    original_env = {key: os.environ.get(key) for key in env_keys}
+    original_popen = oc.subprocess.Popen
+    original_browser_path = oc._browser_path
+    captured: dict = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env", {})
+            captured["shell"] = kwargs.get("shell")
+
+    try:
+        for key, value in env_keys.items():
+            os.environ[key] = value
+        oc._browser_path = lambda _candidate: "/usr/bin/true"
+        oc.subprocess.Popen = FakePopen
+        launch_local_browser("chrome", "http://127.0.0.1:8765/")
+        launch_env = captured.get("env", {})
+        test("BR-SEC4: browser launch preserves DISPLAY", launch_env.get("DISPLAY") == ":99")
+        test("BR-SEC4: browser launch preserves Wayland display", launch_env.get("WAYLAND_DISPLAY") == "wayland-99")
+        test("BR-SEC4: browser launch preserves DBus address", launch_env.get("DBUS_SESSION_BUS_ADDRESS") == "unix:path=/tmp/test-bus")
+        test("BR-SEC4: browser launch does not forward arbitrary secrets", "SECRET_BROWSER_TOKEN" not in launch_env)
+        test("BR-SEC4: generic subprocess env still strips DISPLAY", "DISPLAY" not in oc._build_env())
+        test("BR-SEC4: browser launch remains shell-free", captured.get("shell") is False)
+    finally:
+        oc.subprocess.Popen = original_popen
+        oc._browser_path = original_browser_path
+        for key, old_value in original_env.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -563,6 +642,7 @@ def run_all_tests() -> int:
     run_https_proxy_tests()
     run_dream_path_tests()
     run_active_runs_tests()
+    run_browser_fallback_tests()
 
     print("\n========================================")
     print(f"Results: {_PASS} passed, {_FAIL} failed")

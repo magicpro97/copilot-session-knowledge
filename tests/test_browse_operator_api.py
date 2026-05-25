@@ -121,6 +121,8 @@ from browse.core.operator_console import (  # noqa: E402
     preview_file,
     probe_available_models,
     redact_secrets,
+    launch_local_browser,
+    scan_installed_browsers,
     start_run,
     suggest_paths,
     update_session,
@@ -1764,6 +1766,65 @@ def test_oc60_start_run_returns_none_on_tampered_resume_target():
         delete_session(s["id"])
 
 
+def test_oc61_scan_installed_browsers_contract():
+    browsers = scan_installed_browsers()
+    test("OC61: browser scan returns list", isinstance(browsers, list))
+    ids = {item.get("id") for item in browsers if isinstance(item, dict)}
+    test("OC61: chrome candidate present", "chrome" in ids)
+    test("OC61: edge candidate present", "edge" in ids)
+    test("OC61: firefox candidate present", "firefox" in ids)
+    for browser in browsers:
+        test("OC61: browser entry has id", isinstance(browser.get("id"), str) and bool(browser.get("id")))
+        test("OC61: browser entry has name", isinstance(browser.get("name"), str) and bool(browser.get("name")))
+        test("OC61: installed is bool", isinstance(browser.get("installed"), bool))
+        test("OC61: supported is bool", isinstance(browser.get("supported"), bool))
+        test("OC61: reason is safe text", isinstance(browser.get("reason"), str) and "token=" not in browser.get("reason", ""))
+
+
+def test_oc62_safari_reported_unsupported():
+    browsers = scan_installed_browsers()
+    safari = next((item for item in browsers if item.get("id") == "safari"), None)
+    test("OC62: safari candidate present", safari is not None)
+    if safari:
+        test("OC62: safari unsupported", safari.get("supported") is False)
+        test("OC62: safari not recommended", safari.get("recommended") is False)
+
+
+def test_oc63_launch_local_browser_rejects_unsafe_urls():
+    for label, url in (
+        ("external https", "https://evil.example.com/"),
+        ("javascript", "javascript:alert(1)"),
+        ("file", "file:///etc/passwd"),
+        ("token query", "http://127.0.0.1:8765/?token=secret"),
+        ("bypass flag", "http://127.0.0.1:8765/--disable-web-security"),
+    ):
+        try:
+            launch_local_browser("chrome", url)
+            test(f"OC63: rejects {label}", False)
+        except ValueError:
+            test(f"OC63: rejects {label}", True)
+        except Exception:
+            test(f"OC63: rejects {label} before launch", False)
+
+
+def test_oc64_launch_local_browser_rejects_unknown_or_unsupported_browser():
+    try:
+        launch_local_browser("not-a-browser", "http://127.0.0.1:8765/")
+        test("OC64: unknown browser rejected", False)
+    except ValueError:
+        test("OC64: unknown browser rejected", True)
+    except Exception:
+        test("OC64: unknown browser rejected as ValueError", False)
+
+    try:
+        launch_local_browser("safari", "http://127.0.0.1:8765/")
+        test("OC64: safari launch rejected", False)
+    except ValueError:
+        test("OC64: safari launch rejected", True)
+    except Exception:
+        test("OC64: safari launch rejected as ValueError", False)
+
+
 def run_api_tests():
     server, port = _make_test_server()
     try:
@@ -2200,6 +2261,11 @@ def _run_api_tests(port: int):
             "CAP1: diagnostics in supported_features",
             "diagnostics" in data_cap.get("supported_features", []),
         )
+        test("CAP1: browser_scan in supported_features", "browser_scan" in data_cap.get("supported_features", []))
+        test(
+            "CAP1: local_browser_fallback in supported_features",
+            "local_browser_fallback" in data_cap.get("supported_features", []),
+        )
         # Old keys must NOT be present (schema contract)
         test("CAP1: no stale cli_family key", "cli_family" not in data_cap)
         test("CAP1: no stale operator key", "operator" not in data_cap)
@@ -2381,6 +2447,43 @@ def _run_api_tests(port: int):
         acao_cap = resp_cap_cors.getheader("Access-Control-Allow-Origin", "")
         test("CORS8: ACAO header on capabilities", acao_cap == "https://agents.linhngo.dev")
         _ = resp_cap_cors.read()
+
+        # BR1: GET /api/operator/browsers returns a safe browser scan envelope.
+        resp_browsers = _get(port, "/api/operator/browsers")
+        test("BR1: browsers endpoint → 200", resp_browsers.status == 200)
+        data_browsers = _read_json(resp_browsers)
+        test("BR1: browsers field is list", isinstance(data_browsers.get("browsers"), list))
+        test("BR1: count field matches list", data_browsers.get("count") == len(data_browsers.get("browsers", [])))
+        browser_ids = {item.get("id") for item in data_browsers.get("browsers", []) if isinstance(item, dict)}
+        test("BR1: scan includes chrome", "chrome" in browser_ids)
+        test("BR1: scan includes edge", "edge" in browser_ids)
+        test("BR1: scan includes firefox", "firefox" in browser_ids)
+
+        # BR2: endpoint requires operator auth.
+        conn_browsers_no_auth = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_browsers_no_auth.request("GET", "/api/operator/browsers")
+        resp_browsers_no_auth = conn_browsers_no_auth.getresponse()
+        _ = resp_browsers_no_auth.read()
+        test("BR2: browsers endpoint without token → 401", resp_browsers_no_auth.status == 401)
+
+        # BR3: CORS preflight applies to the browser scan endpoint.
+        conn_browsers_opts = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_browsers_opts.request(
+            "OPTIONS",
+            "/api/operator/browsers",
+            headers={
+                "Origin": "https://agents.linhngo.dev",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+        resp_browsers_opts = conn_browsers_opts.getresponse()
+        _ = resp_browsers_opts.read()
+        test("BR3: browsers OPTIONS → 204", resp_browsers_opts.status == 204)
+        test(
+            "BR3: browsers OPTIONS ACAO",
+            resp_browsers_opts.getheader("Access-Control-Allow-Origin", "") == "https://agents.linhngo.dev",
+        )
 
         # ── Issue #27: diagnostics/non-operator /api/ routes must have deterministic
         #   CORS behaviour for allowlisted origins (GET + OPTIONS coverage) ──────────
@@ -3145,6 +3248,13 @@ if __name__ == "__main__":
     test_oc58_create_session_default_resume_fields()
     test_oc59_existing_session_loads_without_new_fields()
     test_oc60_start_run_returns_none_on_tampered_resume_target()
+
+    print()
+    print("── Local browser fallback tests ────────────────────────────────────")
+    test_oc61_scan_installed_browsers_contract()
+    test_oc62_safari_reported_unsupported()
+    test_oc63_launch_local_browser_rejects_unsafe_urls()
+    test_oc64_launch_local_browser_rejects_unknown_or_unsupported_browser()
 
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")

@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,10 +115,90 @@ _ENV_ALLOWLIST = frozenset(
         "XDG_DATA_HOME",
     }
 )
+_BROWSER_LAUNCH_ENV_ALLOWLIST = _ENV_ALLOWLIST | frozenset(
+    {
+        "DBUS_SESSION_BUS_ADDRESS",
+        "DESKTOP_SESSION",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE",
+    }
+)
 
 # ── Model catalog constants ───────────────────────────────────────────────────
 
 _MODEL_CACHE_TTL = 300  # seconds: model list probe cache lifetime
+
+# ── Local browser fallback constants ───────────────────────────────────────────
+
+_LOCAL_BROWSER_URL_RE = re.compile(r"^https?://(?:127\.0\.0\.1|localhost)(?::\d{1,5})?(?:/.*)?$", re.ASCII)
+_BROWSER_DENIED_FLAGS = (
+    "--disable-web-security",
+    "--allow-insecure-localhost",
+    "--disable-features",
+)
+
+_BROWSER_CANDIDATES = (
+    {
+        "id": "chrome",
+        "name": "Google Chrome",
+        "family": "chromium",
+        "darwin_app": "/Applications/Google Chrome.app",
+        "darwin_open_name": "Google Chrome",
+        "linux_paths": ("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/snap/bin/chromium"),
+        "windows_paths": (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ),
+        "supported": True,
+        "recommended": True,
+        "reason": "Chromium supports Private/Local Network Access prompts and works directly from localhost.",
+    },
+    {
+        "id": "edge",
+        "name": "Microsoft Edge",
+        "family": "chromium",
+        "darwin_app": "/Applications/Microsoft Edge.app",
+        "darwin_open_name": "Microsoft Edge",
+        "linux_paths": ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable"),
+        "windows_paths": (
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ),
+        "supported": True,
+        "recommended": True,
+        "reason": "Edge is Chromium-based, supports Local Network Access prompts, and keeps the hosted-shell path closest to Chrome.",
+    },
+    {
+        "id": "firefox",
+        "name": "Firefox",
+        "family": "firefox",
+        "darwin_app": "/Applications/Firefox.app",
+        "darwin_open_name": "Firefox",
+        "linux_paths": ("/usr/bin/firefox", "/snap/bin/firefox"),
+        "windows_paths": (
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+        ),
+        "supported": True,
+        "recommended": False,
+        "reason": "Firefox does not implement Chromium PNA, but opening the local app directly at localhost avoids PNA.",
+    },
+    {
+        "id": "safari",
+        "name": "Safari",
+        "family": "safari",
+        "darwin_app": "/Applications/Safari.app",
+        "darwin_open_name": "Safari",
+        "linux_paths": (),
+        "windows_paths": (),
+        "supported": False,
+        "recommended": False,
+        "reason": "Safari is reported as unsupported for hosted-to-local connection recovery.",
+    },
+)
 _VERSIONED_MODEL_ALIAS_RE = re.compile(r"^((?:claude-(?:sonnet|opus|haiku)|gpt)-\d)-(\d{1,2})((?:-.+)?)$")
 
 # ── In-memory run registry ────────────────────────────────────────────────────
@@ -936,6 +1017,11 @@ def _build_env() -> dict:
     return {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
 
 
+def _build_browser_launch_env() -> dict:
+    """Return a safe GUI-browser launch environment."""
+    return {k: v for k, v in os.environ.items() if k in _BROWSER_LAUNCH_ENV_ALLOWLIST}
+
+
 def _resolve_copilot_command(env: dict | None = None) -> str:
     """Resolve the Copilot CLI executable for shell-free subprocess calls."""
     search_env = env if env is not None else _build_env()
@@ -947,6 +1033,114 @@ def _resolve_copilot_command(env: dict | None = None) -> str:
             if candidate_path:
                 return candidate_path
     return resolved or "copilot"
+
+
+def _browser_candidate_by_id(browser_id: str) -> dict | None:
+    normalized = (browser_id or "").strip().lower()
+    for candidate in _BROWSER_CANDIDATES:
+        if candidate["id"] == normalized:
+            return candidate
+    return None
+
+
+def _browser_path(candidate: dict) -> str:
+    if sys.platform == "darwin":
+        app_path = str(candidate.get("darwin_app", ""))
+        return app_path if app_path and Path(app_path).is_dir() else ""
+    if os.name == "nt":
+        for raw in candidate.get("windows_paths", ()):
+            path = Path(str(raw))
+            if path.is_file():
+                return str(path)
+        return ""
+    for raw in candidate.get("linux_paths", ()):
+        path = Path(str(raw))
+        if path.is_file():
+            return str(path)
+    return ""
+
+
+def scan_installed_browsers() -> list[dict]:
+    """Return installed browser candidates from a fixed allowlist.
+
+    Safari is included when present, but marked unsupported so callers can tell
+    the user why it is not a viable hosted-to-local recovery browser.
+    """
+    browsers = []
+    for candidate in _BROWSER_CANDIDATES:
+        detected_path = _browser_path(candidate)
+        installed = bool(detected_path)
+        browsers.append(
+            {
+                "id": candidate["id"],
+                "name": candidate["name"],
+                "family": candidate["family"],
+                "installed": installed,
+                "supported": bool(candidate["supported"]),
+                "recommended": bool(candidate["recommended"] and installed),
+                "reason": candidate["reason"],
+            }
+        )
+    return browsers
+
+
+def _validate_local_browser_url(url: str) -> str:
+    cleaned = (url or "").strip()
+    if not _LOCAL_BROWSER_URL_RE.match(cleaned):
+        raise ValueError("browser launch URL must be a loopback http(s) URL")
+    parsed = urllib.parse.urlparse(cleaned)
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if any(key.lower() == "token" for key in query):
+        raise ValueError("browser launch URL must not include token query parameters")
+    if any(flag in cleaned for flag in _BROWSER_DENIED_FLAGS):
+        raise ValueError("browser launch URL must not include browser security-bypass flags")
+    return cleaned
+
+
+def launch_local_browser(browser_id: str, url: str) -> dict:
+    """Launch an installed allowlisted browser at a loopback URL.
+
+    This helper is intended for explicit local CLI use, not unauthenticated web
+    triggers. It never accepts a browser path from the caller and never uses
+    shell=True or browser security-bypass flags.
+    """
+    candidate = _browser_candidate_by_id(browser_id)
+    if candidate is None:
+        raise ValueError("unknown browser_id")
+    if not candidate.get("supported"):
+        raise ValueError(f"{candidate['name']} is not supported for hosted-to-local recovery")
+    launch_url = _validate_local_browser_url(url)
+    browser_path = _browser_path(candidate)
+    if not browser_path:
+        raise FileNotFoundError(f"{candidate['name']} is not installed")
+
+    env = _build_browser_launch_env()
+    if sys.platform == "darwin":
+        opener = "/usr/bin/open"
+        if not Path(opener).is_file():
+            raise FileNotFoundError("/usr/bin/open not found")
+        argv = [opener, "-a", str(candidate["darwin_open_name"]), launch_url]
+    else:
+        argv = [browser_path, launch_url]
+
+    for arg in argv:
+        if any(flag in arg for flag in _BROWSER_DENIED_FLAGS):
+            raise ValueError("browser launch argv contains a forbidden security-bypass flag")
+
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        shell=False,
+    )
+    return {
+        "launched": True,
+        "browser_id": candidate["id"],
+        "browser_name": candidate["name"],
+        "url": launch_url,
+    }
 
 
 def normalize_model_id(model: str) -> str:

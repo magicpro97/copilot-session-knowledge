@@ -543,6 +543,9 @@ describe("HostManagement — detect local backend affordance", () => {
     expect(screen.getByTestId("detect-result-unavailable").textContent).toMatch(
       /127.0.0.1:8765|localhost:8765/
     );
+    const openLocal = screen.getByTestId("detect-result-open-local-ui");
+    expect(openLocal).toHaveAttribute("href", "http://127.0.0.1:8765/");
+    expect(openLocal).toHaveAttribute("target", "_blank");
   });
 
   it("shows detected message and add-button when probe detects a backend", async () => {

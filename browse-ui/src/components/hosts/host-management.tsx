@@ -743,7 +743,17 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
         >
           <AlertCircle className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
           <p className="text-muted-foreground">
-            No local backend found at 127.0.0.1:8765 or localhost:8765.
+            No local backend found at 127.0.0.1:8765 or localhost:8765.{" "}
+            <a
+              href="http://127.0.0.1:8765/"
+              target="_blank"
+              rel="noreferrer"
+              className="text-foreground underline underline-offset-2"
+              data-testid="detect-result-open-local-ui"
+            >
+              Open local app directly
+            </a>
+            .
           </p>
         </div>
       ) : null}

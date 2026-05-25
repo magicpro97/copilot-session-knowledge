@@ -674,6 +674,21 @@ def main() -> None:
             "Exits after removal — does NOT start a server."
         ),
     )
+    p.add_argument(
+        "--list-browsers",
+        action="store_true",
+        default=False,
+        help="List allowlisted installed browsers and exit.",
+    )
+    p.add_argument(
+        "--open-browser",
+        metavar="BROWSER_ID",
+        default="",
+        help=(
+            "After startup, open the local browse UI in BROWSER_ID "
+            "(chrome, edge, or firefox). Safari is reported unsupported."
+        ),
+    )
     # ── Debug-log storage flags (WBS-103) ─────────────────────────────────────
     p.add_argument(
         "--debug-log",
@@ -756,6 +771,14 @@ def main() -> None:
     # --uninstall-launcher: one-shot removal — exit after removing launcher files.
     if args.uninstall_launcher:
         uninstall_browse_hosted_launcher(quiet=False)
+        return
+
+    if args.list_browsers:
+        import json as _json_browsers
+
+        from browse.core.operator_console import scan_installed_browsers
+
+        print(_json_browsers.dumps({"browsers": scan_installed_browsers()}, indent=2), flush=True)
         return
 
     env_token = ""
@@ -1128,6 +1151,18 @@ def main() -> None:
         )
         _dl_start()
         print("[debug-log] storage initialized; /api/debug-log/healthz registered.", flush=True)
+
+    if args.open_browser:
+        from browse.core.operator_console import launch_local_browser
+
+        try:
+            launch_result = launch_local_browser(args.open_browser, f"{scheme}://{host}:{port}/")
+            print(
+                f"[browser] Opened {launch_result['browser_name']} at {launch_result['url']}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[browser] Could not open browser: {exc}", file=sys.stderr, flush=True)
 
     try:
         server.serve_forever()
