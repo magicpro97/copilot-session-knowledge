@@ -2223,14 +2223,13 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
     await waitFor(() => {
       expect(screen.getByTestId("debug-log-flow-session-canvas")).toBeInTheDocument();
       expect(screen.getByTestId("debug-log-flow-page-loading")).toHaveTextContent(
-        "Loading page events"
+        "Loading more events"
       );
     });
     expect(screen.queryByText("Loading debug log…")).not.toBeInTheDocument();
-    // In flow mode the window is cumulative from 0; after expanding to cover idx=100 the
-    // window shows 0–flowLimit-1 (200-1 = 199), i.e. Page 1 · events 0–199.
+    // In flow mode the drilldown fetches the 100-event server page containing idx=100.
     expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
-      "Page 1 · events 0–199"
+      "Page 2 · events 100–199"
     );
   });
 });
@@ -2271,6 +2270,46 @@ describe("DebugLogTab – Flow load-more", () => {
     expect(screen.getByTestId("debug-log-flow-load-more")).toBeInTheDocument();
   });
 
+  it("loads the next 100-event server page and appends it to Flow", async () => {
+    const page2Entry = makeEntry({
+      idx: 100,
+      span_id: "page-two",
+      parent_span_id: null,
+      message: "Event 100",
+    });
+    const seenParams: DebugLogParams[] = [];
+    (useDebugLog as Mock).mockImplementation(
+      (_sessionId: string, _runId: string, params: DebugLogParams) => {
+        seenParams.push(params);
+        const from = params.from ?? 0;
+        return {
+          data: makeResponse(from >= 100 ? [page2Entry] : flowEntries, {
+            from,
+            limit: params.limit ?? 100,
+            total: 250,
+            has_more: from < 200,
+          }),
+          error: null,
+          isLoading: false,
+          isFetching: false,
+        };
+      }
+    );
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    expect(screen.getByTestId("debug-log-flow-has-more")).toHaveTextContent("showing 2 of 250");
+    fireEvent.click(screen.getByTestId("debug-log-flow-load-more"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("debug-log-flow-node-100")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("debug-log-flow-has-more")).toHaveTextContent("showing 3 of 250");
+    expect(seenParams).toContainEqual(expect.objectContaining({ from: 100, limit: 100 }));
+    expect(seenParams).not.toContainEqual(expect.objectContaining({ from: 0, limit: 200 }));
+  });
+
   it("Load more button is disabled while fetching", () => {
     (useDebugLog as Mock).mockReturnValue({
       data: makeResponse(flowEntries, { total: 250, has_more: true }),
@@ -2287,6 +2326,12 @@ describe("DebugLogTab – Flow load-more", () => {
   });
 
   it("does not stall flow focus when the exact target idx is unavailable", async () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(flowEntries, { total: flowEntries.length, has_more: false }),
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    });
     const onFocusEntryHandled = vi.fn();
     const { rerender } = render(
       <DebugLogTab
@@ -2327,7 +2372,7 @@ describe("DebugLogTab – Flow load-more", () => {
     expect(screen.getByRole("button", { name: /^next$/i })).toBeInTheDocument();
   });
 
-  it("bucket click in Flow mode expands flowLimit instead of navigating pages", async () => {
+  it("bucket click in Flow mode fetches the target page instead of navigating List/Tree", async () => {
     const nearestEntry = makeEntry({
       idx: 101,
       span_id: "nearbucket",
@@ -2411,11 +2456,13 @@ describe("DebugLogTab – Flow load-more", () => {
     });
     (useDebugLog as Mock).mockImplementation(
       (_sessionId: string, _runId: string, params: DebugLogParams) => {
-        const limit = params.limit ?? 100;
+        const from = params.from ?? 0;
         return {
-          data: makeResponse(limit >= 200 ? [...flowEntries, nearestEntry] : flowEntries, {
+          data: makeResponse(from >= 100 ? [nearestEntry] : flowEntries, {
+            from,
+            limit: params.limit ?? 100,
             total: 250,
-            has_more: limit < 250,
+            has_more: from < 200,
           }),
           error: null,
           isLoading: false,
@@ -2431,18 +2478,17 @@ describe("DebugLogTab – Flow load-more", () => {
       expect(screen.getByTestId("debug-log-flow-session-canvas")).toBeInTheDocument();
     });
 
-    // The flow session window should show the cumulative range 0–flowLimit-1 = 0–99 initially.
+    // The flow session window initially tracks the first 100-event server page.
     expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
       "Page 1 · events 0–99"
     );
 
-    // Click bucket-1 (events 100–199). In flow mode this expands flowLimit to 200,
-    // NOT navigating to page=1. The window should immediately reflect 0–199.
+    // Click bucket-1 (events 100–199). In flow mode this fetches/appends that server page,
+    // NOT navigating the List/Tree page.
     fireEvent.click(screen.getByTestId("debug-log-flow-session-bucket-tool-1"));
 
-    // Window now covers 0–199 (flowLimit=200 → end=flowLimit-1=199).
     expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
-      "Page 1 · events 0–199"
+      "Page 2 · events 100–199"
     );
     await waitFor(() => {
       const drawer = screen.getByRole("dialog", { name: /debug event detail/i });

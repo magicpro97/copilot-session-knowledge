@@ -405,10 +405,9 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
     const url = new URL(route.request().url());
     const from = Number(url.searchParams.get("from") ?? "0");
     const limit = Number(url.searchParams.get("limit") ?? "100");
-    // Flow view fetches with from=0 and growing limit; List/Tree fetch page-by-page (from>=100).
-    const isExtendedFlowFetch = from === 0 && limit >= 200;
-    const isLegacyPageFetch = from >= 100;
-    if (isExtendedFlowFetch || isLegacyPageFetch) {
+    // Flow view fetches/appends 100-event server pages; List/Tree remains page-by-page too.
+    const isPageFetchAfterFirst = from >= 100;
+    if (isPageFetchAfterFirst) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     const page2Entry = {
@@ -533,11 +532,7 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
         redacted: false,
       },
     ];
-    const entries = isLegacyPageFetch
-      ? [page2Entry]
-      : isExtendedFlowFetch
-        ? [...page1Entries, page2Entry]
-        : page1Entries;
+    const entries = isPageFetchAfterFirst ? [page2Entry] : page1Entries;
 
     await route.fulfill({
       contentType: "application/json",
@@ -698,9 +693,8 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   }, box);
   await expect(zoom).toHaveText(/\d+%/);
 
-  // Aggregate click-through must expand the flow window and render node-100.
-  // In flow mode, clicking a bucket expands flowLimit to cover the bucket
-  // (no page navigation — bucketClickNavigationCount stays 0).
+  // Aggregate click-through must fetch/append the target 100-event page and render node-100.
+  // In flow mode, clicking a bucket does not use the List/Tree pagination controls.
   await page.getByLabel("Close detail panel").click();
   await expect(page.getByRole("dialog", { name: /debug event detail/i })).toHaveCount(0);
   watchBucketNavigation = true;

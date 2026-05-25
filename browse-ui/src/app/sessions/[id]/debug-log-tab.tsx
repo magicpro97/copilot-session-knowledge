@@ -186,6 +186,19 @@ function applyFilters(events: BrowseDebugEntry[], filters: FilterState): BrowseD
   });
 }
 
+function mergeEventsByIdx(
+  current: BrowseDebugEntry[],
+  incoming: BrowseDebugEntry[]
+): BrowseDebugEntry[] {
+  if (incoming.length === 0) return current;
+
+  const seen = new Set(current.map((entry) => entry.idx));
+  const additions = incoming.filter((entry) => !seen.has(entry.idx));
+  if (additions.length === 0) return current;
+
+  return [...current, ...additions].sort((a, b) => a.idx - b.idx);
+}
+
 // ── Detail Drawer ────────────────────────────────────────────────────────────
 
 type DetailDrawerProps = {
@@ -688,8 +701,10 @@ export function DebugLogTab({
   const [page, setPage] = useState(0);
   const [selectedEntry, setSelectedEntry] = useState<BrowseDebugEntry | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "tree" | "flow">("list");
-  // Flow view fetches a cumulative window starting at PAGE_SIZE and growing by PAGE_SIZE.
-  const [flowLimit, setFlowLimit] = useState(PAGE_SIZE);
+  const [flowFetchFrom, setFlowFetchFrom] = useState(0);
+  const [flowLoadedEvents, setFlowLoadedEvents] = useState<BrowseDebugEntry[]>([]);
+  const [flowTotal, setFlowTotal] = useState<number | null>(null);
+  const [flowNextSequentialFrom, setFlowNextSequentialFrom] = useState(0);
 
   // ── Focus-entry-idx: navigate to target page and select entry ─────────────────
   /**
@@ -722,9 +737,7 @@ export function DebugLogTab({
     if (viewMode === "flow") {
       pendingFocusRef.current = null;
       pendingFlowFocusRef.current = focusEntryIdx;
-      setFlowLimit((prev) =>
-        Math.max(prev, Math.ceil((focusEntryIdx + 1) / PAGE_SIZE) * PAGE_SIZE)
-      );
+      setFlowFetchFrom(pageForIdx(focusEntryIdx, PAGE_SIZE) * PAGE_SIZE);
     } else {
       pendingFlowFocusRef.current = null;
       pendingFocusRef.current = { idx: focusEntryIdx, targetPage };
@@ -740,8 +753,7 @@ export function DebugLogTab({
     limit: PAGE_SIZE,
   };
 
-  // Flow-specific fetch: cumulative window from 0 up to flowLimit.
-  const flowFetchParams: DebugLogParams = { from: 0, limit: flowLimit };
+  const flowFetchParams: DebugLogParams = { from: flowFetchFrom, limit: PAGE_SIZE };
 
   // Operator run path — only active when runId is present.
   const operatorQuery = useDebugLog(
@@ -798,19 +810,54 @@ export function DebugLogTab({
       : null;
 
   // Normalised data for the Flow-specific cumulative fetch window.
-  const flowNormalizedData: typeof normalizedData = hasRunId
+  const flowFetchedData = hasRunId
     ? flowOperatorQuery.data
       ? {
           events: flowOperatorQuery.data.events,
           total: flowOperatorQuery.data.total,
           has_more: flowOperatorQuery.data.has_more,
+          from: flowOperatorQuery.data.from,
+          limit: flowOperatorQuery.data.limit,
         }
       : null
     : flowSessionQuery.data
       ? {
           events: flowSessionQuery.data.entries,
           total: flowSessionQuery.data.total,
-          has_more: flowSessionQuery.data.entries.length < flowSessionQuery.data.total,
+          has_more:
+            flowSessionQuery.data.from + flowSessionQuery.data.entries.length <
+            flowSessionQuery.data.total,
+          from: flowSessionQuery.data.from,
+          limit: flowSessionQuery.data.limit,
+        }
+      : null;
+
+  useEffect(() => {
+    setFlowFetchFrom(0);
+    setFlowLoadedEvents([]);
+    setFlowTotal(null);
+    setFlowNextSequentialFrom(0);
+    pendingFlowFocusRef.current = null;
+  }, [sessionId, runId, host.id]);
+
+  useEffect(() => {
+    if (viewMode !== "flow" || !flowFetchedData) return;
+
+    setFlowTotal((prev) => (prev === flowFetchedData.total ? prev : flowFetchedData.total));
+    setFlowLoadedEvents((prev) => mergeEventsByIdx(prev, flowFetchedData.events));
+    setFlowNextSequentialFrom((prev) => {
+      if (flowFetchedData.from !== prev) return prev;
+      const next = flowFetchedData.from + flowFetchedData.limit;
+      return next === prev ? prev : Math.min(next, flowFetchedData.total);
+    });
+  }, [flowFetchedData, viewMode]);
+
+  const flowNormalizedData: typeof normalizedData =
+    flowLoadedEvents.length > 0 || flowTotal !== null
+      ? {
+          events: flowLoadedEvents,
+          total: flowTotal ?? flowLoadedEvents.length,
+          has_more: flowTotal !== null ? flowNextSequentialFrom < flowTotal : false,
         }
       : null;
 
@@ -868,16 +915,11 @@ export function DebugLogTab({
 
     const exactTarget = events.find((e) => e.idx === idx);
     const canLoadMore =
-      Boolean(flowNormalizedData.has_more) && flowLimit < flowNormalizedData.total;
+      Boolean(flowNormalizedData.has_more) && flowNextSequentialFrom < flowNormalizedData.total;
     const latestLoadedIdx = events.reduce((max, entry) => Math.max(max, entry.idx), -1);
 
     if (!exactTarget && canLoadMore && latestLoadedIdx < idx) {
-      setFlowLimit((prev) =>
-        Math.min(
-          flowNormalizedData.total,
-          Math.max(prev + PAGE_SIZE, Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE)
-        )
-      );
+      setFlowFetchFrom(pageForIdx(idx, PAGE_SIZE) * PAGE_SIZE);
       return;
     }
 
@@ -891,7 +933,7 @@ export function DebugLogTab({
       setSelectedEntry(target);
     }
     onFocusHandledRef.current?.();
-  }, [flowLimit, flowNormalizedData, isFlowLoadingMore, viewMode]);
+  }, [flowNextSequentialFrom, flowNormalizedData, isFlowLoadingMore, viewMode]);
 
   // Show tree toggle only when any raw event has a span_id.
   const hasSpanIds = Boolean(normalizedData?.events.some((e) => e.span_id !== null));
@@ -944,12 +986,12 @@ export function DebugLogTab({
       ? {
           events: [],
           total: flowAggregate.totalEvents,
-          has_more: flowLimit < flowAggregate.totalEvents,
+          has_more: flowNextSequentialFrom < flowAggregate.totalEvents,
         }
       : null);
 
   // Navigate to the entry containing idx.
-  // In Flow mode: expand flowLimit to cover the idx.
+  // In Flow mode: fetch the 100-event server page containing idx, then append it.
   // In List/Tree mode: navigate to the page containing the idx.
   const handleNavigateToIdx = useCallback(
     (idx: number) => {
@@ -957,7 +999,7 @@ export function DebugLogTab({
       setSelectedEntry(null);
       if (viewMode === "flow") {
         pendingFlowFocusRef.current = idx;
-        setFlowLimit((prev) => Math.max(prev, Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE));
+        setFlowFetchFrom(pageForIdx(idx, PAGE_SIZE) * PAGE_SIZE);
       } else {
         const targetPage = pageForIdx(idx, PAGE_SIZE);
         pendingFocusRef.current = { idx, targetPage };
@@ -1081,7 +1123,10 @@ export function DebugLogTab({
   const displayPageEnd = normalizedData
     ? pageStartIdx + normalizedData.events.length
     : Math.min(pageStartIdx + PAGE_SIZE, total);
-  const flowWindowEndIdx = Math.max(0, Math.min(flowLimit, flowNormalizedData?.total ?? total) - 1);
+  const flowWindowEndIdx = Math.max(
+    flowFetchFrom,
+    Math.min(flowFetchFrom + PAGE_SIZE, flowNormalizedData?.total ?? total) - 1
+  );
 
   return (
     <div className="space-y-3">
@@ -1180,7 +1225,9 @@ export function DebugLogTab({
           onSelect={handleSelect}
           hasMore={flowNormalizedData?.has_more ?? has_more}
           flowHasMore={flowNormalizedData?.has_more ?? false}
-          onLoadMore={() => setFlowLimit((prev) => prev + PAGE_SIZE)}
+          onLoadMore={() =>
+            setFlowFetchFrom(flowNextSequentialFrom > 0 ? flowNextSequentialFrom : PAGE_SIZE)
+          }
           flowLoadedCount={flowNormalizedData?.events.length ?? filteredEvents.length}
           flowLoadingMore={isFlowLoadingMore}
           totalEvents={flowNormalizedData?.total ?? total}
@@ -1188,8 +1235,8 @@ export function DebugLogTab({
           aggregate={flowAggregate ?? undefined}
           atlasLoading={atlasQuery.isLoading}
           atlasError={atlasQuery.isError}
-          currentPage={0}
-          currentPageStart={0}
+          currentPage={pageForIdx(flowFetchFrom, PAGE_SIZE)}
+          currentPageStart={flowFetchFrom}
           currentPageEnd={flowWindowEndIdx}
           onNavigateToIdx={handleNavigateToIdx}
           pageLoading={isFlowLoadingMore || isFlowPageLoading}
