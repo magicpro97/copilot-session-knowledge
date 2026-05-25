@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::process::ExitCode;
 
 use crate::db::connection::KnowledgeDb;
@@ -17,6 +18,15 @@ type DetailRow = (
     String,
 );
 type FtsRow = (i64, String, String, String, String, f64, String, String);
+type LikeRow = (i64, String, String, String, String);
+
+#[derive(Debug)]
+struct SessionHistoryRow {
+    source: String,
+    title: String,
+    snippet: String,
+    session_id: String,
+}
 
 /// Entry point called from main's dispatch for the `query` command.
 pub fn run_query_command(args: &[String]) -> ExitCode {
@@ -398,7 +408,47 @@ fn search_fts_cmd(
     room: Option<&str>,
 ) -> ExitCode {
     let fts_query = sanitize_fts_query(query);
+    let mut rows = match search_knowledge_rows(db, &fts_query, limit, wing, room) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("sk query: FTS search error: {e}");
+            return ExitCode::from(1);
+        }
+    };
 
+    if rows.is_empty() {
+        if let Some(expanded_query) = expanded_fts_query(query) {
+            if expanded_query != fts_query {
+                rows = match search_knowledge_rows(db, &expanded_query, limit, wing, room) {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        eprintln!("sk query: expanded FTS search error: {e}");
+                        return ExitCode::from(1);
+                    }
+                };
+                rows = filter_expanded_knowledge_rows(rows, query);
+                if !rows.is_empty() {
+                    println!("(No exact FTS match — showing expanded knowledge matches)");
+                }
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        return search_like_fallback(db, query, limit, verbose);
+    }
+
+    print_knowledge_rows(query, &rows, verbose);
+    ExitCode::SUCCESS
+}
+
+fn search_knowledge_rows(
+    db: &KnowledgeDb,
+    fts_query: &str,
+    limit: usize,
+    wing: Option<&str>,
+    room: Option<&str>,
+) -> rusqlite::Result<Vec<FtsRow>> {
     let sql = "SELECT ke.id, ke.category, ke.title, ke.content, COALESCE(ke.tags,'') as tags, \
                ke.confidence, COALESCE(ke.wing,'') as wing, COALESCE(ke.room,'') as room \
                FROM ke_fts fts \
@@ -407,13 +457,7 @@ fn search_fts_cmd(
                ORDER BY rank \
                LIMIT ?";
 
-    let mut stmt = match db.conn.prepare(sql) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sk query: FTS prepare error: {e}");
-            return ExitCode::from(1);
-        }
-    };
+    let mut stmt = db.conn.prepare(sql)?;
 
     let rows: Vec<FtsRow> = stmt
         .query_map(rusqlite::params![fts_query, limit as i64], |row| {
@@ -427,23 +471,18 @@ fn search_fts_cmd(
                 row.get(6)?,
                 row.get(7)?,
             ))
-        })
-        .map(|r| r.filter_map(|x| x.ok()).collect())
-        .unwrap_or_default();
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    // Filter by wing/room in memory if needed
-    let rows: Vec<_> = rows
+    Ok(rows
         .into_iter()
         .filter(|(_, _, _, _, _, _, w, r)| {
             wing.map_or(true, |wf| w == wf) && room.map_or(true, |rf| r == rf)
         })
-        .collect();
+        .collect())
+}
 
-    if rows.is_empty() {
-        // Fallback: LIKE search
-        return search_like_fallback(db, query, limit, verbose);
-    }
-
+fn print_knowledge_rows(query: &str, rows: &[FtsRow], verbose: bool) {
     println!(
         "\nKnowledge entries matching: {query} ({} results)\n",
         rows.len()
@@ -455,53 +494,117 @@ fn search_fts_cmd(
             let preview = content.chars().take(300).collect::<String>();
             println!("   {}", preview.replace('\n', "\n   "));
         } else {
-            let first_line = content
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(80)
-                .collect::<String>();
-            if !first_line.is_empty() {
-                println!("   {first_line}");
+            let preview = preview_content_line(content, query, 100);
+            if !preview.is_empty() {
+                println!("   {preview}");
             }
         }
         println!();
     }
-    ExitCode::SUCCESS
+}
+
+fn preview_content_line(content: &str, query: &str, max: usize) -> String {
+    let terms = expanded_query_terms(query);
+
+    for line in content.lines() {
+        let lower = line.to_lowercase();
+        if terms
+            .iter()
+            .any(|term| text_contains_query_term(&lower, &term.to_lowercase()))
+        {
+            return truncate(line.trim(), max);
+        }
+    }
+
+    content
+        .lines()
+        .next()
+        .map(|line| truncate(line.trim(), max))
+        .unwrap_or_default()
+}
+
+fn filter_expanded_knowledge_rows(rows: Vec<FtsRow>, query: &str) -> Vec<FtsRow> {
+    let terms = expanded_query_terms(query);
+    rows.into_iter()
+        .filter(|row| should_keep_expanded_knowledge_row(row, &terms, query))
+        .collect()
+}
+
+fn should_keep_expanded_knowledge_row(row: &FtsRow, terms: &[String], query: &str) -> bool {
+    if is_retrieval_meta_row(row) && !query_is_about_session_knowledge(query) {
+        return false;
+    }
+
+    let min_matches = if terms.len() <= 2 { 1 } else { 2 };
+    count_row_term_matches(row, terms) >= min_matches
+}
+
+fn is_retrieval_meta_row(row: &FtsRow) -> bool {
+    let text = format!("{} {} {}", row.2, row.3, row.4).to_lowercase();
+    text.contains("sk query misses")
+        || (text.contains("query-expansion")
+            && (text.contains("session-store") || text.contains("knowledge-db")))
+}
+
+fn query_is_about_session_knowledge(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    lower.contains("sk")
+        || lower.contains("knowledge")
+        || lower.contains("session")
+        || lower.contains("recall")
+        || lower.contains("query-expansion")
+}
+
+fn count_row_term_matches(row: &FtsRow, terms: &[String]) -> usize {
+    let text = format!("{} {} {}", row.2, row.3, row.4).to_lowercase();
+    let mut seen_terms = Vec::new();
+    let mut count = 0;
+    for term in terms {
+        let lower = term.to_lowercase();
+        if seen_terms.iter().any(|seen| seen == &lower) {
+            continue;
+        }
+        seen_terms.push(lower.clone());
+        if text_contains_query_term(&text, &lower) {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn text_contains_query_term(text_lower: &str, term_lower: &str) -> bool {
+    if term_lower.chars().count() <= 4 {
+        if term_lower.chars().any(|c| c == '_' || c == '-') {
+            return text_lower.contains(term_lower);
+        }
+        text_lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|token| token == term_lower)
+    } else {
+        text_lower.contains(term_lower)
+    }
 }
 
 /// LIKE fallback when FTS returns nothing.
 fn search_like_fallback(db: &KnowledgeDb, query: &str, limit: usize, verbose: bool) -> ExitCode {
-    let pattern = format!("%{}%", query.to_lowercase());
-    let sql = "SELECT id, category, title, content, COALESCE(tags,'') \
-               FROM knowledge_entries \
-               WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ? \
-               ORDER BY confidence DESC \
-               LIMIT ?";
-
-    let mut stmt = match db.conn.prepare(sql) {
-        Ok(s) => s,
-        Err(_) => {
-            println!("No results for: {query}");
-            return ExitCode::SUCCESS;
+    let rows = match search_like_rows(db, query, limit) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("sk query: substring search error: {e}");
+            return ExitCode::from(1);
         }
     };
 
-    let rows: Vec<(i64, String, String, String, String)> = stmt
-        .query_map(rusqlite::params![pattern, pattern, limit as i64], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        })
-        .map(|r| r.filter_map(|x| x.ok()).collect())
-        .unwrap_or_default();
-
     if rows.is_empty() {
+        let session_rows = expanded_fts_query(query)
+            .map(|expanded_query| search_session_history_rows(db, &expanded_query, limit))
+            .unwrap_or_default();
+        if !session_rows.is_empty() {
+            println!("(Learned knowledge returned 0 — showing session history fallback)");
+            print_session_history_rows(query, &session_rows, verbose);
+            return ExitCode::SUCCESS;
+        }
+
         println!("No results for: {query}");
         println!("Tip: Try broader terms or check --wings/--rooms for available categories.");
         return ExitCode::SUCCESS;
@@ -518,10 +621,267 @@ fn search_like_fallback(db: &KnowledgeDb, query: &str, limit: usize, verbose: bo
         if verbose && !content.is_empty() {
             let preview = content.chars().take(300).collect::<String>();
             println!("   {}", preview.replace('\n', "\n   "));
+        } else {
+            let preview = preview_content_line(content, query, 100);
+            if !preview.is_empty() {
+                println!("   {preview}");
+            }
         }
         println!();
     }
     ExitCode::SUCCESS
+}
+
+fn search_like_rows(db: &KnowledgeDb, query: &str, limit: usize) -> rusqlite::Result<Vec<LikeRow>> {
+    let pattern = format!("%{}%", query.to_lowercase());
+    let sql = "SELECT id, category, title, content, COALESCE(tags,'') \
+               FROM knowledge_entries \
+               WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ? \
+               ORDER BY confidence DESC \
+               LIMIT ?";
+
+    let mut stmt = db.conn.prepare(sql)?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![pattern, pattern, limit as i64], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(rows)
+}
+
+fn search_session_history_rows(
+    db: &KnowledgeDb,
+    fts_query: &str,
+    limit: usize,
+) -> Vec<SessionHistoryRow> {
+    let mut rows = Vec::new();
+    rows.extend(search_sessions_fts_rows(db, fts_query, limit));
+    if rows.len() < limit {
+        rows.extend(search_knowledge_fts_rows(
+            db,
+            fts_query,
+            limit.saturating_sub(rows.len()),
+        ));
+    }
+    dedupe_session_history_rows(&mut rows);
+    rows.truncate(limit);
+    rows
+}
+
+fn dedupe_session_history_rows(rows: &mut Vec<SessionHistoryRow>) {
+    let mut seen = HashSet::new();
+    rows.retain(|row| {
+        let key = if row.session_id.trim().is_empty() {
+            format!("{}:{}:{}", row.source, row.title, row.snippet)
+        } else {
+            row.session_id.clone()
+        };
+        seen.insert(key)
+    });
+}
+
+fn search_sessions_fts_rows(
+    db: &KnowledgeDb,
+    fts_query: &str,
+    limit: usize,
+) -> Vec<SessionHistoryRow> {
+    let sql = "SELECT COALESCE(session_id,''), COALESCE(title,''), \
+                      snippet(sessions_fts, -1, '[', ']', ' ... ', 18) \
+               FROM sessions_fts \
+               WHERE sessions_fts MATCH ? \
+               ORDER BY rank \
+               LIMIT ?";
+    let mut stmt = match db.conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map(rusqlite::params![fts_query, limit as i64], |row| {
+        Ok(SessionHistoryRow {
+            source: "session".to_string(),
+            session_id: row.get(0)?,
+            title: row.get(1)?,
+            snippet: row.get(2)?,
+        })
+    })
+    .map(|r| r.filter_map(|x| x.ok()).collect())
+    .unwrap_or_default()
+}
+
+fn search_knowledge_fts_rows(
+    db: &KnowledgeDb,
+    fts_query: &str,
+    limit: usize,
+) -> Vec<SessionHistoryRow> {
+    let sql = "SELECT COALESCE(session_id,''), COALESCE(title,''), \
+                      snippet(knowledge_fts, -1, '[', ']', ' ... ', 18) \
+               FROM knowledge_fts \
+               WHERE knowledge_fts MATCH ? \
+               ORDER BY rank \
+               LIMIT ?";
+    let mut stmt = match db.conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map(rusqlite::params![fts_query, limit as i64], |row| {
+        Ok(SessionHistoryRow {
+            source: "indexed-doc".to_string(),
+            session_id: row.get(0)?,
+            title: row.get(1)?,
+            snippet: row.get(2)?,
+        })
+    })
+    .map(|r| r.filter_map(|x| x.ok()).collect())
+    .unwrap_or_default()
+}
+
+fn print_session_history_rows(query: &str, rows: &[SessionHistoryRow], verbose: bool) {
+    println!(
+        "\nSession history matching: {query} ({} results)\n",
+        rows.len()
+    );
+    for (i, row) in rows.iter().enumerate() {
+        let title = if row.title.trim().is_empty() {
+            "(untitled session)"
+        } else {
+            row.title.trim()
+        };
+        println!("{}. [{}] {}", i + 1, row.source, truncate(title, 80));
+        if !row.session_id.is_empty() {
+            println!("   Session: {}", truncate(&row.session_id, 24));
+        }
+        let snippet = row.snippet.replace('\n', " ");
+        if verbose {
+            println!("   {}", snippet);
+        } else {
+            println!("   {}", truncate(&snippet, 160));
+        }
+        println!();
+    }
+}
+
+fn expanded_fts_query(query: &str) -> Option<String> {
+    let terms = expanded_query_terms(query);
+    if terms.is_empty() {
+        None
+    } else {
+        Some(
+            terms
+                .iter()
+                .map(|term| format!("\"{}\"*", term))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        )
+    }
+}
+
+fn expanded_query_terms(query: &str) -> Vec<String> {
+    let mut terms = fallback_terms(query);
+
+    for term in safe_query_terms(query) {
+        for part in split_query_identifier(&term) {
+            if !is_query_stopword(&part) {
+                push_unique(&mut terms, part);
+            }
+        }
+    }
+
+    terms.truncate(24);
+    terms
+}
+
+fn fallback_terms(query: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for term in safe_query_terms(query) {
+        if !is_query_stopword(&term) {
+            push_unique(&mut terms, term);
+        }
+    }
+    terms
+}
+
+fn safe_query_terms(query: &str) -> Vec<String> {
+    let cleaned: String = query
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    cleaned
+        .split_whitespace()
+        .filter(|term| term.chars().count() >= 3)
+        .map(|term| term.to_string())
+        .collect()
+}
+
+fn split_query_identifier(term: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut previous: Option<char> = None;
+
+    for ch in term.chars() {
+        if ch == '_' || ch == '-' {
+            push_identifier_part(&mut parts, &mut current);
+            previous = None;
+            continue;
+        }
+
+        if let Some(prev) = previous {
+            if prev.is_lowercase() && ch.is_uppercase() {
+                push_identifier_part(&mut parts, &mut current);
+            }
+        }
+
+        current.push(ch);
+        previous = Some(ch);
+    }
+    push_identifier_part(&mut parts, &mut current);
+    parts
+}
+
+fn push_identifier_part(parts: &mut Vec<String>, current: &mut String) {
+    if current.chars().count() >= 3 {
+        push_unique(parts, current.clone());
+    }
+    current.clear();
+}
+
+fn is_query_stopword(term: &str) -> bool {
+    matches!(
+        term.to_lowercase().as_str(),
+        "and"
+            | "the"
+            | "for"
+            | "not"
+            | "with"
+            | "source"
+            | "truth"
+            | "manual"
+            | "pattern"
+            | "processing"
+            | "generated"
+            | "data"
+    )
+}
+
+fn push_unique(terms: &mut Vec<String>, term: String) {
+    if !terms
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&term))
+    {
+        terms.push(term);
+    }
 }
 
 /// Show recent entries across all categories when no search terms given.
@@ -590,5 +950,253 @@ fn truncate(s: &str, max: usize) -> String {
             end += c.len_utf8();
         }
         format!("{}...", &s[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_query_db() -> KnowledgeDb {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE knowledge_entries (
+                 id INTEGER PRIMARY KEY,
+                 category TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 content TEXT NOT NULL,
+                 tags TEXT DEFAULT '',
+                 confidence REAL DEFAULT 1.0,
+                 wing TEXT DEFAULT '',
+                 room TEXT DEFAULT ''
+             );
+             CREATE VIRTUAL TABLE ke_fts USING fts5(
+                 title, content, tags, category, wing, room, facts
+             );
+             CREATE VIRTUAL TABLE sessions_fts USING fts5(
+                 session_id, title, user_messages, assistant_messages, tool_names
+             );
+             CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+                 title, section_name, content, doc_type, session_id, document_id
+             );",
+        )
+        .unwrap();
+        KnowledgeDb { conn }
+    }
+
+    fn insert_knowledge(db: &KnowledgeDb, id: i64, title: &str, content: &str) {
+        db.conn
+            .execute(
+                "INSERT INTO knowledge_entries
+                 (id, category, title, content, tags, confidence, wing, room)
+                 VALUES (?, 'pattern', ?, ?, 'test', 1.0, 'backend', 'patient')",
+                rusqlite::params![id, title, content],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO ke_fts
+                 (rowid, title, content, tags, category, wing, room, facts)
+                 VALUES (?, ?, ?, 'test', 'pattern', 'backend', 'patient', '')",
+                rusqlite::params![id, title, content],
+            )
+            .unwrap();
+    }
+
+    fn insert_indexed_doc(db: &KnowledgeDb, session_id: &str, title: &str, body: &str) {
+        db.conn
+            .execute(
+                "INSERT INTO knowledge_fts
+                 (title, section_name, content, doc_type, session_id, document_id)
+                 VALUES (?, 'section', ?, 'session', ?, 'doc')",
+                rusqlite::params![title, body, session_id],
+            )
+            .unwrap();
+    }
+
+    fn insert_session(db: &KnowledgeDb, session_id: &str, title: &str, body: &str) {
+        db.conn
+            .execute(
+                "INSERT INTO sessions_fts
+                 (session_id, title, user_messages, assistant_messages, tool_names)
+                 VALUES (?, ?, ?, ?, 'rg view')",
+                rusqlite::params![session_id, title, body, body],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn expanded_query_splits_identifier_terms() {
+        let query = expanded_fts_query("userProfile created-at migration").unwrap();
+        assert!(query.contains("\"userProfile\"*"), "{query}");
+        assert!(query.contains("\"user\"*"), "{query}");
+        assert!(query.contains("\"Profile\"*"), "{query}");
+        assert!(query.contains("\"created\"*"), "{query}");
+        assert!(query.contains(" OR "), "{query}");
+    }
+
+    #[test]
+    fn expanded_query_keeps_technology_terms() {
+        let terms = expanded_query_terms("DynamoDB manual hash repository pattern");
+        assert!(terms.iter().any(|term| term == "DynamoDB"), "{terms:?}");
+        assert!(terms.iter().any(|term| term == "repository"), "{terms:?}");
+    }
+
+    #[test]
+    fn expanded_query_keeps_user_terms() {
+        let terms = expanded_query_terms("export WebSocket SQS ZIP TSV async");
+        assert!(terms.iter().any(|term| term == "WebSocket"), "{terms:?}");
+        assert!(terms.iter().any(|term| term == "SQS"), "{terms:?}");
+        assert!(terms.iter().any(|term| term == "export"), "{terms:?}");
+        assert_eq!(
+            terms
+                .iter()
+                .filter(|term| term.eq_ignore_ascii_case("websocket"))
+                .count(),
+            1,
+            "{terms:?}"
+        );
+    }
+
+    #[test]
+    fn short_terms_match_snake_and_kebab_identifiers() {
+        assert!(text_contains_query_term("openapi_dto", "dto"));
+        assert!(text_contains_query_term("openapi-dto", "dto"));
+        assert!(!text_contains_query_term("metadata", "data"));
+        assert!(text_contains_query_term("mongo _id field", "_id"));
+        assert!(text_contains_query_term("co-op workflow", "co-op"));
+        assert!(!text_contains_query_term("coop workflow", "co-op"));
+    }
+
+    #[test]
+    fn expanded_filter_hides_retrieval_meta_for_domain_queries() {
+        let row = (
+            1,
+            "discovery".to_string(),
+            "sk query misses recoverable session history".to_string(),
+            "Benchmark follow-up mentions WebSocket SQS ZIP TSV misses.".to_string(),
+            "sk,knowledge-db,session-store,recall,query-expansion".to_string(),
+            1.0,
+            String::new(),
+            String::new(),
+        );
+
+        assert!(!should_keep_expanded_knowledge_row(
+            &row,
+            &expanded_query_terms("export WebSocket SQS ZIP TSV async"),
+            "export WebSocket SQS ZIP TSV async"
+        ));
+    }
+
+    #[test]
+    fn expanded_filter_keeps_retrieval_meta_for_sk_queries() {
+        let row = (
+            1,
+            "discovery".to_string(),
+            "sk query misses recoverable session history".to_string(),
+            "Benchmark follow-up mentions session-store and query-expansion.".to_string(),
+            "sk,knowledge-db,session-store,recall,query-expansion".to_string(),
+            1.0,
+            String::new(),
+            String::new(),
+        );
+
+        assert!(should_keep_expanded_knowledge_row(
+            &row,
+            &expanded_query_terms("sk query expansion session history"),
+            "sk query expansion session history"
+        ));
+    }
+
+    #[test]
+    fn preview_prefers_query_matching_line() {
+        let content = "Generic opening line\nRun cd shared && yarn gen after OpenAPI updates";
+        let preview = preview_content_line(content, "OpenAPI DTO yarn gen shared interface", 100);
+        assert_eq!(preview, "Run cd shared && yarn gen after OpenAPI updates");
+    }
+
+    #[test]
+    fn primary_knowledge_search_still_returns_learned_entries() {
+        let db = make_query_db();
+        insert_knowledge(
+            &db,
+            1,
+            "Box CLI folded Location redirect",
+            "box-download.ps1 must parse folded Location redirect output.",
+        );
+
+        let rows = search_knowledge_rows(
+            &db,
+            &sanitize_fts_query("Box CLI folded Location"),
+            10,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].2, "Box CLI folded Location redirect");
+    }
+
+    #[test]
+    fn knowledge_search_surfaces_prepare_errors() {
+        let db = KnowledgeDb {
+            conn: rusqlite::Connection::open_in_memory().unwrap(),
+        };
+
+        assert!(search_knowledge_rows(&db, "\"missing\"*", 10, None, None).is_err());
+        assert!(search_like_rows(&db, "missing", 10).is_err());
+    }
+
+    #[test]
+    fn session_history_fallback_recovers_unlearned_concepts() {
+        let db = make_query_db();
+        insert_session(
+            &db,
+            "session-user-profile",
+            "userProfile createdAt investigation",
+            "createdAt userProfile migration fallback for a stale cache issue",
+        );
+
+        let exact_rows = search_knowledge_rows(
+            &db,
+            &sanitize_fts_query("userProfile createdAt stale cache migration"),
+            10,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(exact_rows.is_empty(), "fixture must have no learned rows");
+
+        let expanded = expanded_fts_query("userProfile createdAt stale cache migration")
+            .expect("expanded query");
+        let rows = search_session_history_rows(&db, &expanded, 5);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "session");
+        assert!(rows[0].snippet.contains("userProfile"), "{rows:?}");
+    }
+
+    #[test]
+    fn session_history_dedupes_same_session_across_indexes() {
+        let db = make_query_db();
+        insert_session(
+            &db,
+            "session-user-profile",
+            "userProfile createdAt investigation",
+            "createdAt userProfile migration fallback",
+        );
+        insert_indexed_doc(
+            &db,
+            "session-user-profile",
+            "userProfile createdAt investigation",
+            "createdAt userProfile migration fallback",
+        );
+
+        let expanded = expanded_fts_query("userProfile createdAt migration").unwrap();
+        let rows = search_session_history_rows(&db, &expanded, 5);
+
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].source, "session");
     }
 }
