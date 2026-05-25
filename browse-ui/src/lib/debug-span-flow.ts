@@ -104,6 +104,8 @@ export const FLOW_NODE_WIDTH = 200;
 export const FLOW_NODE_HEIGHT = 60;
 export const FLOW_HORIZONTAL_GAP = 24;
 export const FLOW_VERTICAL_GAP = 36;
+/** Horizontal indent (in tree-units) per depth level in the vertical DFS layout. */
+export const FLOW_INDENT_PER_LEVEL = 24;
 
 // ── Pure helpers (exported for testability) ──────────────────────────────────
 
@@ -406,9 +408,22 @@ function keyOf(node: SpanTreeNode): string {
 
 /**
  * Compute a deterministic top-down tree layout from a flat list of debug
- * entries. Sibling roots are laid out left-to-right; each subtree is centered
- * over its children. Missing parent_span_id values are handled by
- * `deriveSpanTree` (collected under a synthetic orphans root).
+ * entries using DFS pre-order vertical stacking.
+ *
+ * Each node is placed in DFS pre-order:
+ *   - `y` = sequential row index × (FLOW_NODE_HEIGHT + FLOW_VERTICAL_GAP)
+ *   - `x` = node.depth × FLOW_INDENT_PER_LEVEL
+ *
+ * This produces a compact, readable vertical outline that mirrors the
+ * VS Code Agent Debug "flow chart" view. Siblings are stacked vertically
+ * rather than spread horizontally, so deep trees remain visible without
+ * requiring horizontal scrolling on typical viewport widths.
+ *
+ * Width  = max(x + FLOW_NODE_WIDTH) across all placed nodes.
+ * Height = max(y + FLOW_NODE_HEIGHT) across all placed nodes.
+ *
+ * Missing parent_span_id values are handled by `deriveSpanTree`
+ * (collected under a synthetic orphans root).
  */
 export function computeFlowLayout(entries: BrowseDebugEntry[]): FlowLayout {
   const roots = deriveSpanTree(entries);
@@ -419,41 +434,18 @@ export function computeFlowLayout(entries: BrowseDebugEntry[]): FlowLayout {
     return { nodes, edges, width: 0, height: 0 };
   }
 
-  let cursorX = 0;
+  // Incremented in DFS pre-order; each visit consumes one vertical slot.
+  let rowIndex = 0;
 
-  function layout(node: SpanTreeNode): { left: number; right: number; center: number } {
-    const y = node.depth * (FLOW_NODE_HEIGHT + FLOW_VERTICAL_GAP);
+  function layout(node: SpanTreeNode): void {
+    const x = node.depth * FLOW_INDENT_PER_LEVEL;
+    const y = rowIndex * (FLOW_NODE_HEIGHT + FLOW_VERTICAL_GAP);
     const isSynthetic = node.entry.idx === -1;
-
-    if (node.children.length === 0) {
-      const left = cursorX;
-      const right = left + FLOW_NODE_WIDTH;
-      const center = left + FLOW_NODE_WIDTH / 2;
-      nodes.push({
-        id: keyOf(node),
-        entry: node.entry,
-        x: left,
-        y,
-        width: FLOW_NODE_WIDTH,
-        height: FLOW_NODE_HEIGHT,
-        depth: node.depth,
-        isSynthetic,
-        render: deriveNodeRender(node.entry),
-      });
-      cursorX = right + FLOW_HORIZONTAL_GAP;
-      return { left, right, center };
-    }
-
-    const childExtents = node.children.map((c) => layout(c));
-    const left = childExtents[0].left;
-    const right = childExtents[childExtents.length - 1].right;
-    const center = (left + right) / 2;
-    const nodeX = center - FLOW_NODE_WIDTH / 2;
 
     nodes.push({
       id: keyOf(node),
       entry: node.entry,
-      x: nodeX,
+      x,
       y,
       width: FLOW_NODE_WIDTH,
       height: FLOW_NODE_HEIGHT,
@@ -462,11 +454,12 @@ export function computeFlowLayout(entries: BrowseDebugEntry[]): FlowLayout {
       render: deriveNodeRender(node.entry),
     });
 
+    rowIndex += 1;
+
     for (const child of node.children) {
       edges.push({ fromId: keyOf(node), toId: keyOf(child) });
+      layout(child);
     }
-
-    return { left, right, center };
   }
 
   for (const root of roots) {

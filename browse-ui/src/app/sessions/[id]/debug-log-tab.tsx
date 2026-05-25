@@ -688,6 +688,8 @@ export function DebugLogTab({
   const [page, setPage] = useState(0);
   const [selectedEntry, setSelectedEntry] = useState<BrowseDebugEntry | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "tree" | "flow">("list");
+  // Flow view fetches a cumulative window starting at PAGE_SIZE and growing by PAGE_SIZE.
+  const [flowLimit, setFlowLimit] = useState(PAGE_SIZE);
 
   // ── Focus-entry-idx: navigate to target page and select entry ─────────────────
   /**
@@ -696,6 +698,7 @@ export function DebugLogTab({
    * being in the dependency array (avoids stale-closure loops).
    */
   const pendingFocusRef = useRef<{ idx: number; targetPage: number } | null>(null);
+  const pendingFlowFocusRef = useRef<number | null>(null);
   /**
    * Stable ref for onFocusEntryHandled to avoid re-registering Effect 2
    * every time the parent re-renders.
@@ -709,15 +712,25 @@ export function DebugLogTab({
   useEffect(() => {
     if (focusEntryIdx == null) {
       pendingFocusRef.current = null;
+      pendingFlowFocusRef.current = null;
       return;
     }
     const targetPage = Math.floor(focusEntryIdx / PAGE_SIZE);
-    pendingFocusRef.current = { idx: focusEntryIdx, targetPage };
     // Clear filters so they cannot hide the requested entry.
     setFilters({ text: "", kind: "", level: "", status: "" });
     setSelectedEntry(null);
-    setPage(targetPage);
-  }, [focusEntryIdx]);
+    if (viewMode === "flow") {
+      pendingFocusRef.current = null;
+      pendingFlowFocusRef.current = focusEntryIdx;
+      setFlowLimit((prev) =>
+        Math.max(prev, Math.ceil((focusEntryIdx + 1) / PAGE_SIZE) * PAGE_SIZE)
+      );
+    } else {
+      pendingFlowFocusRef.current = null;
+      pendingFocusRef.current = { idx: focusEntryIdx, targetPage };
+      setPage(targetPage);
+    }
+  }, [focusEntryIdx, viewMode]);
 
   const hasRunId = Boolean(runId);
 
@@ -726,6 +739,9 @@ export function DebugLogTab({
     from: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   };
+
+  // Flow-specific fetch: cumulative window from 0 up to flowLimit.
+  const flowFetchParams: DebugLogParams = { from: 0, limit: flowLimit };
 
   // Operator run path — only active when runId is present.
   const operatorQuery = useDebugLog(
@@ -741,6 +757,23 @@ export function DebugLogTab({
     sessionId,
     fetchParams,
     !hasRunId && Boolean(sessionId),
+    host
+  );
+
+  // Flow-specific operator query — only enabled in Flow view.
+  const flowOperatorQuery = useDebugLog(
+    sessionId,
+    runId ?? "",
+    flowFetchParams,
+    viewMode === "flow" && hasRunId && Boolean(sessionId),
+    host
+  );
+
+  // Flow-specific session query — only enabled in Flow view without a runId.
+  const flowSessionQuery = useSessionDebugLog(
+    sessionId,
+    flowFetchParams,
+    viewMode === "flow" && !hasRunId && Boolean(sessionId),
     host
   );
 
@@ -763,6 +796,27 @@ export function DebugLogTab({
           has_more: page * PAGE_SIZE + sessionQuery.data.entries.length < sessionQuery.data.total,
         }
       : null;
+
+  // Normalised data for the Flow-specific cumulative fetch window.
+  const flowNormalizedData: typeof normalizedData = hasRunId
+    ? flowOperatorQuery.data
+      ? {
+          events: flowOperatorQuery.data.events,
+          total: flowOperatorQuery.data.total,
+          has_more: flowOperatorQuery.data.has_more,
+        }
+      : null
+    : flowSessionQuery.data
+      ? {
+          events: flowSessionQuery.data.entries,
+          total: flowSessionQuery.data.total,
+          has_more: flowSessionQuery.data.entries.length < flowSessionQuery.data.total,
+        }
+      : null;
+
+  // True while a flow load-more or initial-flow fetch is in progress.
+  const isFlowLoadingMore =
+    viewMode === "flow" && (hasRunId ? flowOperatorQuery.isFetching : flowSessionQuery.isFetching);
 
   // Effect 2: once the target page's data is available, find and select the entry.
   // Runs after normalizedData, isQueryLoading, or page changes.
@@ -790,6 +844,54 @@ export function DebugLogTab({
 
   // Apply client-side filters (text, kind, level, status) — AND composition.
   const filteredEvents = normalizedData?.events ? applyFilters(normalizedData.events, filters) : [];
+  // Flow-specific filtered events from the cumulative flow window.
+  const flowFilteredEvents = flowNormalizedData?.events
+    ? applyFilters(flowNormalizedData.events, filters)
+    : filteredEvents;
+  const visibleFilteredEvents = viewMode === "flow" ? flowFilteredEvents : filteredEvents;
+  const visibleUnfilteredCount =
+    viewMode === "flow"
+      ? (flowNormalizedData?.events.length ?? normalizedData?.events.length ?? 0)
+      : (normalizedData?.events.length ?? 0);
+
+  useEffect(() => {
+    const idx = pendingFlowFocusRef.current;
+    if (idx == null || viewMode !== "flow") return;
+    if (isFlowLoadingMore) return;
+
+    const events = flowNormalizedData?.events;
+    if (!events) {
+      pendingFlowFocusRef.current = null;
+      onFocusHandledRef.current?.();
+      return;
+    }
+
+    const exactTarget = events.find((e) => e.idx === idx);
+    const canLoadMore =
+      Boolean(flowNormalizedData.has_more) && flowLimit < flowNormalizedData.total;
+    const latestLoadedIdx = events.reduce((max, entry) => Math.max(max, entry.idx), -1);
+
+    if (!exactTarget && canLoadMore && latestLoadedIdx < idx) {
+      setFlowLimit((prev) =>
+        Math.min(
+          flowNormalizedData.total,
+          Math.max(prev + PAGE_SIZE, Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE)
+        )
+      );
+      return;
+    }
+
+    const target =
+      exactTarget ??
+      events.find((e) => e.idx > idx) ??
+      [...events].reverse().find((e) => e.idx < idx);
+
+    pendingFlowFocusRef.current = null;
+    if (target) {
+      setSelectedEntry(target);
+    }
+    onFocusHandledRef.current?.();
+  }, [flowLimit, flowNormalizedData, isFlowLoadingMore, viewMode]);
 
   // Show tree toggle only when any raw event has a span_id.
   const hasSpanIds = Boolean(normalizedData?.events.some((e) => e.span_id !== null));
@@ -833,26 +935,37 @@ export function DebugLogTab({
     [viewMode, atlasQuery.data, subagentQuery.data, subagentInternalsQuery.data]
   );
   const isFlowPageLoading =
-    viewMode === "flow" && isQueryLoading && (flowAggregate?.totalEvents ?? 0) > 0;
+    viewMode === "flow" &&
+    (hasRunId ? flowOperatorQuery.isLoading : flowSessionQuery.isLoading) &&
+    (flowAggregate?.totalEvents ?? 0) > 0;
   const displayedData =
-    normalizedData ??
+    (viewMode === "flow" ? (flowNormalizedData ?? normalizedData) : normalizedData) ??
     (isFlowPageLoading && flowAggregate
       ? {
           events: [],
           total: flowAggregate.totalEvents,
-          has_more: page * PAGE_SIZE + PAGE_SIZE < flowAggregate.totalEvents,
+          has_more: flowLimit < flowAggregate.totalEvents,
         }
       : null);
 
-  // Navigate to the page containing idx, clear filters, queue pendingFocusRef.
-  // Reuses the same pattern as the focusEntryIdx effect (lines 706-718).
-  const handleNavigateToIdx = useCallback((idx: number) => {
-    const targetPage = pageForIdx(idx, PAGE_SIZE);
-    pendingFocusRef.current = { idx, targetPage };
-    setFilters({ text: "", kind: "", level: "", status: "" });
-    setSelectedEntry(null);
-    setPage(targetPage);
-  }, []);
+  // Navigate to the entry containing idx.
+  // In Flow mode: expand flowLimit to cover the idx.
+  // In List/Tree mode: navigate to the page containing the idx.
+  const handleNavigateToIdx = useCallback(
+    (idx: number) => {
+      setFilters({ text: "", kind: "", level: "", status: "" });
+      setSelectedEntry(null);
+      if (viewMode === "flow") {
+        pendingFlowFocusRef.current = idx;
+        setFlowLimit((prev) => Math.max(prev, Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE));
+      } else {
+        const targetPage = pageForIdx(idx, PAGE_SIZE);
+        pendingFocusRef.current = { idx, targetPage };
+        setPage(targetPage);
+      }
+    },
+    [viewMode]
+  );
 
   // Sub-agent panel ref and flash tick for MissionStrip chip interaction.
   const subagentPanelRef = useRef<HTMLDivElement>(null);
@@ -965,12 +1078,10 @@ export function DebugLogTab({
 
   const { total, has_more } = displayedData;
   const pageStartIdx = page * PAGE_SIZE;
-  const currentPageEndIdx = normalizedData
-    ? pageStartIdx + normalizedData.events.length - 1
-    : Math.min(pageStartIdx + PAGE_SIZE - 1, Math.max(total - 1, pageStartIdx));
   const displayPageEnd = normalizedData
     ? pageStartIdx + normalizedData.events.length
     : Math.min(pageStartIdx + PAGE_SIZE, total);
+  const flowWindowEndIdx = Math.max(0, Math.min(flowLimit, flowNormalizedData?.total ?? total) - 1);
 
   return (
     <div className="space-y-3">
@@ -978,8 +1089,8 @@ export function DebugLogTab({
       <FilterToolbar
         filters={filters}
         onChange={handleFilterChange}
-        resultCount={filteredEvents.length}
-        totalCount={displayedData.events.length}
+        resultCount={visibleFilteredEvents.length}
+        totalCount={visibleUnfilteredCount}
       />
 
       {/* Flight Recorder v3 mission strip — visible across all view modes.
@@ -1064,20 +1175,24 @@ export function DebugLogTab({
       {/* Flow / Tree / List views */}
       {viewMode === "flow" ? (
         <DebugLogFlowChart
-          entries={filteredEvents}
+          entries={flowFilteredEvents}
           selectedEntry={selectedEntry}
           onSelect={handleSelect}
-          hasMore={has_more}
-          totalEvents={total}
+          hasMore={flowNormalizedData?.has_more ?? has_more}
+          flowHasMore={flowNormalizedData?.has_more ?? false}
+          onLoadMore={() => setFlowLimit((prev) => prev + PAGE_SIZE)}
+          flowLoadedCount={flowNormalizedData?.events.length ?? filteredEvents.length}
+          flowLoadingMore={isFlowLoadingMore}
+          totalEvents={flowNormalizedData?.total ?? total}
           subagentInternals={subagentInternalsQuery.data}
           aggregate={flowAggregate ?? undefined}
           atlasLoading={atlasQuery.isLoading}
           atlasError={atlasQuery.isError}
-          currentPage={page}
-          currentPageStart={pageStartIdx}
-          currentPageEnd={currentPageEndIdx}
+          currentPage={0}
+          currentPageStart={0}
+          currentPageEnd={flowWindowEndIdx}
           onNavigateToIdx={handleNavigateToIdx}
-          pageLoading={isFlowPageLoading}
+          pageLoading={isFlowLoadingMore || isFlowPageLoading}
         />
       ) : viewMode === "tree" ? (
         <SpanTreeView
@@ -1137,8 +1252,8 @@ export function DebugLogTab({
         </div>
       )}
 
-      {/* Server-side pagination controls */}
-      {(page > 0 || has_more) && (
+      {/* Server-side pagination controls — hidden in Flow view (uses cumulative load-more instead) */}
+      {viewMode !== "flow" && (page > 0 || has_more) && (
         <div className="flex items-center justify-between">
           <p className="text-muted-foreground text-xs">
             {isFlowPageLoading ? "Loading" : "Showing"} {pageStartIdx + 1}–{displayPageEnd} of{" "}

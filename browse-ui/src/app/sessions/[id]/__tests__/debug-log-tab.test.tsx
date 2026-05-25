@@ -5,12 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import type {
   BrowseDebugEntry,
+  DebugLogParams,
   DebugLogResponse,
   SessionDebugLogResponse,
   SessionMissionAtlasResponse,
   SubagentActivityResponse,
   SubagentInternalsResponse,
 } from "@/lib/api/types";
+import { DebugLogFlowChart } from "../debug-log-flow-chart";
 import { DebugLogTab } from "../debug-log-tab";
 
 // ── Mock debug-log API hooks ──────────────────────────────────────────────────
@@ -154,7 +156,10 @@ describe("DebugLogTab – no run available (session-scoped path)", () => {
 
   it("useSessionDebugLog is called with enabled=true when runId is null", () => {
     render(<DebugLogTab sessionId="sess-1" runId={null} host={HOST} />);
-    expect((useSessionDebugLog as Mock).mock.calls.at(-1)?.[2]).toBe(true);
+    // The component calls useSessionDebugLog twice: once for the List/Tree query (enabled=true
+    // when no runId), once for the flow-specific query (enabled only in Flow view). We check
+    // the first call, which is the primary List/Tree query that should be enabled.
+    expect((useSessionDebugLog as Mock).mock.calls.at(0)?.[2]).toBe(true);
   });
 
   it("useSessionDebugLog is called with enabled=false when runId is provided (operator path)", () => {
@@ -1341,6 +1346,47 @@ describe("DebugLogTab – flow chart rich render", () => {
     const calls = removeSpy.mock.calls.map((c) => c[0]);
     expect(calls).toContain("wheel");
   });
+
+  it("does not auto-pan back to a selected node when the flow window grows", async () => {
+    const selectedEntry = richEntries[1];
+    const extendedEntries = [
+      ...richEntries,
+      makeEntry({
+        idx: 3,
+        span_id: "laterdddddddddd",
+        parent_span_id: "rootaaaaaaaaaaaa",
+        kind: "tool_call",
+        message: "Later tool",
+      }),
+    ];
+    const viewBoxY = (svg: HTMLElement) =>
+      Number(svg.getAttribute("viewBox")?.split(/\s+/)[1] ?? "0");
+
+    const { rerender } = render(
+      <DebugLogFlowChart entries={richEntries} selectedEntry={selectedEntry} onSelect={vi.fn()} />
+    );
+    const svg = screen.getByRole("img", { name: /debug log flow chart/i });
+
+    await waitFor(() => {
+      expect(viewBoxY(svg)).toBeGreaterThan(0);
+    });
+
+    fireEvent.mouseDown(svg, { clientX: 0, clientY: 0 });
+    fireEvent.mouseMove(svg, { clientX: 0, clientY: -240 });
+    fireEvent.mouseUp(svg);
+    const manualPanY = viewBoxY(svg);
+    expect(manualPanY).toBeGreaterThan(200);
+
+    rerender(
+      <DebugLogFlowChart
+        entries={extendedEntries}
+        selectedEntry={selectedEntry}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(viewBoxY(svg)).toBe(manualPanY);
+  });
 });
 
 // ── focusEntryIdx — Timeline → Debug Log sync handoff (#541) ─────────────────
@@ -2181,8 +2227,226 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
       );
     });
     expect(screen.queryByText("Loading debug log…")).not.toBeInTheDocument();
+    // In flow mode the window is cumulative from 0; after expanding to cover idx=100 the
+    // window shows 0–flowLimit-1 (200-1 = 199), i.e. Page 1 · events 0–199.
     expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
-      "Page 2 · events 100–199"
+      "Page 1 · events 0–199"
     );
+  });
+});
+
+// ── Flow chart view: Flow-specific load-more pagination ───────────────────────
+
+describe("DebugLogTab – Flow load-more", () => {
+  const flowEntries = [
+    makeEntry({ idx: 0, span_id: "rootaaa", parent_span_id: null, message: "Event 0" }),
+    makeEntry({ idx: 1, span_id: "chilaaa", parent_span_id: "rootaaa", message: "Event 1" }),
+  ];
+
+  beforeEach(() => {
+    // Default: page-0 data for List/Tree queries; flow query same window.
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(flowEntries, { total: 250, has_more: true }),
+      error: null,
+      isLoading: false,
+      isFetching: false,
+    });
+  });
+
+  it("Previous / Next pagination controls are hidden in Flow view", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    // In flow mode the standard page controls must not be rendered.
+    expect(screen.queryByRole("button", { name: /^previous$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^next$/i })).not.toBeInTheDocument();
+  });
+
+  it("shows Load more button when flowHasMore is true", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    // The flow query returns has_more=true, so the Load more button must appear.
+    expect(screen.getByTestId("debug-log-flow-has-more")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-load-more")).toBeInTheDocument();
+  });
+
+  it("Load more button is disabled while fetching", () => {
+    (useDebugLog as Mock).mockReturnValue({
+      data: makeResponse(flowEntries, { total: 250, has_more: true }),
+      error: null,
+      isLoading: false,
+      isFetching: true,
+    });
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    const btn = screen.getByTestId("debug-log-flow-load-more");
+    expect(btn).toBeDisabled();
+  });
+
+  it("does not stall flow focus when the exact target idx is unavailable", async () => {
+    const onFocusEntryHandled = vi.fn();
+    const { rerender } = render(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId="run-1"
+        host={HOST}
+        onFocusEntryHandled={onFocusEntryHandled}
+      />
+    );
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    rerender(
+      <DebugLogTab
+        sessionId="sess-1"
+        runId="run-1"
+        host={HOST}
+        focusEntryIdx={150}
+        onFocusEntryHandled={onFocusEntryHandled}
+      />
+    );
+
+    await waitFor(() => {
+      expect(onFocusEntryHandled).toHaveBeenCalledOnce();
+    });
+    const drawer = screen.getByRole("dialog", { name: /debug event detail/i });
+    expect(within(drawer).getByText("Event 1")).toBeInTheDocument();
+  });
+
+  it("Previous / Next remain visible in List view even when has_more is true", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    // Default view is "list"; has_more=true, so Next should be present.
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeInTheDocument();
+  });
+
+  it("Previous / Next remain visible in Tree view", () => {
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: /^tree$/i }));
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeInTheDocument();
+  });
+
+  it("bucket click in Flow mode expands flowLimit instead of navigating pages", async () => {
+    const nearestEntry = makeEntry({
+      idx: 101,
+      span_id: "nearbucket",
+      parent_span_id: "rootaaa",
+      message: "Nearest event after bucket start",
+    });
+    const atlas: SessionMissionAtlasResponse = {
+      schema_version: "1",
+      session_id: "sess-1",
+      total_events: 250,
+      event_file_bytes: 25000,
+      first_event_at: "2024-01-01T12:00:00.000Z",
+      last_event_at: "2024-01-01T12:05:00.000Z",
+      duration_ms: 300000,
+      bucket_count: 2,
+      buckets: [
+        {
+          bucket_idx: 0,
+          start_idx: 0,
+          end_idx: 99,
+          event_count: 100,
+          start_rel_ms: 0,
+          end_rel_ms: 150000,
+          ts_start: "2024-01-01T12:00:00.000Z",
+          ts_end: "2024-01-01T12:02:30.000Z",
+          is_gap: false,
+          error_count: 0,
+          dominant_lane: "tool",
+          lanes: { tool: 1 },
+        },
+        {
+          bucket_idx: 1,
+          start_idx: 100,
+          end_idx: 199,
+          event_count: 100,
+          start_rel_ms: 150001,
+          end_rel_ms: 300000,
+          ts_start: "2024-01-01T12:02:30.000Z",
+          ts_end: "2024-01-01T12:05:00.000Z",
+          is_gap: false,
+          error_count: 0,
+          dominant_lane: "tool",
+          lanes: { tool: 1 },
+        },
+      ],
+      lane_totals: {
+        tool: 2,
+        hook: 0,
+        skill: 0,
+        subagent: 0,
+        model: 0,
+        turn: 0,
+        system: 0,
+        error: 0,
+        generic: 0,
+      },
+      top_tools: [],
+      top_skills: [],
+      top_agent_names: [],
+      milestones: [],
+      artifact_counts: {
+        checkpoint_files: 0,
+        rewind_snapshots: 0,
+        todos_total: 0,
+        todos_done: 0,
+        todos_blocked: 0,
+        todo_deps: 0,
+        files: 0,
+        compactions: 0,
+      },
+      error_count: 0,
+      error_sample: [],
+      caps: { top_n: 20, milestones: 200, error_sample: 5, buckets_min: 10, buckets_max: 200 },
+      truncated: { tools: false, skills: false, agents: false, milestones: false },
+    };
+
+    (useSessionMissionAtlas as Mock).mockReturnValue({
+      data: atlas,
+      error: null,
+      isLoading: false,
+    });
+    (useDebugLog as Mock).mockImplementation(
+      (_sessionId: string, _runId: string, params: DebugLogParams) => {
+        const limit = params.limit ?? 100;
+        return {
+          data: makeResponse(limit >= 200 ? [...flowEntries, nearestEntry] : flowEntries, {
+            total: 250,
+            has_more: limit < 250,
+          }),
+          error: null,
+          isLoading: false,
+          isFetching: false,
+        };
+      }
+    );
+
+    render(<DebugLogTab sessionId="sess-1" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("debug-log-flow-session-canvas")).toBeInTheDocument();
+    });
+
+    // The flow session window should show the cumulative range 0–flowLimit-1 = 0–99 initially.
+    expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
+      "Page 1 · events 0–99"
+    );
+
+    // Click bucket-1 (events 100–199). In flow mode this expands flowLimit to 200,
+    // NOT navigating to page=1. The window should immediately reflect 0–199.
+    fireEvent.click(screen.getByTestId("debug-log-flow-session-bucket-tool-1"));
+
+    // Window now covers 0–199 (flowLimit=200 → end=flowLimit-1=199).
+    expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
+      "Page 1 · events 0–199"
+    );
+    await waitFor(() => {
+      const drawer = screen.getByRole("dialog", { name: /debug event detail/i });
+      expect(within(drawer).getByText("Nearest event after bucket start")).toBeInTheDocument();
+    });
   });
 });

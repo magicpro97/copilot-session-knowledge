@@ -10,6 +10,7 @@ import {
   deriveNodeRender,
   deriveNodeStatus,
   FLOW_HORIZONTAL_GAP,
+  FLOW_INDENT_PER_LEVEL,
   FLOW_NODE_HEIGHT,
   FLOW_NODE_WIDTH,
   FLOW_VERTICAL_GAP,
@@ -86,15 +87,47 @@ describe("computeFlowLayout", () => {
     expect(child.y - root.y).toBe(FLOW_NODE_HEIGHT + FLOW_VERTICAL_GAP);
   });
 
-  it("places sibling roots side-by-side with horizontal gap", () => {
+  it("places sibling roots vertically in DFS pre-order (not side-by-side)", () => {
     const layout = computeFlowLayout([
       makeEntry({ idx: 0, span_id: "a", parent_span_id: null }),
       makeEntry({ idx: 1, span_id: "b", parent_span_id: null }),
     ]);
     const a = layout.nodes.find((n) => n.id === "node-0")!;
     const b = layout.nodes.find((n) => n.id === "node-1")!;
-    expect(b.x - (a.x + a.width)).toBe(FLOW_HORIZONTAL_GAP);
-    expect(a.y).toBe(b.y);
+    // Both roots at depth 0 → x = 0
+    expect(a.x).toBe(0);
+    expect(b.x).toBe(0);
+    // b is placed one row below a
+    expect(b.y - a.y).toBe(FLOW_NODE_HEIGHT + FLOW_VERTICAL_GAP);
+    expect(a.y).toBeLessThan(b.y);
+    // FLOW_HORIZONTAL_GAP is exported for back-compat but not used for y-layout
+    expect(FLOW_HORIZONTAL_GAP).toBeGreaterThan(0);
+  });
+
+  it("indents children by FLOW_INDENT_PER_LEVEL × depth", () => {
+    const layout = computeFlowLayout([
+      makeEntry({ idx: 0, span_id: "root", parent_span_id: null }),
+      makeEntry({ idx: 1, span_id: "child", parent_span_id: "root" }),
+    ]);
+    const root = layout.nodes.find((n) => n.id === "node-0")!;
+    const child = layout.nodes.find((n) => n.id === "node-1")!;
+    expect(root.x).toBe(0);
+    expect(child.x).toBe(FLOW_INDENT_PER_LEVEL);
+  });
+
+  it("places nodes in DFS pre-order: parent before its children, first subtree before sibling subtrees", () => {
+    // Tree:  root → [childA → grandchild, childB]
+    const layout = computeFlowLayout([
+      makeEntry({ idx: 0, span_id: "root", parent_span_id: null }),
+      makeEntry({ idx: 1, span_id: "childA", parent_span_id: "root" }),
+      makeEntry({ idx: 2, span_id: "grand", parent_span_id: "childA" }),
+      makeEntry({ idx: 3, span_id: "childB", parent_span_id: "root" }),
+    ]);
+    const positions = [0, 1, 2, 3].map((i) => layout.nodes.find((n) => n.id === `node-${i}`)!.y);
+    // DFS pre-order: root(0) < childA(1) < grand(2) < childB(3)
+    expect(positions[0]).toBeLessThan(positions[1]);
+    expect(positions[1]).toBeLessThan(positions[2]);
+    expect(positions[2]).toBeLessThan(positions[3]);
   });
 
   it("collects orphans under a synthetic node and exposes it as a node", () => {

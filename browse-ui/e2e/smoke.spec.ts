@@ -404,135 +404,140 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
     const url = new URL(route.request().url());
     const from = Number(url.searchParams.get("from") ?? "0");
-    if (from >= 100) {
+    const limit = Number(url.searchParams.get("limit") ?? "100");
+    // Flow view fetches with from=0 and growing limit; List/Tree fetch page-by-page (from>=100).
+    const isExtendedFlowFetch = from === 0 && limit >= 200;
+    const isLegacyPageFetch = from >= 100;
+    if (isExtendedFlowFetch || isLegacyPageFetch) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const entries =
-      from >= 100
-        ? [
-            {
-              idx: 100,
-              timestamp: "2026-05-01T01:07:03.001Z",
-              kind: "tool_call",
-              level: "debug",
-              source: "tool",
-              message: "Cross-page drilldown target",
-              tool_name: "bash",
-              duration_ms: 80,
-              span_id: "page-two-tool",
-              parent_span_id: null,
-              status: "ok",
-              attrs: { tool_status: "ok", tool_result_type: "text" },
-              redacted: false,
-            },
-          ]
-        : [
-            {
-              idx: 0,
-              timestamp: "2026-05-01T01:02:03.000Z",
-              kind: "turn_start",
-              level: "info",
-              source: "copilot-cli",
-              message: "Turn started",
-              tool_name: null,
-              duration_ms: 240,
-              span_id: "turn-root",
-              parent_span_id: null,
-              status: "ok",
-              attrs: { mode: "agent" },
-              redacted: false,
-            },
-            {
-              idx: 1,
-              timestamp: "2026-05-01T01:02:03.100Z",
-              kind: "tool_call",
-              level: "debug",
-              source: "tool",
-              message: "Read debug event file",
-              tool_name: "view",
-              duration_ms: 120,
-              span_id: "tool-view",
-              parent_span_id: "turn-root",
-              status: "ok",
-              attrs: {
-                tool_status: "ok",
-                tool_result_type: "text",
-                tool_metric_duration_ms: 120,
-              },
-              redacted: false,
-            },
-            {
-              idx: 2,
-              timestamp: "2026-05-01T01:02:03.200Z",
-              kind: "hook",
-              level: "info",
-              source: "hook",
-              message: "Post tool hook completed",
-              tool_name: null,
-              duration_ms: 30,
-              span_id: "hook-post",
-              parent_span_id: "tool-view",
-              status: "ok",
-              attrs: {
-                hook_type: "post-tool-use",
-                hook_status: "ok",
-                event_phase: "complete",
-              },
-              redacted: false,
-            },
-            {
-              idx: 3,
-              timestamp: "2026-05-01T01:02:03.300Z",
-              kind: "skill_run",
-              level: "info",
-              source: "skill",
-              message: "Skill executed",
-              tool_name: null,
-              duration_ms: 75,
-              span_id: "skill-cr",
-              parent_span_id: "turn-root",
-              status: "ok",
-              attrs: {
-                skill_name: "code-reviewer",
-                skill_path_category: "skill_pkg",
-                skill_content_bytes: 4096,
-              },
-              redacted: false,
-            },
-            {
-              idx: 4,
-              timestamp: "2026-05-01T01:02:03.400Z",
-              kind: "agent_response",
-              level: "info",
-              source: "copilot-cli",
-              message: "Assistant produced a response",
-              tool_name: null,
-              duration_ms: 200,
-              span_id: "model-assistant",
-              parent_span_id: "turn-root",
-              status: "ok",
-              attrs: {
-                output_tokens: 42,
-                tool_request_count: 1,
-              },
-              redacted: false,
-            },
-            {
-              idx: 5,
-              timestamp: "2026-05-01T01:02:03.500Z",
-              kind: "subagent",
-              level: "info",
-              source: "copilot-cli",
-              message: "research subagent",
-              tool_name: null,
-              duration_ms: 60,
-              span_id: "subagent-research",
-              parent_span_id: "turn-root",
-              status: "ok",
-              attrs: null,
-              redacted: false,
-            },
-          ];
+    const page2Entry = {
+      idx: 100,
+      timestamp: "2026-05-01T01:07:03.001Z",
+      kind: "tool_call",
+      level: "debug",
+      source: "tool",
+      message: "Cross-page drilldown target",
+      tool_name: "bash",
+      duration_ms: 80,
+      span_id: "page-two-tool",
+      parent_span_id: null,
+      status: "ok",
+      attrs: { tool_status: "ok", tool_result_type: "text" },
+      redacted: false,
+    };
+    const page1Entries = [
+      {
+        idx: 0,
+        timestamp: "2026-05-01T01:02:03.000Z",
+        kind: "turn_start",
+        level: "info",
+        source: "copilot-cli",
+        message: "Turn started",
+        tool_name: null,
+        duration_ms: 240,
+        span_id: "turn-root",
+        parent_span_id: null,
+        status: "ok",
+        attrs: { mode: "agent" },
+        redacted: false,
+      },
+      {
+        idx: 1,
+        timestamp: "2026-05-01T01:02:03.100Z",
+        kind: "tool_call",
+        level: "debug",
+        source: "tool",
+        message: "Read debug event file",
+        tool_name: "view",
+        duration_ms: 120,
+        span_id: "tool-view",
+        parent_span_id: "turn-root",
+        status: "ok",
+        attrs: {
+          tool_status: "ok",
+          tool_result_type: "text",
+          tool_metric_duration_ms: 120,
+        },
+        redacted: false,
+      },
+      {
+        idx: 2,
+        timestamp: "2026-05-01T01:02:03.200Z",
+        kind: "hook",
+        level: "info",
+        source: "hook",
+        message: "Post tool hook completed",
+        tool_name: null,
+        duration_ms: 30,
+        span_id: "hook-post",
+        parent_span_id: "tool-view",
+        status: "ok",
+        attrs: {
+          hook_type: "post-tool-use",
+          hook_status: "ok",
+          event_phase: "complete",
+        },
+        redacted: false,
+      },
+      {
+        idx: 3,
+        timestamp: "2026-05-01T01:02:03.300Z",
+        kind: "skill_run",
+        level: "info",
+        source: "skill",
+        message: "Skill executed",
+        tool_name: null,
+        duration_ms: 75,
+        span_id: "skill-cr",
+        parent_span_id: "turn-root",
+        status: "ok",
+        attrs: {
+          skill_name: "code-reviewer",
+          skill_path_category: "skill_pkg",
+          skill_content_bytes: 4096,
+        },
+        redacted: false,
+      },
+      {
+        idx: 4,
+        timestamp: "2026-05-01T01:02:03.400Z",
+        kind: "agent_response",
+        level: "info",
+        source: "copilot-cli",
+        message: "Assistant produced a response",
+        tool_name: null,
+        duration_ms: 200,
+        span_id: "model-assistant",
+        parent_span_id: "turn-root",
+        status: "ok",
+        attrs: {
+          output_tokens: 42,
+          tool_request_count: 1,
+        },
+        redacted: false,
+      },
+      {
+        idx: 5,
+        timestamp: "2026-05-01T01:02:03.500Z",
+        kind: "subagent",
+        level: "info",
+        source: "copilot-cli",
+        message: "research subagent",
+        tool_name: null,
+        duration_ms: 60,
+        span_id: "subagent-research",
+        parent_span_id: "turn-root",
+        status: "ok",
+        attrs: null,
+        redacted: false,
+      },
+    ];
+    const entries = isLegacyPageFetch
+      ? [page2Entry]
+      : isExtendedFlowFetch
+        ? [...page1Entries, page2Entry]
+        : page1Entries;
 
     await route.fulfill({
       contentType: "application/json",
@@ -540,7 +545,7 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
         schema_version: "debug-log/1",
         session_id: SEEDED_SESSION_ID,
         from,
-        limit: 100,
+        limit,
         total: 550,
         has_more: from + entries.length < 550,
         entries,
@@ -635,6 +640,7 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   // -- has_more affordance ----------------------------------------------
   await expect(page.getByTestId("debug-log-flow-has-more")).toBeVisible();
   await expect(page.getByTestId("debug-log-flow-has-more")).toContainText(/More events available/);
+  await expect(page.getByTestId("debug-log-flow-load-more")).toBeVisible();
 
   // -- Zoom safety: wheel listener must be non-passive ------------------
   const zoom = page.getByTestId("debug-log-flow-zoom");
@@ -692,15 +698,19 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   }, box);
   await expect(zoom).toHaveText(/\d+%/);
 
-  // Aggregate click-through must navigate to the target debug-log page and
-  // render the selected page-level tree below the session canvas.
+  // Aggregate click-through must expand the flow window and render node-100.
+  // In flow mode, clicking a bucket expands flowLimit to cover the bucket
+  // (no page navigation — bucketClickNavigationCount stays 0).
   await page.getByLabel("Close detail panel").click();
   await expect(page.getByRole("dialog", { name: /debug event detail/i })).toHaveCount(0);
   watchBucketNavigation = true;
   await page.getByTestId("debug-log-flow-session-bucket-tool-1").click();
   await expect(sessionCanvas).toBeVisible();
+  // The flow loading indicator appears while the extended fetch is in-flight.
   await expect(page.getByTestId("debug-log-flow-page-loading")).toBeVisible();
+  // No legacy page navigation — the bucket click stays within Flow mode.
   expect(bucketClickNavigationCount).toBe(0);
+  // After the extended fetch resolves, node-100 is rendered in the flow chart.
   await expect(page.getByTestId("debug-log-flow-node-100")).toBeVisible();
   await expect(page.getByTestId("debug-log-flow-node-100-label")).toContainText("bash");
 

@@ -7,6 +7,7 @@ import {
   computeFlowLayout,
   computeTraceLayout,
   deriveInspectorCard,
+  FLOW_VERTICAL_GAP,
   laneIdSlug,
   type FlowNodeCategory,
   type FlowNodeStatus,
@@ -34,6 +35,8 @@ const MIN_SCALE = 0.1;
 const MAX_SCALE = 5;
 const WHEEL_ZOOM_FACTOR = 0.002;
 const ZOOM_STEP = 1.2;
+const MIN_FLOW_VIEWPORT_HEIGHT = 480;
+const MAX_FLOW_VIEWPORT_HEIGHT = 900;
 
 /** Category → accent colour for the left gutter and category label. */
 const CATEGORY_COLORS: Record<FlowNodeCategory, string> = {
@@ -67,8 +70,16 @@ export type DebugLogFlowChartProps = {
   entries: BrowseDebugEntry[];
   selectedEntry: BrowseDebugEntry | null;
   onSelect: (entry: BrowseDebugEntry) => void;
-  /** True when more events are available beyond the currently-loaded page. */
+  /** @deprecated Use flowHasMore + onLoadMore instead. Kept for back-compat. */
   hasMore?: boolean;
+  /** True when more events are available beyond the currently-loaded flow window. */
+  flowHasMore?: boolean;
+  /** Called when the user clicks "Load more" in the flow chart footer. */
+  onLoadMore?: () => void;
+  /** Number of events loaded into the current flow window. */
+  flowLoadedCount?: number;
+  /** True while a flow load-more or initial-flow fetch is in progress. */
+  flowLoadingMore?: boolean;
   /** Total number of events on the server (across all pages). */
   totalEvents?: number;
   /** Full-session safe internals summary for sub-agent flow context. */
@@ -87,7 +98,7 @@ export type DebugLogFlowChartProps = {
   currentPageEnd?: number;
   /** Called when the user clicks a bucket/milestone/subagent bar to navigate. */
   onNavigateToIdx?: (idx: number) => void;
-  /** True while the current page-level debug entries are being fetched. */
+  /** True while the current flow events are being fetched. */
   pageLoading?: boolean;
 };
 
@@ -96,6 +107,10 @@ export function DebugLogFlowChart({
   selectedEntry,
   onSelect,
   hasMore = false,
+  flowHasMore = false,
+  onLoadMore,
+  flowLoadedCount,
+  flowLoadingMore = false,
   totalEvents,
   subagentInternals,
   aggregate,
@@ -114,9 +129,14 @@ export function DebugLogFlowChart({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const layoutRef = useRef(layout);
 
   const contentWidth = layout.width + PADDING * 2;
   const contentHeight = layout.height + PADDING * 2;
+  const viewportHeight = Math.max(
+    MIN_FLOW_VIEWPORT_HEIGHT,
+    Math.min(contentHeight, MAX_FLOW_VIEWPORT_HEIGHT)
+  );
 
   // Native non-passive wheel listener. Using React's onWheel attaches a
   // passive listener in modern browsers; calling `preventDefault()` then
@@ -145,9 +165,9 @@ export function DebugLogFlowChart({
         if (hasRect) {
           // Keep the tree point under the cursor stable across the zoom step.
           const viewWidthPrev = contentWidth / prevScale;
-          const viewHeightPrev = contentHeight / prevScale;
+          const viewHeightPrev = viewportHeight / prevScale;
           const viewWidthNext = contentWidth / nextScale;
-          const viewHeightNext = contentHeight / nextScale;
+          const viewHeightNext = viewportHeight / nextScale;
           setPan((prevPan) => {
             const pointX = prevPan.x + ratioX * viewWidthPrev;
             const pointY = prevPan.y + ratioY * viewHeightPrev;
@@ -164,7 +184,20 @@ export function DebugLogFlowChart({
     return () => {
       svg.removeEventListener("wheel", handleWheel);
     };
-  }, [contentWidth, contentHeight]);
+  }, [contentWidth, viewportHeight]);
+
+  useEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
+
+  useEffect(() => {
+    if (selectedEntry == null) return;
+    const node = layoutRef.current.nodes.find(
+      (n) => !n.isSynthetic && n.entry.idx === selectedEntry.idx
+    );
+    if (!node) return;
+    setPan((prev) => ({ ...prev, y: Math.max(0, node.y - FLOW_VERTICAL_GAP) }));
+  }, [selectedEntry?.idx]);
 
   if (layout.nodes.length === 0) {
     return (
@@ -189,7 +222,7 @@ export function DebugLogFlowChart({
   }
 
   const viewWidth = contentWidth / scale;
-  const viewHeight = contentHeight / scale;
+  const viewHeight = viewportHeight / scale;
 
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
     if ((e.target as Element).closest("[data-flow-node]")) return;
@@ -295,7 +328,7 @@ export function DebugLogFlowChart({
         role="img"
         aria-label="Debug log flow chart"
         className="block w-full cursor-grab select-none active:cursor-grabbing"
-        style={{ height: 480 }}
+        style={{ height: viewportHeight }}
         viewBox={`${pan.x} ${pan.y} ${viewWidth} ${viewHeight}`}
         preserveAspectRatio="xMidYMin meet"
         onMouseDown={handleMouseDown}
@@ -461,14 +494,34 @@ export function DebugLogFlowChart({
           })}
         </g>
       </svg>
-      {hasMore ? (
+      {pageLoading && layout.nodes.length > 0 ? (
         <div
           className="border-border text-muted-foreground border-t px-3 py-1.5 text-xs"
+          data-testid="debug-log-flow-page-loading"
+        >
+          Loading more events…
+        </div>
+      ) : null}
+      {flowHasMore || hasMore ? (
+        <div
+          className="border-border text-muted-foreground flex items-center gap-3 border-t px-3 py-1.5 text-xs"
           data-testid="debug-log-flow-has-more"
         >
-          {typeof totalEvents === "number"
-            ? `More events available — showing ${layout.nodes.length} of ${totalEvents}. Use Next below to load more.`
-            : "More events available — use Next below to load more."}
+          <span>
+            {typeof totalEvents === "number"
+              ? `More events available — showing ${flowLoadedCount ?? layout.nodes.length} of ${totalEvents}.`
+              : "More events available."}
+          </span>
+          {onLoadMore ? (
+            <button
+              className="text-primary hover:underline disabled:opacity-50"
+              disabled={flowLoadingMore}
+              onClick={onLoadMore}
+              data-testid="debug-log-flow-load-more"
+            >
+              {flowLoadingMore ? "Loading…" : "Load more"}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
