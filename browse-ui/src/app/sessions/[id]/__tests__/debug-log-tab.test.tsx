@@ -2078,4 +2078,111 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
       "flow-agent"
     );
   });
+
+  it("keeps the full-session Flow canvas mounted while a clicked bucket page loads", async () => {
+    const atlas: SessionMissionAtlasResponse = {
+      schema_version: "1",
+      session_id: "sess-atlas",
+      total_events: 1000,
+      event_file_bytes: 120000,
+      first_event_at: "2024-01-01T00:00:00.000Z",
+      last_event_at: "2024-01-01T00:10:00.000Z",
+      duration_ms: 600000,
+      bucket_count: 2,
+      buckets: [
+        {
+          bucket_idx: 0,
+          start_idx: 0,
+          end_idx: 99,
+          event_count: 100,
+          start_rel_ms: 0,
+          end_rel_ms: 300000,
+          ts_start: "2024-01-01T00:00:00.000Z",
+          ts_end: "2024-01-01T00:05:00.000Z",
+          is_gap: false,
+          error_count: 0,
+          dominant_lane: "turn",
+          lanes: { turn: 1, tool: 40 },
+        },
+        {
+          bucket_idx: 1,
+          start_idx: 100,
+          end_idx: 199,
+          event_count: 100,
+          start_rel_ms: 300001,
+          end_rel_ms: 600000,
+          ts_start: "2024-01-01T00:05:00.001Z",
+          ts_end: "2024-01-01T00:10:00.000Z",
+          is_gap: false,
+          error_count: 0,
+          dominant_lane: "tool",
+          lanes: { tool: 60 },
+        },
+      ],
+      lane_totals: {
+        tool: 100,
+        hook: 0,
+        skill: 0,
+        subagent: 0,
+        model: 0,
+        turn: 1,
+        system: 0,
+        error: 0,
+        generic: 0,
+      },
+      top_tools: [{ name: "bash", count: 100 }],
+      top_skills: [],
+      top_agent_names: [],
+      milestones: [],
+      artifact_counts: {
+        checkpoint_files: 0,
+        rewind_snapshots: 0,
+        todos_total: 0,
+        todos_done: 0,
+        todos_blocked: 0,
+        todo_deps: 0,
+        files: 0,
+        compactions: 0,
+      },
+      error_count: 0,
+      error_sample: [],
+      caps: { top_n: 20, milestones: 200, error_sample: 5, buckets_min: 10, buckets_max: 200 },
+      truncated: { tools: false, skills: false, agents: false, milestones: false },
+    };
+    let debugQuery: { data: DebugLogResponse | null; error: Error | null; isLoading: boolean } = {
+      data: makeResponse([makeEntry({ idx: 0, kind: "turn_start", message: "Page 0" })], {
+        total: 1000,
+        has_more: true,
+      }),
+      error: null,
+      isLoading: false,
+    };
+
+    (useDebugLog as Mock).mockImplementation(() => debugQuery);
+    (useSessionMissionAtlas as Mock).mockReturnValue({
+      data: atlas,
+      error: null,
+      isLoading: false,
+    });
+
+    render(<DebugLogTab sessionId="sess-atlas" runId="run-1" host={HOST} />);
+    fireEvent.click(screen.getByTestId("debug-log-view-flow"));
+    await waitFor(() => {
+      expect(screen.getByTestId("debug-log-flow-session-canvas")).toBeInTheDocument();
+    });
+
+    debugQuery = { data: null, error: null, isLoading: true };
+    fireEvent.click(screen.getByTestId("debug-log-flow-session-bucket-tool-1"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("debug-log-flow-session-canvas")).toBeInTheDocument();
+      expect(screen.getByTestId("debug-log-flow-page-loading")).toHaveTextContent(
+        "Loading page events"
+      );
+    });
+    expect(screen.queryByText("Loading debug log…")).not.toBeInTheDocument();
+    expect(screen.getByTestId("debug-log-flow-session-window")).toHaveTextContent(
+      "Page 2 · events 100–199"
+    );
+  });
 });

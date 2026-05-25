@@ -87,6 +87,8 @@ export type DebugLogFlowChartProps = {
   currentPageEnd?: number;
   /** Called when the user clicks a bucket/milestone/subagent bar to navigate. */
   onNavigateToIdx?: (idx: number) => void;
+  /** True while the current page-level debug entries are being fetched. */
+  pageLoading?: boolean;
 };
 
 export function DebugLogFlowChart({
@@ -103,6 +105,7 @@ export function DebugLogFlowChart({
   currentPageStart,
   currentPageEnd,
   onNavigateToIdx,
+  pageLoading = false,
 }: DebugLogFlowChartProps) {
   // P4 (perf): memoize the heavy layout so it isn't rebuilt on every
   // pan/zoom/state change. Only the entry list drives geometry.
@@ -177,9 +180,9 @@ export function DebugLogFlowChart({
         />
         <div
           className="text-muted-foreground py-8 text-center text-sm"
-          data-testid="debug-log-flow-chart-empty"
+          data-testid={pageLoading ? "debug-log-flow-page-loading" : "debug-log-flow-chart-empty"}
         >
-          No events match the current filters.
+          {pageLoading ? "Loading page events…" : "No events match the current filters."}
         </div>
       </div>
     );
@@ -733,7 +736,11 @@ function FlowSessionCanvas({
                       data-testid={`debug-log-flow-session-bucket-${lane}-${bucket.bucket_idx}`}
                       onClick={
                         hasIdx && onNavigateToIdx
-                          ? () => onNavigateToIdx(bucket.start_idx!)
+                          ? (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onNavigateToIdx(bucket.start_idx!);
+                            }
                           : undefined
                       }
                       onKeyDown={
@@ -793,7 +800,15 @@ function FlowSessionCanvas({
                   tabIndex={hasIdx ? 0 : undefined}
                   aria-label={hasIdx ? `${m.kind}: ${m.label}` : undefined}
                   data-testid={`debug-log-flow-session-milestone-${i}`}
-                  onClick={hasIdx && onNavigateToIdx ? () => onNavigateToIdx(m.idx!) : undefined}
+                  onClick={
+                    hasIdx && onNavigateToIdx
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onNavigateToIdx(m.idx!);
+                        }
+                      : undefined
+                  }
                   onKeyDown={
                     hasIdx && onNavigateToIdx
                       ? (e) => {
@@ -863,7 +878,13 @@ function FlowSessionCanvas({
                     }
                     data-testid={`debug-log-flow-session-subagent-${bar.key}`}
                     onClick={
-                      hasIdx && onNavigateToIdx ? () => onNavigateToIdx(bar.start_idx!) : undefined
+                      hasIdx && onNavigateToIdx
+                        ? (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onNavigateToIdx(bar.start_idx!);
+                          }
+                        : undefined
                     }
                     onKeyDown={
                       hasIdx && onNavigateToIdx

@@ -306,6 +306,13 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
   });
+  let watchBucketNavigation = false;
+  let bucketClickNavigationCount = 0;
+  page.on("framenavigated", (frame) => {
+    if (watchBucketNavigation && frame === page.mainFrame()) {
+      bucketClickNavigationCount += 1;
+    }
+  });
 
   // Synthetic, redaction-safe debug-log payload covering the full rich-Flow
   // contract surface: turn, tool, hook, skill, assistant (agent_response /
@@ -397,6 +404,9 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   await page.route(`**/api/session/${SEEDED_SESSION_ID}/debug-log*`, async (route) => {
     const url = new URL(route.request().url());
     const from = Number(url.searchParams.get("from") ?? "0");
+    if (from >= 100) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
     const entries =
       from >= 100
         ? [
@@ -686,7 +696,11 @@ test("session debug log flow chart: zoom safety + rich content (issue #536)", as
   // render the selected page-level tree below the session canvas.
   await page.getByLabel("Close detail panel").click();
   await expect(page.getByRole("dialog", { name: /debug event detail/i })).toHaveCount(0);
+  watchBucketNavigation = true;
   await page.getByTestId("debug-log-flow-session-bucket-tool-1").click();
+  await expect(sessionCanvas).toBeVisible();
+  await expect(page.getByTestId("debug-log-flow-page-loading")).toBeVisible();
+  expect(bucketClickNavigationCount).toBe(0);
   await expect(page.getByTestId("debug-log-flow-node-100")).toBeVisible();
   await expect(page.getByTestId("debug-log-flow-node-100-label")).toContainText("bash");
 

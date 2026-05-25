@@ -832,6 +832,17 @@ export function DebugLogTab({
         : null,
     [viewMode, atlasQuery.data, subagentQuery.data, subagentInternalsQuery.data]
   );
+  const isFlowPageLoading =
+    viewMode === "flow" && isQueryLoading && (flowAggregate?.totalEvents ?? 0) > 0;
+  const displayedData =
+    normalizedData ??
+    (isFlowPageLoading && flowAggregate
+      ? {
+          events: [],
+          total: flowAggregate.totalEvents,
+          has_more: page * PAGE_SIZE + PAGE_SIZE < flowAggregate.totalEvents,
+        }
+      : null);
 
   // Navigate to the page containing idx, clear filters, queue pendingFocusRef.
   // Reuses the same pattern as the focusEntryIdx effect (lines 706-718).
@@ -890,7 +901,7 @@ export function DebugLogTab({
   }
 
   // ── Loading state (either path) ────────────────────────────────────────────
-  if (isQueryLoading) {
+  if (isQueryLoading && !isFlowPageLoading) {
     return (
       <div className="border-border text-muted-foreground rounded-xl border p-4 text-sm">
         Loading debug log…
@@ -912,7 +923,7 @@ export function DebugLogTab({
   }
 
   // ── Empty state ────────────────────────────────────────────────────────────
-  if (!normalizedData || normalizedData.events.length === 0) {
+  if (!displayedData || (displayedData.events.length === 0 && !isFlowPageLoading)) {
     if (!hasRunId) {
       // Session-scoped path: no entries recorded (or session API unavailable).
       // Do not block debug display on adoption; Adopt in Chat is a secondary CTA.
@@ -952,7 +963,14 @@ export function DebugLogTab({
     );
   }
 
-  const { total, has_more } = normalizedData;
+  const { total, has_more } = displayedData;
+  const pageStartIdx = page * PAGE_SIZE;
+  const currentPageEndIdx = normalizedData
+    ? pageStartIdx + normalizedData.events.length - 1
+    : Math.min(pageStartIdx + PAGE_SIZE - 1, Math.max(total - 1, pageStartIdx));
+  const displayPageEnd = normalizedData
+    ? pageStartIdx + normalizedData.events.length
+    : Math.min(pageStartIdx + PAGE_SIZE, total);
 
   return (
     <div className="space-y-3">
@@ -961,7 +979,7 @@ export function DebugLogTab({
         filters={filters}
         onChange={handleFilterChange}
         resultCount={filteredEvents.length}
-        totalCount={normalizedData.events.length}
+        totalCount={displayedData.events.length}
       />
 
       {/* Flight Recorder v3 mission strip — visible across all view modes.
@@ -999,7 +1017,7 @@ export function DebugLogTab({
       />
 
       {/* Flow is full-session aggregate now; only Tree still depends on span_ids. */}
-      {normalizedData.events.length > 0 && (
+      {(displayedData.events.length > 0 || isFlowPageLoading) && (
         <div className="flex items-center gap-1" role="group" aria-label="Debug log view mode">
           <button
             type="button"
@@ -1056,9 +1074,10 @@ export function DebugLogTab({
           atlasLoading={atlasQuery.isLoading}
           atlasError={atlasQuery.isError}
           currentPage={page}
-          currentPageStart={page * PAGE_SIZE}
-          currentPageEnd={page * PAGE_SIZE + normalizedData.events.length - 1}
+          currentPageStart={pageStartIdx}
+          currentPageEnd={currentPageEndIdx}
           onNavigateToIdx={handleNavigateToIdx}
+          pageLoading={isFlowPageLoading}
         />
       ) : viewMode === "tree" ? (
         <SpanTreeView
@@ -1122,7 +1141,7 @@ export function DebugLogTab({
       {(page > 0 || has_more) && (
         <div className="flex items-center justify-between">
           <p className="text-muted-foreground text-xs">
-            Showing {page * PAGE_SIZE + 1}–{page * PAGE_SIZE + normalizedData.events.length} of{" "}
+            {isFlowPageLoading ? "Loading" : "Showing"} {pageStartIdx + 1}–{displayPageEnd} of{" "}
             {total} total events
           </p>
           <div className="flex gap-2">
