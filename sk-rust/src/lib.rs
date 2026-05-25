@@ -12,3 +12,7 @@ mod config;
 #[cfg(feature = "browse-server")]
 #[allow(dead_code)]
 mod db;
+
+#[cfg(feature = "browse-server")]
+#[allow(dead_code)]
+mod sync;
