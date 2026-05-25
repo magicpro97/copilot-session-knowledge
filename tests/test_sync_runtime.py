@@ -268,7 +268,7 @@ sync_enqueue.enqueue_sync_op_fail_open(
     db,
     "knowledge_entries",
     "entry-1",
-    {"stable_id": "entry-1", "title": "Entry", "content": "same"},
+    {"content": "same", "title": "Entry", "stable_id": "entry-1"},
 )
 sync_enqueue.enqueue_sync_op_fail_open(
     db,

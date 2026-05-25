@@ -252,6 +252,7 @@ test("TOOL_FILES contains briefing.py", "briefing.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains watch-sessions.py", "watch-sessions.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains install.py", "install.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains sk.py", "sk.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains sync_enqueue.py", "sync_enqueue.py" in _install.TOOL_FILES)
 test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
 
 # MINIMAL_SKILL_MD sanity

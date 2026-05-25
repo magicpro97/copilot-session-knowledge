@@ -10,9 +10,17 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def _stable_sha256(*parts) -> str:
@@ -22,6 +30,10 @@ def _stable_sha256(*parts) -> str:
 
 def _utc_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _canonical_payload_json(row_payload: dict) -> str:
+    return json.dumps(row_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _default_local_replica_id() -> str:
@@ -144,7 +156,7 @@ def enqueue_sync_op_fail_open(
         now = _utc_now()
         txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
         savepoint = f"sync_enqueue_{txn_id[:16]}"
-        payload_json = json.dumps(row_payload, ensure_ascii=False)
+        payload_json = _canonical_payload_json(row_payload)
         db.execute(f"SAVEPOINT {savepoint}")
         try:
             if op_type == "upsert" and _coalesce_pending_upsert(
