@@ -16,7 +16,6 @@ impl KnowledgeDb {
         )?;
         conn.execute_batch(
             "PRAGMA mmap_size=268435456;
-             PRAGMA journal_mode=WAL;
              PRAGMA query_only=ON;",
         )?;
         Ok(Self { conn })

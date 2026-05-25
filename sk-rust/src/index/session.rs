@@ -712,36 +712,7 @@ pub fn apply_sessions_column_migrations(conn: &Connection) -> rusqlite::Result<(
 ///
 /// Mirrors Python's `_enqueue_sync_op_fail_open("documents", stable_id, payload)`.
 fn enqueue_doc_sync_op_fail_open(conn: &Connection, stable_id: &str, payload_json: &str) {
-    // Guard: skip silently when sync schema is not yet bootstrapped.
-    if !crate::sync::schema::sync_foundation_current(conn) {
-        return;
-    }
-
-    // Read local replica_id; fall back to empty string on any error.
-    let replica_id: String = conn
-        .query_row(
-            "SELECT value FROM sync_state WHERE key='local_replica_id'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_default();
-
-    let now = utc_now();
-    // Unique txn_id derived from (marker, stable_id, timestamp).
-    let txn_id = stable_sha256(&["txn", stable_id, &now]);
-
-    // Both inserts are fail-open: any SQL error is silently ignored.
-    let _ = conn.execute(
-        "INSERT OR IGNORE INTO sync_txns (txn_id, replica_id, status, created_at)
-         VALUES (?1, ?2, 'pending', ?3)",
-        rusqlite::params![txn_id, replica_id, now],
-    );
-    let _ = conn.execute(
-        "INSERT OR IGNORE INTO sync_ops
-             (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
-         VALUES (?1, 'documents', 'upsert', ?2, ?3, 0, ?4)",
-        rusqlite::params![txn_id, stable_id, payload_json, now],
-    );
+    crate::db::write::enqueue_sync_op_fail_open(conn, "documents", stable_id, payload_json);
 }
 
 fn get_document_hash(conn: &Connection, file_path: &str) -> Option<String> {
@@ -1796,6 +1767,12 @@ mod tests {
         let conn = Connection::open(&db_path).unwrap();
         ensure_tables(&conn).unwrap();
         ensure_sync_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sync_state (key, value) VALUES ('local_replica_id', 'replica-test')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )
+        .unwrap();
         drop(conn);
 
         // Build a session with a checkpoint and a research doc.

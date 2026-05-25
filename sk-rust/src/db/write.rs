@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OpenFlags, Result};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Result};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -320,6 +320,10 @@ fn try_enqueue_sync_op(
     // code that is already inside a larger transaction.
     conn.execute_batch(&format!("SAVEPOINT {savepoint}"))?;
     let result = (|| -> Result<()> {
+        if pending_upsert_already_queued(conn, &replica_id, table_name, stable_id, payload_json)? {
+            return Ok(());
+        }
+        coalesce_pending_upserts(conn, &replica_id, table_name, stable_id)?;
         conn.execute(
             "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) \
              VALUES (?, ?, 'pending', ?, '')",
@@ -343,6 +347,64 @@ fn try_enqueue_sync_op(
             return Err(err);
         }
     }
+    Ok(())
+}
+
+fn pending_upsert_already_queued(
+    conn: &Connection,
+    replica_id: &str,
+    table_name: &str,
+    stable_id: &str,
+    payload_json: &str,
+) -> Result<bool> {
+    let duplicate: Option<i64> = conn
+        .query_row(
+            "SELECT 1
+             FROM sync_ops o
+             JOIN sync_txns t ON t.txn_id = o.txn_id
+             WHERE t.status = 'pending'
+               AND t.replica_id = ?1
+               AND o.table_name = ?2
+               AND o.op_type = 'upsert'
+               AND o.row_stable_id = ?3
+               AND o.row_payload = ?4
+             LIMIT 1",
+            rusqlite::params![replica_id, table_name, stable_id, payload_json],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(duplicate.is_some())
+}
+
+fn coalesce_pending_upserts(
+    conn: &Connection,
+    replica_id: &str,
+    table_name: &str,
+    stable_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM sync_ops
+         WHERE id IN (
+             SELECT o.id
+             FROM sync_ops o
+             JOIN sync_txns t ON t.txn_id = o.txn_id
+             WHERE t.status = 'pending'
+               AND t.replica_id = ?1
+               AND o.table_name = ?2
+               AND o.op_type = 'upsert'
+               AND o.row_stable_id = ?3
+         )",
+        rusqlite::params![replica_id, table_name, stable_id],
+    )?;
+    conn.execute(
+        "DELETE FROM sync_txns
+         WHERE status = 'pending'
+           AND replica_id = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM sync_ops o WHERE o.txn_id = sync_txns.txn_id
+           )",
+        [replica_id],
+    )?;
     Ok(())
 }
 
@@ -411,6 +473,97 @@ mod tests {
         assert_eq!(format_datetime(0), "1970-01-01T00:00:00");
         // One day later
         assert_eq!(format_datetime(86400), "1970-01-02T00:00:00");
+    }
+
+    fn sync_enqueue_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE sync_table_policies (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT NOT NULL,
+                stable_id_column TEXT DEFAULT ''
+            );
+            CREATE TABLE sync_txns (
+                txn_id TEXT PRIMARY KEY,
+                replica_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                committed_at TEXT DEFAULT ''
+            );
+            CREATE TABLE sync_ops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                txn_id TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                op_type TEXT NOT NULL,
+                row_stable_id TEXT NOT NULL,
+                row_payload TEXT NOT NULL,
+                op_index INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(txn_id, op_index)
+            );
+            CREATE INDEX idx_sync_ops_txn ON sync_ops(txn_id);
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_state (key, value) VALUES ('local_replica_id', 'replica-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
+             VALUES ('knowledge_entries', 'canonical', 'stable_id')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn enqueue_sync_op_skips_identical_pending_upsert() {
+        let conn = sync_enqueue_db();
+
+        enqueue_sync_op_fail_open(&conn, "knowledge_entries", "stable-1", r#"{"k":"v"}"#);
+        enqueue_sync_op_fail_open(&conn, "knowledge_entries", "stable-1", r#"{"k":"v"}"#);
+
+        let txn_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_txns WHERE status='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let op_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_ops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(txn_count, 1);
+        assert_eq!(op_count, 1);
+    }
+
+    #[test]
+    fn enqueue_sync_op_replaces_stale_pending_upsert() {
+        let conn = sync_enqueue_db();
+
+        enqueue_sync_op_fail_open(&conn, "knowledge_entries", "stable-1", r#"{"k":"old"}"#);
+        enqueue_sync_op_fail_open(&conn, "knowledge_entries", "stable-1", r#"{"k":"new"}"#);
+
+        let txn_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_txns WHERE status='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let payload: String = conn
+            .query_row("SELECT row_payload FROM sync_ops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(txn_count, 1);
+        assert_eq!(payload, r#"{"k":"new"}"#);
     }
 
     #[test]

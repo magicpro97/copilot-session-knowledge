@@ -58,9 +58,9 @@ pub fn run_native_sync_cycle(
                 println!(
                     "[sync] cleanup compacted pending queue txns {}→{} ops {}→{}",
                     maintenance.compaction.old_pending_txns,
-                    maintenance.compaction.new_pending_txns,
+                    maintenance.compaction.remaining_pending_txns,
                     maintenance.compaction.old_pending_ops,
-                    maintenance.compaction.new_pending_ops
+                    maintenance.compaction.remaining_pending_ops
                 );
             }
         }
