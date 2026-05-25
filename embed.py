@@ -104,34 +104,13 @@ def _enqueue_sync_op_fail_open(
     row_payload: dict,
     op_type: str = "upsert",
 ):
-    if not row_stable_id:
-        return
     try:
-        policy = db.execute(
-            "SELECT sync_scope FROM sync_table_policies WHERE table_name = ?",
-            (table_name,),
-        ).fetchone()
-        if not policy or policy[0] != "canonical":
-            return
-        replica_id = _get_local_replica_id(db)
-        if not replica_id:
-            return
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
-        db.execute(
-            """
-            INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
-            VALUES (?, ?, 'pending', ?, '')
-        """,
-            (txn_id, replica_id, now),
-        )
-        db.execute(
-            """
-            INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
-            VALUES (?, ?, ?, ?, ?, 0, ?)
-        """,
-            (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now),
-        )
+        tools_dir = str(Path(__file__).resolve().parent)
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+        from sync_enqueue import enqueue_sync_op_fail_open
+
+        enqueue_sync_op_fail_open(db, table_name, row_stable_id, row_payload, op_type)
     except Exception:
         return
 

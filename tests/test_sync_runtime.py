@@ -27,6 +27,8 @@ if os.name == "nt":
 
 REPO = Path(__file__).parent.parent
 ARTIFACT_DIR = REPO / ".sync-runtime-test-artifacts"
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 
 PASS = 0
 FAIL = 0
@@ -237,6 +239,7 @@ sync_daemon = load_module("sync_daemon_test", "sync-daemon.py")
 sync_status = load_module("sync_status_test", "sync-status.py")
 knowledge_health = load_module("knowledge_health_test", "knowledge-health.py")
 sync_knowledge = load_module("sync_knowledge_test", "sync-knowledge.py")
+sync_enqueue = load_module("sync_enqueue_test", "sync_enqueue.py")
 
 # Point modules to artifact paths.
 sync_daemon.DB_PATH = db_path
@@ -255,6 +258,40 @@ db = sqlite3.connect(str(db_path))
 sync_knowledge.ensure_sync_runtime_schema(db)
 db.commit()
 db.close()
+
+# Sync enqueue should be idempotent for repeated indexing/extraction of the same row.
+enqueue_db_path = ARTIFACT_DIR / "enqueue.db"
+db = sqlite3.connect(str(enqueue_db_path))
+sync_knowledge.ensure_sync_runtime_schema(db)
+db.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES ('local_replica_id', 'local-enqueue')")
+sync_enqueue.enqueue_sync_op_fail_open(
+    db,
+    "knowledge_entries",
+    "entry-1",
+    {"content": "same", "title": "Entry", "stable_id": "entry-1"},
+)
+sync_enqueue.enqueue_sync_op_fail_open(
+    db,
+    "knowledge_entries",
+    "entry-1",
+    {"stable_id": "entry-1", "title": "Entry", "content": "same"},
+)
+same_count = db.execute("SELECT COUNT(*) FROM sync_ops").fetchone()[0]
+sync_enqueue.enqueue_sync_op_fail_open(
+    db,
+    "knowledge_entries",
+    "entry-1",
+    {"stable_id": "entry-1", "title": "Entry", "content": "changed"},
+)
+changed_count = db.execute("SELECT COUNT(*) FROM sync_ops").fetchone()[0]
+latest_payload = db.execute("SELECT row_payload FROM sync_ops").fetchone()[0]
+db.close()
+test("sync enqueue skips identical pending upserts", same_count == 1, f"ops={same_count}")
+test(
+    "sync enqueue coalesces stale pending upserts",
+    changed_count == 1 and "changed" in latest_payload,
+    f"ops={changed_count} payload={latest_payload}",
+)
 
 # Seed one pending local transaction.
 db = sqlite3.connect(str(db_path))
@@ -1405,7 +1442,7 @@ latest_relation_payload = json.loads(
 db7.close()
 test(
     "sync queue compaction coalesces duplicate pending rows",
-    compaction["compacted"] is True and remaining_txns == 1 and remaining_ops == 2,
+    compaction["compacted"] is True and remaining_txns == 2 and remaining_ops == 2,
     f"compaction={compaction} txns={remaining_txns} ops={remaining_ops}",
 )
 test(
@@ -1429,24 +1466,26 @@ for i in range(0, 3):
     db8.execute(
         """
         INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
-        VALUES (?, 'sessions', 'upsert', ?, ?, 0, ?)
+        VALUES (?, 'sessions', 'upsert', 'session-rollback', ?, 0, ?)
         """,
-        (txn_id, f"session-rollback-{i}", json.dumps({"id": f"session-rollback-{i}"}), created_at),
+        (txn_id, json.dumps({"id": "session-rollback", "summary": f"v{i}"}), created_at),
     )
-db8.execute(
-    "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES ('collision-txn', 'local-rollback', 'committed', '2026-03-03T00:00:00Z', '2026-03-03T00:00:01Z')"
-)
 db8.commit()
-original_stable_sha256 = sync_daemon._stable_sha256
+original_set_sync_state = sync_daemon.set_sync_state
 rollback_error = None
 try:
-    sync_daemon._stable_sha256 = lambda *parts: "collision-txn"
+    def _fail_compaction_note(db, key, value):
+        if key == "sync_queue_compaction_note":
+            raise sqlite3.DatabaseError("forced compaction note failure")
+        return original_set_sync_state(db, key, value)
+
+    sync_daemon.set_sync_state = _fail_compaction_note
     try:
         sync_daemon.compact_pending_sync_queue(db8, "local-rollback", force=True)
     except sqlite3.DatabaseError as exc:
         rollback_error = exc
 finally:
-    sync_daemon._stable_sha256 = original_stable_sha256
+    sync_daemon.set_sync_state = original_set_sync_state
 rollback_pending_txns = db8.execute(
     "SELECT COUNT(*) FROM sync_txns WHERE status='pending' AND replica_id='local-rollback'"
 ).fetchone()[0]
@@ -1456,10 +1495,15 @@ rollback_pending_ops = db8.execute(
 temp_tables_after_rollback = db8.execute(
     "SELECT COUNT(*) FROM sqlite_temp_master WHERE type='table' AND name LIKE 'sync_compact_%'"
 ).fetchone()[0]
+compacted_at_after_rollback = db8.execute("SELECT value FROM sync_state WHERE key='sync_queue_compacted_at'").fetchone()
 db8.close()
 test(
-    "sync queue compaction rolls back failed rebuild",
-    rollback_error is not None and rollback_pending_txns == 3 and rollback_pending_ops == 3,
+    "sync queue compaction rolls back failed coalesce",
+    rollback_error is not None
+    and "forced compaction note failure" in str(rollback_error)
+    and rollback_pending_txns == 3
+    and rollback_pending_ops == 3
+    and compacted_at_after_rollback is None,
     f"error={rollback_error} txns={rollback_pending_txns} ops={rollback_pending_ops}",
 )
 test(

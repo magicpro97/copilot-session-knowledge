@@ -218,6 +218,7 @@ TOOL_FILES = [
     "watch-sessions.py",
     "learn.py",
     "embed.py",
+    "sync_enqueue.py",
     "agent_adapters.py",
     "claude-adapter.py",
     "context-blocks.py",

@@ -1490,10 +1490,7 @@ fn error_occurred_native_kb_search_returns_results() {
     {
         let conn = Connection::open(&db_path).expect("create temp db");
         conn.execute_batch(
-                // Enable WAL mode so KnowledgeDb::open() (which sets PRAGMA journal_mode=WAL)
-                // succeeds on the read-only re-open.
-                "PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS knowledge_entries (
+                "CREATE TABLE IF NOT EXISTS knowledge_entries (
                     id INTEGER PRIMARY KEY,
                     category TEXT, title TEXT, content TEXT, tags TEXT,
                     confidence REAL DEFAULT 1.0, occurrence_count INTEGER DEFAULT 1,

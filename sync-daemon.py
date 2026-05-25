@@ -56,22 +56,10 @@ MAX_PULL_PAGES_PER_CYCLE = 10
 PUSH_TIMEOUT_SECONDS = 120
 SYNC_COMPACTION_PENDING_TXN_THRESHOLD = 5000
 SYNC_COMPACTION_PENDING_OP_THRESHOLD = 50000
-SYNC_COMPACTION_BATCH_SIZE = 50
 SYNC_COMMITTED_RETENTION_DAYS = 7
 SYNC_FAILURE_RETENTION_ROWS = 100
 DLQ_MAX_PUSH_RETRIES = 5
 DLQ_EXHAUSTED_RETENTION_ROWS = 200
-
-SYNC_TABLE_PRIORITY = {
-    "sessions": 10,
-    "documents": 20,
-    "sections": 30,
-    "knowledge_entries": 40,
-    "knowledge_relations": 50,
-    "entity_relations": 60,
-    "search_feedback": 70,
-}
-
 
 SYNC_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sync_metadata (
@@ -701,13 +689,8 @@ def _pending_sync_queue_counts(db: sqlite3.Connection, replica_id: str) -> tuple
     return int(row[0] or 0), int(row[1] or 0)
 
 
-def _table_rank_sql() -> str:
-    cases = " ".join(f"WHEN '{table}' THEN {rank}" for table, rank in SYNC_TABLE_PRIORITY.items())
-    return f"CASE table_name {cases} ELSE 999 END"
-
-
 def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force: bool = False) -> dict:
-    """Coalesce large local pending sync queues to latest per canonical row.
+    """Coalesce large local pending sync queues to latest pending upsert per row.
 
     This keeps current state pushable while preventing repeated local indexing
     from growing sync_txns/sync_ops without bound when the gateway is down.
@@ -722,20 +705,18 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
             "compacted": False,
             "old_pending_txns": old_txns,
             "old_pending_ops": old_ops,
-            "new_pending_txns": old_txns,
-            "new_pending_ops": old_ops,
+            "remaining_pending_txns": old_txns,
+            "remaining_pending_ops": old_ops,
         }
     if old_txns == 0 and old_ops == 0:
         return {
             "compacted": False,
             "old_pending_txns": 0,
             "old_pending_ops": 0,
-            "new_pending_txns": 0,
-            "new_pending_ops": 0,
+            "remaining_pending_txns": 0,
+            "remaining_pending_ops": 0,
         }
 
-    new_txns = 0
-    new_ops = 0
     savepoint_open = False
     try:
         db.execute("DROP TABLE IF EXISTS temp.sync_compact_pending_txns")
@@ -751,10 +732,9 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
             (replica_id or "", replica_id or ""),
         )
         db.execute(
-            f"""
+            """
             CREATE TEMP TABLE sync_compact_keep_ops AS
-            SELECT table_name, op_type, row_stable_id, row_payload, created_at,
-                   {_table_rank_sql()} AS table_rank
+            SELECT id
             FROM (
                 SELECT o.*,
                        ROW_NUMBER() OVER (
@@ -763,55 +743,41 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
                        ) AS rn
                 FROM sync_ops o
                 JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
+                WHERE o.op_type = 'upsert'
             )
             WHERE rn = 1
             """
         )
 
-        kept_ops = db.execute(
-            """
-            SELECT table_name, op_type, row_stable_id, row_payload, created_at
-            FROM sync_compact_keep_ops
-            ORDER BY table_rank, table_name, row_stable_id
-            """
-        ).fetchall()
-
         now = utc_now()
         db.execute("SAVEPOINT sync_queue_compact")
         savepoint_open = True
-        db.execute("DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)")
-        db.execute("DELETE FROM sync_txns WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)")
-
-        for batch_index in range(0, len(kept_ops), SYNC_COMPACTION_BATCH_SIZE):
-            batch = kept_ops[batch_index : batch_index + SYNC_COMPACTION_BATCH_SIZE]
-            txn_id = _stable_sha256("sync-compact", replica_id, now, batch_index // SYNC_COMPACTION_BATCH_SIZE)
-            db.execute(
-                """
-                INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
-                VALUES (?, ?, 'pending', ?, '')
-                """,
-                (txn_id, replica_id or "local", now),
+        db.execute(
+            """
+            DELETE FROM sync_ops
+            WHERE id IN (
+                SELECT o.id
+                FROM sync_ops o
+                JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
+                LEFT JOIN sync_compact_keep_ops k ON k.id = o.id
+                WHERE o.op_type = 'upsert'
+                  AND k.id IS NULL
             )
-            db.executemany(
-                """
-                INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        txn_id,
-                        row["table_name"] if isinstance(row, sqlite3.Row) else row[0],
-                        row["op_type"] if isinstance(row, sqlite3.Row) else row[1],
-                        row["row_stable_id"] if isinstance(row, sqlite3.Row) else row[2],
-                        row["row_payload"] if isinstance(row, sqlite3.Row) else row[3],
-                        op_index,
-                        row["created_at"] if isinstance(row, sqlite3.Row) else row[4],
-                    )
-                    for op_index, row in enumerate(batch)
-                ],
+            """
+        )
+        db.execute(
+            """
+            DELETE FROM sync_txns
+            WHERE txn_id IN (
+                SELECT p.txn_id
+                FROM sync_compact_pending_txns p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sync_ops o WHERE o.txn_id = p.txn_id
+                )
             )
-            new_txns += 1
-            new_ops += len(batch)
+            """
+        )
+        new_txns, new_ops = _pending_sync_queue_counts(db, replica_id)
 
         set_sync_state(db, "sync_queue_compacted_at", now)
         set_sync_state(
@@ -819,7 +785,7 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
             "sync_queue_compaction_note",
             (
                 f"old_pending_txns={old_txns}; old_pending_ops={old_ops}; "
-                f"new_pending_txns={new_txns}; new_pending_ops={new_ops}"
+                f"remaining_pending_txns={new_txns}; remaining_pending_ops={new_ops}"
             ),
         )
         db.execute("RELEASE SAVEPOINT sync_queue_compact")
@@ -836,8 +802,8 @@ def compact_pending_sync_queue(db: sqlite3.Connection, replica_id: str, *, force
         "compacted": True,
         "old_pending_txns": old_txns,
         "old_pending_ops": old_ops,
-        "new_pending_txns": new_txns,
-        "new_pending_ops": new_ops,
+        "remaining_pending_txns": new_txns,
+        "remaining_pending_ops": new_ops,
     }
 
 

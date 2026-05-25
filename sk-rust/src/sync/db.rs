@@ -34,7 +34,6 @@ pub const MAX_SYNC_LIMIT: usize = 1000;
 pub const MAX_PULL_PAGES: usize = 10;
 pub const SYNC_COMPACTION_PENDING_TXN_THRESHOLD: i64 = 5000;
 pub const SYNC_COMPACTION_PENDING_OP_THRESHOLD: i64 = 50000;
-pub const SYNC_COMPACTION_BATCH_SIZE: usize = 50;
 pub const SYNC_COMMITTED_RETENTION_DAYS: i64 = 7;
 pub const SYNC_FAILURE_RETENTION_ROWS: i64 = 100;
 
@@ -43,8 +42,8 @@ pub struct SyncQueueCompactionResult {
     pub compacted: bool,
     pub old_pending_txns: i64,
     pub old_pending_ops: i64,
-    pub new_pending_txns: i64,
-    pub new_pending_ops: i64,
+    pub remaining_pending_txns: i64,
+    pub remaining_pending_ops: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,12 +354,6 @@ pub fn repair_nonlocal_committed_txns(conn: &Connection, local_replica_id: &str)
     Ok(n)
 }
 
-fn stable_sha256(parts: &[&str]) -> String {
-    let payload = parts.join("\0");
-    let digest = Sha256::digest(payload.as_bytes());
-    format!("{digest:x}")
-}
-
 fn pending_sync_queue_counts(conn: &Connection, replica_id: &str) -> Result<(i64, i64)> {
     conn.query_row(
         "SELECT COUNT(DISTINCT t.txn_id), COUNT(o.id)
@@ -371,28 +364,6 @@ fn pending_sync_queue_counts(conn: &Connection, replica_id: &str) -> Result<(i64
         [replica_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
-}
-
-fn table_rank_case_sql() -> &'static str {
-    "CASE table_name
-        WHEN 'sessions' THEN 10
-        WHEN 'documents' THEN 20
-        WHEN 'sections' THEN 30
-        WHEN 'knowledge_entries' THEN 40
-        WHEN 'knowledge_relations' THEN 50
-        WHEN 'entity_relations' THEN 60
-        WHEN 'search_feedback' THEN 70
-        ELSE 999
-     END"
-}
-
-#[derive(Debug)]
-struct PendingSyncOp {
-    table_name: String,
-    op_type: String,
-    row_stable_id: String,
-    row_payload: String,
-    created_at: String,
 }
 
 pub fn compact_pending_sync_queue(
@@ -409,8 +380,8 @@ pub fn compact_pending_sync_queue(
             compacted: false,
             old_pending_txns: old_txns,
             old_pending_ops: old_ops,
-            new_pending_txns: old_txns,
-            new_pending_ops: old_ops,
+            remaining_pending_txns: old_txns,
+            remaining_pending_ops: old_ops,
         });
     }
     if old_txns == 0 && old_ops == 0 {
@@ -418,8 +389,8 @@ pub fn compact_pending_sync_queue(
             compacted: false,
             old_pending_txns: 0,
             old_pending_ops: 0,
-            new_pending_txns: 0,
-            new_pending_ops: 0,
+            remaining_pending_txns: 0,
+            remaining_pending_ops: 0,
         });
     }
 
@@ -437,88 +408,48 @@ pub fn compact_pending_sync_queue(
                AND (?1 = '' OR replica_id = ?1)",
             [replica_id],
         )?;
-        conn.execute_batch(&format!(
+        conn.execute_batch(
             "CREATE TEMP TABLE sync_compact_keep_ops AS
-             SELECT table_name, op_type, row_stable_id, row_payload, created_at,
-                    {} AS table_rank
+             SELECT id
              FROM (
-                 SELECT o.*,
+                SELECT o.*,
                         ROW_NUMBER() OVER (
                             PARTITION BY o.table_name, o.row_stable_id
                             ORDER BY o.created_at DESC, o.id DESC
                         ) AS rn
                  FROM sync_ops o
                  JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
+                 WHERE o.op_type = 'upsert'
              )
              WHERE rn = 1",
-            table_rank_case_sql()
-        ))?;
-
-        let kept_ops: Vec<PendingSyncOp> = {
-            let mut stmt = conn.prepare(
-                "SELECT table_name, op_type, row_stable_id, row_payload, created_at
-                 FROM sync_compact_keep_ops
-                 ORDER BY table_rank, table_name, row_stable_id",
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(PendingSyncOp {
-                    table_name: r.get(0)?,
-                    op_type: r.get(1)?,
-                    row_stable_id: r.get(2)?,
-                    row_payload: r.get(3)?,
-                    created_at: r.get(4)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>>>()?
-        };
+        )?;
 
         conn.execute(
-            "DELETE FROM sync_ops WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)",
+            "DELETE FROM sync_ops
+             WHERE id IN (
+                SELECT o.id
+                FROM sync_ops o
+                JOIN sync_compact_pending_txns p ON p.txn_id = o.txn_id
+                LEFT JOIN sync_compact_keep_ops k ON k.id = o.id
+                WHERE o.op_type = 'upsert'
+                  AND k.id IS NULL
+             )",
             [],
         )?;
         conn.execute(
-            "DELETE FROM sync_txns WHERE txn_id IN (SELECT txn_id FROM sync_compact_pending_txns)",
+            "DELETE FROM sync_txns
+             WHERE txn_id IN (
+                SELECT p.txn_id
+                FROM sync_compact_pending_txns p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sync_ops o WHERE o.txn_id = p.txn_id
+                )
+             )",
             [],
         )?;
 
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let mut new_txns = 0_i64;
-        let mut new_ops = 0_i64;
-        for (batch_idx, batch) in kept_ops.chunks(SYNC_COMPACTION_BATCH_SIZE).enumerate() {
-            let batch_idx_s = batch_idx.to_string();
-            let txn_id = stable_sha256(&["sync-compact", replica_id, &now, &batch_idx_s]);
-            conn.execute(
-                "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
-                 VALUES (?1, ?2, 'pending', ?3, '')",
-                rusqlite::params![
-                    txn_id.as_str(),
-                    if replica_id.is_empty() {
-                        "local"
-                    } else {
-                        replica_id
-                    },
-                    now.as_str()
-                ],
-            )?;
-            for (op_index, op) in batch.iter().enumerate() {
-                conn.execute(
-                    "INSERT INTO sync_ops
-                         (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        txn_id.as_str(),
-                        op.table_name.as_str(),
-                        op.op_type.as_str(),
-                        op.row_stable_id.as_str(),
-                        op.row_payload.as_str(),
-                        op_index as i64,
-                        op.created_at.as_str()
-                    ],
-                )?;
-            }
-            new_txns += 1;
-            new_ops += batch.len() as i64;
-        }
+        let (new_txns, new_ops) = pending_sync_queue_counts(conn, replica_id)?;
 
         conn.execute_batch(
             "DROP TABLE IF EXISTS temp.sync_compact_pending_txns;
@@ -529,15 +460,15 @@ pub fn compact_pending_sync_queue(
             conn,
             "sync_queue_compaction_note",
             &format!(
-                "old_pending_txns={old_txns}; old_pending_ops={old_ops}; new_pending_txns={new_txns}; new_pending_ops={new_ops}"
+                "old_pending_txns={old_txns}; old_pending_ops={old_ops}; remaining_pending_txns={new_txns}; remaining_pending_ops={new_ops}"
             ),
         )?;
         Ok(SyncQueueCompactionResult {
             compacted: true,
             old_pending_txns: old_txns,
             old_pending_ops: old_ops,
-            new_pending_txns: new_txns,
-            new_pending_ops: new_ops,
+            remaining_pending_txns: new_txns,
+            remaining_pending_ops: new_ops,
         })
     })();
 
@@ -1489,8 +1420,8 @@ mod tests {
         assert!(result.compacted);
         assert_eq!(result.old_pending_txns, 11);
         assert_eq!(result.old_pending_ops, 11);
-        assert_eq!(result.new_pending_txns, 1);
-        assert_eq!(result.new_pending_ops, 2);
+        assert_eq!(result.remaining_pending_txns, 2);
+        assert_eq!(result.remaining_pending_ops, 2);
 
         let pending_txns: i64 = conn
             .query_row(
@@ -1509,7 +1440,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(pending_txns, 1);
+        assert_eq!(pending_txns, 2);
         assert_eq!(pending_ops, 2);
 
         let session_payload: String = conn
@@ -1534,6 +1465,68 @@ mod tests {
             relation_payload.contains(r#""confidence":2"#),
             "expected latest relation payload, got {relation_payload}"
         );
+    }
+
+    #[test]
+    fn compact_pending_sync_queue_rolls_back_failed_compaction() {
+        let conn = fresh_sync_db();
+        for i in 0..3_i32 {
+            let txn_id = format!("rollback-session-{i}");
+            let created_at = format!("2026-03-04T00:02:{i:02}Z");
+            let payload = format!(r#"{{"id":"session-rollback","summary":"v{i}"}}"#);
+            conn.execute(
+                "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
+                 VALUES (?1, 'local-rollback', 'pending', ?2, '')",
+                rusqlite::params![txn_id.as_str(), created_at.as_str()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sync_ops
+                     (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+                 VALUES (?1, 'sessions', 'upsert', 'session-rollback', ?2, 0, ?3)",
+                rusqlite::params![txn_id.as_str(), payload.as_str(), created_at.as_str()],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "CREATE TRIGGER fail_compaction_note
+             BEFORE INSERT ON sync_state
+             WHEN NEW.key = 'sync_queue_compaction_note'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced compaction note failure');
+             END;",
+        )
+        .unwrap();
+
+        let err = compact_pending_sync_queue(&conn, "local-rollback", true)
+            .expect_err("forced sync_state failure should abort compaction");
+        assert!(
+            err.to_string().contains("forced compaction note failure"),
+            "unexpected error: {err}"
+        );
+
+        let pending_txns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_txns WHERE status='pending' AND replica_id='local-rollback'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let pending_ops: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM sync_ops o
+                 JOIN sync_txns t ON t.txn_id=o.txn_id
+                 WHERE t.status='pending' AND t.replica_id='local-rollback'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let compacted_at: Option<String> =
+            get_sync_state(&conn, "sync_queue_compacted_at").unwrap();
+        assert_eq!(pending_txns, 3);
+        assert_eq!(pending_ops, 3);
+        assert!(compacted_at.is_none());
     }
 
     // ── FTS refresh tests ─────────────────────────────────────────────────

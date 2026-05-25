@@ -100,15 +100,16 @@ pub fn run_sync_run_command(args: &[String]) -> ExitCode {
     let config = load_sync_config(&resolve_tools_dir());
     if config.connection_string.is_empty() {
         if opts.once {
-            println!("[sync] No remote configured (sync-config.json connection_string is empty). Nothing to do.");
+            println!(
+                "[sync] No remote configured (sync-config.json connection_string is empty). Running local cleanup only."
+            );
             println!("[sync] Run: sk sync config --setup <url>");
-            lock.release();
-            return ExitCode::SUCCESS;
-        }
-        println!(
-            "[sync] No remote configured. Daemon will wait for configuration.\n\
+        } else {
+            println!(
+                "[sync] No remote configured. Daemon will wait for configuration.\n\
              [sync] Run: sk sync config --setup <url>"
-        );
+            );
+        }
     }
 
     let markers_dir = copilot_dir.join("markers");
@@ -212,9 +213,6 @@ pub fn run_sync_run_command(args: &[String]) -> ExitCode {
 /// In the default build, calls the native Rust HTTP engine directly.  Builds
 /// compiled without `native-sync` shell out to `sync-daemon.py --once`.
 fn run_sync_cycle(opts: &SyncOpts, config: &SyncConfig, tools_dir: &Path) -> Result<(), String> {
-    if config.connection_string.is_empty() {
-        return Ok(()); // nothing configured — silently skip
-    }
     run_sync_cycle_impl(opts, config, tools_dir)
 }
 
