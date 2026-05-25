@@ -96,8 +96,11 @@ const BROWSER_LABELS: Record<BrowserKind, string> = {
 
 const LOCAL_UI_URL = "https://127.0.0.1:8765/";
 const LOCAL_UI_HTTP_FALLBACK_URL = "http://127.0.0.1:8765/";
-const LOCAL_BROWSER_COMMAND = "browse --hosted-bootstrap --open-browser chrome";
-const BROWSER_SCAN_COMMAND = "browse --list-browsers";
+const INSTALL_BACKEND_SCRIPT_COMMAND = "python3 ~/.copilot/tools/browse.py --install-launcher";
+const RUN_BACKEND_SCRIPT_COMMAND = "~/.copilot/bin/browse-hosted";
+const LOCAL_BROWSER_COMMAND =
+  "python3 ~/.copilot/tools/browse.py --hosted-bootstrap --open-browser chrome";
+const BROWSER_SCAN_COMMAND = "python3 ~/.copilot/tools/browse.py --list-browsers";
 
 // ── CopyButton ────────────────────────────────────────────────────────────────
 
@@ -209,6 +212,17 @@ function ConfiguredBrowserFallback({ browserInfo }: { browserInfo: BrowserInfo }
           <CodeSnippet copyText={BROWSER_SCAN_COMMAND}>{BROWSER_SCAN_COMMAND}</CodeSnippet>.
         </span>
       </div>
+      <p className="text-muted-foreground text-xs">
+        To create a reusable backend script, run{" "}
+        <CodeSnippet copyText={INSTALL_BACKEND_SCRIPT_COMMAND}>
+          {INSTALL_BACKEND_SCRIPT_COMMAND}
+        </CodeSnippet>
+        . After that, start the backend with{" "}
+        <CodeSnippet copyText={RUN_BACKEND_SCRIPT_COMMAND}>
+          {RUN_BACKEND_SCRIPT_COMMAND}
+        </CodeSnippet>
+        .
+      </p>
       <p className="text-muted-foreground text-xs">
         If your backend was started with <CodeSnippet copyText="--no-tls">--no-tls</CodeSnippet>,
         use{" "}

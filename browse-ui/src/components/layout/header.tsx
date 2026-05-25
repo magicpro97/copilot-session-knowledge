@@ -130,8 +130,18 @@ function HostedBackendGuideBanner() {
           Local backend
         </span>
         <span className="text-muted-foreground">
-          Run <CodePill>browse --hosted-bootstrap --open-browser chrome</CodePill> to start the
-          backend and open a configured browser.
+          Install backend script with{" "}
+          <CodePill>python3 ~/.copilot/tools/browse.py --install-launcher</CodePill>.
+        </span>
+        <span className="text-muted-foreground">
+          Start it with <CodePill>~/.copilot/bin/browse-hosted</CodePill>.
+        </span>
+        <span className="text-muted-foreground">
+          One-shot:{" "}
+          <CodePill>
+            python3 ~/.copilot/tools/browse.py --hosted-bootstrap --open-browser chrome
+          </CodePill>
+          .
         </span>
         <a
           href="https://127.0.0.1:8765/"

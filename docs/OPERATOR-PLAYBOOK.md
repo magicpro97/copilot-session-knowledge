@@ -779,12 +779,16 @@ python browse.py --install-launcher
 After install, start the backend with:
 
 ```bash
-browse-hosted                          # open-auth, random port will be 8765
-browse-hosted --token <your-token>    # token-protected
+~/.copilot/bin/browse-hosted                          # open-auth, port 8765
+~/.copilot/bin/browse-hosted --token <your-token>    # token-protected
 ```
 
+Use `browse-hosted` instead when `~/.copilot/bin` is already on `PATH`.
+
 Then open `https://agents.linhngo.dev` (or double-click `Browse UI.lnk` on the Desktop, or
-`browse-hosted.url` in `~/.copilot/bin/`) and add `http://127.0.0.1:8765` as a host profile.
+`browse-hosted.url` in `~/.copilot/bin/`) and add `https://127.0.0.1:8765` as a host profile
+when TLS is enabled. Use `http://127.0.0.1:8765` only when the backend was started with
+`--no-tls`.
 Alternatively, double-click `Browse Backend.lnk` on the Desktop to start the backend in a
 console window.
 
@@ -799,8 +803,9 @@ python3 browse.py --hosted-bootstrap --open-browser chrome
 
 `--list-browsers` reports allowlisted Chrome, Edge, Firefox, and Safari candidates. Safari is
 reported as unsupported for hosted-to-local recovery; Chrome/Edge are preferred, and Firefox is
-usable only through the direct local app path (`http://127.0.0.1:8765/`). `--open-browser` only
-opens loopback URLs and never appends token query strings.
+usable only through the direct local app path (`https://127.0.0.1:8765/`, or HTTP when the
+backend was started with `--no-tls`). `--open-browser` only opens loopback URLs and never appends
+token query strings.
 
 **Security note:** The launcher does **not** use any browser security-bypass flags
 (`--disable-web-security`, `--allow-insecure-localhost`, etc.). Use `--hosted-bootstrap` for

@@ -238,8 +238,14 @@ describe("DiagnosticPanel", () => {
     );
     const fallback = screen.getByTestId("configured-browser-fallback");
     expect(fallback).toHaveTextContent(/Chrome\/Edge can use Local Network Access/i);
-    expect(fallback).toHaveTextContent(/browse --list-browsers/);
-    expect(fallback).toHaveTextContent(/browse --hosted-bootstrap --open-browser chrome/);
+    expect(fallback).toHaveTextContent(/python3 ~\/\.copilot\/tools\/browse\.py --list-browsers/);
+    expect(fallback).toHaveTextContent(
+      /python3 ~\/\.copilot\/tools\/browse\.py --install-launcher/
+    );
+    expect(fallback).toHaveTextContent(/~\/\.copilot\/bin\/browse-hosted/);
+    expect(fallback).toHaveTextContent(
+      /python3 ~\/\.copilot\/tools\/browse\.py --hosted-bootstrap --open-browser chrome/
+    );
     expect(fallback).not.toHaveTextContent(/--disable-web-security/);
     const cta = screen.getByTestId("open-configured-browser-cta");
     expect(cta).toHaveAttribute("href", "https://127.0.0.1:8765/");

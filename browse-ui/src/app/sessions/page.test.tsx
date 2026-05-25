@@ -221,11 +221,17 @@ describe("SessionsPage", () => {
     // Chromium (Chrome/Edge) is supported — actionable LNA/PNA message
     expect(fallback).toHaveTextContent(/Chrome\/Edge/i);
 
-    // Scan command present
-    expect(fallback).toHaveTextContent(/browse --list-browsers/);
+    // Scan + reusable backend script commands are present.
+    expect(fallback).toHaveTextContent(/python3 ~\/\.copilot\/tools\/browse\.py --list-browsers/);
+    expect(fallback).toHaveTextContent(
+      /python3 ~\/\.copilot\/tools\/browse\.py --install-launcher/
+    );
+    expect(fallback).toHaveTextContent(/~\/\.copilot\/bin\/browse-hosted/);
 
     // Start command present — opens a configured browser without security bypass flags
-    expect(fallback).toHaveTextContent(/browse --hosted-bootstrap --open-browser chrome/);
+    expect(fallback).toHaveTextContent(
+      /python3 ~\/\.copilot\/tools\/browse\.py --hosted-bootstrap --open-browser chrome/
+    );
   });
 
   it("shows configured-browser-fallback on hosted origin — Safari is reported as unsupported", () => {

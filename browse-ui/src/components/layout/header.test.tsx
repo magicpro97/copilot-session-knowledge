@@ -85,7 +85,11 @@ describe("Header hosted backend guide", () => {
     render(<Header />);
 
     const banner = await screen.findByTestId("hosted-backend-guide-banner");
-    expect(banner).toHaveTextContent(/browse --hosted-bootstrap --open-browser chrome/);
+    expect(banner).toHaveTextContent(/python3 ~\/\.copilot\/tools\/browse\.py --install-launcher/);
+    expect(banner).toHaveTextContent(/~\/\.copilot\/bin\/browse-hosted/);
+    expect(banner).toHaveTextContent(
+      /python3 ~\/\.copilot\/tools\/browse\.py --hosted-bootstrap --open-browser chrome/
+    );
     expect(screen.getByTestId("hosted-backend-guide-open-https")).toHaveAttribute(
       "href",
       "https://127.0.0.1:8765/"
