@@ -594,6 +594,9 @@ def _enqueue_sync_op_fail_open(
     op_type: str = "upsert",
 ):
     try:
+        tools_dir = str(Path(__file__).resolve().parent)
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
         from sync_enqueue import enqueue_sync_op_fail_open
 
         enqueue_sync_op_fail_open(db, table_name, row_stable_id, row_payload, op_type)
