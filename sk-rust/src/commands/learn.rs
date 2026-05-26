@@ -372,90 +372,6 @@ impl LearnParams {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn facts_json_escapes_special_characters() {
-        let params = LearnParams {
-            category: "pattern".to_string(),
-            title: "title".to_string(),
-            description: "description".to_string(),
-            tags: String::new(),
-            wing: String::new(),
-            room: String::new(),
-            confidence: 0.7,
-            facts: vec!["C:\\tmp\nquoted \"fact\"".to_string()],
-            argv: vec![],
-            skip_gate: false,
-            skip_scan: false,
-        };
-
-        let parsed: Vec<String> = serde_json::from_str(&params.facts_json()).unwrap();
-        assert_eq!(parsed, params.facts);
-    }
-
-    #[test]
-    fn queued_payload_preserves_flags_and_facts() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let inbox = std::env::temp_dir().join(format!("sk_learn_inbox_test_{unique}"));
-        let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
-        std::env::set_var("SK_LEARN_INBOX", &inbox);
-
-        let params = LearnParams {
-            category: "decision".to_string(),
-            title: "queue title".to_string(),
-            description: "queue description".to_string(),
-            tags: "sqlite".to_string(),
-            wing: "devops".to_string(),
-            room: "tooling".to_string(),
-            confidence: 0.8,
-            facts: vec!["C:\\tmp\nfact".to_string()],
-            argv: vec![
-                "--decision".to_string(),
-                "queue title".to_string(),
-                "queue description".to_string(),
-            ],
-            skip_gate: false,
-            skip_scan: true,
-        };
-
-        let queued = write_learn_payload(&params).unwrap();
-        let payload: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&queued).unwrap()).unwrap();
-        assert_eq!(payload["entry"]["skip_gate"], false);
-        assert_eq!(payload["entry"]["skip_scan"], true);
-        assert_eq!(payload["entry"]["facts"][0], "C:\\tmp\nfact");
-
-        let _ = std::fs::remove_dir_all(&inbox);
-        match old_inbox {
-            Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
-            None => std::env::remove_var("SK_LEARN_INBOX"),
-        }
-    }
-
-    #[test]
-    fn learn_inbox_dir_expands_tilde_env() {
-        let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
-        std::env::set_var(
-            "SK_LEARN_INBOX",
-            "~/.copilot/session-state/learn-inbox-test",
-        );
-        let resolved = learn_inbox_dir();
-        assert!(!resolved.to_string_lossy().starts_with('~'));
-        assert!(resolved.ends_with(".copilot/session-state/learn-inbox-test"));
-        match old_inbox {
-            Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
-            None => std::env::remove_var("SK_LEARN_INBOX"),
-        }
-    }
-}
-
 /// Simplified wing auto-detection (mirrors Python _WING_RULES).
 fn auto_detect_wing(tags: &str, title: &str, content: &str) -> String {
     let text = format!(
@@ -555,4 +471,88 @@ fn auto_detect_room(tags: &str, title: &str, content: &str) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn facts_json_escapes_special_characters() {
+        let params = LearnParams {
+            category: "pattern".to_string(),
+            title: "title".to_string(),
+            description: "description".to_string(),
+            tags: String::new(),
+            wing: String::new(),
+            room: String::new(),
+            confidence: 0.7,
+            facts: vec!["C:\\tmp\nquoted \"fact\"".to_string()],
+            argv: vec![],
+            skip_gate: false,
+            skip_scan: false,
+        };
+
+        let parsed: Vec<String> = serde_json::from_str(&params.facts_json()).unwrap();
+        assert_eq!(parsed, params.facts);
+    }
+
+    #[test]
+    fn queued_payload_preserves_flags_and_facts() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let inbox = std::env::temp_dir().join(format!("sk_learn_inbox_test_{unique}"));
+        let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
+        std::env::set_var("SK_LEARN_INBOX", &inbox);
+
+        let params = LearnParams {
+            category: "decision".to_string(),
+            title: "queue title".to_string(),
+            description: "queue description".to_string(),
+            tags: "sqlite".to_string(),
+            wing: "devops".to_string(),
+            room: "tooling".to_string(),
+            confidence: 0.8,
+            facts: vec!["C:\\tmp\nfact".to_string()],
+            argv: vec![
+                "--decision".to_string(),
+                "queue title".to_string(),
+                "queue description".to_string(),
+            ],
+            skip_gate: false,
+            skip_scan: true,
+        };
+
+        let queued = write_learn_payload(&params).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&queued).unwrap()).unwrap();
+        assert_eq!(payload["entry"]["skip_gate"], false);
+        assert_eq!(payload["entry"]["skip_scan"], true);
+        assert_eq!(payload["entry"]["facts"][0], "C:\\tmp\nfact");
+
+        let _ = std::fs::remove_dir_all(&inbox);
+        match old_inbox {
+            Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
+            None => std::env::remove_var("SK_LEARN_INBOX"),
+        }
+    }
+
+    #[test]
+    fn learn_inbox_dir_expands_tilde_env() {
+        let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
+        std::env::set_var(
+            "SK_LEARN_INBOX",
+            "~/.copilot/session-state/learn-inbox-test",
+        );
+        let resolved = learn_inbox_dir();
+        assert!(!resolved.to_string_lossy().starts_with('~'));
+        assert!(resolved.ends_with(".copilot/session-state/learn-inbox-test"));
+        match old_inbox {
+            Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
+            None => std::env::remove_var("SK_LEARN_INBOX"),
+        }
+    }
 }
