@@ -1,7 +1,7 @@
 "use client";
 
 import { formatDistanceToNow } from "date-fns";
-import { MessageSquare, Trash2 } from "lucide-react";
+import { Loader2, MessageSquare, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,6 +16,13 @@ type SessionListProps = {
   onDelete?: (id: string) => void;
   loading?: boolean;
   isDeleting?: boolean;
+  /**
+   * Issue #564: set of session IDs that currently have a non-terminal
+   * active run. When provided, each matching session row renders a small
+   * indicator. When omitted (or empty) the list behaves exactly as before
+   * for backward compatibility with hosts that lack `runs_workbench`.
+   */
+  activeRunSessionIds?: ReadonlySet<string>;
 };
 
 /**
@@ -29,6 +36,7 @@ export function SessionList({
   onDelete,
   loading,
   isDeleting,
+  activeRunSessionIds,
 }: SessionListProps) {
   if (loading) {
     return (
@@ -57,6 +65,7 @@ export function SessionList({
         });
         const isCliAdopted = session.source === "cli_adopt";
         const isConfirmed = Boolean(session.confirmed_at);
+        const hasActiveRun = Boolean(activeRunSessionIds?.has(session.id));
 
         return (
           <li key={session.id}>
@@ -80,6 +89,18 @@ export function SessionList({
                 <div className="flex items-center gap-1.5">
                   <MessageSquare className="size-3 shrink-0 opacity-60" />
                   <span className="truncate text-sm font-medium">{session.name}</span>
+                  {hasActiveRun ? (
+                    <span
+                      data-testid="session-active-run-indicator"
+                      data-session-id={session.id}
+                      aria-label="Active run in progress"
+                      title="Active run in progress"
+                      className="bg-primary/15 text-primary ml-1 inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                    >
+                      <Loader2 className="size-2.5 animate-spin" />
+                      <span>live</span>
+                    </span>
+                  ) : null}
                 </div>
                 <p className="text-muted-foreground truncate font-mono text-xs">
                   {session.workspace}

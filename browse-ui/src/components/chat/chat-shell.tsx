@@ -22,6 +22,7 @@ import {
   useOperatorSessions,
   useOperatorSession,
   useOperatorRuns,
+  useOperatorActiveRuns,
   useCreateOperatorSession,
   useDeleteOperatorSession,
   useSubmitPrompt,
@@ -45,6 +46,7 @@ import { MetadataBar } from "./metadata-bar";
 import { Transcript } from "./transcript";
 import { Composer } from "./composer";
 import { ConfirmAdoptionPanel } from "./cli-session-picker";
+import { WorkbenchPanel } from "./workbench-panel";
 import { COPILOT_MODES } from "./session-create-dialog";
 import { SLASH_COMMANDS } from "./slash-commands";
 import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
@@ -154,6 +156,21 @@ export function ChatShell() {
     Boolean(activeSessionId) && operatorEnabled && sessionQuery.isSuccess,
     activeHost
   );
+
+  // Issue #564: Chat Workbench feed. The hook itself is also gated by the
+  // `runs_workbench` capability inside the WorkbenchPanel component; here we
+  // additionally read it to derive the per-session active-run indicator set
+  // for the SessionList. When the host does not advertise the capability the
+  // hook stays disabled and the indicator set is empty — preserving the
+  // legacy SessionList appearance.
+  const activeRunsQuery = useOperatorActiveRuns(operatorEnabled, activeHost);
+  const activeRunSessionIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const run of activeRunsQuery.data?.runs ?? []) {
+      if (run?.session_id) set.add(run.session_id);
+    }
+    return set;
+  }, [activeRunsQuery.data]);
 
   const createMutation = useCreateOperatorSession(activeHost);
   const deleteMutation = useDeleteOperatorSession(activeHost);
@@ -612,8 +629,14 @@ export function ChatShell() {
             onDelete={handleDeleteSession}
             loading={sessionsQuery.isLoading}
             isDeleting={deleteMutation.isPending}
+            activeRunSessionIds={activeRunSessionIds}
           />
         </div>
+        <WorkbenchPanel
+          host={activeHost}
+          activeSessionId={activeSessionId}
+          onSelectRun={(run) => handleSelectSession(run.session_id)}
+        />
       </aside>
 
       {/* Mobile session sidebar — Sheet overlay (visible only on small screens) */}
@@ -643,8 +666,17 @@ export function ChatShell() {
               onDelete={handleDeleteSession}
               loading={sessionsQuery.isLoading}
               isDeleting={deleteMutation.isPending}
+              activeRunSessionIds={activeRunSessionIds}
             />
           </div>
+          <WorkbenchPanel
+            host={activeHost}
+            activeSessionId={activeSessionId}
+            onSelectRun={(run) => {
+              handleSelectSession(run.session_id);
+              setMobileSidebarOpen(false);
+            }}
+          />
         </SheetContent>
       </Sheet>
 

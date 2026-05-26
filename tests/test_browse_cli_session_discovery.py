@@ -861,7 +861,390 @@ def test_csh11_empty_server_token_still_rejected():
         server.shutdown()
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Wave 1: prior_context (#568) and cli_metadata (#555) ─────────────────────
+
+
+def test_pc1_prior_context_present_with_events_jsonl():
+    """PC1: events.jsonl in CLI session dir surfaces prior_context envelope."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        d = _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        events = (
+            '{"timestamp": "2026-05-01T10:00:00Z", "type": "user_prompt"}\n'
+            '{"timestamp": "2026-05-01T10:00:01Z", "type": "assistant_msg"}\n'
+            '{"timestamp": "2026-05-01T10:00:02Z", "status": "completed"}\n'
+        )
+        (d / "events.jsonl").write_text(events, encoding="utf-8")
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            got = get_cli_session_by_id(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("PC1: candidate built", got is not None)
+    if got is not None:
+        pc = got.get("prior_context")
+        test("PC1: prior_context dict", isinstance(pc, dict))
+        if isinstance(pc, dict):
+            test("PC1: event_count == 3", pc.get("event_count") == 3)
+            test("PC1: first_event_at present", pc.get("first_event_at") == "2026-05-01T10:00:00Z")
+            test("PC1: last_event_at present", pc.get("last_event_at") == "2026-05-01T10:00:02Z")
+            test("PC1: last_status is 'completed'", pc.get("last_status") == "completed")
+            test("PC1: truncated False", pc.get("truncated") is False)
+            test("PC1: redacted False", pc.get("redacted") is False)
+
+
+def test_pc2_prior_context_null_without_events_jsonl():
+    """PC2: missing events.jsonl → prior_context is None on the candidate dict."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            got = get_cli_session_by_id(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("PC2: candidate built", got is not None)
+    if got is not None:
+        test("PC2: prior_context key present", "prior_context" in got)
+        test("PC2: prior_context is None", got.get("prior_context") is None)
+
+
+def test_pc3_prior_context_skips_malformed_lines():
+    """PC3: malformed JSON lines are skipped; valid lines still counted."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        d = _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        events = (
+            '{"timestamp": "2026-05-01T10:00:00Z", "type": "ok"}\n'
+            "not-json garbage line {{{\n"
+            '{"timestamp": "2026-05-01T10:00:02Z", "type": "ok"}\n'
+            "\n"
+            '[1,2,3]\n'  # JSON array — not a dict, should be skipped
+        )
+        (d / "events.jsonl").write_text(events, encoding="utf-8")
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            got = get_cli_session_by_id(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("PC3: candidate built", got is not None)
+    if got is not None:
+        pc = got.get("prior_context")
+        test("PC3: prior_context dict", isinstance(pc, dict))
+        if isinstance(pc, dict):
+            test("PC3: event_count == 2", pc.get("event_count") == 2)
+
+
+def test_pc4_prior_context_never_contains_raw_text():
+    """PC4: prior_context never surfaces raw prompts/tool args/text fields."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        d = _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        secret_marker = "SECRET_PROMPT_TEXT_MARKER_SHOULD_NOT_LEAK"
+        events = (
+            '{"timestamp": "2026-05-01T10:00:00Z", "type": "user_prompt",'
+            f' "prompt": "{secret_marker}", "tool_args": {{"x": "{secret_marker}"}}}}\n'
+            '{"timestamp": "2026-05-01T10:00:01Z", "type": "assistant_msg",'
+            f' "text": "{secret_marker}"}}\n'
+        )
+        (d / "events.jsonl").write_text(events, encoding="utf-8")
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            got = get_cli_session_by_id(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("PC4: candidate built", got is not None)
+    if got is not None:
+        pc = got.get("prior_context")
+        serialized = json.dumps(pc)
+        test("PC4: secret marker not in prior_context", secret_marker not in serialized)
+
+
+def test_pc5_prior_context_oversize_truncated():
+    """PC5: events.jsonl larger than the byte cap is truncated."""
+    from browse.core.operator_console import _EVENTS_JSONL_MAX_BYTES  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        d = _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        line = '{"timestamp": "2026-05-01T10:00:00Z", "type": "x"}\n'
+        # Build a file larger than the cap
+        with (d / "events.jsonl").open("w", encoding="utf-8") as fh:
+            written = 0
+            while written < _EVENTS_JSONL_MAX_BYTES + 1024:
+                fh.write(line)
+                written += len(line)
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            got = get_cli_session_by_id(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("PC5: candidate built", got is not None)
+    if got is not None:
+        pc = got.get("prior_context")
+        test("PC5: prior_context dict", isinstance(pc, dict))
+        if isinstance(pc, dict):
+            test("PC5: truncated flag True", pc.get("truncated") is True)
+
+
+def test_pc6_prior_context_symlink_rejected():
+    """PC6: events.jsonl symlink → prior_context is None (no follow)."""
+    if os.name == "nt":
+        test("PC6: skipped on Windows", True)
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        d = _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        target = Path(tmp) / "target.jsonl"
+        target.write_text('{"timestamp":"2026-05-01T10:00:00Z","type":"ok"}\n', encoding="utf-8")
+        try:
+            os.symlink(str(target), str(d / "events.jsonl"))
+        except OSError:
+            test("PC6: skipped — symlink creation failed", True)
+            return
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            got = get_cli_session_by_id(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("PC6: candidate built", got is not None)
+    if got is not None:
+        test("PC6: prior_context is None for symlink", got.get("prior_context") is None)
+
+
+def test_pc7_discovery_response_has_prior_context_key():
+    """PC7: every discovery sessions entry exposes a prior_context key (additive contract)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            result = discover_cli_sessions()
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    sessions = result.get("sessions", [])
+    test("PC7: one session", len(sessions) == 1)
+    if sessions:
+        test("PC7: prior_context key present", "prior_context" in sessions[0])
+
+
+# ── cli_metadata #555 ────────────────────────────────────────────────────────
+
+
+def test_cm1_build_cli_metadata_safe_fields():
+    """CM1: _build_cli_metadata surfaces allowlisted scalar fields only."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        yaml = (
+            f"id: {sid}\n"
+            "title: T\n"
+            "workspace: /home/u/projects/app\n"
+            "branch: main\n"
+            "repository: owner/app\n"
+            "cli_kind: copilot\n"
+            "cli_version: 1.2.3\n"
+            "model: gpt-5\n"
+            "model_version: 2026-05-01\n"
+            "host_profile_id: hp-001\n"
+            "started_at: 2026-05-01T09:00:00Z\n"
+            "last_activity: 2026-05-01T10:00:00Z\n"
+            "tool_inventory_summary: 4 tools\n"
+        )
+        _make_session_dir(Path(tmp), sid, yaml)
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            md = _build_cli_metadata(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("CM1: metadata dict", isinstance(md, dict))
+    if isinstance(md, dict):
+        test("CM1: cli_kind copilot", md.get("cli_kind") == "copilot")
+        test("CM1: cli_version 1.2.3", md.get("cli_version") == "1.2.3")
+        test("CM1: model gpt-5", md.get("model") == "gpt-5")
+        test("CM1: model_version", md.get("model_version") == "2026-05-01")
+        test("CM1: host_profile_id", md.get("host_profile_id") == "hp-001")
+        test("CM1: started_at", md.get("started_at") == "2026-05-01T09:00:00Z")
+        test("CM1: last_activity", md.get("last_activity") == "2026-05-01T10:00:00Z")
+        test("CM1: tool_inventory_summary", md.get("tool_inventory_summary") == "4 tools")
+        test("CM1: branch", md.get("branch") == "main")
+        test("CM1: repository", md.get("repository") == "owner/app")
+        test("CM1: cwd_label is safe hint", isinstance(md.get("cwd_label"), str) and "/home/" not in (md.get("cwd_label") or ""))
+        test("CM1: hook_decision_counts None", md.get("hook_decision_counts") is None)
+        test("CM1: redacted True", md.get("redacted") is True)
+
+
+def test_cm2_build_cli_metadata_no_absolute_path():
+    """CM2: cli_metadata.cwd_label strips username/home prefix; no absolute paths."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    home = str(Path.home())
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        yaml = f"id: {sid}\ntitle: T\nworkspace: {home}/projects/myapp\nbranch: main\n"
+        _make_session_dir(Path(tmp), sid, yaml)
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            md = _build_cli_metadata(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("CM2: metadata dict", isinstance(md, dict))
+    if isinstance(md, dict):
+        cwd = md.get("cwd_label") or ""
+        test("CM2: home prefix stripped", home not in cwd)
+        test("CM2: no /Users/ prefix in cwd_label", "/Users/" not in cwd and "/home/" not in cwd)
+
+
+def test_cm3_build_cli_metadata_invalid_uuid():
+    """CM3: invalid resume_target → None (graceful degrade)."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    test("CM3: invalid uuid → None", _build_cli_metadata("not-a-uuid") is None)
+    test("CM3: empty → None", _build_cli_metadata("") is None)
+
+
+def test_cm4_attach_cli_metadata_noop_for_non_cli_adopt():
+    """CM4: attach_cli_metadata is a no-op for non-cli_adopt sessions."""
+    from browse.core.operator_console import attach_cli_metadata  # noqa: PLC0415
+    sess = {"id": "x", "source": "manual"}
+    attach_cli_metadata(sess)
+    test("CM4: no cli_metadata key added for non-cli_adopt", "cli_metadata" not in sess)
+
+
+def test_cm5_attach_cli_metadata_adds_field_for_cli_adopt():
+    """CM5: attach_cli_metadata adds cli_metadata field for cli_adopt sessions."""
+    from browse.core.operator_console import attach_cli_metadata  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        _make_session_dir(Path(tmp), sid, _MINIMAL_YAML.format(uuid=sid))
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            sess = {"id": "op-1", "source": "cli_adopt", "resume_target": sid}
+            attach_cli_metadata(sess)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("CM5: cli_metadata key added", "cli_metadata" in sess)
+    test("CM5: cli_metadata is dict", isinstance(sess.get("cli_metadata"), dict))
+
+
+def test_cm6_attach_cli_metadata_handles_missing_cli_session():
+    """CM6: when resume_target refers to a missing CLI dir → cli_metadata set to None."""
+    from browse.core.operator_console import attach_cli_metadata  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            sess = {"id": "op-1", "source": "cli_adopt", "resume_target": _fresh_uuid()}
+            attach_cli_metadata(sess)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("CM6: cli_metadata key present", "cli_metadata" in sess)
+    test("CM6: cli_metadata is None when CLI session is gone", sess.get("cli_metadata") is None)
+
+
+def test_cm7_capabilities_advertises_new_features():
+    """CM7: /api/operator/capabilities advertises cli_metadata and cli_prior_context features."""
+    server, port = _make_test_server()
+    try:
+        resp = _bearer(port, "/api/operator/capabilities")
+        body = resp.read()
+        test("CM7: status 200", resp.status == 200)
+        data = json.loads(body)
+        feats = data.get("supported_features", [])
+        test("CM7: cli_metadata advertised", "cli_metadata" in feats)
+        test("CM7: cli_prior_context advertised", "cli_prior_context" in feats)
+    finally:
+        server.shutdown()
+
+
+def test_cm8_explicit_cwd_label_macos_absolute_path_stripped():
+    """CM8: explicit cwd_label with /Users/<name>/... is normalized — no /Users/, no leading /."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        yaml = (
+            f"id: {sid}\n"
+            "title: T\n"
+            "cwd_label: /Users/alice/private/secret-project\n"
+        )
+        _make_session_dir(Path(tmp), sid, yaml)
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            md = _build_cli_metadata(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("CM8: metadata dict", isinstance(md, dict))
+    if isinstance(md, dict):
+        cwd = md.get("cwd_label") or ""
+        test("CM8: no /Users/ prefix", "/Users/" not in cwd)
+        test("CM8: no username 'alice'", "alice" not in cwd)
+        test("CM8: no leading slash", not cwd.startswith("/"))
+        test("CM8: useful tail kept", cwd == "private/secret-project")
+
+
+def test_cm9_explicit_cwd_label_linux_absolute_path_stripped():
+    """CM9: explicit cwd_label with /home/<name>/... is normalized — no /home/, no username."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        yaml = (
+            f"id: {sid}\n"
+            "title: T\n"
+            "cwd_label: /home/bob/code/internal-app\n"
+        )
+        _make_session_dir(Path(tmp), sid, yaml)
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            md = _build_cli_metadata(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    test("CM9: metadata dict", isinstance(md, dict))
+    if isinstance(md, dict):
+        cwd = md.get("cwd_label") or ""
+        test("CM9: no /home/ prefix", "/home/" not in cwd)
+        test("CM9: no username 'bob'", "bob" not in cwd)
+        test("CM9: no leading slash", not cwd.startswith("/"))
+        test("CM9: useful tail kept", cwd == "code/internal-app")
+
+
+def test_cm10_explicit_cwd_label_other_absolute_paths_stripped():
+    """CM10: explicit cwd_label with /root/, /private/, Windows C:\\Users\\ — no absolute leakage."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    cases = [
+        ("/root/secret/area", ("/root/", "/", "root")),
+        ("/private/var/folders/xx/secret-project", ("/private/", "/", "private")),
+        ("C:\\Users\\carol\\projects\\app", ("/Users/", "C:\\Users\\", "carol", "Users")),
+    ]
+    for raw, forbidden in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            sid = _fresh_uuid()
+            yaml = f"id: {sid}\ntitle: T\ncwd_label: {raw}\n"
+            _make_session_dir(Path(tmp), sid, yaml)
+            os.environ["COPILOT_SESSION_STATE"] = tmp
+            try:
+                md = _build_cli_metadata(sid)
+            finally:
+                os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+        cwd = (md or {}).get("cwd_label") or ""
+        test(f"CM10[{raw}]: no leading slash", not cwd.startswith("/"))
+        test(f"CM10[{raw}]: no backslash", "\\" not in cwd)
+        for token in forbidden:
+            if token in ("/",):
+                continue
+            test(f"CM10[{raw}]: no '{token}' leakage", token not in cwd)
+
+
+def test_cm11_explicit_cwd_label_already_safe_passes_through():
+    """CM11: already-safe explicit cwd_label like 'src/app' is preserved (no regression on useful labels)."""
+    from browse.core.operator_console import _build_cli_metadata  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        sid = _fresh_uuid()
+        yaml = f"id: {sid}\ntitle: T\ncwd_label: src/app\n"
+        _make_session_dir(Path(tmp), sid, yaml)
+        os.environ["COPILOT_SESSION_STATE"] = tmp
+        try:
+            md = _build_cli_metadata(sid)
+        finally:
+            os.environ["COPILOT_SESSION_STATE"] = str(_CLI_STATE_DIR)
+    cwd = (md or {}).get("cwd_label") or ""
+    test("CM11: safe label preserved", cwd == "src/app")
+
 
 
 def main() -> None:
@@ -908,6 +1291,26 @@ def main() -> None:
     test_csh9_single_session_route_404()
     test_csh10_no_full_paths_in_response()
     test_csh11_empty_server_token_still_rejected()
+
+    print("\n── Wave 1: prior_context (#568) + cli_metadata (#555) ──")
+    test_pc1_prior_context_present_with_events_jsonl()
+    test_pc2_prior_context_null_without_events_jsonl()
+    test_pc3_prior_context_skips_malformed_lines()
+    test_pc4_prior_context_never_contains_raw_text()
+    test_pc5_prior_context_oversize_truncated()
+    test_pc6_prior_context_symlink_rejected()
+    test_pc7_discovery_response_has_prior_context_key()
+    test_cm1_build_cli_metadata_safe_fields()
+    test_cm2_build_cli_metadata_no_absolute_path()
+    test_cm3_build_cli_metadata_invalid_uuid()
+    test_cm4_attach_cli_metadata_noop_for_non_cli_adopt()
+    test_cm5_attach_cli_metadata_adds_field_for_cli_adopt()
+    test_cm6_attach_cli_metadata_handles_missing_cli_session()
+    test_cm7_capabilities_advertises_new_features()
+    test_cm8_explicit_cwd_label_macos_absolute_path_stripped()
+    test_cm9_explicit_cwd_label_linux_absolute_path_stripped()
+    test_cm10_explicit_cwd_label_other_absolute_paths_stripped()
+    test_cm11_explicit_cwd_label_already_safe_passes_through()
 
     print(f"\n{'=' * 60}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")

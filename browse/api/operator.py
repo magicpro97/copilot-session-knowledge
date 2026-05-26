@@ -9,6 +9,7 @@ Endpoints:
   GET   /api/operator/sessions/{id}/stream  → SSE run output (text/event-stream)
   GET   /api/operator/sessions/{id}/status  → run + session status
   GET   /api/operator/sessions/{id}/runs    → persisted run history → {runs: [...], count: N}
+  GET   /api/operator/runs                  → read-only active-runs workbench (issue #564)
   POST  /api/operator/sessions/{id}/delete  → delete session → {deleted: true}
   POST  /api/operator/sessions/adopt        → adopt CLI session → session dict (201|200)
   POST  /api/operator/sessions/{id}/confirm → confirm adopted session → session dict
@@ -40,6 +41,7 @@ from browse.api._common import json_error, json_ok
 from browse.core.operator_console import (
     _has_active_run,
     adopt_cli_session,
+    attach_cli_metadata,
     confine_path,
     confirm_adopted_session,
     consume_resume_token,
@@ -50,6 +52,7 @@ from browse.core.operator_console import (
     get_cli_session_by_id,
     get_run_status,
     get_session,
+    list_active_runs_summary,
     list_runs,
     list_sessions,
     make_stream_generator,
@@ -177,7 +180,8 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
         "supported_modes":   ["interactive", "plan", "autopilot"],
         "supported_features": [
           "chat", "sessions", "search", "graph", "insights", "diagnostics",
-          "models", "suggest", "preview", "diff", "cli_adopt"
+          "models", "suggest", "preview", "diff", "cli_adopt",
+          "cli_metadata", "cli_prior_context"
         ]
       }
 
@@ -211,8 +215,11 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "preview",
                 "diff",
                 "cli_adopt",
+                "cli_metadata",
+                "cli_prior_context",
                 "browser_scan",
                 "local_browser_fallback",
+                "runs_workbench",
             ],
         }
     )
@@ -262,6 +269,8 @@ def handle_create_session(db, params, token, nonce) -> tuple:
 def handle_list_sessions(db, params, token, nonce) -> tuple:
     """GET /api/operator/sessions — list all sessions."""
     sessions = list_sessions()
+    for s in sessions:
+        attach_cli_metadata(s)
     return json_ok({"sessions": sessions, "count": len(sessions)})
 
 
@@ -271,6 +280,7 @@ def handle_get_session(db, params, token, nonce, session_id: str = "") -> tuple:
     session = get_session(session_id)
     if session is None:
         return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
+    attach_cli_metadata(session)
     return json_ok(session)
 
 
@@ -482,6 +492,32 @@ def handle_list_runs(db, params, token, nonce, session_id: str = "") -> tuple:
         return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
 
     runs = [_public_run_info(run) for run in list_runs(session_id)]
+    return json_ok({"runs": runs, "count": len(runs)})
+
+
+# ── Issue #564: read-only active-runs workbench ──────────────────────────────
+
+
+@route("/api/operator/runs", methods=["GET"])
+def handle_list_active_runs(db, params, token, nonce) -> tuple:
+    """GET /api/operator/runs — read-only Chat Workbench feed.
+
+    Returns the currently non-terminal (active) runs from the in-memory
+    ``_ACTIVE_RUNS`` registry, capped by ``_ACTIVE_RUNS_CAP`` (TTL/cap
+    eviction is run before the snapshot is taken).
+
+    The payload is a strict public-summary allowlist — it MUST NEVER include
+    prompt, events, files, proc handles, env vars, absolute paths, tokens,
+    raw outputs, debug-event sidecars, or attachments.  See
+    ``list_active_runs_summary`` for the authoritative contract.
+
+    Response shape:
+      ``{"runs": [{...summary...}, ...], "count": N}``
+
+    Static-slot ``readonly`` callers MAY read this endpoint; mutating
+    behavior is out of scope here.
+    """
+    runs = list_active_runs_summary()
     return json_ok({"runs": runs, "count": len(runs)})
 
 

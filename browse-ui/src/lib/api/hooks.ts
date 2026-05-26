@@ -39,6 +39,7 @@ import {
   promptSubmitResponseSchema,
   operatorRunStatusSchema,
   operatorRunsResponseSchema,
+  operatorActiveRunsResponseSchema,
   pathSuggestResponseSchema,
   filePreviewResponseSchema,
   fileDiffResponseSchema,
@@ -94,6 +95,7 @@ import type {
   PromptSubmitResponse,
   OperatorRunStatus,
   OperatorRunsResponse,
+  OperatorActiveRunsResponse,
   PathSuggestResponse,
   FilePreviewResponse,
   FileDiffResponse,
@@ -183,6 +185,7 @@ export const queryKeys = {
     ["operator-status", hostId, sessionId, runId] as const,
   operatorRuns: (sessionId: string, hostId = LOCAL_HOST_ID) =>
     ["operator-runs", hostId, sessionId] as const,
+  operatorActiveRuns: (hostId = LOCAL_HOST_ID) => ["operator-active-runs", hostId] as const,
   operatorSuggest: (q: string, hidden = false, hostId = LOCAL_HOST_ID) =>
     ["operator-suggest", hostId, q, hidden] as const,
   operatorPreview: (path: string, hostId = LOCAL_HOST_ID) =>
@@ -837,6 +840,50 @@ export function useOperatorRuns(sessionId: string, enabled = true, host: HostPro
       } catch (err) {
         // Knowledge sessions return 404 — treat as empty runs list so the
         // debug-log tab shows an empty state rather than an error.
+        if (err instanceof Error && err.message.includes("404")) {
+          return { runs: [], count: 0 };
+        }
+        throw err;
+      }
+    },
+  });
+}
+
+/**
+ * Issue #564: Chat Workbench feed.
+ *
+ * Polls `GET /api/operator/runs` for the currently active (non-terminal) runs.
+ * The response is a strict public-summary allowlist — never contains prompt,
+ * events, files, or other sensitive run internals.
+ *
+ * Hosts that don't advertise the `runs_workbench` capability should call this
+ * with `enabled=false`; the caller is responsible for gating via
+ * `useHostFeature(host, "runs_workbench")` so legacy backends remain
+ * untouched. When `enabled` flips off the query stays idle.
+ *
+ * 404 responses (e.g. legacy backend that does not implement the endpoint)
+ * are normalized to an empty runs list so the workbench panel renders an
+ * empty state rather than an error.
+ */
+export function useOperatorActiveRuns(enabled = true, host: HostProfile = LOCAL_HOST) {
+  return useQuery({
+    queryKey: queryKeys.operatorActiveRuns(host.id),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    refetchOnMount: "always",
+    enabled,
+    retry: (failureCount, error) => {
+      if (error instanceof Error && error.message.includes("404")) return false;
+      return failureCount < 2;
+    },
+    queryFn: async (): Promise<OperatorActiveRunsResponse> => {
+      try {
+        const data = await hostFetch<OperatorActiveRunsResponse>(
+          withLeadingSlash("/api/operator/runs"),
+          host
+        );
+        return operatorActiveRunsResponseSchema.parse(data);
+      } catch (err) {
         if (err instanceof Error && err.message.includes("404")) {
           return { runs: [], count: 0 };
         }

@@ -849,6 +849,103 @@ def _has_active_run(session_id: str) -> bool:
         )
 
 
+# ── Issue #564: read-only active-runs workbench ──────────────────────────────
+#
+# Public summary fields exposed by ``list_active_runs_summary``.  This is a
+# strict allowlist — anything not listed here (prompt, events, files, proc
+# handles, env, absolute paths, raw outputs, tokens, debug sidecar, attachments)
+# never appears in the workbench response by construction.
+_WORKBENCH_PUBLIC_RUN_KEYS = (
+    "id",
+    "session_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "exit_code",
+    "resume_used",
+)
+# Optional fields included when present on the run record but never required.
+# These are bounded scalars / small primitives only; they MUST NOT carry prompt,
+# event, or path content.
+_WORKBENCH_OPTIONAL_RUN_KEYS = ("health", "queue")
+
+
+def list_active_runs_summary() -> list[dict]:
+    """Return public-safe summaries of currently non-terminal active runs.
+
+    Issue #564 contract:
+      * Reads only from the in-memory ``_ACTIVE_RUNS`` registry (no disk scan).
+      * Runs the existing TTL/cap eviction so the response is bounded by
+        ``_ACTIVE_RUNS_CAP`` even if a callsite forgot to evict.
+      * Excludes terminal runs — only runs whose status is NOT in
+        ``_TERMINAL_RUN_STATUSES`` are returned.
+      * Output uses the public-summary allowlist (no prompt, events, files,
+        proc handles, env, absolute paths, tokens, raw outputs).
+      * ``session_label`` is derived from each distinct session_id with one
+        ``get_session`` read per session (cached in a per-call dict so a
+        workbench with many runs sharing a session does not hit disk once per
+        run).
+    """
+    # Evict before snapshotting to drop expired terminal entries; this also
+    # enforces _ACTIVE_RUNS_CAP defensively for callers that don't otherwise
+    # trigger eviction.
+    evict_active_runs()
+
+    with _RUNS_LOCK:
+        snapshot = [run for run in _ACTIVE_RUNS.values() if run.get("status") not in _TERMINAL_RUN_STATUSES]
+
+    # Map session_id → label, populated lazily so we only read each session
+    # file at most once per workbench call.
+    label_cache: dict[str, str | None] = {}
+
+    def _label_for(session_id: str) -> str | None:
+        if not session_id:
+            return None
+        if session_id in label_cache:
+            return label_cache[session_id]
+        sess = get_session(session_id) if _is_valid_id(session_id) else None
+        label: str | None = None
+        if isinstance(sess, dict):
+            raw = sess.get("name")
+            if isinstance(raw, str):
+                trimmed = raw.strip()
+                if trimmed:
+                    # Cap label length defensively to avoid unbounded payloads.
+                    label = trimmed[:200]
+        label_cache[session_id] = label
+        return label
+
+    out: list[dict] = []
+    for run in snapshot:
+        if not isinstance(run, dict):
+            continue
+        summary: dict = {}
+        for key in _WORKBENCH_PUBLIC_RUN_KEYS:
+            if key in run:
+                summary[key] = run.get(key)
+        for key in _WORKBENCH_OPTIONAL_RUN_KEYS:
+            value = run.get(key)
+            if value is None:
+                continue
+            # Only allow simple JSON-safe scalars or short dict/list payloads.
+            if isinstance(value, (str, int, float, bool)):
+                summary[key] = value
+            elif isinstance(value, dict) or isinstance(value, list):
+                # Re-serialize through json to drop any non-JSON-safe values
+                # and bound the depth.  If serialization fails, skip silently.
+                try:
+                    summary[key] = json.loads(json.dumps(value, default=str))
+                except (TypeError, ValueError):
+                    continue
+        session_id = summary.get("session_id") or ""
+        summary["session_label"] = _label_for(str(session_id))
+        out.append(summary)
+
+    # Stable order: oldest started_at first, falling back to id.
+    out.sort(key=lambda r: (str(r.get("started_at") or ""), str(r.get("id") or "")))
+    return out
+
+
 _VALID_SESSION_MODES = frozenset({"interactive", "plan", "autopilot"})
 
 
@@ -2124,8 +2221,29 @@ _WORKSPACE_YAML_KEY_ALLOWLIST = frozenset(
         "branch",
         "repository",
         "repo",
+        # Issue #555: additional safe keys surfaced as cli_metadata.
+        # All are flat scalar strings; nested structures are rejected by the
+        # _parse_flat_yaml allowlist enforcement. Optional/missing → null.
+        "cli_kind",
+        "cli_version",
+        "model",
+        "model_version",
+        "host_profile_id",
+        "started_at",
+        "last_activity",
+        "cwd_label",
+        "tool_inventory_summary",
     }
 )
+
+# Issue #555: maximum length per scalar metadata field (post-redaction).
+_CLI_METADATA_FIELD_MAX = 200
+
+# Issue #568: bounded events.jsonl read for prior_context.
+# Hard caps prevent unbounded I/O on huge or hostile files.
+_EVENTS_JSONL_MAX_BYTES: int = 256 * 1024  # 256 KiB
+_EVENTS_JSONL_MAX_LINES: int = 2000  # parse up to this many JSON lines
+_EVENT_STATUS_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
 # Reuses the module-level _UUID4_RE for CLI session directory validation.
 # Exposed as a named alias for clarity in the discovery functions.
@@ -2326,6 +2444,228 @@ def _safe_repository_hint(raw_repo: str) -> str:
     return last
 
 
+def _read_prior_context_safe(dir_path: Path) -> "dict | None":
+    """Read bounded summary of ``events.jsonl`` for issue #568 prior_context.
+
+    Strictly read-only. Returns a minimal envelope with counts/timestamps/
+    status only — NEVER raw prompts, assistant text, tool args, tool outputs,
+    tokens, or absolute paths. Returns None when:
+      - events.jsonl is missing, is a symlink, or is not a regular file
+      - file cannot be opened or decoded
+      - parsing yields zero usable events AND file was empty/all malformed
+
+    The returned dict has the shape::
+
+        {
+          "event_count":     int,             # parsed JSON lines (capped)
+          "first_event_at":  str | null,      # ISO-like timestamp from 1st
+          "last_event_at":   str | null,      # ISO-like timestamp from last
+          "last_status":     str | null,      # safe-identifier event/status
+          "truncated":       bool,            # file larger than read cap
+          "redacted":        bool,            # always False — no strings copied
+        }
+
+    Bounds enforced:
+      - O_RDONLY | O_NOFOLLOW open, lstat+fstat TOCTOU guard.
+      - At most _EVENTS_JSONL_MAX_BYTES bytes are read.
+      - At most _EVENTS_JSONL_MAX_LINES JSON lines are parsed.
+      - Malformed lines are silently skipped (no exception leakage).
+    """
+    events_path = dir_path / "events.jsonl"
+    try:
+        st = os.lstat(str(events_path))
+    except OSError:
+        return None
+
+    if _stat_mod.S_ISLNK(st.st_mode):
+        return None
+    if not _stat_mod.S_ISREG(st.st_mode):
+        return None
+
+    truncated = st.st_size > _EVENTS_JSONL_MAX_BYTES
+
+    raw = _open_read_safe(str(events_path), st, _EVENTS_JSONL_MAX_BYTES)
+    if raw is None:
+        return None
+
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+    lines = text.splitlines()
+    # If we capped reading mid-file the final line may be partial — drop it.
+    if truncated and lines:
+        lines = lines[:-1]
+    if len(lines) > _EVENTS_JSONL_MAX_LINES:
+        lines = lines[:_EVENTS_JSONL_MAX_LINES]
+        truncated = True
+
+    event_count = 0
+    first_ts: str | None = None
+    last_ts: str | None = None
+    last_status: str | None = None
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        event_count += 1
+        # Timestamp: accept first non-empty safe-looking ISO/short string.
+        for ts_key in ("timestamp", "time", "ts", "at"):
+            ts_val = obj.get(ts_key)
+            if isinstance(ts_val, str) and 0 < len(ts_val) <= 64:
+                if first_ts is None:
+                    first_ts = ts_val
+                last_ts = ts_val
+                break
+        # Status: only accept safe-identifier-like enum values.
+        for st_key in ("status", "type", "event", "kind"):
+            st_val = obj.get(st_key)
+            if isinstance(st_val, str) and _EVENT_STATUS_RE.match(st_val):
+                last_status = st_val
+                break
+
+    if event_count == 0 and not truncated:
+        # Empty / all-malformed file → degrade safely (None signals "no
+        # prior_context available" rather than an empty stat envelope).
+        return None
+
+    return {
+        "event_count": event_count,
+        "first_event_at": first_ts,
+        "last_event_at": last_ts,
+        "last_status": last_status,
+        "truncated": truncated,
+        "redacted": False,
+    }
+
+
+# Allowlist of safe cli_metadata field names (issue #555). All optional/null.
+_CLI_METADATA_FIELDS: tuple = (
+    "cwd_label",
+    "branch",
+    "repository",
+    "cli_kind",
+    "cli_version",
+    "model",
+    "model_version",
+    "host_profile_id",
+    "started_at",
+    "last_activity",
+    "tool_inventory_summary",
+)
+
+
+def _safe_metadata_string(raw: object) -> "str | None":
+    """Return a redaction-scrubbed, length-capped string for cli_metadata.
+
+    Returns None for empty/non-string input.
+    """
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    return redact_secrets(stripped)[:_CLI_METADATA_FIELD_MAX]
+
+
+def _build_cli_metadata(cli_session_id: str) -> "dict | None":
+    """Build the cli_metadata envelope for an adopted CLI session (issue #555).
+
+    Reads only allowlisted, scalar fields from the resume target's
+    ``workspace.yaml`` via the existing safe reader. All strings are passed
+    through ``redact_secrets``; paths use ``_safe_workspace_hint``;
+    repository uses ``_safe_repository_hint``. Never reads or surfaces raw
+    prompts, tool args, tokens, or absolute paths.
+
+    Returns the metadata dict on success or None when the resume target is
+    invalid or unreadable. All fields are optional and may be None.
+    """
+    if not cli_session_id or not _CLI_SESSION_UUID4_RE.match(cli_session_id):
+        return None
+    root = _cli_session_state_root()
+    entry = root / cli_session_id
+    parsed = _read_workspace_yaml_safe(entry)
+    if parsed is None:
+        return None
+    yaml_data, _ = parsed
+
+    # cwd_label: prefer explicit cwd_label, otherwise derive a safe hint from
+    # workspace/cwd/workdir. Never expose an absolute path. The explicit
+    # workspace.yaml ``cwd_label`` is operator-supplied and may contain an
+    # absolute path or username (e.g. ``/Users/alice/private/secret-project``)
+    # — flow it through ``_safe_workspace_hint`` so the same home/username
+    # stripping and "last 2 path components" cap that protects the
+    # fallback also protects the explicit label. Already-safe labels like
+    # ``src/app`` pass through unchanged.
+    cwd_label: str | None = None
+    raw_label = yaml_data.get("cwd_label")
+    if isinstance(raw_label, str) and raw_label.strip():
+        hint = _safe_workspace_hint(raw_label.strip())
+        if hint:
+            cwd_label = redact_secrets(hint)[:_CLI_METADATA_FIELD_MAX]
+    if cwd_label is None:
+        raw_ws = yaml_data.get("workspace") or yaml_data.get("cwd") or yaml_data.get("workdir") or ""
+        if isinstance(raw_ws, str) and raw_ws.strip():
+            hint = _safe_workspace_hint(raw_ws.strip())
+            cwd_label = hint or None
+
+    branch = _safe_metadata_string(yaml_data.get("branch"))
+
+    raw_repo = yaml_data.get("repository") or yaml_data.get("repo") or ""
+    repository: str | None = None
+    if isinstance(raw_repo, str) and raw_repo.strip():
+        repo_hint = _safe_repository_hint(raw_repo.strip())
+        repository = redact_secrets(repo_hint)[:_CLI_METADATA_FIELD_MAX] if repo_hint else None
+
+    metadata = {
+        "cwd_label": cwd_label,
+        "branch": branch,
+        "repository": repository,
+        "cli_kind": _safe_metadata_string(yaml_data.get("cli_kind")),
+        "cli_version": _safe_metadata_string(yaml_data.get("cli_version")),
+        "model": _safe_metadata_string(yaml_data.get("model")),
+        "model_version": _safe_metadata_string(yaml_data.get("model_version")),
+        "host_profile_id": _safe_metadata_string(yaml_data.get("host_profile_id")),
+        "started_at": _safe_metadata_string(yaml_data.get("started_at")),
+        "last_activity": _safe_metadata_string(yaml_data.get("last_activity")),
+        "tool_inventory_summary": _safe_metadata_string(yaml_data.get("tool_inventory_summary")),
+        # Flat YAML cannot express nested dicts safely → null. Reserved.
+        "hook_decision_counts": None,
+        "redacted": True,  # all strings flowed through redact_secrets
+    }
+    return metadata
+
+
+def attach_cli_metadata(session: "dict | None") -> "dict | None":
+    """Augment a cli_adopt operator-session dict with a ``cli_metadata`` field.
+
+    Issue #555. Returns the same object (mutated) so callers can chain. Safe
+    to call on non-cli_adopt sessions (no-op) and on None (passthrough).
+
+    The added field is additive and optional — when the resume target cannot
+    be read (deleted CLI session, malformed yaml), ``cli_metadata`` is set to
+    None so the UI can degrade gracefully without breaking the contract.
+    """
+    if not isinstance(session, dict):
+        return session
+    if session.get("source") != "cli_adopt":
+        return session
+    resume_target = session.get("resume_target")
+    if not isinstance(resume_target, str):
+        session["cli_metadata"] = None
+        return session
+    session["cli_metadata"] = _build_cli_metadata(resume_target)
+    return session
+
+
 def _build_cli_session_candidate(entry: Path, name: str) -> "dict | None":
     """Build a redacted candidate dict for one CLI session directory.
 
@@ -2373,6 +2713,9 @@ def _build_cli_session_candidate(entry: Path, name: str) -> "dict | None":
     raw_repo = str(yaml_data.get("repository") or yaml_data.get("repo") or "").strip()
     repository = _safe_repository_hint(raw_repo)
 
+    # Issue #568: bounded events.jsonl prior_context (optional / null on miss).
+    prior_context = _read_prior_context_safe(entry)
+
     return {
         "cli_session_id": name,
         "title": title,
@@ -2380,6 +2723,7 @@ def _build_cli_session_candidate(entry: Path, name: str) -> "dict | None":
         "workspace_hint": workspace_hint,
         "branch": branch,
         "repository": repository,
+        "prior_context": prior_context,
         "_mtime_epoch": file_mtime,  # internal sort key; stripped before API response
     }
 
@@ -2541,6 +2885,7 @@ def adopt_cli_session(
                 if existing.get("confirmed_at"):
                     return {}, "ALREADY_ADOPTED", 409
                 # Unconfirmed duplicate → return idempotently
+                attach_cli_metadata(existing)
                 return existing, "", 200
 
         # Create fresh operator session
@@ -2563,6 +2908,7 @@ def adopt_cli_session(
             "source": "cli_adopt",
         }
         _write_json(_sessions_dir() / f"{session_id}.json", session)
+        attach_cli_metadata(session)
         return session, "", 201
 
 
@@ -2591,6 +2937,7 @@ def confirm_adopted_session(session_id: str) -> "tuple[dict, str, int]":
             return {}, "SESSION_ACTIVE_RUN", 409
 
         if session.get("confirmed_at"):
+            attach_cli_metadata(session)
             return session, "", 200
 
         updated = dict(session)
@@ -2598,4 +2945,5 @@ def confirm_adopted_session(session_id: str) -> "tuple[dict, str, int]":
         updated["resume_ready"] = True
         updated["updated_at"] = datetime.now(timezone.utc).isoformat()
         _write_json(_sessions_dir() / f"{session_id}.json", updated)
+        attach_cli_metadata(updated)
         return updated, "", 200

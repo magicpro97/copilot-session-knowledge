@@ -928,6 +928,22 @@ export const copilotStreamFrameSchema = z.union([
 ]);
 
 /** Operator session as returned by create/list/get endpoints. */
+export const cliMetadataSchema = z.object({
+  cwd_label: z.string().nullable().optional(),
+  branch: z.string().nullable().optional(),
+  repository: z.string().nullable().optional(),
+  cli_kind: z.string().nullable().optional(),
+  cli_version: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  model_version: z.string().nullable().optional(),
+  host_profile_id: z.string().nullable().optional(),
+  started_at: z.string().nullable().optional(),
+  last_activity: z.string().nullable().optional(),
+  tool_inventory_summary: z.string().nullable().optional(),
+  hook_decision_counts: z.record(z.string(), z.number()).nullable().optional(),
+  redacted: z.boolean(),
+});
+
 export const operatorSessionSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -953,11 +969,29 @@ export const operatorSessionSchema = z.object({
    * Null/absent means the session is pending confirmation.
    */
   confirmed_at: z.string().nullable().optional(),
+  /**
+   * #555: Safe CLI metadata envelope. Additive/optional — appears for
+   * cli_adopt sessions when the host advertises the `cli_metadata` capability.
+   */
+  cli_metadata: cliMetadataSchema.nullable().optional(),
 });
 
 export const operatorSessionListResponseSchema = z.object({
   sessions: z.array(operatorSessionSchema),
   count: z.number().int().nonnegative(),
+});
+
+/**
+ * #568: bounded prior-context envelope from CLI events.jsonl.
+ * Backend exposes counts and timestamps only — never raw event content.
+ */
+export const cliSessionPriorContextSchema = z.object({
+  event_count: z.number().int().nonnegative(),
+  first_event_at: z.string().nullable().optional(),
+  last_event_at: z.string().nullable().optional(),
+  last_status: z.string().nullable().optional(),
+  truncated: z.boolean(),
+  redacted: z.boolean(),
 });
 
 /** A single CLI history session returned by the discovery endpoint. */
@@ -968,6 +1002,7 @@ export const cliSessionSchema = z.object({
   workspace_hint: z.string().nullable().optional(),
   branch: z.string().nullable().optional(),
   repository: z.string().nullable().optional(),
+  prior_context: cliSessionPriorContextSchema.nullable().optional(),
 });
 
 export const cliSessionListResponseSchema = z.object({
@@ -1061,6 +1096,35 @@ export const operatorRunStatusSchema = z.object({
 /** Response from `GET /api/operator/sessions/{id}/runs`. */
 export const operatorRunsResponseSchema = z.object({
   runs: z.array(operatorRunInfoSchema),
+  count: z.number().int().nonnegative(),
+});
+
+/**
+ * Issue #564: Public-summary entry returned by `GET /api/operator/runs`
+ * (Chat Workbench feed). Strict allowlist — must NOT include prompt, events,
+ * files, proc handles, env, absolute paths, tokens, raw outputs. Optional
+ * fields are tolerated additively for forward compatibility.
+ */
+export const operatorActiveRunSummarySchema = z
+  .object({
+    id: z.string(),
+    session_id: z.string(),
+    status: z.string(),
+    started_at: z.string().nullable().optional(),
+    finished_at: z.string().nullable().optional(),
+    exit_code: z.number().int().nullable().optional(),
+    resume_used: z.boolean().optional(),
+    session_label: z.string().nullable().optional(),
+    /** Optional health hint (e.g. "ok", "stalled"). */
+    health: z.string().nullable().optional(),
+    /** Optional queue/position metadata; shape is treated as opaque JSON. */
+    queue: z.unknown().optional(),
+  })
+  .passthrough();
+
+/** Response from `GET /api/operator/runs` (Chat Workbench feed). */
+export const operatorActiveRunsResponseSchema = z.object({
+  runs: z.array(operatorActiveRunSummarySchema),
   count: z.number().int().nonnegative(),
 });
 

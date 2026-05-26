@@ -314,6 +314,13 @@ def run_unit_tests():
     test("CR2: confirmed_at is None", sess.get("confirmed_at") is None)
     test("CR2: resume_target = fixture UUID", sess.get("resume_target") == _FIXTURE_UUID)
     test("CR2: operator id != cli id", sess.get("id") != _FIXTURE_UUID)
+    # #555: adopt response includes cli_metadata envelope (additive, optional fields).
+    cm = sess.get("cli_metadata")
+    test("CR2: cli_metadata present on adopt", isinstance(cm, dict))
+    if isinstance(cm, dict):
+        test("CR2: cli_metadata.repository safe", cm.get("repository") == "owner/mock-repo")
+        test("CR2: cli_metadata.branch", cm.get("branch") == "main")
+        test("CR2: cli_metadata.redacted True", cm.get("redacted") is True)
     op_session_id = sess.get("id", "")
 
     # CR3: unconfirmed adopted session rejects start_run

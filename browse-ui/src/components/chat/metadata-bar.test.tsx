@@ -280,3 +280,74 @@ describe("MetadataBar — edit popover surface contract", () => {
     expect(cls).not.toContain("backdrop-blur");
   });
 });
+
+// ── cli_metadata (#555) ──────────────────────────────────────────────────────
+
+describe("MetadataBar — cli_metadata", () => {
+  const cliSession: OperatorSession = {
+    ...baseSession,
+    source: "cli_adopt",
+    cli_metadata: {
+      cli_kind: "copilot-cli",
+      cli_version: "0.0.342",
+      model: "claude-sonnet-4.6",
+      model_version: "20260501",
+      host_profile_id: "local",
+      started_at: "2026-05-01T09:00:00Z",
+      last_activity: "2026-05-01T10:05:00Z",
+      branch: "main",
+      repository: "owner/app",
+      cwd_label: "~/projects/app",
+      tool_inventory_summary: "12 tools",
+      hook_decision_counts: null,
+      redacted: true,
+    },
+  };
+
+  it("renders the cli-metadata row when cli_metadata is present", () => {
+    render(<MetadataBar session={cliSession} />);
+    expect(screen.getByTestId("cli-metadata-row")).toBeInTheDocument();
+    expect(screen.getByTestId("cli-kind")).toHaveTextContent("copilot-cli 0.0.342");
+    expect(screen.getByTestId("cli-model-version")).toHaveTextContent("20260501");
+    expect(screen.getByTestId("cli-branch")).toHaveTextContent("main");
+    expect(screen.getByTestId("cli-started-at")).toHaveTextContent(/started/i);
+    expect(screen.getByTestId("cli-last-activity")).toHaveTextContent(/active/i);
+    expect(screen.getByTestId("cli-tools")).toHaveTextContent("12 tools");
+    expect(screen.getByTestId("cli-host-profile")).toHaveTextContent("local");
+  });
+
+  it("does not render the cli-metadata row when cli_metadata is absent", () => {
+    render(<MetadataBar session={baseSession} />);
+    expect(screen.queryByTestId("cli-metadata-row")).not.toBeInTheDocument();
+  });
+
+  it("does not render the cli-metadata row when cli_metadata is null", () => {
+    render(<MetadataBar session={{ ...baseSession, cli_metadata: null }} />);
+    expect(screen.queryByTestId("cli-metadata-row")).not.toBeInTheDocument();
+  });
+
+  it("does not surface absolute filesystem paths or raw secrets", () => {
+    render(<MetadataBar session={cliSession} />);
+    const row = screen.getByTestId("cli-metadata-row");
+    // workspace_hint-style label is fine; no absolute paths in this row
+    expect(row.textContent).not.toMatch(/\/Users\//);
+    expect(row.textContent).not.toMatch(/\/home\//);
+    expect(row.textContent).not.toMatch(/[A-Za-z]:\\/);
+  });
+
+  it("renders only the fields that are present (partial cli_metadata)", () => {
+    const partial: OperatorSession = {
+      ...baseSession,
+      source: "cli_adopt",
+      cli_metadata: {
+        cli_kind: "copilot-cli",
+        redacted: true,
+      },
+    };
+    render(<MetadataBar session={partial} />);
+    expect(screen.getByTestId("cli-kind")).toHaveTextContent("copilot-cli");
+    expect(screen.queryByTestId("cli-model-version")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cli-branch")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cli-tools")).not.toBeInTheDocument();
+  });
+});

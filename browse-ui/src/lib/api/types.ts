@@ -943,6 +943,32 @@ export interface CopilotStatusFrame {
 /** Discriminated union of all SSE frame shapes from `/api/operator/sessions/{id}/stream`. */
 export type CopilotStreamFrame = CopilotEventFrame | CopilotRawFrame | CopilotStatusFrame;
 
+/**
+ * Safe metadata envelope for an adopted CLI session (issue #555).
+ *
+ * Surfaced via the `cli_metadata` host capability. All fields are derived
+ * from allowlisted scalar `workspace.yaml` keys, scrubbed through
+ * `redact_secrets` on the backend. Paths use the safe workspace hint —
+ * never absolute paths. All fields are optional and may be null.
+ */
+export interface CliMetadata {
+  cwd_label?: string | null;
+  branch?: string | null;
+  repository?: string | null;
+  cli_kind?: string | null;
+  cli_version?: string | null;
+  model?: string | null;
+  model_version?: string | null;
+  host_profile_id?: string | null;
+  started_at?: string | null;
+  last_activity?: string | null;
+  tool_inventory_summary?: string | null;
+  /** Reserved — backend currently emits null; will populate when supported. */
+  hook_decision_counts?: Record<string, number> | null;
+  /** True when all string fields passed through backend redaction. */
+  redacted: boolean;
+}
+
 /** Operator session as returned by create/list/get endpoints. */
 export interface OperatorSession {
   id: string;
@@ -969,11 +995,33 @@ export interface OperatorSession {
    * Null/absent means the session is pending confirmation.
    */
   confirmed_at?: string | null;
+  /**
+   * Safe CLI metadata envelope. Present (additive) for cli_adopt sessions
+   * when the host advertises the `cli_metadata` capability. May be null
+   * when the underlying CLI session is gone.
+   */
+  cli_metadata?: CliMetadata | null;
 }
 
 export interface OperatorSessionListResponse {
   sessions: OperatorSession[];
   count: number;
+}
+
+/**
+ * Bounded, safe prior-context envelope for a CLI history session (issue #568).
+ *
+ * Surfaced via the `cli_prior_context` host capability. Counts and timestamps
+ * only — backend NEVER includes raw prompts, assistant text, tool args, or
+ * absolute paths.
+ */
+export interface CliSessionPriorContext {
+  event_count: number;
+  first_event_at?: string | null;
+  last_event_at?: string | null;
+  last_status?: string | null;
+  truncated: boolean;
+  redacted: boolean;
 }
 
 /** A single CLI history session returned by `GET /api/operator/cli-sessions`. */
@@ -984,6 +1032,12 @@ export interface CliSession {
   workspace_hint?: string | null;
   branch?: string | null;
   repository?: string | null;
+  /**
+   * Bounded summary of the CLI session's events.jsonl. Present only when the
+   * host advertises the `cli_prior_context` capability and a readable
+   * events.jsonl was found. Always safe to render — counts/timestamps only.
+   */
+  prior_context?: CliSessionPriorContext | null;
 }
 
 export interface CliSessionListResponse {
@@ -1087,6 +1141,30 @@ export interface OperatorRunStatus {
 /** Response from `GET /api/operator/sessions/{id}/runs`. */
 export interface OperatorRunsResponse {
   runs: OperatorRunInfo[];
+  count: number;
+}
+
+/**
+ * Issue #564: Public-summary entry returned by `GET /api/operator/runs`
+ * (Chat Workbench feed). Strict allowlist — never contains prompt, events,
+ * files, proc handles, env, absolute paths, tokens, raw outputs.
+ */
+export interface OperatorActiveRunSummary {
+  id: string;
+  session_id: string;
+  status: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  resume_used?: boolean;
+  session_label?: string | null;
+  health?: string | null;
+  queue?: unknown;
+}
+
+/** Response from `GET /api/operator/runs` (Chat Workbench feed, issue #564). */
+export interface OperatorActiveRunsResponse {
+  runs: OperatorActiveRunSummary[];
   count: number;
 }
 

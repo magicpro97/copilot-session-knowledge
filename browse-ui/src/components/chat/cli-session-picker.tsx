@@ -1,11 +1,11 @@
 "use client";
 
 import { formatDistanceToNow } from "date-fns";
-import { Terminal, GitBranch, FolderOpen, AlertCircle, Loader2 } from "lucide-react";
+import { Terminal, GitBranch, FolderOpen, AlertCircle, Loader2, Activity } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { CliSession } from "@/lib/api/types";
+import type { CliSession, CliSessionPriorContext } from "@/lib/api/types";
 
 type CliSessionPickerProps = {
   sessions: CliSession[];
@@ -112,6 +112,45 @@ export function CliSessionPicker({
                 ) : null}
                 <span className="ml-auto shrink-0 opacity-60">{updatedAt}</span>
               </div>
+              {session.prior_context && session.prior_context.event_count > 0 ? (
+                <div
+                  className="text-muted-foreground mt-0.5 flex items-center gap-2 text-xs"
+                  data-testid="cli-prior-context"
+                >
+                  <Activity className="size-3 shrink-0" />
+                  <span>
+                    {session.prior_context.event_count} prior event
+                    {session.prior_context.event_count !== 1 ? "s" : ""}
+                  </span>
+                  {session.prior_context.last_status ? (
+                    <span
+                      className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] dark:bg-slate-800"
+                      data-testid="cli-prior-status"
+                    >
+                      {session.prior_context.last_status}
+                    </span>
+                  ) : null}
+                  {session.prior_context.last_event_at ? (
+                    <span className="opacity-60" data-testid="cli-prior-last-at">
+                      {(() => {
+                        try {
+                          return formatDistanceToNow(
+                            new Date(session.prior_context.last_event_at),
+                            { addSuffix: true }
+                          );
+                        } catch {
+                          return session.prior_context.last_event_at;
+                        }
+                      })()}
+                    </span>
+                  ) : null}
+                  {session.prior_context.truncated ? (
+                    <span className="opacity-60" data-testid="cli-prior-truncated">
+                      (truncated)
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </button>
           </li>
         );
@@ -158,6 +197,8 @@ type ConfirmAdoptionPanelProps = {
   workspace?: string;
   /** Additional directories included in the adopted session. */
   addDirs?: string[];
+  /** Optional bounded prior-context envelope from the CLI session events.jsonl (#568). */
+  priorContext?: CliSessionPriorContext | null;
   onConfirm: () => void;
   isConfirming?: boolean;
 };
@@ -166,6 +207,7 @@ export function ConfirmAdoptionPanel({
   sessionName,
   workspace,
   addDirs,
+  priorContext,
   onConfirm,
   isConfirming,
 }: ConfirmAdoptionPanelProps) {
@@ -195,6 +237,17 @@ export function ConfirmAdoptionPanel({
             data-testid="confirm-adoption-add-dirs"
           >
             +{addDirs.join(", ")}
+          </span>
+        ) : null}
+        {priorContext && priorContext.event_count > 0 ? (
+          <span
+            className="ml-2 text-xs text-amber-700 dark:text-amber-400"
+            data-testid="confirm-adoption-prior-context"
+          >
+            prior activity: {priorContext.event_count} event
+            {priorContext.event_count !== 1 ? "s" : ""}
+            {priorContext.last_status ? `, last ${priorContext.last_status}` : ""}
+            {priorContext.truncated ? " (truncated)" : ""}
           </span>
         ) : null}
       </div>

@@ -113,6 +113,7 @@ from browse.core.operator_console import (  # noqa: E402
     get_available_models,
     get_run_status,
     get_session,
+    list_active_runs_summary,
     list_runs,
     list_sessions,
     normalize_model_id,
@@ -1833,6 +1834,185 @@ def run_api_tests():
         server.shutdown()
 
 
+# ── Issue #564: read-only active-runs workbench ──────────────────────────────
+
+
+def test_oc65_list_active_runs_summary_excludes_terminal_and_private_fields():
+    """OC65: list_active_runs_summary returns only non-terminal runs, public allowlist only."""
+    s_active = create_session("workbench-active", workspace=str(Path.home()))
+    s_done = create_session("workbench-done", workspace=str(Path.home()))
+    active_id = s_active["id"]
+    done_id = s_done["id"]
+
+    # Inject runs directly into the registry (bypassing subprocess machinery).
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS.clear()
+        _ACTIVE_RUNS["11111111-1111-1111-1111-111111111111"] = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "session_id": active_id,
+            "prompt": "secret-prompt-content",
+            "status": "running",
+            "started_at": "2025-01-01T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "resume_used": False,
+            "events": [{"type": "text", "content": "must-not-leak"}],
+            "proc": object(),
+            "debug_events": [{"kind": "trace", "raw": "INTERNAL"}],
+            "_debug_idx": 5,
+            "_debug_seq": 9,
+            "attachments": [{"name": "x", "data": b"raw"}],
+            "files": [{"name": "f.txt", "type": "text/plain", "size": 3}],
+            "health": "ok",
+            "queue": {"position": 1},
+        }
+        _ACTIVE_RUNS["22222222-2222-2222-2222-222222222222"] = {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "session_id": done_id,
+            "prompt": "should-be-omitted",
+            "status": "done",
+            "started_at": "2025-01-01T00:00:01+00:00",
+            "finished_at": "2025-01-01T00:00:05+00:00",
+            "exit_code": 0,
+            "resume_used": True,
+            "events": [],
+            "proc": None,
+        }
+
+    try:
+        summary = list_active_runs_summary()
+        test("OC65: returns a list", isinstance(summary, list))
+        test("OC65: terminal run excluded", len(summary) == 1)
+        if summary:
+            item = summary[0]
+            test("OC65: includes id", item.get("id") == "11111111-1111-1111-1111-111111111111")
+            test("OC65: includes session_id", item.get("session_id") == active_id)
+            test("OC65: includes status running", item.get("status") == "running")
+            test("OC65: includes started_at", item.get("started_at") == "2025-01-01T00:00:00+00:00")
+            test("OC65: finished_at preserved as None", item.get("finished_at") is None)
+            test("OC65: exit_code preserved", item.get("exit_code") is None)
+            test("OC65: resume_used preserved", item.get("resume_used") is False)
+            test("OC65: session_label derived from name", item.get("session_label") == "workbench-active")
+            test("OC65: health passes through", item.get("health") == "ok")
+            test("OC65: queue passes through", isinstance(item.get("queue"), dict))
+            # Strict allowlist enforcement
+            forbidden = ("prompt", "events", "proc", "debug_events",
+                         "_debug_idx", "_debug_seq", "attachments", "files")
+            for key in forbidden:
+                test(f"OC65: forbidden key '{key}' absent", key not in item)
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.clear()
+        delete_session(active_id)
+        delete_session(done_id)
+
+
+def test_oc66_list_active_runs_summary_empty_when_no_active():
+    """OC66: empty registry returns empty list (not None)."""
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS.clear()
+    summary = list_active_runs_summary()
+    test("OC66: empty list returned", isinstance(summary, list) and len(summary) == 0)
+
+
+def test_oc67_runs_workbench_capability_advertised():
+    """OC67: 'runs_workbench' appears in /capabilities supported_features."""
+    from browse.api.operator import handle_capabilities
+
+    body, _ct, _status = handle_capabilities(None, {}, None, None)
+    data = json.loads(body)
+    features = data.get("supported_features", [])
+    test("OC67: runs_workbench in supported_features", "runs_workbench" in features)
+
+
+def run_workbench_api_tests():
+    """API1564: GET /api/operator/runs returns public-summary payload."""
+    server, port = _make_test_server()
+    try:
+        # Seed sessions on disk + active runs in memory.
+        s_active = create_session("workbench-api-active", workspace=str(Path.home()))
+        s_term = create_session("workbench-api-term", workspace=str(Path.home()))
+        active_id = s_active["id"]
+        term_id = s_term["id"]
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.clear()
+            _ACTIVE_RUNS["33333333-3333-3333-3333-333333333333"] = {
+                "id": "33333333-3333-3333-3333-333333333333",
+                "session_id": active_id,
+                "prompt": "DO-NOT-LEAK",
+                "status": "running",
+                "started_at": "2025-02-01T00:00:00+00:00",
+                "finished_at": None,
+                "exit_code": None,
+                "resume_used": False,
+                "events": [{"type": "text", "content": "shh"}],
+                "proc": None,
+                "debug_events": [],
+                "attachments": [{"name": "n", "data": b"x"}],
+            }
+            _ACTIVE_RUNS["44444444-4444-4444-4444-444444444444"] = {
+                "id": "44444444-4444-4444-4444-444444444444",
+                "session_id": term_id,
+                "prompt": "p",
+                "status": "done",
+                "started_at": "2025-02-01T00:00:01+00:00",
+                "finished_at": "2025-02-01T00:00:02+00:00",
+                "exit_code": 0,
+                "resume_used": False,
+                "events": [],
+                "proc": None,
+            }
+
+        resp = _get(port, "/api/operator/runs")
+        test("API1564-1: /api/operator/runs returns 200", resp.status == 200)
+        data = _read_json(resp)
+        runs = data.get("runs")
+        count = data.get("count")
+        test("API1564-2: runs is a list", isinstance(runs, list))
+        test("API1564-3: count matches list length",
+             isinstance(count, int) and isinstance(runs, list) and count == len(runs))
+        test("API1564-4: only active run returned", isinstance(runs, list) and len(runs) == 1)
+        if runs:
+            r = runs[0]
+            test("API1564-5: response carries summary fields",
+                 r.get("id") == "33333333-3333-3333-3333-333333333333"
+                 and r.get("session_id") == active_id
+                 and r.get("status") == "running")
+            test("API1564-6: session_label populated", r.get("session_label") == "workbench-api-active")
+            for key in ("prompt", "events", "proc", "debug_events", "_debug_idx",
+                        "_debug_seq", "attachments", "files"):
+                test(f"API1564-7: forbidden field '{key}' absent", key not in r)
+        # Serialized payload must not contain leaked prompt content.
+        raw_body = json.dumps(data)
+        test("API1564-8: prompt content not leaked in payload",
+             "DO-NOT-LEAK" not in raw_body)
+
+        # Static-slot readonly token may call this read-only endpoint.
+        from browse.core.pairing import create_static_slot, terminate_static_slot
+        terminate_static_slot()
+        slot = create_static_slot(f"http://127.0.0.1:{port}")
+        try:
+            resp_ro = _get(port, "/api/operator/runs", token=slot["token"])
+            test("API1564-9: static-slot readonly GET → 200", resp_ro.status == 200)
+            _ = resp_ro.read()
+        finally:
+            terminate_static_slot()
+
+        # No-token request is rejected (401).
+        resp_noauth = _get(port, "/api/operator/runs", token="bogus")
+        test("API1564-10: bad token → 401", resp_noauth.status == 401)
+        _ = resp_noauth.read()
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.clear()
+        try:
+            delete_session(active_id)
+            delete_session(term_id)
+        except Exception:
+            pass
+        server.shutdown()
+
+
 def _run_api_tests(port: int):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     raw = json.dumps({"name": "test"}).encode("utf-8")
@@ -3368,6 +3548,13 @@ if __name__ == "__main__":
     print()
     print("── Issue #562: static-slot readonly ACL on mutating operator APIs ───")
     run_static_acl_tests()
+
+    print()
+    print("── Issue #564: active-runs workbench (read-only) ────────────────────")
+    test_oc65_list_active_runs_summary_excludes_terminal_and_private_fields()
+    test_oc66_list_active_runs_summary_empty_when_no_active()
+    test_oc67_runs_workbench_capability_advertised()
+    run_workbench_api_tests()
 
     print()
     print("=" * 60)

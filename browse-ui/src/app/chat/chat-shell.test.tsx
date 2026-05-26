@@ -53,6 +53,12 @@ vi.mock("@/lib/api/hooks", () => ({
     isError: false,
     refetch: vi.fn(),
   })),
+  useOperatorActiveRuns: vi.fn(() => ({
+    data: { runs: [], count: 0 },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  })),
   useCreateOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSubmitPrompt: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

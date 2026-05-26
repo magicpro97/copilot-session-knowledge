@@ -1,7 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Cpu, Settings2, Hash, RefreshCw, Pencil } from "lucide-react";
+import {
+  FolderOpen,
+  Cpu,
+  Settings2,
+  Hash,
+  RefreshCw,
+  Pencil,
+  Terminal,
+  GitBranch,
+  Clock,
+  Wrench,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -136,154 +147,229 @@ export function MetadataBar({
     handleOpenChange(false);
   }
 
+  const cliMeta = session.cli_metadata ?? null;
+
   return (
-    <div
-      className={cn(
-        "bg-muted/30 flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-1.5 text-xs",
-        className
-      )}
-    >
-      <span className="text-muted-foreground flex items-center gap-1">
-        <FolderOpen className="size-3" />
-        <span className="font-mono">{session.workspace}</span>
-      </span>
-      <span className="text-muted-foreground flex items-center gap-1">
-        <Cpu className="size-3" />
-        <span>{session.model}</span>
-      </span>
-      <span className="text-muted-foreground flex items-center gap-1">
-        <Settings2 className="size-3" />
-        <span>{session.mode}</span>
-      </span>
-      <span className="text-muted-foreground flex items-center gap-1">
-        <Hash className="size-3" />
-        <span>
-          {session.run_count} run{session.run_count !== 1 ? "s" : ""}
-        </span>
-      </span>
-      <span
+    <>
+      <div
         className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5",
-          session.resume_ready
-            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-            : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+          "bg-muted/30 flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-1.5 text-xs",
+          className
         )}
       >
-        {session.resume_ready ? (
-          <>
-            <RefreshCw className="size-3" />
-            <span>context ready</span>
-          </>
-        ) : (
-          <>
-            <RefreshCw className="size-3" />
-            <span>new context</span>
-          </>
-        )}
-      </span>
+        <span className="text-muted-foreground flex items-center gap-1">
+          <FolderOpen className="size-3" />
+          <span className="font-mono">{session.workspace}</span>
+        </span>
+        <span className="text-muted-foreground flex items-center gap-1">
+          <Cpu className="size-3" />
+          <span>{session.model}</span>
+        </span>
+        <span className="text-muted-foreground flex items-center gap-1">
+          <Settings2 className="size-3" />
+          <span>{session.mode}</span>
+        </span>
+        <span className="text-muted-foreground flex items-center gap-1">
+          <Hash className="size-3" />
+          <span>
+            {session.run_count} run{session.run_count !== 1 ? "s" : ""}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "flex items-center gap-1 rounded px-1.5 py-0.5",
+            session.resume_ready
+              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+              : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+          )}
+        >
+          {session.resume_ready ? (
+            <>
+              <RefreshCw className="size-3" />
+              <span>context ready</span>
+            </>
+          ) : (
+            <>
+              <RefreshCw className="size-3" />
+              <span>new context</span>
+            </>
+          )}
+        </span>
 
-      {onUpdate ? (
-        <Popover open={open} onOpenChange={handleOpenChange}>
-          <PopoverTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-5 shrink-0"
-                disabled={editDisabled}
-                aria-label={
-                  isRunning
-                    ? "Editing disabled during active run"
-                    : isUpdating
-                      ? "Saving…"
-                      : "Edit session"
-                }
-                data-testid="edit-session-btn"
-              >
-                <Pencil className="size-3" />
-              </Button>
-            }
-          />
-          <PopoverContent align="start" className="w-80">
-            <PopoverHeader>
-              <PopoverTitle>Edit Session</PopoverTitle>
-            </PopoverHeader>
-            <form onSubmit={handleSubmit} className="mt-2 space-y-3">
-              <div className="space-y-1">
-                <label className="text-xs font-medium">Name</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Session name"
-                  disabled={editDisabled}
-                  className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded border bg-transparent px-2 py-1 text-xs transition-colors outline-none focus-visible:ring-1 disabled:opacity-50"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium">Model</label>
-                <input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="CLI default"
-                  disabled={editDisabled}
-                  className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded border bg-transparent px-2 py-1 text-xs transition-colors outline-none focus-visible:ring-1 disabled:opacity-50"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium">Mode</label>
-                <Select
-                  value={mode}
-                  onValueChange={(v) => {
-                    if (v) {
-                      setMode(v);
-                      setModeChanged(true);
-                    }
-                  }}
-                  disabled={editDisabled}
-                >
-                  <SelectTrigger className="h-7 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {COPILOT_MODES.map((m) => (
-                      <SelectItem key={m.value} value={m.value} className="text-xs">
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {/* UX copy: next-run semantics and operator-approval notice */}
-              <p className="text-muted-foreground text-xs" data-testid="next-run-note">
-                Changes apply to the next run. Hosted and operator prompts remain operator-approved
-                — no additional browser permission is required.
-              </p>
-              <div className="flex justify-end gap-2">
+        {onUpdate ? (
+          <Popover open={open} onOpenChange={handleOpenChange}>
+            <PopoverTrigger
+              render={
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2 text-xs"
-                  onClick={() => handleOpenChange(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  className="h-6 px-2 text-xs"
+                  variant="ghost"
+                  size="icon"
+                  className="size-5 shrink-0"
                   disabled={editDisabled}
+                  aria-label={
+                    isRunning
+                      ? "Editing disabled during active run"
+                      : isUpdating
+                        ? "Saving…"
+                        : "Edit session"
+                  }
+                  data-testid="edit-session-btn"
                 >
-                  {isUpdating ? "Saving…" : "Save"}
+                  <Pencil className="size-3" />
                 </Button>
-              </div>
-            </form>
-          </PopoverContent>
-        </Popover>
+              }
+            />
+            <PopoverContent align="start" className="w-80">
+              <PopoverHeader>
+                <PopoverTitle>Edit Session</PopoverTitle>
+              </PopoverHeader>
+              <form onSubmit={handleSubmit} className="mt-2 space-y-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Name</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Session name"
+                    disabled={editDisabled}
+                    className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded border bg-transparent px-2 py-1 text-xs transition-colors outline-none focus-visible:ring-1 disabled:opacity-50"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Model</label>
+                  <input
+                    type="text"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="CLI default"
+                    disabled={editDisabled}
+                    className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded border bg-transparent px-2 py-1 text-xs transition-colors outline-none focus-visible:ring-1 disabled:opacity-50"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Mode</label>
+                  <Select
+                    value={mode}
+                    onValueChange={(v) => {
+                      if (v) {
+                        setMode(v);
+                        setModeChanged(true);
+                      }
+                    }}
+                    disabled={editDisabled}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {COPILOT_MODES.map((m) => (
+                        <SelectItem key={m.value} value={m.value} className="text-xs">
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* UX copy: next-run semantics and operator-approval notice */}
+                <p className="text-muted-foreground text-xs" data-testid="next-run-note">
+                  Changes apply to the next run. Hosted and operator prompts remain
+                  operator-approved — no additional browser permission is required.
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => handleOpenChange(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    disabled={editDisabled}
+                  >
+                    {isUpdating ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+              </form>
+            </PopoverContent>
+          </Popover>
+        ) : null}
+      </div>
+      {cliMeta ? (
+        <div
+          className={cn(
+            "bg-muted/20 flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-1 text-xs",
+            className
+          )}
+          data-testid="cli-metadata-row"
+          aria-label="Adopted CLI session metadata"
+        >
+          {cliMeta.cli_kind ? (
+            <span className="text-muted-foreground flex items-center gap-1" data-testid="cli-kind">
+              <Terminal className="size-3" />
+              <span>
+                {cliMeta.cli_kind}
+                {cliMeta.cli_version ? ` ${cliMeta.cli_version}` : ""}
+              </span>
+            </span>
+          ) : null}
+          {cliMeta.model_version ? (
+            <span
+              className="text-muted-foreground flex items-center gap-1"
+              data-testid="cli-model-version"
+            >
+              <Cpu className="size-3" />
+              <span>{cliMeta.model_version}</span>
+            </span>
+          ) : null}
+          {cliMeta.branch ? (
+            <span
+              className="text-muted-foreground flex items-center gap-1"
+              data-testid="cli-branch"
+            >
+              <GitBranch className="size-3" />
+              <span>{cliMeta.branch}</span>
+            </span>
+          ) : null}
+          {cliMeta.started_at ? (
+            <span
+              className="text-muted-foreground flex items-center gap-1"
+              data-testid="cli-started-at"
+            >
+              <Clock className="size-3" />
+              <span title="Started">started {cliMeta.started_at}</span>
+            </span>
+          ) : null}
+          {cliMeta.last_activity ? (
+            <span
+              className="text-muted-foreground flex items-center gap-1"
+              data-testid="cli-last-activity"
+            >
+              <Clock className="size-3" />
+              <span title="Last activity">active {cliMeta.last_activity}</span>
+            </span>
+          ) : null}
+          {cliMeta.tool_inventory_summary ? (
+            <span className="text-muted-foreground flex items-center gap-1" data-testid="cli-tools">
+              <Wrench className="size-3" />
+              <span>{cliMeta.tool_inventory_summary}</span>
+            </span>
+          ) : null}
+          {cliMeta.host_profile_id ? (
+            <span
+              className="text-muted-foreground flex items-center gap-1"
+              data-testid="cli-host-profile"
+            >
+              <Settings2 className="size-3" />
+              <span>{cliMeta.host_profile_id}</span>
+            </span>
+          ) : null}
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }
