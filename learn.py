@@ -94,17 +94,29 @@ def _queue_learn_payload(payload: dict) -> Path:
     return final_path
 
 
-def _build_learn_payload(argv: list[str], entry_kwargs: dict) -> dict:
+def _build_learn_payload(
+    argv: list[str],
+    entry_kwargs: dict,
+    *,
+    update_cerebrum: bool = False,
+    cerebrum_output: str = "CEREBRUM.md",
+    cerebrum_sections: str | None = None,
+) -> dict:
     return {
         "schema_version": 1,
         "queued_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "reason": "database_locked",
         "argv": list(argv),
         "entry": entry_kwargs,
+        "cerebrum": {
+            "update": update_cerebrum,
+            "output": cerebrum_output,
+            "sections": cerebrum_sections,
+        },
     }
 
 
-def _replay_queued_payload(payload: dict) -> int:
+def _replay_queued_payload(payload: dict) -> tuple[int, int]:
     entry = dict(payload.get("entry") or {})
     entry_id = _write_learn_entry(entry)
     if entry_id >= 0 and entry.get("category") == "pattern":
@@ -120,7 +132,15 @@ def _replay_queued_payload(payload: dict) -> int:
                 "confidence": entry.get("confidence"),
             },
         )
-    return entry_id
+    cerebrum_rc = 0
+    cerebrum = payload.get("cerebrum") or {}
+    if entry_id >= 0 and cerebrum.get("update"):
+        cerebrum_rc = _auto_update_cerebrum(
+            cerebrum.get("output") or "CEREBRUM.md",
+            cerebrum.get("sections"),
+            json_mode=True,
+        )
+    return entry_id, cerebrum_rc
 
 
 def _write_learn_entry(entry_kwargs: dict) -> int:
@@ -135,19 +155,22 @@ def _write_learn_entry(entry_kwargs: dict) -> int:
 def flush_learn_inbox(limit: int = 100) -> dict:
     """Replay queued learn writes in FIFO order."""
     if not LEARN_INBOX.exists():
-        return {"status": "ok", "processed": 0, "remaining": 0, "failed": 0}
+        return {"status": "ok", "processed": 0, "remaining": 0, "failed": 0, "cerebrum_failed": 0}
 
     files = sorted(LEARN_INBOX.glob("*.json"))
     processed = 0
     failed = 0
+    cerebrum_failed = 0
     busy = False
 
     for path in files[: max(0, limit)]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            _replay_queued_payload(payload)
+            _, cerebrum_rc = _replay_queued_payload(payload)
             path.unlink()
             processed += 1
+            if cerebrum_rc != 0:
+                cerebrum_failed += 1
         except sqlite3.OperationalError as exc:
             if _is_busy_error(exc):
                 busy = True
@@ -164,6 +187,7 @@ def flush_learn_inbox(limit: int = 100) -> dict:
         "processed": processed,
         "remaining": remaining,
         "failed": failed,
+        "cerebrum_failed": cerebrum_failed,
     }
 
 
@@ -1702,7 +1726,9 @@ def main():
             )
             if result["status"] == "busy":
                 print("  DB still busy; retry later.", file=sys.stderr)
-        if result["status"] == "busy" or result["failed"]:
+            if result.get("cerebrum_failed"):
+                print("  Cerebrum refresh failed for one or more replayed entries.", file=sys.stderr)
+        if result["status"] == "busy" or result["failed"] or result.get("cerebrum_failed"):
             sys.exit(1)
         return
 
@@ -2056,7 +2082,15 @@ def main():
         entry_id = _write_learn_entry(entry_kwargs)
     except sqlite3.OperationalError as exc:
         if _is_busy_error(exc) and os.environ.get("SK_LEARN_QUEUE_ON_LOCK", "1") != "0":
-            queued_path = _queue_learn_payload(_build_learn_payload(args, entry_kwargs))
+            queued_path = _queue_learn_payload(
+                _build_learn_payload(
+                    args,
+                    entry_kwargs,
+                    update_cerebrum=update_cerebrum,
+                    cerebrum_output=cerebrum_output,
+                    cerebrum_sections=cerebrum_sections,
+                )
+            )
             if json_mode:
                 print(
                     json.dumps(

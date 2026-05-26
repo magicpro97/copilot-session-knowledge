@@ -12,6 +12,7 @@
 sk briefing "implement user CRUD"        # → briefing.py
 sk query "docker error"                  # → query-session.py
 sk learn --mistake "Title" "Description" # → learn.py
+sk learn --flush-inbox                   # replay queued learn writes after DB lock contention
 sk tentacle create api-export --scope "src/api/*.py" --desc "Export API"  # → tentacle.py
 sk tentacle split planner --into research builder reviewer                # → tentacle.py
 sk tentacle auto add on-push --command "sk tentacle status"              # → tentacle.py
@@ -582,6 +583,11 @@ learn --relate "addPatient Lambda" "writes_to" "dataTable"
 # Bulk import
 learn --from-file notes.md  # Format: ## category: Title
 
+# Recover writes queued when SQLite stayed locked after retries
+learn --flush-inbox
+learn --flush-inbox --limit 25
+learn --flush-inbox --json
+
 # View
 learn --list               # Recent entries
 learn --stats              # Knowledge base statistics
@@ -589,6 +595,11 @@ learn --stats              # Knowledge base statistics
 # JSON output (machine-readable; emits JSON object with id, title, category, tags, etc.)
 learn --mistake "Title" "Description" --json
 ```
+
+When a single-entry `learn` write still hits SQLite `database is locked` after
+the built-in retry window, it is queued under `SK_LEARN_INBOX` if set, otherwise
+`~/.copilot/session-state/learn-inbox`. Set `SK_LEARN_QUEUE_ON_LOCK=0` to fail
+instead of queueing.
 
 ## Palace Concepts (Wing/Room)
 
