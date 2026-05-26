@@ -37,6 +37,8 @@ struct LearnParams {
     confidence: f64,
     facts: Vec<String>,
     argv: Vec<String>,
+    skip_gate: bool,
+    skip_scan: bool,
 }
 
 /// Default confidence per category (mirrors Python learn.py).
@@ -59,6 +61,8 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
     let mut room = String::new();
     let mut confidence: Option<f64> = None;
     let mut facts: Vec<String> = Vec::new();
+    let mut skip_gate = false;
+    let mut skip_scan = false;
 
     let category_flags = [
         "--mistake",
@@ -113,7 +117,15 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
                 }
                 i += 2;
             }
-            // Skip flags we don't handle (--skip-gate, --skip-scan, etc.)
+            "--skip-gate" => {
+                skip_gate = true;
+                i += 1;
+            }
+            "--skip-scan" => {
+                skip_scan = true;
+                i += 1;
+            }
+            // Skip unknown flags we don't handle.
             s if s.starts_with("--") => {
                 i += 2; // skip flag + value
             }
@@ -157,21 +169,13 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
         confidence: conf,
         facts,
         argv: args.to_vec(),
+        skip_gate,
+        skip_scan,
     })
 }
 
 fn execute_learn(params: LearnParams) -> ExitCode {
-    let facts_json = if params.facts.is_empty() {
-        "[]".to_string()
-    } else {
-        // Build simple JSON array
-        let items: Vec<String> = params
-            .facts
-            .iter()
-            .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
-            .collect();
-        format!("[{}]", items.join(","))
-    };
+    let facts_json = params.facts_json();
 
     let entry = NewEntry {
         category: params.category.clone(),
@@ -255,13 +259,26 @@ fn is_busy_error(err: &rusqlite::Error) -> bool {
 
 fn learn_inbox_dir() -> PathBuf {
     if let Ok(path) = std::env::var("SK_LEARN_INBOX") {
-        return PathBuf::from(path);
+        return expand_tilde(PathBuf::from(path));
     }
     resolve_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".copilot")
         .join("session-state")
         .join("learn-inbox")
+}
+
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return resolve_home_dir().unwrap_or(path);
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        if let Some(home) = resolve_home_dir() {
+            return home.join(rest);
+        }
+    }
+    path
 }
 
 fn queue_learn_params(params: &LearnParams) -> ExitCode {
@@ -286,8 +303,6 @@ fn queue_learn_params(params: &LearnParams) -> ExitCode {
 fn write_learn_payload(params: &LearnParams) -> Result<PathBuf, String> {
     let inbox = learn_inbox_dir();
     fs::create_dir_all(&inbox).map_err(|err| err.to_string())?;
-    let facts = serde_json::from_str::<serde_json::Value>(&params.facts_json())
-        .unwrap_or_else(|_| json!([]));
     let payload = json!({
         "schema_version": 1,
         "queued_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -302,9 +317,9 @@ fn write_learn_payload(params: &LearnParams) -> Result<PathBuf, String> {
             "confidence": params.confidence,
             "wing": params.wing.clone(),
             "room": params.room.clone(),
-            "facts": facts,
-            "skip_gate": true,
-            "skip_scan": true,
+            "facts": params.facts.clone(),
+            "skip_gate": params.skip_gate,
+            "skip_scan": params.skip_scan,
             "task_id": "",
             "affected_files": [],
             "source_file": "",
@@ -353,15 +368,90 @@ fn write_learn_payload(params: &LearnParams) -> Result<PathBuf, String> {
 
 impl LearnParams {
     fn facts_json(&self) -> String {
-        if self.facts.is_empty() {
-            "[]".to_string()
-        } else {
-            let items: Vec<String> = self
-                .facts
-                .iter()
-                .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
-                .collect();
-            format!("[{}]", items.join(","))
+        serde_json::to_string(&self.facts).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn facts_json_escapes_special_characters() {
+        let params = LearnParams {
+            category: "pattern".to_string(),
+            title: "title".to_string(),
+            description: "description".to_string(),
+            tags: String::new(),
+            wing: String::new(),
+            room: String::new(),
+            confidence: 0.7,
+            facts: vec!["C:\\tmp\nquoted \"fact\"".to_string()],
+            argv: vec![],
+            skip_gate: false,
+            skip_scan: false,
+        };
+
+        let parsed: Vec<String> = serde_json::from_str(&params.facts_json()).unwrap();
+        assert_eq!(parsed, params.facts);
+    }
+
+    #[test]
+    fn queued_payload_preserves_flags_and_facts() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let inbox = std::env::temp_dir().join(format!("sk_learn_inbox_test_{unique}"));
+        let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
+        std::env::set_var("SK_LEARN_INBOX", &inbox);
+
+        let params = LearnParams {
+            category: "decision".to_string(),
+            title: "queue title".to_string(),
+            description: "queue description".to_string(),
+            tags: "sqlite".to_string(),
+            wing: "devops".to_string(),
+            room: "tooling".to_string(),
+            confidence: 0.8,
+            facts: vec!["C:\\tmp\nfact".to_string()],
+            argv: vec![
+                "--decision".to_string(),
+                "queue title".to_string(),
+                "queue description".to_string(),
+            ],
+            skip_gate: false,
+            skip_scan: true,
+        };
+
+        let queued = write_learn_payload(&params).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&queued).unwrap()).unwrap();
+        assert_eq!(payload["entry"]["skip_gate"], false);
+        assert_eq!(payload["entry"]["skip_scan"], true);
+        assert_eq!(payload["entry"]["facts"][0], "C:\\tmp\nfact");
+
+        let _ = std::fs::remove_dir_all(&inbox);
+        match old_inbox {
+            Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
+            None => std::env::remove_var("SK_LEARN_INBOX"),
+        }
+    }
+
+    #[test]
+    fn learn_inbox_dir_expands_tilde_env() {
+        let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
+        std::env::set_var(
+            "SK_LEARN_INBOX",
+            "~/.copilot/session-state/learn-inbox-test",
+        );
+        let resolved = learn_inbox_dir();
+        assert!(!resolved.to_string_lossy().starts_with('~'));
+        assert!(resolved.ends_with(".copilot/session-state/learn-inbox-test"));
+        match old_inbox {
+            Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
+            None => std::env::remove_var("SK_LEARN_INBOX"),
         }
     }
 }
