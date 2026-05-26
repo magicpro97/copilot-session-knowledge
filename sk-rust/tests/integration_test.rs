@@ -284,6 +284,42 @@ fn fallback_executes_python_script() {
 }
 
 #[test]
+fn learn_flush_inbox_delegates_to_python_script() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_dir = std::env::temp_dir().join(format!("sk_learn_flush_delegate_{unique}"));
+    let _guard = TempTree(test_dir.clone());
+    let args_file = test_dir.join("learn-args.txt");
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let script = r#"
+import os
+import sys
+from pathlib import Path
+Path(os.environ["SK_LEARN_TEST_ARGS"]).write_text("\n".join(sys.argv[1:]), encoding="utf-8")
+print("FLUSH_DELEGATED")
+"#;
+    fs::write(test_dir.join("learn.py"), script).unwrap();
+
+    sk().args(["learn", "--flush-inbox", "--json", "--limit", "0"])
+        .env("SK_TOOLS_DIR", &test_dir)
+        .env("SK_LEARN_TEST_ARGS", &args_file)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FLUSH_DELEGATED"));
+
+    let observed = fs::read_to_string(&args_file).unwrap();
+    assert!(observed.contains("--flush-inbox"));
+    assert!(observed.contains("--json"));
+    assert!(observed.contains("--limit"));
+}
+
+#[test]
 fn watch_once_honors_home_override() {
     use std::fs;
 
