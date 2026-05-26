@@ -1,9 +1,21 @@
-use std::process::ExitCode;
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, ExitCode};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::ErrorCode;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+use crate::config::{python_exe, resolve_home_dir, resolve_tools_dir};
 use crate::db::write::{insert_or_update_entry, open_writable, rebuild_fts, NewEntry};
 
 /// Entry point called from main's dispatch for the `learn` command.
 pub fn run_learn_command(args: &[String]) -> ExitCode {
+    if args.iter().any(|arg| arg == "--flush-inbox") {
+        return delegate_to_python_learn(args);
+    }
+
     match parse_learn_args(args) {
         Ok(params) => execute_learn(params),
         Err(msg) => {
@@ -24,6 +36,7 @@ struct LearnParams {
     room: String,
     confidence: f64,
     facts: Vec<String>,
+    argv: Vec<String>,
 }
 
 /// Default confidence per category (mirrors Python learn.py).
@@ -143,6 +156,7 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
         room,
         confidence: conf,
         facts,
+        argv: args.to_vec(),
     })
 }
 
@@ -162,8 +176,8 @@ fn execute_learn(params: LearnParams) -> ExitCode {
     let entry = NewEntry {
         category: params.category.clone(),
         title: params.title.clone(),
-        content: params.description,
-        tags: params.tags,
+        content: params.description.clone(),
+        tags: params.tags.clone(),
         wing: params.wing.clone(),
         room: params.room.clone(),
         confidence: params.confidence,
@@ -173,6 +187,9 @@ fn execute_learn(params: LearnParams) -> ExitCode {
     let conn = match open_writable(None) {
         Ok(c) => c,
         Err(e) => {
+            if is_busy_error(&e) && queue_on_lock_enabled() {
+                return queue_learn_params(&params);
+            }
             eprintln!("sk learn: cannot open knowledge.db for writing: {e}");
             eprintln!("Hint: Run 'sk index build' first to initialize the database.");
             return ExitCode::from(1);
@@ -182,6 +199,9 @@ fn execute_learn(params: LearnParams) -> ExitCode {
     let entry_id = match insert_or_update_entry(&conn, &entry) {
         Ok(id) => id,
         Err(e) => {
+            if is_busy_error(&e) && queue_on_lock_enabled() {
+                return queue_learn_params(&params);
+            }
             eprintln!("sk learn: DB write failed: {e}");
             return ExitCode::from(1);
         }
@@ -199,6 +219,151 @@ fn execute_learn(params: LearnParams) -> ExitCode {
     println!("  Added new {} #{}{}", params.category, entry_id, loc);
 
     ExitCode::SUCCESS
+}
+
+fn delegate_to_python_learn(args: &[String]) -> ExitCode {
+    let learn_py = resolve_tools_dir().join("learn.py");
+    let status = Command::new(python_exe()).arg(learn_py).args(args).status();
+    match status {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::from(1),
+        Err(err) => {
+            eprintln!("sk learn: failed to run learn.py for --flush-inbox: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn queue_on_lock_enabled() -> bool {
+    std::env::var("SK_LEARN_QUEUE_ON_LOCK").map_or(true, |value| value != "0")
+}
+
+fn is_busy_error(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(sqlite_err, _) => {
+            matches!(
+                sqlite_err.code,
+                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+            )
+        }
+        _ => {
+            let message = err.to_string().to_ascii_lowercase();
+            message.contains("database is locked") || message.contains("database is busy")
+        }
+    }
+}
+
+fn learn_inbox_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("SK_LEARN_INBOX") {
+        return PathBuf::from(path);
+    }
+    resolve_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".copilot")
+        .join("session-state")
+        .join("learn-inbox")
+}
+
+fn queue_learn_params(params: &LearnParams) -> ExitCode {
+    match write_learn_payload(params) {
+        Ok(path) => {
+            eprintln!(
+                "  DB busy after retries; queued learn entry for later flush: {}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("queued learn entry")
+            );
+            eprintln!("  Run `sk learn --flush-inbox` to replay queued entries.");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("sk learn: DB locked and failed to queue entry: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn write_learn_payload(params: &LearnParams) -> Result<PathBuf, String> {
+    let inbox = learn_inbox_dir();
+    fs::create_dir_all(&inbox).map_err(|err| err.to_string())?;
+    let facts = serde_json::from_str::<serde_json::Value>(&params.facts_json())
+        .unwrap_or_else(|_| json!([]));
+    let payload = json!({
+        "schema_version": 1,
+        "queued_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        "reason": "database_locked",
+        "argv": params.argv.clone(),
+        "entry": {
+            "category": params.category.clone(),
+            "title": params.title.clone(),
+            "content": params.description.clone(),
+            "tags": params.tags.clone(),
+            "session_id": "manual",
+            "confidence": params.confidence,
+            "wing": params.wing.clone(),
+            "room": params.room.clone(),
+            "facts": facts,
+            "skip_gate": true,
+            "skip_scan": true,
+            "task_id": "",
+            "affected_files": [],
+            "source_file": "",
+            "start_line": 0,
+            "end_line": 0,
+            "code_language": "",
+            "code_snippet": "",
+            "code_location_set": false,
+            "quiet": false,
+            "error_type": "",
+            "root_cause": "",
+            "severity": "",
+            "fix_steps": "",
+            "valence": "",
+            "intensity": null,
+            "priority": "",
+            "agent_id": "",
+            "certainty": "",
+            "caveats": ""
+        },
+        "cerebrum": {
+            "update": false,
+            "output": "CEREBRUM.md",
+            "sections": null
+        }
+    });
+    let raw = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
+    let digest = Sha256::digest(raw.as_bytes());
+    let hash = format!("{:x}", digest);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_nanos();
+    let name = format!(
+        "{}-{}-{}.json",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S"),
+        nanos,
+        &hash[..16]
+    );
+    let final_path = inbox.join(&name);
+    let tmp_path = inbox.join(format!(".{name}.tmp"));
+    fs::write(&tmp_path, format!("{raw}\n")).map_err(|err| err.to_string())?;
+    fs::rename(&tmp_path, &final_path).map_err(|err| err.to_string())?;
+    Ok(final_path)
+}
+
+impl LearnParams {
+    fn facts_json(&self) -> String {
+        if self.facts.is_empty() {
+            "[]".to_string()
+        } else {
+            let items: Vec<String> = self
+                .facts
+                .iter()
+                .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
+                .collect();
+            format!("[{}]", items.join(","))
+        }
+    }
 }
 
 /// Simplified wing auto-detection (mirrors Python _WING_RULES).
