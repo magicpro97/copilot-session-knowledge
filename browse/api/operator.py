@@ -42,6 +42,7 @@ from browse.core.operator_console import (
     _has_active_run,
     adopt_cli_session,
     attach_cli_metadata,
+    cancel_run,
     confine_path,
     confirm_adopted_session,
     consume_resume_token,
@@ -220,6 +221,7 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "browser_scan",
                 "local_browser_fallback",
                 "runs_workbench",
+                "run_cancel",
             ],
         }
     )
@@ -493,6 +495,72 @@ def handle_list_runs(db, params, token, nonce, session_id: str = "") -> tuple:
 
     runs = [_public_run_info(run) for run in list_runs(session_id)]
     return json_ok({"runs": runs, "count": len(runs)})
+
+
+# ── Issue #563: per-run cancel ────────────────────────────────────────────────
+
+
+@route(
+    "/api/operator/sessions/{session_id}/runs/{run_id}/cancel",
+    methods=["POST"],
+)
+def handle_cancel_run(
+    db,
+    params,
+    token,
+    nonce,
+    session_id: str = "",
+    run_id: str = "",
+) -> tuple:
+    """POST /api/operator/sessions/{id}/runs/{run_id}/cancel — cancel a run.
+
+    Cancels an in-flight run via SIGTERM (with a short grace window) then
+    SIGKILL if the process is still alive.  The streaming generator emits a
+    final ``status: cancelled`` SSE frame and the terminal record is persisted
+    through the normal ``_persist_run`` path.
+
+    Idempotent: if the run is already terminal, returns 200 with
+    ``code=RUN_ALREADY_TERMINAL`` and ``already_terminal=true`` plus the
+    current public run info.  Callers can therefore retry safely.
+
+    Auth & ACL:
+      * Requires the standard operator auth path (Bearer / cookie / token).
+      * Static-slot tokens are blocked centrally with 403
+        ``READONLY_STATIC_SESSION`` (see browse/core/server.py issue #562).
+
+    Errors:
+      * ``BAD_ID`` (400) — malformed session_id or run_id.
+      * ``SESSION_NOT_FOUND`` (404) — unknown session.
+      * ``RUN_NOT_FOUND`` (404) — unknown run, or run does not belong to the
+        given session (cross-session ownership is reported as not-found so
+        callers cannot probe for runs in other sessions).
+
+    Response (200):
+      ``{"run": <public run info>, "session_id": "...", "run_id": "...",``
+      ``  "already_terminal": bool, "code": "RUN_ALREADY_TERMINAL" if so}``
+    """
+    info, already_terminal, err = cancel_run(session_id, run_id)
+
+    if err == "BAD_ID":
+        return json_error("invalid session or run id", "BAD_ID", 400)
+    if err == "SESSION_NOT_FOUND":
+        return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
+    if err == "RUN_NOT_FOUND":
+        # Wrong-session ownership is also reported here (avoid leaking the
+        # existence of runs belonging to other sessions).
+        return json_error("run not found", "RUN_NOT_FOUND", 404)
+    if info is None:
+        return json_error("failed to cancel run", "CANCEL_FAILED", 500)
+
+    payload: dict = {
+        "run": _public_run_info(info),
+        "session_id": session_id,
+        "run_id": run_id,
+        "already_terminal": bool(already_terminal),
+    }
+    if already_terminal:
+        payload["code"] = "RUN_ALREADY_TERMINAL"
+    return json_ok(payload)
 
 
 # ── Issue #564: read-only active-runs workbench ──────────────────────────────

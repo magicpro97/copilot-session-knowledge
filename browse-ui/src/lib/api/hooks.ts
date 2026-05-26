@@ -39,6 +39,7 @@ import {
   promptSubmitResponseSchema,
   operatorRunStatusSchema,
   operatorRunsResponseSchema,
+  cancelRunResponseSchema,
   operatorActiveRunsResponseSchema,
   pathSuggestResponseSchema,
   filePreviewResponseSchema,
@@ -938,6 +939,46 @@ export function useDeleteOperatorSession(host: HostProfile = LOCAL_HOST) {
       queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
       queryClient.removeQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
       queryClient.removeQueries({ queryKey: queryKeys.operatorRuns(sessionId, host.id) });
+    },
+  });
+}
+
+/**
+ * Issue #563: Cancel a single in-flight operator run.
+ *
+ * Idempotent — the server reports ``already_terminal=true`` with
+ * ``code="RUN_ALREADY_TERMINAL"`` when the run had already reached a terminal
+ * status (done / failed / timeout / cancelled) by the time the request
+ * arrived.  Callers may safely retry without producing duplicate effects.
+ *
+ * On success we invalidate the per-session status, runs list, and the
+ * active-runs workbench feed so the UI reflects the cancelled state.
+ */
+export function useCancelOperatorRun(sessionId: string, host: HostProfile = LOCAL_HOST) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      const data = await hostFetch<unknown>(
+        withLeadingSlash(
+          `/api/operator/sessions/${encodeURIComponent(sessionId)}` +
+            `/runs/${encodeURIComponent(runId)}/cancel`
+        ),
+        host,
+        { method: "POST" }
+      );
+      return cancelRunResponseSchema.parse(data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.operatorSession(sessionId, host.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.operatorRuns(sessionId, host.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.operatorActiveRuns(host.id),
+      });
     },
   });
 }

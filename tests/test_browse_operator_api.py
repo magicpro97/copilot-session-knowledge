@@ -63,6 +63,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -107,6 +108,7 @@ from browse.core.operator_console import (  # noqa: E402
     _parse_output_event,
     _persist_run,
     _resolve_copilot_command,
+    cancel_run,
     confine_path,
     create_session,
     delete_session,
@@ -2013,6 +2015,330 @@ def run_workbench_api_tests():
         server.shutdown()
 
 
+# ── Issue #563: per-run cancel tests ─────────────────────────────────────────
+
+
+def _make_fake_proc(alive: bool = True):
+    """Lightweight fake of ``subprocess.Popen`` used by cancel_run unit tests."""
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self._alive = alive
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None if self._alive else 0
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self._alive = False
+
+        def kill(self) -> None:
+            self.killed = True
+            self._alive = False
+
+    return _FakeProc()
+
+
+def test_oc68_cancel_run_validates_ids():
+    """cancel_run rejects malformed UUIDs with BAD_ID before touching state."""
+    info, terminal, err = cancel_run("not-a-uuid", "33333333-3333-4333-8333-333333333333")
+    test("OC68: bad session_id → BAD_ID", info is None and terminal is False and err == "BAD_ID")
+
+    info, terminal, err = cancel_run("33333333-3333-4333-8333-333333333333", "")
+    test("OC68: bad run_id → BAD_ID", info is None and terminal is False and err == "BAD_ID")
+
+
+def test_oc69_cancel_run_unknown_session():
+    """cancel_run reports SESSION_NOT_FOUND when the session is unknown."""
+    info, terminal, err = cancel_run(
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    )
+    test("OC69: unknown session → SESSION_NOT_FOUND",
+         info is None and terminal is False and err == "SESSION_NOT_FOUND")
+
+
+def test_oc70_cancel_run_unknown_run():
+    """cancel_run reports RUN_NOT_FOUND when the run does not exist."""
+    sess = create_session("cancel-unknown-run", workspace=str(Path.home()))
+    try:
+        info, terminal, err = cancel_run(sess["id"], "55555555-5555-4555-8555-555555555555")
+        test("OC70: unknown run → RUN_NOT_FOUND",
+             info is None and terminal is False and err == "RUN_NOT_FOUND")
+    finally:
+        delete_session(sess["id"])
+
+
+def test_oc71_cancel_run_wrong_session_ownership_is_not_found():
+    """Wrong-session ownership must NOT leak; reported as RUN_NOT_FOUND."""
+    sess_a = create_session("cancel-owner-a", workspace=str(Path.home()))
+    sess_b = create_session("cancel-owner-b", workspace=str(Path.home()))
+    run_id = "66666666-6666-4666-8666-666666666666"
+    try:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[run_id] = {
+                "id": run_id,
+                "session_id": sess_a["id"],
+                "prompt": "OWNER-LEAK-CANARY",
+                "status": "running",
+                "started_at": "2025-02-01T00:00:00+00:00",
+                "finished_at": None,
+                "exit_code": None,
+                "resume_used": False,
+                "events": [],
+                "proc": None,
+            }
+        info, terminal, err = cancel_run(sess_b["id"], run_id)
+        test("OC71: wrong owner → RUN_NOT_FOUND",
+             info is None and terminal is False and err == "RUN_NOT_FOUND")
+        # Defence in depth: the original run must NOT have been mutated.
+        with _RUNS_LOCK:
+            still_running = _ACTIVE_RUNS.get(run_id, {}).get("status")
+        test("OC71: original run untouched by wrong-owner cancel", still_running == "running")
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+        delete_session(sess_a["id"])
+        delete_session(sess_b["id"])
+
+
+def test_oc72_cancel_run_already_terminal_idempotent():
+    """A run already in a terminal status returns already_terminal=True."""
+    sess = create_session("cancel-terminal", workspace=str(Path.home()))
+    run_id = "77777777-7777-4777-8777-777777777777"
+    try:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[run_id] = {
+                "id": run_id,
+                "session_id": sess["id"],
+                "prompt": "p",
+                "status": "done",
+                "started_at": "2025-02-01T00:00:00+00:00",
+                "finished_at": "2025-02-01T00:00:01+00:00",
+                "exit_code": 0,
+                "resume_used": False,
+                "events": [],
+                "proc": None,
+            }
+        info, terminal, err = cancel_run(sess["id"], run_id)
+        test("OC72: terminal run → ok, already_terminal=True",
+             err is None and terminal is True and isinstance(info, dict))
+        test("OC72: status preserved (not overwritten)",
+             isinstance(info, dict) and info.get("status") == "done")
+        test("OC72: no cancelled_by added to terminal-already run",
+             isinstance(info, dict) and "cancelled_by" not in info)
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+        delete_session(sess["id"])
+
+
+def test_oc73_cancel_run_marks_active_run_cancelled():
+    """Active run transitions to cancelled + cancelled_by='operator' and proc is signalled."""
+    sess = create_session("cancel-active", workspace=str(Path.home()))
+    run_id = "88888888-8888-4888-8888-888888888888"
+    fake = _make_fake_proc(alive=True)
+    try:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[run_id] = {
+                "id": run_id,
+                "session_id": sess["id"],
+                "prompt": "p",
+                "status": "running",
+                "started_at": "2025-02-01T00:00:00+00:00",
+                "finished_at": None,
+                "exit_code": None,
+                "resume_used": False,
+                "events": [],
+                "proc": fake,
+            }
+        info, terminal, err = cancel_run(sess["id"], run_id)
+        test("OC73: active run cancel → ok", err is None and terminal is False)
+        test("OC73: returned info has cancelled status",
+             isinstance(info, dict) and info.get("status") == "cancelled")
+        test("OC73: returned info has cancelled_by=operator",
+             isinstance(info, dict) and info.get("cancelled_by") == "operator")
+        test("OC73: returned info has finished_at populated",
+             isinstance(info, dict) and bool(info.get("finished_at")))
+        test("OC73: SIGTERM (proc.terminate) was sent", fake.terminated is True)
+        test("OC73: SIGKILL not needed when SIGTERM succeeds", fake.killed is False)
+        # Registry must reflect the cancelled transition.
+        with _RUNS_LOCK:
+            reg = _ACTIVE_RUNS.get(run_id, {})
+        test("OC73: registry status flipped to cancelled", reg.get("status") == "cancelled")
+        test("OC73: registry cancelled_by populated", reg.get("cancelled_by") == "operator")
+        # Public payload must NOT leak the proc handle.
+        test("OC73: returned info strips proc handle",
+             isinstance(info, dict) and "proc" not in info)
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+        delete_session(sess["id"])
+
+
+def test_oc74_cancel_run_capability_advertised():
+    """run_cancel capability MUST appear in /api/operator/capabilities."""
+    from browse.api.operator import handle_capabilities
+
+    body, _ct, _status = handle_capabilities(None, {}, None, None)
+    data = json.loads(body)
+    features = data.get("supported_features", [])
+    test("OC74: run_cancel advertised in supported_features", "run_cancel" in features)
+
+
+def run_cancel_run_api_tests():
+    """API563-*: HTTP-level checks for the cancel endpoint."""
+    server, port = _make_test_server()
+    try:
+        sess = create_session("cancel-api", workspace=str(Path.home()))
+        sid = sess["id"]
+        run_id_active = "99999999-9999-4999-8999-999999999999"
+        run_id_terminal = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        fake = _make_fake_proc(alive=True)
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[run_id_active] = {
+                "id": run_id_active,
+                "session_id": sid,
+                "prompt": "CANARY-CANCEL-PROMPT",
+                "status": "running",
+                "started_at": "2025-02-01T00:00:00+00:00",
+                "finished_at": None,
+                "exit_code": None,
+                "resume_used": False,
+                "events": [{"type": "raw", "text": "STREAMED-EVENT", "idx": 0}],
+                "proc": fake,
+                "debug_events": [],
+            }
+            _ACTIVE_RUNS[run_id_terminal] = {
+                "id": run_id_terminal,
+                "session_id": sid,
+                "prompt": "ALREADY-DONE",
+                "status": "done",
+                "started_at": "2025-02-01T00:00:00+00:00",
+                "finished_at": "2025-02-01T00:00:02+00:00",
+                "exit_code": 0,
+                "resume_used": False,
+                "events": [],
+                "proc": None,
+                "_evict_after": time.monotonic() + 3600,
+            }
+
+        # ── API563-1: active run cancel → 200 with cancelled status ─────────
+        resp = _post(port, f"/api/operator/sessions/{sid}/runs/{run_id_active}/cancel")
+        data = _read_json(resp)
+        test("API563-1: active cancel returns 200", resp.status == 200)
+        run_field = data.get("run") if isinstance(data, dict) else None
+        test("API563-1: response has run object", isinstance(run_field, dict))
+        test("API563-1: status reported as cancelled",
+             isinstance(run_field, dict) and run_field.get("status") == "cancelled")
+        test("API563-1: cancelled_by=operator",
+             isinstance(run_field, dict) and run_field.get("cancelled_by") == "operator")
+        test("API563-1: already_terminal=false on first cancel",
+             isinstance(data, dict) and data.get("already_terminal") is False)
+        test("API563-1: proc handle absent from payload",
+             isinstance(run_field, dict) and "proc" not in run_field)
+
+        # ── API563-3: cancelling an already-terminal run is idempotent ──
+        # (Run before API563-2 retry because eviction can prune injected
+        # terminal entries on the next _persist_run call.)
+        resp = _post(port, f"/api/operator/sessions/{sid}/runs/{run_id_terminal}/cancel")
+        data = _read_json(resp)
+        test("API563-3: terminal run cancel returns 200", resp.status == 200)
+        test("API563-3: code=RUN_ALREADY_TERMINAL",
+             isinstance(data, dict) and data.get("code") == "RUN_ALREADY_TERMINAL")
+
+        # ── API563-2: second cancel is idempotent (RUN_ALREADY_TERMINAL) ─
+        resp = _post(port, f"/api/operator/sessions/{sid}/runs/{run_id_active}/cancel")
+        data = _read_json(resp)
+        test("API563-2: idempotent retry returns 200", resp.status == 200)
+        test("API563-2: code=RUN_ALREADY_TERMINAL on retry",
+             isinstance(data, dict) and data.get("code") == "RUN_ALREADY_TERMINAL")
+        test("API563-2: already_terminal=true on retry",
+             isinstance(data, dict) and data.get("already_terminal") is True)
+
+        # ── API563-4: unknown run → 404 RUN_NOT_FOUND ────────────────────
+        resp = _post(
+            port,
+            f"/api/operator/sessions/{sid}/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/cancel",
+        )
+        data = _read_json(resp)
+        test("API563-4: unknown run → 404", resp.status == 404)
+        test("API563-4: error code RUN_NOT_FOUND",
+             isinstance(data, dict) and data.get("code") == "RUN_NOT_FOUND")
+
+        # ── API563-5: bad UUID → 400 BAD_ID ──────────────────────────────
+        resp = _post(port, f"/api/operator/sessions/{sid}/runs/not-a-uuid/cancel")
+        data = _read_json(resp)
+        test("API563-5: bad run id → 400", resp.status == 400)
+        test("API563-5: error code BAD_ID",
+             isinstance(data, dict) and data.get("code") == "BAD_ID")
+
+        # ── API563-6: unknown session → 404 SESSION_NOT_FOUND ────────────
+        resp = _post(
+            port,
+            "/api/operator/sessions/cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            f"/runs/{run_id_terminal}/cancel",
+        )
+        data = _read_json(resp)
+        test("API563-6: unknown session → 404", resp.status == 404)
+        test("API563-6: error code SESSION_NOT_FOUND",
+             isinstance(data, dict) and data.get("code") == "SESSION_NOT_FOUND")
+
+        # ── API563-7: cross-session ownership leaks nothing ──────────────
+        sess2 = create_session("cancel-api-other", workspace=str(Path.home()))
+        try:
+            resp = _post(
+                port,
+                f"/api/operator/sessions/{sess2['id']}/runs/{run_id_terminal}/cancel",
+            )
+            data = _read_json(resp)
+            test("API563-7: wrong-owner cancel → 404", resp.status == 404)
+            test("API563-7: code RUN_NOT_FOUND (no cross-session leak)",
+                 isinstance(data, dict) and data.get("code") == "RUN_NOT_FOUND")
+            raw = json.dumps(data)
+            test("API563-7: prompt content not leaked", "ALREADY-DONE" not in raw)
+        finally:
+            delete_session(sess2["id"])
+
+        # ── API563-8: bad token → 401 ────────────────────────────────────
+        resp = _post(
+            port,
+            f"/api/operator/sessions/{sid}/runs/{run_id_terminal}/cancel",
+            token="bogus",
+        )
+        test("API563-8: bogus token → 401", resp.status == 401)
+        _ = resp.read()
+
+        # ── API563-9: static-slot mutation → 403 READONLY_STATIC_SESSION ─
+        from browse.core.pairing import create_static_slot, terminate_static_slot
+
+        terminate_static_slot()
+        slot = create_static_slot(f"http://127.0.0.1:{port}")
+        try:
+            resp = _post(
+                port,
+                f"/api/operator/sessions/{sid}/runs/{run_id_terminal}/cancel",
+                token=slot["token"],
+            )
+            data = _read_json(resp)
+            test("API563-9: static-slot cancel → 403", resp.status == 403)
+            test("API563-9: code READONLY_STATIC_SESSION",
+                 isinstance(data, dict) and data.get("code") == "READONLY_STATIC_SESSION")
+        finally:
+            terminate_static_slot()
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id_active, None)
+            _ACTIVE_RUNS.pop(run_id_terminal, None)
+        try:
+            delete_session(sid)
+        except Exception:
+            pass
+        server.shutdown()
+
+
 def _run_api_tests(port: int):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     raw = json.dumps({"name": "test"}).encode("utf-8")
@@ -3555,6 +3881,17 @@ if __name__ == "__main__":
     test_oc66_list_active_runs_summary_empty_when_no_active()
     test_oc67_runs_workbench_capability_advertised()
     run_workbench_api_tests()
+
+    print()
+    print("── Issue #563: per-run cancel ───────────────────────────────────────")
+    test_oc68_cancel_run_validates_ids()
+    test_oc69_cancel_run_unknown_session()
+    test_oc70_cancel_run_unknown_run()
+    test_oc71_cancel_run_wrong_session_ownership_is_not_found()
+    test_oc72_cancel_run_already_terminal_idempotent()
+    test_oc73_cancel_run_marks_active_run_cancelled()
+    test_oc74_cancel_run_capability_advertised()
+    run_cancel_run_api_tests()
 
     print()
     print("=" * 60)

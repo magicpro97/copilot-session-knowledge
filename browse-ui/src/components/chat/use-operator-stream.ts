@@ -5,7 +5,7 @@ import type { CopilotStreamFrame, CopilotStatusFrame, HostProfile } from "@/lib/
 import { createOperatorStreamPath, createOperatorStreamUrl } from "@/lib/api/hooks";
 import { withLoopbackHint } from "@/lib/http/loopback";
 
-export type StreamStatus = "idle" | "connecting" | "streaming" | "done" | "error";
+export type StreamStatus = "idle" | "connecting" | "streaming" | "done" | "error" | "cancelled";
 
 export type UseOperatorStreamResult = {
   frames: CopilotStreamFrame[];
@@ -156,7 +156,17 @@ export function useOperatorStream(
                   sawTerminalStatus = true;
                   const statusFrame = frame as CopilotStatusFrame;
                   setExitCode(statusFrame.exit_code);
-                  setStatus(statusFrame.status === "done" ? "done" : "error");
+                  // Issue #563: a server-emitted ``cancelled`` status frame
+                  // is a successful operator-initiated termination, NOT an
+                  // error.  Map it to its own UI state so the transcript can
+                  // render a distinct badge.
+                  if (statusFrame.status === "done") {
+                    setStatus("done");
+                  } else if (statusFrame.status === "cancelled") {
+                    setStatus("cancelled");
+                  } else {
+                    setStatus("error");
+                  }
                   return;
                 }
                 addFrame(frame);
@@ -214,7 +224,15 @@ export function useOperatorStream(
       if (frame.type === "status") {
         const statusFrame = frame as CopilotStatusFrame;
         setExitCode(statusFrame.exit_code);
-        setStatus(statusFrame.status === "done" ? "done" : "error");
+        // Issue #563: see comment in fetch path — operator-initiated
+        // cancellation is a successful terminal state, not an error.
+        if (statusFrame.status === "done") {
+          setStatus("done");
+        } else if (statusFrame.status === "cancelled") {
+          setStatus("cancelled");
+        } else {
+          setStatus("error");
+        }
         es.close();
         esRef.current = null;
         return;

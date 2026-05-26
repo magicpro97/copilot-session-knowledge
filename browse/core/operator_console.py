@@ -57,6 +57,13 @@ _MAX_SUGGESTIONS = 50  # path suggestions cap
 _TOKEN_TTL = 300  # seconds: resume token lifetime
 _CHECKPOINT_INTERVAL = 25  # issue a new SSE id: token every N events
 
+# ── Issue #563: per-run cancel timing ─────────────────────────────────────────
+# Grace window between SIGTERM and SIGKILL.  Kept short so an operator clicking
+# "cancel" gets a fast terminal transition while still letting well-behaved
+# child processes clean up.  Tunable for tests via monkeypatch.
+_CANCEL_SIGTERM_GRACE = 2.0
+_CANCEL_POLL_INTERVAL = 0.05
+
 # ── Attachment / staged-file constants ────────────────────────────────────────
 
 _MAX_STAGED_FILES = 10  # maximum files per prompt submission
@@ -1104,6 +1111,114 @@ def delete_session(session_id: str) -> bool:
         pass
 
     return True
+
+
+def cancel_run(session_id: str, run_id: str) -> tuple:
+    """Cancel an in-flight run; idempotent for already-terminal runs.
+
+    Issue #563.
+
+    Behaviour:
+      * Validates ``session_id`` and ``run_id`` are UUID4.
+      * Confirms the session exists and the run belongs to it (no cross-session
+        leakage — wrong ownership returns ``RUN_NOT_FOUND``).
+      * If the run is already terminal (``done``/``failed``/``timeout``/
+        ``cancelled``) the call is a no-op and returns the current public run
+        info with ``already_terminal=True``.  This matches the issue spec
+        (200 + ``RUN_ALREADY_TERMINAL`` flag rather than an error).
+      * If the run is still active the function transitions the in-memory
+        registry to ``status="cancelled"`` + ``cancelled_by="operator"``,
+        signals the subprocess with ``SIGTERM``, waits up to
+        ``_CANCEL_SIGTERM_GRACE`` seconds, then escalates to ``SIGKILL``.
+        The streaming generator picks up the new status on its next poll and
+        emits a terminal ``status`` SSE frame; the run thread persists the
+        terminal record through the normal ``_persist_run`` path.
+      * A defensive ``_persist_run`` write is performed here as well so the
+        on-disk record reflects the cancelled state immediately even if the
+        run thread is stuck or already exited abnormally.
+
+    Returns ``(public_run_info, already_terminal, error_code)``:
+      * ``public_run_info``: dict with ``proc``/private fields stripped, or
+        ``None`` on error.
+      * ``already_terminal``: ``True`` when the run was already in a terminal
+        status at cancel time (callers should surface ``RUN_ALREADY_TERMINAL``).
+      * ``error_code``: one of ``"BAD_ID"``, ``"SESSION_NOT_FOUND"``,
+        ``"RUN_NOT_FOUND"``, or ``None`` on success.  Wrong-session ownership
+        is reported as ``RUN_NOT_FOUND`` to avoid leaking the existence of
+        runs belonging to other sessions.
+    """
+    if not _is_valid_id(session_id or "") or not _is_valid_id(run_id or ""):
+        return None, False, "BAD_ID"
+
+    if get_session(session_id) is None:
+        return None, False, "SESSION_NOT_FOUND"
+
+    # Snapshot the in-memory run record under the registry lock.  If the run is
+    # not in memory fall back to the on-disk record (terminal-only path).
+    proc = None
+    with _RUNS_LOCK:
+        run = _ACTIVE_RUNS.get(run_id)
+        in_memory = run is not None
+        if run is not None:
+            # Defensive ownership check before any mutation.
+            if run.get("session_id") != session_id:
+                return None, False, "RUN_NOT_FOUND"
+            current_status = run.get("status", "running")
+            if current_status in _TERMINAL_RUN_STATUSES:
+                snapshot = {k: v for k, v in run.items() if k != "proc"}
+                return snapshot, True, None
+            proc = run.get("proc")
+            run["status"] = "cancelled"
+            run["cancelled_by"] = "operator"
+            if not run.get("finished_at"):
+                run["finished_at"] = datetime.now(timezone.utc).isoformat()
+            snapshot = {k: v for k, v in run.items() if k != "proc"}
+
+    if not in_memory:
+        persisted = _load_persisted_run(run_id, session_id)
+        if persisted is None:
+            return None, False, "RUN_NOT_FOUND"
+        if persisted.get("session_id") != session_id:
+            return None, False, "RUN_NOT_FOUND"
+        # Persisted runs are always terminal — they only land on disk after
+        # ``_persist_run`` marks the run done/failed/timeout/cancelled.  Report
+        # idempotently rather than surfacing an error so retries are safe.
+        return persisted, True, None
+
+    # ── Outside the lock: signal the subprocess.  ``proc.terminate``/``kill``
+    # are best-effort — the run-thread already handles a missing/already-exited
+    # process safely via its own poll/wait path.
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    _log.debug("cancel_run: proc.terminate failed for %s", run_id, exc_info=True)
+                deadline = time.monotonic() + max(0.0, _CANCEL_SIGTERM_GRACE)
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(_CANCEL_POLL_INTERVAL)
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        _log.debug("cancel_run: proc.kill failed for %s", run_id, exc_info=True)
+        except Exception:
+            # Never let signal failures break the API response — the registry
+            # is already marked cancelled and the run thread will reconcile.
+            _log.debug("cancel_run: signalling proc raised for %s", run_id, exc_info=True)
+
+    # Persist the cancelled state to disk now so external readers (status,
+    # list_runs, debug log) see the terminal record immediately rather than
+    # racing against the run thread's finally-block ``_persist_run`` call.
+    try:
+        _persist_run(run_id)
+    except Exception:
+        _log.debug("cancel_run: _persist_run failed for %s", run_id, exc_info=True)
+
+    return snapshot, False, None
 
 
 # ── Subprocess execution ──────────────────────────────────────────────────────

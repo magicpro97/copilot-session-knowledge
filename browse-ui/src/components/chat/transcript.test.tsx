@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "@/components/chat/transcript";
@@ -41,6 +41,30 @@ const mockUseOperatorStream = vi.fn(
 vi.mock("@/components/chat/use-operator-stream", () => ({
   useOperatorStream: (sessionId: string | null, runId: string | null, host?: HostProfile | null) =>
     mockUseOperatorStream(sessionId, runId, host),
+}));
+
+// Issue #563: mock the cancel-run mutation hook and the capability gate so
+// Transcript can render <ActiveRun> in tests without a QueryClient provider.
+const mockCancelMutate = vi.fn();
+const mockCancelState = { isPending: false };
+vi.mock("@/lib/api/hooks", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api/hooks")>("@/lib/api/hooks");
+  return {
+    ...actual,
+    useCancelOperatorRun: (_sessionId: string, _host?: unknown) => ({
+      mutate: mockCancelMutate,
+      isPending: mockCancelState.isPending,
+    }),
+  };
+});
+
+const mockUseHostFeature = vi.fn((_host: HostProfile, _feature: string, _enabled?: boolean) => ({
+  supported: true,
+  loading: false,
+}));
+vi.mock("@/lib/hosts/use-host-feature", () => ({
+  useHostFeature: (host: HostProfile, feature: string, enabled?: boolean) =>
+    mockUseHostFeature(host, feature, enabled),
 }));
 
 describe("Transcript", () => {
@@ -142,6 +166,115 @@ describe("Transcript", () => {
 
     await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
     expect(screen.getAllByText("Hello")).toHaveLength(2);
+  });
+
+  // ── Issue #563: per-run cancel UI ─────────────────────────────────────
+
+  it("shows the cancel button while streaming and run_cancel is supported", () => {
+    mockUseOperatorStream.mockReturnValueOnce({
+      frames: [],
+      status: "streaming" as const,
+      exitCode: null,
+    });
+    mockUseHostFeature.mockReturnValueOnce({ supported: true, loading: false });
+
+    render(
+      <Transcript
+        runs={[]}
+        activeRun={{ id: "run-cancel", prompt: "long task" }}
+        sessionId="session-cancel"
+      />
+    );
+
+    const btn = screen.getByTestId("cancel-run-button");
+    expect(btn).toBeEnabled();
+    expect(btn).toHaveAccessibleName(/cancel current run/i);
+  });
+
+  it("hides the cancel button when run_cancel capability is unsupported", () => {
+    mockUseOperatorStream.mockReturnValueOnce({
+      frames: [],
+      status: "streaming" as const,
+      exitCode: null,
+    });
+    mockUseHostFeature.mockReturnValueOnce({ supported: false, loading: false });
+
+    render(
+      <Transcript
+        runs={[]}
+        activeRun={{ id: "run-legacy", prompt: "legacy" }}
+        sessionId="session-legacy"
+      />
+    );
+
+    expect(screen.queryByTestId("cancel-run-button")).toBeNull();
+  });
+
+  it("hides the cancel button once the stream reaches a terminal status", () => {
+    mockUseOperatorStream.mockReturnValueOnce({
+      frames: [],
+      status: "done" as const,
+      exitCode: 0,
+    });
+    mockUseHostFeature.mockReturnValueOnce({ supported: true, loading: false });
+
+    render(
+      <Transcript
+        runs={[]}
+        activeRun={{ id: "run-done", prompt: "done" }}
+        sessionId="session-done"
+      />
+    );
+
+    expect(screen.queryByTestId("cancel-run-button")).toBeNull();
+  });
+
+  it("invokes the cancel mutation exactly once per click", async () => {
+    mockCancelMutate.mockClear();
+    mockUseOperatorStream.mockReturnValue({
+      frames: [],
+      status: "streaming" as const,
+      exitCode: null,
+    });
+    mockUseHostFeature.mockReturnValue({ supported: true, loading: false });
+
+    render(
+      <Transcript
+        runs={[]}
+        activeRun={{ id: "run-click", prompt: "click" }}
+        sessionId="session-click"
+      />
+    );
+
+    const btn = screen.getByTestId("cancel-run-button");
+    fireEvent.click(btn);
+
+    expect(mockCancelMutate).toHaveBeenCalledTimes(1);
+    expect(mockCancelMutate).toHaveBeenCalledWith("run-click");
+  });
+
+  it("renders the cancelled badge and maps cancelled→done for onRunDone", () => {
+    const onDone = vi.fn();
+    mockUseOperatorStream.mockReturnValueOnce({
+      frames: [],
+      status: "cancelled" as const,
+      exitCode: null,
+    });
+    mockUseHostFeature.mockReturnValueOnce({ supported: true, loading: false });
+
+    render(
+      <Transcript
+        runs={[]}
+        activeRun={{ id: "run-cancelled", prompt: "x" }}
+        sessionId="session-cancelled"
+        onRunDone={onDone}
+      />
+    );
+
+    expect(screen.getByTestId("cancelled-badge")).toBeInTheDocument();
+    // contract preserved: parent sees "done", not "cancelled".
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onDone).toHaveBeenCalledWith("done", "run-cancelled");
   });
 });
 

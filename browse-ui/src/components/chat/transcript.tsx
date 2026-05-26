@@ -5,10 +5,14 @@ import { useCallback, useEffect, useRef } from "react";
 import { formatDistanceToNow } from "date-fns";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { UserBubble, AssistantBubble } from "./chat-bubbles";
 import { FileReviewPanel } from "./file-review-panel";
 import { deriveChunks, extractFilePaths } from "./stream-derive";
 import { useOperatorStream } from "./use-operator-stream";
+import { useCancelOperatorRun } from "@/lib/api/hooks";
+import { useHostFeature } from "@/lib/hosts/use-host-feature";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 import type { OperatorRunInfo, HostProfile, RunFileMetadata } from "@/lib/api/types";
 
 type HistoricalRunProps = {
@@ -62,6 +66,14 @@ function ActiveRun({ sessionId, runId, prompt, files, host, onDone, onProgress }
   const onDoneRef = useRef(onDone);
   const onProgressRef = useRef(onProgress);
 
+  // Issue #563: gate the Cancel button on the backend advertising
+  // ``run_cancel`` in /api/operator/capabilities.  Legacy backends without
+  // this feature do not expose the POST cancel endpoint, so hiding the
+  // button fails closed (no broken 404 if a user clicked through).
+  const hostProfile = host ?? LOCAL_HOST;
+  const { supported: cancelSupported } = useHostFeature(hostProfile, "run_cancel", true);
+  const cancelMutation = useCancelOperatorRun(sessionId, hostProfile);
+
   useEffect(() => {
     onDoneRef.current = onDone;
   }, [onDone]);
@@ -71,8 +83,14 @@ function ActiveRun({ sessionId, runId, prompt, files, host, onDone, onProgress }
   }, [onProgress]);
 
   useEffect(() => {
-    if (status === "done" || status === "error") {
-      onDoneRef.current?.(status, runId);
+    if (status === "done" || status === "error" || status === "cancelled") {
+      // Issue #563: ``cancelled`` is a successful operator-initiated
+      // terminal state.  We collapse it to ``"done"`` when notifying the
+      // parent so existing onRunDone consumers (chat-shell) continue to
+      // work without an API change.  The badge below still renders the
+      // distinct cancelled state for the user.
+      const parentStatus: "done" | "error" = status === "error" ? "error" : "done";
+      onDoneRef.current?.(parentStatus, runId);
     }
   }, [runId, status]);
 
@@ -85,11 +103,41 @@ function ActiveRun({ sessionId, runId, prompt, files, host, onDone, onProgress }
   const chunks = deriveChunks(frames);
   const streamFiles = extractFilePaths(chunks);
   const streaming = status === "connecting" || status === "streaming";
+  const cancelDisabled = cancelMutation.isPending || !streaming;
+
+  const handleCancel = useCallback(() => {
+    if (cancelDisabled) return;
+    cancelMutation.mutate(runId);
+  }, [cancelDisabled, cancelMutation, runId]);
 
   return (
     <div className="space-y-3">
       <UserBubble prompt={prompt} files={files} />
       <AssistantBubble chunks={chunks} streaming={streaming} exitCode={exitCode} />
+      {streaming && cancelSupported ? (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleCancel}
+            disabled={cancelDisabled}
+            aria-label="Cancel current run"
+            data-testid="cancel-run-button"
+          >
+            {cancelMutation.isPending ? "Cancelling…" : "Cancel run"}
+          </Button>
+        </div>
+      ) : null}
+      {status === "cancelled" ? (
+        <div
+          className="text-muted-foreground text-xs italic"
+          role="status"
+          data-testid="cancelled-badge"
+        >
+          Run cancelled by operator
+        </div>
+      ) : null}
       {streamFiles.length > 0 ? <FileReviewPanel files={streamFiles} host={host} /> : null}
     </div>
   );

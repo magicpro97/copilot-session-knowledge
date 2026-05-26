@@ -450,4 +450,39 @@ describe("useOperatorStream", () => {
     expect(result.current.status).toBe("error");
     expect(MockEventSource.instances[0].closed).toBe(true);
   });
+
+  // ── Issue #563: cancelled status frame ───────────────────────────────
+
+  it("EventSource: cancelled status frame yields status=cancelled, NOT error", async () => {
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", LOCAL_HOST));
+
+    await act(async () => {
+      MockEventSource.instances[0].emitMessage({
+        type: "status",
+        status: "cancelled",
+        exit_code: 143,
+      });
+    });
+
+    expect(result.current.status).toBe("cancelled");
+    // exit_code from the cancelled status frame is preserved (SIGTERM=143).
+    expect(result.current.exitCode).toBe(143);
+    expect(MockEventSource.instances[0].closed).toBe(true);
+  });
+
+  it("fetch: cancelled status frame yields status=cancelled, NOT error", async () => {
+    const stream = makeSseStream([
+      { type: "text", content: "partial work" },
+      { type: "status", status: "cancelled", exit_code: 143 },
+    ]);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body: stream }));
+
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", REMOTE_HOST));
+
+    await waitFor(() => expect(result.current.status).toBe("cancelled"), { timeout: 2000 });
+
+    expect(result.current.exitCode).toBe(143);
+    expect(result.current.frames).toHaveLength(1);
+  });
 });

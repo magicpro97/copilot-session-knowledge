@@ -1085,6 +1085,27 @@ export const operatorRunInfoSchema = z.object({
   files: z.array(runFileMetadataSchema).optional(),
   /** Whether this run used `--resume` to carry prior conversation context. Optional for backward compatibility. */
   resume_used: z.boolean().optional(),
+  /**
+   * Issue #563: identifies who cancelled the run (currently always
+   * `"operator"`).  Absent on runs that completed normally.
+   */
+  cancelled_by: z.string().optional(),
+});
+
+/**
+ * Issue #563: Response from
+ * `POST /api/operator/sessions/{id}/runs/{run_id}/cancel`.
+ *
+ * Idempotent: `already_terminal=true` with `code="RUN_ALREADY_TERMINAL"`
+ * indicates the run had already reached a terminal status before the cancel
+ * request arrived.  Callers can therefore retry safely.
+ */
+export const cancelRunResponseSchema = z.object({
+  run: operatorRunInfoSchema,
+  session_id: z.string(),
+  run_id: z.string(),
+  already_terminal: z.boolean(),
+  code: z.string().optional(),
 });
 
 /** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */
