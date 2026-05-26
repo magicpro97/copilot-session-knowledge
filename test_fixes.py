@@ -8,6 +8,7 @@ test_fixes.py — Tests for the three limitation fixes:
 Run: python3 test_fixes.py
 """
 
+import builtins
 import json
 import os
 import plistlib
@@ -23,6 +24,35 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+
+_WINDOWS_TTY = os.name == "nt" and sys.stdout.isatty()
+_ORIG_PRINT = builtins.print
+
+
+def _safe_print(*values, sep=" ", end="\n", file=None, flush=False):
+    """ASCII-escape and flush Windows TTY output to avoid partial-line stalls."""
+    target = sys.stdout if file is None else file
+    if target is sys.stdout and _WINDOWS_TTY:
+        text = sep.join(str(value) for value in values) + end
+        sys.stdout.write(text.encode("ascii", "backslashreplace").decode("ascii"))
+        sys.stdout.flush()
+        return
+    _ORIG_PRINT(*values, sep=sep, end=end, file=target, flush=flush)
+
+
+print = _safe_print
+
+_ORIG_SUBPROCESS_RUN = subprocess.run
+
+
+def _run_utf8_text(*args, **kwargs):
+    """Run subprocesses with deterministic Windows text decoding when requested."""
+    if os.name == "nt" and (kwargs.get("text") is True or kwargs.get("universal_newlines") is True):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    return _ORIG_SUBPROCESS_RUN(*args, **kwargs)
+
+
 PASS = 0
 FAIL = 0
 REPO = Path(__file__).parent
@@ -32,7 +62,8 @@ def test(name: str, condition: bool, detail: str = ""):
     global PASS, FAIL
     if condition:
         PASS += 1
-        print(f"  ✅ {name}")
+        if not _WINDOWS_TTY:
+            print(f"  ✅ {name}")
     else:
         FAIL += 1
         print(f"  ❌ {name}" + (f" — {detail}" if detail else ""))
@@ -248,7 +279,7 @@ _briefing_env["HOME"] = str(_briefing_home)
 _briefing_env["USERPROFILE"] = str(_briefing_home)
 try:
     # 2a. --for-subagent flag exists and produces output
-    result = subprocess.run(
+    result = _run_utf8_text(
         [sys.executable, str(REPO / "briefing.py"), "code review", "--for-subagent", "--min-confidence", "0"],
         capture_output=True,
         text=True,
@@ -279,7 +310,7 @@ try:
     test("Output is compact (< 2000 chars)", len(output) < 2000, f"Got {len(output)} chars")
 
     # 2c. Regular briefing still works
-    result2 = subprocess.run(
+    result2 = _run_utf8_text(
         [sys.executable, str(REPO / "briefing.py"), "kotlin compose"],
         capture_output=True,
         text=True,
@@ -291,7 +322,7 @@ try:
     test("Regular briefing still works", result2.returncode == 0, f"stdout: {result2.stdout[:100]}")
 
     # 2d. --for-subagent remains compact with explicit mode
-    result3 = subprocess.run(
+    result3 = _run_utf8_text(
         [
             sys.executable,
             str(REPO / "briefing.py"),
@@ -318,7 +349,7 @@ try:
     )
 
     # 2e. --pack exposes machine-readable briefing surface
-    result4 = subprocess.run(
+    result4 = _run_utf8_text(
         [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--mode", "review", "--pack", "--limit", "1"],
         capture_output=True,
         text=True,
@@ -442,7 +473,7 @@ if sys.platform == "darwin":
         )
 
         # 3d. plutil validates the plist
-        plutil_result = subprocess.run(
+        plutil_result = _run_utf8_text(
             ["plutil", "-lint", str(plist_under_test)],
             capture_output=True,
             text=True,
@@ -1433,7 +1464,7 @@ def _make_doctor_tracer(pid_for: set, loaded_for: set):
                 if label in loaded_for:
                     return subprocess.CompletedProcess(cmd, 0, '{\n  "Label" = "' + label + '";\n}', "")
                 return subprocess.CompletedProcess(cmd, 1, "", "")
-            return subprocess.run(cmd, *a, **kw)
+            return _run_utf8_text(cmd, *a, **kw)
 
         def __getattr__(self, name):
             return getattr(subprocess, name)
@@ -1718,7 +1749,7 @@ _goal_tentacles.mkdir(parents=True)
 _tp = REPO / "tentacle.py"
 
 # Gs1: goal init creates a valid goal.json
-_gs1_res = subprocess.run(
+_gs1_res = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -1767,7 +1798,7 @@ else:
         test(_lbl, False, "goal.json missing")
 
 # Gs2: goal status text output
-_gs2_res = subprocess.run(
+_gs2_res = _run_utf8_text(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "status"],
     capture_output=True,
     text=True,
@@ -1778,7 +1809,7 @@ test("Gs2: goal status shows title", "Test Goal" in _gs2_res.stdout, _gs2_res.st
 test("Gs2: goal status shows active", "active" in _gs2_res.stdout, _gs2_res.stdout[:200])
 
 # Gs3: goal status --format json
-_gs3_res = subprocess.run(
+_gs3_res = _run_utf8_text(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "status", "--format", "json"],
     capture_output=True,
     text=True,
@@ -1796,7 +1827,7 @@ except Exception as _e:
 
 # Gs4: Create a tentacle then goal link it
 _gs4_tname = f"test-t-{_uuid.uuid4().hex[:6]}"
-_gs4_create = subprocess.run(
+_gs4_create = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -1813,7 +1844,7 @@ _gs4_create = subprocess.run(
 )
 test("Gs4: create tentacle exits 0", _gs4_create.returncode == 0, _gs4_create.stderr[:200])
 
-_gs4_link = subprocess.run(
+_gs4_link = _run_utf8_text(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "link", _gs4_tname],
     capture_output=True,
     text=True,
@@ -1855,7 +1886,7 @@ else:
     test("Gs4: meta.json has goal_iteration after link", False, "meta.json missing")
 
 # Gs5a: goal eval --decision continue blocks until the linked tentacle has a terminal handoff
-_gs5_block = subprocess.run(
+_gs5_block = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -1889,7 +1920,7 @@ else:
     test("Gs5b: terminal handoff fixture exists", False, "meta.json missing")
 
 # Gs5b: goal eval --decision continue advances iteration after the terminal handoff lands
-_gs5_res = subprocess.run(
+_gs5_res = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -1933,7 +1964,7 @@ else:
         test(_l, False, "goal.json missing")
 
 # Gs6: goal eval --decision pause sets status=paused
-_gs6_res = subprocess.run(
+_gs6_res = _run_utf8_text(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "eval", "--decision", "pause"],
     capture_output=True,
     text=True,
@@ -1947,7 +1978,7 @@ else:
     test("Gs6: status=paused after eval pause", False, "goal.json missing")
 
 # Gs7: goal resume sets status back to active
-_gs7_res = subprocess.run(
+_gs7_res = _run_utf8_text(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "resume"],
     capture_output=True,
     text=True,
@@ -1963,7 +1994,7 @@ else:
 # Gs8: create --goal-id stores goal_id in meta.json
 _gs8_tname = f"test-gid-{_uuid.uuid4().hex[:6]}"
 _gs8_gid = f"test-goal-{_uuid.uuid4().hex[:8]}"
-_gs8_create = subprocess.run(
+_gs8_create = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -2025,7 +2056,7 @@ _tp_loader = _importlib.util.module_from_spec(_tp_module)
 # Instead, just call _ensure_metrics_schema directly through subprocess
 _gs9_conn.close()
 
-_gs9_check = subprocess.run(
+_gs9_check = _run_utf8_text(
     [
         sys.executable,
         "-c",
@@ -2067,7 +2098,7 @@ else:
     test("Gs9: _ensure_metrics_schema adds iteration column", False, _gs9_check.stderr[:200])
 
 # Gs10: goal eval --decision complete marks goal as completed
-_gs10_res = subprocess.run(
+_gs10_res = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -2098,7 +2129,7 @@ else:
     test("Gs10: completed_at is set", False, "goal.json missing")
 
 # Gs11: goal init --force reinitializes existing goal.json
-_gs10b_res = subprocess.run(
+_gs10b_res = _run_utf8_text(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "eval", "--decision", "continue"],
     capture_output=True,
     text=True,
@@ -2120,7 +2151,7 @@ else:
     test("Gs10b: completed goal stays completed after rejected continue", False, "goal.json missing")
 
 # Gs11: goal init --force reinitializes existing goal.json
-_gs11_res = subprocess.run(
+_gs11_res = _run_utf8_text(
     [
         sys.executable,
         str(_tp),
@@ -2916,7 +2947,7 @@ try:
         _p121_env["USERPROFILE"] = str(_p121_home)
         _seed_priority_db_file(_p121_home / ".copilot" / "session-state" / "knowledge.db", with_priority_col=True)
 
-        _p121_valid = subprocess.run(
+        _p121_valid = _run_utf8_text(
             [
                 sys.executable,
                 str(REPO / "learn.py"),
@@ -2938,7 +2969,7 @@ try:
             f"code={_p121_valid.returncode} stdout={_p121_valid.stdout!r} stderr={_p121_valid.stderr!r}",
         )
 
-        _p121_invalid = subprocess.run(
+        _p121_invalid = _run_utf8_text(
             [
                 sys.executable,
                 str(REPO / "learn.py"),
@@ -3388,7 +3419,7 @@ try:
         _cr_db.commit()
         _cr_db.close()
 
-        _cr_result = subprocess.run(
+        _cr_result = _run_utf8_text(
             [sys.executable, str(REPO / "migrate.py"), str(_cr_db_path)],
             capture_output=True,
             text=True,
