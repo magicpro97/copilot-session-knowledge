@@ -27,6 +27,7 @@ Usage:
     python learn.py --relate "addPatient Lambda" "writes_to" "dataTable"
 
     python learn.py --from-file notes.md          # Bulk import from markdown
+    python learn.py --flush-inbox                 # Replay entries queued while DB was locked
     python learn.py --list                        # List recent entries
     python learn.py --stats                       # Show knowledge stats
 
@@ -55,6 +56,7 @@ if os.name == "nt":
 TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
+LEARN_INBOX = Path(os.environ.get("SK_LEARN_INBOX", str(SESSION_STATE / "learn-inbox"))).expanduser()
 
 
 def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
@@ -77,6 +79,116 @@ def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
         )
     except Exception:
         return
+
+
+def _queue_learn_payload(payload: dict) -> Path:
+    """Persist a learn write for later replay when SQLite is temporarily locked."""
+    LEARN_INBOX.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    name = f"{time.strftime('%Y%m%dT%H%M%S')}-{time.time_ns()}-{digest}.json"
+    final_path = LEARN_INBOX / name
+    tmp_path = LEARN_INBOX / f".{name}.tmp"
+    tmp_path.write_text(raw + "\n", encoding="utf-8")
+    os.replace(tmp_path, final_path)
+    return final_path
+
+
+def _build_learn_payload(
+    argv: list[str],
+    entry_kwargs: dict,
+    *,
+    update_cerebrum: bool = False,
+    cerebrum_output: str = "CEREBRUM.md",
+    cerebrum_sections: str | None = None,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "queued_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "reason": "database_locked",
+        "argv": list(argv),
+        "entry": entry_kwargs,
+        "cerebrum": {
+            "update": update_cerebrum,
+            "output": cerebrum_output,
+            "sections": cerebrum_sections,
+        },
+    }
+
+
+def _replay_queued_payload(payload: dict) -> tuple[int, int]:
+    entry = dict(payload.get("entry") or {})
+    entry_id = _write_learn_entry(entry)
+    if entry_id >= 0 and entry.get("category") == "pattern":
+        _emit_knowledge_event_fail_open(
+            "pattern_learned",
+            {
+                "entry_id": entry_id,
+                "title": entry.get("title", ""),
+                "task_id": entry.get("task_id", ""),
+                "wing": entry.get("wing", ""),
+                "room": entry.get("room", ""),
+                "priority": entry.get("priority") or "P2",
+                "confidence": entry.get("confidence"),
+            },
+        )
+    cerebrum_rc = 0
+    cerebrum = payload.get("cerebrum") or {}
+    if entry_id >= 0 and cerebrum.get("update"):
+        cerebrum_rc = _auto_update_cerebrum(
+            cerebrum.get("output") or "CEREBRUM.md",
+            cerebrum.get("sections"),
+            json_mode=True,
+        )
+    return entry_id, cerebrum_rc
+
+
+def _write_learn_entry(entry_kwargs: dict) -> int:
+    """Write an entry through the standard retry path, preserving CLI call shape."""
+    entry = dict(entry_kwargs)
+    category = entry.pop("category")
+    title = entry.pop("title")
+    content = entry.pop("content")
+    return with_retry(add_entry, category, title, content, **entry)
+
+
+def flush_learn_inbox(limit: int = 100) -> dict:
+    """Replay queued learn writes in FIFO order."""
+    if not LEARN_INBOX.exists():
+        return {"status": "ok", "processed": 0, "remaining": 0, "failed": 0, "cerebrum_failed": 0}
+
+    files = sorted(LEARN_INBOX.glob("*.json"))
+    processed = 0
+    failed = 0
+    cerebrum_failed = 0
+    busy = False
+
+    for path in files[: max(0, limit)]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            _, cerebrum_rc = _replay_queued_payload(payload)
+            path.unlink()
+            processed += 1
+            if cerebrum_rc != 0:
+                cerebrum_failed += 1
+        except sqlite3.OperationalError as exc:
+            if _is_busy_error(exc):
+                busy = True
+                break
+            failed += 1
+            path.rename(path.with_suffix(path.suffix + ".failed"))
+        except Exception:
+            failed += 1
+            path.rename(path.with_suffix(path.suffix + ".failed"))
+
+    remaining = len(list(LEARN_INBOX.glob("*.json"))) if LEARN_INBOX.exists() else 0
+    return {
+        "status": "busy" if busy else "ok",
+        "processed": processed,
+        "remaining": remaining,
+        "failed": failed,
+        "cerebrum_failed": cerebrum_failed,
+    }
 
 
 # Wing auto-detection rules: tag patterns → wing
@@ -1599,6 +1711,27 @@ def main():
         show_stats()
         return
 
+    if "--flush-inbox" in args:
+        limit = 100
+        if "--limit" in args:
+            idx = args.index("--limit")
+            limit = int(args[idx + 1]) if idx + 1 < len(args) else 100
+        result = flush_learn_inbox(limit)
+        if "--json" in args:
+            print(json.dumps(result, indent=2))
+        else:
+            print(
+                "Learn inbox flush: "
+                f"{result['processed']} processed, {result['remaining']} remaining, {result['failed']} failed"
+            )
+            if result["status"] == "busy":
+                print("  DB still busy; retry later.", file=sys.stderr)
+            if result.get("cerebrum_failed"):
+                print("  Cerebrum refresh failed for one or more replayed entries.", file=sys.stderr)
+        if result["status"] == "busy" or result["failed"] or result.get("cerebrum_failed"):
+            sys.exit(1)
+        return
+
     if "--from-file" in args:
         idx = args.index("--from-file")
         if idx + 1 < len(args):
@@ -1912,39 +2045,73 @@ def main():
         else:
             print(f"Recording {category}...")
 
-    entry_id = with_retry(
-        add_entry,
-        category,
-        title,
-        content,
-        tags=tags,
-        session_id=session_id,
-        confidence=confidence,
-        wing=wing,
-        room=room,
-        facts=facts,
-        skip_gate=skip_gate,
-        skip_scan=skip_scan,
-        task_id=task_id,
-        affected_files=affected_files,
-        source_file=source_file,
-        start_line=start_line,
-        end_line=end_line,
-        code_language=code_language,
-        code_snippet=code_snippet,
-        code_location_set=code_location_set,
-        quiet=json_mode,
-        error_type=error_type,
-        root_cause=root_cause,
-        severity=severity,
-        fix_steps=fix_steps,
-        valence=valence,
-        intensity=intensity,
-        priority=priority,
-        agent_id=agent_id,
-        certainty=certainty,
-        caveats=caveats,
-    )
+    entry_kwargs = {
+        "category": category,
+        "title": title,
+        "content": content,
+        "tags": tags,
+        "session_id": session_id,
+        "confidence": confidence,
+        "wing": wing,
+        "room": room,
+        "facts": facts,
+        "skip_gate": skip_gate,
+        "skip_scan": skip_scan,
+        "task_id": task_id,
+        "affected_files": affected_files,
+        "source_file": source_file,
+        "start_line": start_line,
+        "end_line": end_line,
+        "code_language": code_language,
+        "code_snippet": code_snippet,
+        "code_location_set": code_location_set,
+        "quiet": json_mode,
+        "error_type": error_type,
+        "root_cause": root_cause,
+        "severity": severity,
+        "fix_steps": fix_steps,
+        "valence": valence,
+        "intensity": intensity,
+        "priority": priority,
+        "agent_id": agent_id,
+        "certainty": certainty,
+        "caveats": caveats,
+    }
+
+    try:
+        entry_id = _write_learn_entry(entry_kwargs)
+    except sqlite3.OperationalError as exc:
+        if _is_busy_error(exc) and os.environ.get("SK_LEARN_QUEUE_ON_LOCK", "1") != "0":
+            queued_path = _queue_learn_payload(
+                _build_learn_payload(
+                    args,
+                    entry_kwargs,
+                    update_cerebrum=update_cerebrum,
+                    cerebrum_output=cerebrum_output,
+                    cerebrum_sections=cerebrum_sections,
+                )
+            )
+            if json_mode:
+                print(
+                    json.dumps(
+                        {
+                            "status": "queued",
+                            "reason": "database_locked",
+                            "queue_path": str(queued_path),
+                            "flush_command": "sk learn --flush-inbox",
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(
+                    f"  DB busy after retries; queued learn entry for later flush: {queued_path.name}",
+                    file=sys.stderr,
+                )
+                print("  Run `sk learn --flush-inbox` to replay queued entries.", file=sys.stderr)
+            return
+        raise
 
     if entry_id >= 0 and category == "pattern":
         _emit_knowledge_event_fail_open(

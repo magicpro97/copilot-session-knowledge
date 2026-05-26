@@ -33,6 +33,7 @@ Scenarios covered:
 
 import importlib.util
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -789,6 +790,114 @@ def test_from_file_cerebrum_output_no_swallow():
     test("from_file_no_swallow: exit code None (success)", code is None)
 
 
+def test_learn_queues_entry_when_db_locked():
+    """A locked DB queues the learn request instead of losing it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        inbox = Path(tmpdir) / "learn-inbox"
+
+        def busy_with_retry(func, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        captured_out = io.StringIO()
+        captured_err = io.StringIO()
+        exit_code = None
+        with ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(learn, "LEARN_INBOX", inbox))
+            stack.enter_context(unittest.mock.patch.object(learn, "with_retry", busy_with_retry))
+            stack.enter_context(unittest.mock.patch("sys.stdout", captured_out))
+            stack.enter_context(unittest.mock.patch("sys.stderr", captured_err))
+            stack.enter_context(unittest.mock.patch.object(sys, "argv", [
+                "learn.py", "--decision", "Queued lock test", "Queue this when locked.",
+                "--tags", "sqlite,queue", "--wing", "devops", "--room", "tooling",
+            ]))
+            try:
+                learn.main()
+            except SystemExit as exc:
+                exit_code = exc.code
+
+        queued = list(inbox.glob("*.json"))
+        payload = json.loads(queued[0].read_text(encoding="utf-8")) if queued else {}
+        entry = payload.get("entry", {})
+        test("learn_inbox_lock: exits normally after queueing", exit_code is None)
+        test("learn_inbox_lock: one queued payload written", len(queued) == 1)
+        test("learn_inbox_lock: payload category preserved", entry.get("category") == "decision")
+        test("learn_inbox_lock: payload title preserved", entry.get("title") == "Queued lock test")
+        test("learn_inbox_lock: stderr mentions flush command", "flush-inbox" in captured_err.getvalue())
+
+
+def test_flush_inbox_replays_and_removes_payload():
+    """Queued entries replay through add_entry and are removed after success."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        inbox = Path(tmpdir) / "learn-inbox"
+        payload = learn._build_learn_payload(["--pattern", "Replay title", "Replay body"], {
+            "category": "pattern", "title": "Replay title", "content": "Replay body",
+            "tags": "", "session_id": "sess", "confidence": None, "wing": "devops", "room": "tooling",
+            "facts": [], "skip_gate": True, "skip_scan": True, "task_id": "", "affected_files": [],
+            "source_file": "", "start_line": 0, "end_line": 0, "code_language": "", "code_snippet": "",
+            "code_location_set": False, "quiet": True, "error_type": "", "root_cause": "", "severity": "",
+            "fix_steps": "", "valence": "", "intensity": None, "priority": "", "agent_id": "",
+            "certainty": "", "caveats": "",
+        }, update_cerebrum=True, cerebrum_output="OUT.md", cerebrum_sections="mistakes")
+        replayed = {}
+        auto_updated = {}
+
+        def fake_with_retry(func, *args, **kwargs):
+            replayed["title"] = args[1]
+            return 123
+
+        def fake_auto_update(output_path, sections, *, json_mode=False):
+            auto_updated["output"] = output_path
+            auto_updated["sections"] = sections
+            auto_updated["json_mode"] = json_mode
+            return 0
+
+        with ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(learn, "LEARN_INBOX", inbox))
+            stack.enter_context(unittest.mock.patch.object(learn, "with_retry", fake_with_retry))
+            stack.enter_context(unittest.mock.patch.object(learn, "_emit_knowledge_event_fail_open", lambda *a, **k: None))
+            stack.enter_context(unittest.mock.patch.object(learn, "_auto_update_cerebrum", fake_auto_update))
+            learn._queue_learn_payload(payload)
+            result = learn.flush_learn_inbox()
+
+        test("flush_inbox: processed queued payload", result["processed"] == 1)
+        test("flush_inbox: no remaining queued payload", result["remaining"] == 0)
+        test("flush_inbox: replayed title preserved", replayed.get("title") == "Replay title")
+        test("flush_inbox: replays cerebrum output", auto_updated.get("output") == "OUT.md")
+        test("flush_inbox: replays cerebrum sections", auto_updated.get("sections") == "mistakes")
+        test("flush_inbox: keeps flush stdout clean", auto_updated.get("json_mode") is True)
+
+
+def test_flush_inbox_unlinks_after_cerebrum_failure():
+    """A successful DB replay must not be retried just because cerebrum export failed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        inbox = Path(tmpdir) / "learn-inbox"
+        payload = learn._build_learn_payload(["--pattern", "Replay title", "Replay body"], {
+            "category": "pattern", "title": "Replay title", "content": "Replay body",
+            "tags": "", "session_id": "sess", "confidence": None, "wing": "devops", "room": "tooling",
+            "facts": [], "skip_gate": True, "skip_scan": True, "task_id": "", "affected_files": [],
+            "source_file": "", "start_line": 0, "end_line": 0, "code_language": "", "code_snippet": "",
+            "code_location_set": False, "quiet": True, "error_type": "", "root_cause": "", "severity": "",
+            "fix_steps": "", "valence": "", "intensity": None, "priority": "", "agent_id": "",
+            "certainty": "", "caveats": "",
+        }, update_cerebrum=True)
+
+        def fake_with_retry(func, *args, **kwargs):
+            return 123
+
+        with ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(learn, "LEARN_INBOX", inbox))
+            stack.enter_context(unittest.mock.patch.object(learn, "with_retry", fake_with_retry))
+            stack.enter_context(unittest.mock.patch.object(learn, "_emit_knowledge_event_fail_open", lambda *a, **k: None))
+            stack.enter_context(unittest.mock.patch.object(learn, "_auto_update_cerebrum", lambda *a, **k: 7))
+            learn._queue_learn_payload(payload)
+            result = learn.flush_learn_inbox()
+
+        test("flush_inbox_cerebrum_fail: DB replay counted processed", result["processed"] == 1)
+        test("flush_inbox_cerebrum_fail: queue file removed after DB replay", result["remaining"] == 0)
+        test("flush_inbox_cerebrum_fail: DB replay not marked failed", result["failed"] == 0)
+        test("flush_inbox_cerebrum_fail: cerebrum failure counted separately", result["cerebrum_failed"] == 1)
+
+
 # ===========================================================================
 # Entry point
 # ===========================================================================
@@ -835,6 +944,9 @@ def _run_all():
     test_cerebrum_output_flag_no_content_pollution()
     test_cerebrum_sections_flag_no_value()
     test_from_file_cerebrum_output_no_swallow()
+    test_learn_queues_entry_when_db_locked()
+    test_flush_inbox_replays_and_removes_payload()
+    test_flush_inbox_unlinks_after_cerebrum_failure()
 
     print(f"\n  {_PASS} passed, {_FAIL} failed\n")
     return _FAIL
