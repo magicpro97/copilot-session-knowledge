@@ -34,6 +34,7 @@ import {
   trendScoutStatusResponseSchema,
   trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
+  healthResponseSchema,
   tentacleStatusResponseSchema,
   skillMetricsResponseSchema,
   skillCatalogResponseSchema,
@@ -176,18 +177,21 @@ describe("api schemas", () => {
     expect(parsed.communities[0].top_relation_types?.[0]?.type).toBe("CITED_WITH");
   });
 
-  it("parses sync diagnostics status response", () => {
+  it("parses sync diagnostics status response (redacted, no absolute paths)", () => {
     const parsed = syncStatusResponseSchema.parse({
       status: "pending",
       configured: true,
       connection: {
         configured: true,
         endpoint: "https://sync.local",
-        config_path: "/home/user/.copilot/tools/sync-config.json",
+        // Issue #561: backend emits non-PII presence flag + stable label
+        // instead of an absolute config_path.
+        config_path_present: true,
+        config_path_label: "~/.copilot/tools/sync-config.json",
       },
       runtime: {
         generated_at: "2026-01-01T00:00:00Z",
-        db_path: "/home/user/.copilot/session-state/knowledge.db",
+        // Issue #561: db_path intentionally absent.
         db_mode: "file",
         sync_tables: {
           sync_state: true,
@@ -224,9 +228,40 @@ describe("api schemas", () => {
     });
 
     expect(parsed.connection.endpoint).toBe("https://sync.local");
+    expect(parsed.connection.config_path_present).toBe(true);
+    expect(parsed.connection.config_path_label).toBe("~/.copilot/tools/sync-config.json");
+    expect(parsed.connection.config_path).toBeUndefined();
+    expect(parsed.runtime.db_path).toBeUndefined();
     expect(parsed.runtime.db_mode).toBe("file");
     expect(parsed.operator_actions[0].safe).toBe(true);
     expect(parsed.failed_ops).toBe(1);
+  });
+
+  it("parses liveness-only /healthz payload (issue #560)", () => {
+    // New contract: only status + sync_status_endpoint are emitted.
+    const parsed = healthResponseSchema.parse({
+      status: "ok",
+      sync_status_endpoint: "/api/sync/status",
+    });
+    expect(parsed.status).toBe("ok");
+    expect(parsed.sync_status_endpoint).toBe("/api/sync/status");
+    expect(parsed.schema_version).toBeUndefined();
+    expect(parsed.sessions).toBeUndefined();
+    expect(parsed.knowledge_entries).toBeUndefined();
+    expect(parsed.last_indexed_at).toBeUndefined();
+  });
+
+  it("still parses legacy /healthz payload with corpus fields", () => {
+    // Back-compat: older backends that still emit these must not throw.
+    const parsed = healthResponseSchema.parse({
+      status: "ok",
+      schema_version: 7,
+      sessions: 42,
+      knowledge_entries: 100,
+      last_indexed_at: "2026-01-01T00:00:00Z",
+    });
+    expect(parsed.schema_version).toBe(7);
+    expect(parsed.sessions).toBe(42);
   });
 
   it("parses trend scout diagnostics status response", () => {

@@ -288,9 +288,12 @@ describe("InsightsLayout — health badge", () => {
     window.history.pushState({}, "", "/v2/insights");
   });
 
-  it("shows health status and session count", () => {
+  it("shows liveness-only health status (issue #560: no schema_version/sessions)", () => {
     render(<InsightsLayout>children</InsightsLayout>);
-    expect(screen.getByText(/ok.*schema v5.*42 sessions/)).toBeInTheDocument();
+    expect(screen.getByText(/Health: ok/)).toBeInTheDocument();
+    // Removed corpus fields must not leak through the badge.
+    expect(screen.queryByText(/schema v/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sessions/)).not.toBeInTheDocument();
   });
 });
 

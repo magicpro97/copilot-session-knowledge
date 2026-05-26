@@ -1848,7 +1848,7 @@ describe("DebugLogTab — SubagentActivityPanel integration", () => {
       "error"
     );
     expect(screen.getByTestId("subagent-activity-row-span-b-outcome")).toHaveTextContent(
-      "Failed: rate_limited"
+      "Rate limited"
     );
   });
 

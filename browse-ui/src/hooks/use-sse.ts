@@ -5,9 +5,9 @@ import {
   useRef,
   useState,
   useCallback,
+  useReducer,
   type Dispatch,
   type MutableRefObject,
-  type SetStateAction,
 } from "react";
 import type { LiveEvent } from "@/lib/api/types";
 import { liveEventSchema } from "@/lib/api/schemas";
@@ -21,19 +21,62 @@ type UseSseOptions = {
   authToken?: string;
 };
 
+/**
+ * Maximum number of live events retained in the in-memory buffer.
+ * Excess events are dropped (count-only, no payloads retained) and surfaced
+ * via `dropped`/`capped` from {@link useSSE} so the UI can warn the operator
+ * instead of silently truncating history.
+ */
+export const LIVE_EVENT_BUFFER_LIMIT = 200;
+
+type BufferState = {
+  events: LiveEvent[];
+  dropped: number;
+};
+
+type BufferAction = { type: "push"; event: LiveEvent } | { type: "clear" };
+
+const initialBufferState: BufferState = { events: [], dropped: 0 };
+
+/**
+ * Pure reducer for the live-event buffer. Both `events` and `dropped` live in
+ * a single state so overflow accounting happens atomically without calling a
+ * setter inside another setter's updater (which would double-count under
+ * React StrictMode's intentional double-invocation of updaters in dev).
+ */
+function bufferReducer(state: BufferState, action: BufferAction): BufferState {
+  switch (action.type) {
+    case "push": {
+      const next = [action.event, ...state.events];
+      if (next.length > LIVE_EVENT_BUFFER_LIMIT) {
+        // Drop accounting is O(1): only counts are retained — never payloads
+        // or identifiers from the dropped events.
+        const overflow = next.length - LIVE_EVENT_BUFFER_LIMIT;
+        next.length = LIVE_EVENT_BUFFER_LIMIT;
+        return { events: next, dropped: state.dropped + overflow };
+      }
+      return { events: next, dropped: state.dropped };
+    }
+    case "clear":
+      return initialBufferState;
+    default:
+      return state;
+  }
+}
+
 function pushEvent(
   raw: unknown,
   pausedRef: MutableRefObject<boolean>,
-  setEvents: Dispatch<SetStateAction<LiveEvent[]>>
+  dispatch: Dispatch<BufferAction>
 ) {
   if (pausedRef.current) return;
   const parsed = liveEventSchema.safeParse(raw);
   if (!parsed.success) return;
-  setEvents((prev) => [parsed.data, ...prev].slice(0, 200));
+  dispatch({ type: "push", event: parsed.data });
 }
 
 export function useSSE(url: string, options?: UseSseOptions) {
-  const [events, setEvents] = useState<LiveEvent[]>([]);
+  const [{ events, dropped }, dispatch] = useReducer(bufferReducer, initialBufferState);
   const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
   const [paused, setPaused] = useState(false);
   const esRef = useRef<EventSource | null>(null);
@@ -48,9 +91,13 @@ export function useSSE(url: string, options?: UseSseOptions) {
     });
   }, []);
 
+  const clear = useCallback(() => {
+    dispatch({ type: "clear" });
+  }, []);
+
   useEffect(() => {
     if (previousUrlRef.current !== url) {
-      setEvents([]);
+      dispatch({ type: "clear" });
       previousUrlRef.current = url;
     }
     if (options?.enabled === false) {
@@ -103,7 +150,7 @@ export function useSSE(url: string, options?: UseSseOptions) {
               } catch {
                 continue;
               }
-              pushEvent(raw, pausedRef, setEvents);
+              pushEvent(raw, pausedRef, dispatch);
             }
           }
 
@@ -133,7 +180,7 @@ export function useSSE(url: string, options?: UseSseOptions) {
       } catch {
         return;
       }
-      pushEvent(raw, pausedRef, setEvents);
+      pushEvent(raw, pausedRef, dispatch);
     };
     es.onerror = () => {
       setStatus(es.readyState === EventSource.CLOSED ? "closed" : "connecting");
@@ -145,5 +192,14 @@ export function useSSE(url: string, options?: UseSseOptions) {
     };
   }, [url, options?.authToken, options?.enabled, options?.transport]);
 
-  return { events, status, paused, toggle };
+  return {
+    events,
+    status,
+    paused,
+    toggle,
+    dropped,
+    capped: dropped > 0,
+    bufferLimit: LIVE_EVENT_BUFFER_LIMIT,
+    clear,
+  };
 }

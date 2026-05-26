@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useSSE } from "@/hooks/use-sse";
+import { useSSE, LIVE_EVENT_BUFFER_LIMIT } from "@/hooks/use-sse";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -148,5 +149,105 @@ describe("useSSE", () => {
         headers: {},
       })
     );
+  });
+});
+
+// ── Buffer cap (#566) ─────────────────────────────────────────────────────────
+
+function BufferProbe({ url }: { url: string }) {
+  const { events, dropped, capped, bufferLimit, clear } = useSSE(url, {
+    transport: "eventsource",
+  });
+  return (
+    <div>
+      <span data-testid="events-len">{events.length}</span>
+      <span data-testid="dropped">{dropped}</span>
+      <span data-testid="capped">{capped ? "yes" : "no"}</span>
+      <span data-testid="limit">{bufferLimit}</span>
+      <button type="button" data-testid="clear" onClick={clear}>
+        clear
+      </button>
+    </div>
+  );
+}
+
+describe("useSSE — buffer cap", () => {
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function emitEvent(es: MockEventSource, id: number) {
+    es.emitMessage({
+      id,
+      category: "patterns",
+      title: `event-${id}`,
+      wing: "alpha",
+      room: "one",
+      created_at: "2026-05-04T00:00:00Z",
+    });
+  }
+
+  it("exposes the named buffer limit and starts uncapped", () => {
+    render(<BufferProbe url="/api/live?stream=cap" />);
+    expect(screen.getByTestId("limit")).toHaveTextContent(String(LIVE_EVENT_BUFFER_LIMIT));
+    expect(screen.getByTestId("capped")).toHaveTextContent("no");
+    expect(screen.getByTestId("dropped")).toHaveTextContent("0");
+  });
+
+  it("retains at most LIVE_EVENT_BUFFER_LIMIT events and counts overflow as dropped", async () => {
+    render(<BufferProbe url="/api/live?stream=cap" />);
+    const es = MockEventSource.instances[0];
+    const total = LIVE_EVENT_BUFFER_LIMIT + 5;
+    await act(async () => {
+      for (let i = 0; i < total; i += 1) emitEvent(es, i);
+    });
+    expect(screen.getByTestId("events-len")).toHaveTextContent(String(LIVE_EVENT_BUFFER_LIMIT));
+    expect(screen.getByTestId("dropped")).toHaveTextContent("5");
+    expect(screen.getByTestId("capped")).toHaveTextContent("yes");
+  });
+
+  it("clear() resets events and dropped count without reconnecting", async () => {
+    render(<BufferProbe url="/api/live?stream=cap" />);
+    const es = MockEventSource.instances[0];
+    await act(async () => {
+      for (let i = 0; i < LIVE_EVENT_BUFFER_LIMIT + 3; i += 1) emitEvent(es, i);
+    });
+    expect(screen.getByTestId("dropped")).toHaveTextContent("3");
+
+    await act(async () => {
+      screen.getByTestId("clear").click();
+    });
+
+    expect(screen.getByTestId("events-len")).toHaveTextContent("0");
+    expect(screen.getByTestId("dropped")).toHaveTextContent("0");
+    expect(screen.getByTestId("capped")).toHaveTextContent("no");
+    // No new EventSource constructed — clear is purely client-side
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(es.closed).toBe(false);
+  });
+
+  it("counts each overflow event exactly once under React.StrictMode", async () => {
+    // Regression: pushEvent previously called setDropped inside setEvents'
+    // updater. Under StrictMode (dev-only), React intentionally double-invokes
+    // updater functions to surface impure logic, which double-counted dropped
+    // events. The reducer-based buffer makes the update atomic.
+    render(
+      <StrictMode>
+        <BufferProbe url="/api/live?stream=strict" />
+      </StrictMode>
+    );
+    const es = MockEventSource.instances.find((i) => !i.closed)!;
+    const overflow = 7;
+    const total = LIVE_EVENT_BUFFER_LIMIT + overflow;
+    await act(async () => {
+      for (let i = 0; i < total; i += 1) emitEvent(es, i);
+    });
+    expect(screen.getByTestId("events-len")).toHaveTextContent(String(LIVE_EVENT_BUFFER_LIMIT));
+    expect(screen.getByTestId("dropped")).toHaveTextContent(String(overflow));
   });
 });

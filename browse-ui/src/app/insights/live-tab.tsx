@@ -30,7 +30,7 @@ function connectionTone(status: "connecting" | "open" | "closed"): string {
 function LiveTabContent({ active = true }: LiveTabProps) {
   const { host, diagnosticsEnabled } = useInsightsTab();
   const url = createLiveStreamUrl(host);
-  const { events, status, paused, toggle } = useSSE(url, {
+  const { events, status, paused, toggle, dropped, capped, bufferLimit, clear } = useSSE(url, {
     enabled: active && diagnosticsEnabled,
     transport: host.base_url ? "fetch" : "eventsource",
     authToken: host.token || undefined,
@@ -45,6 +45,26 @@ function LiveTabContent({ active = true }: LiveTabProps) {
         </Badge>
         <Button type="button" variant="outline" size="sm" onClick={toggle}>
           {paused ? "Resume" : "Pause"}
+        </Button>
+        {capped ? (
+          <Badge
+            data-testid="live-buffer-dropped-badge"
+            variant="outline"
+            className="gap-1.5 border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+            aria-label={`${dropped} live events dropped due to ${bufferLimit}-event buffer cap`}
+            title={`Live buffer holds the most recent ${bufferLimit} events. Older events are dropped (count only — no payloads retained).`}
+          >
+            {dropped} events dropped
+          </Badge>
+        ) : null}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={clear}
+          data-testid="live-clear-buffer"
+        >
+          Clear buffer
         </Button>
         <span className="text-muted-foreground text-xs">
           {paused ? "Paused: incoming events are intentionally dropped." : "Receiving live events."}

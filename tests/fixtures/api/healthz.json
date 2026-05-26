@@ -2,16 +2,12 @@
   "_meta": {
     "id": "healthz",
     "endpoint": "GET /healthz",
-    "description": "Health-check endpoint — always 200 with schema/session counts"
+    "description": "Health-check endpoint — liveness-only payload (#560). No DB reads; no activity counts; no timestamps."
   },
   "status": 200,
   "content_type_prefix": "application/json",
   "body_shape": {
     "status": "ok",
-    "schema_version": "__int__",
-    "sessions": "__int__",
-    "knowledge_entries": "__int__",
-    "last_indexed_at": "__any__",
     "sync_status_endpoint": "/api/sync/status"
   }
 }

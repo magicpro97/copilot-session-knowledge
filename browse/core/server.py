@@ -732,6 +732,31 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 flush=True,
             )
 
+        # ── Issue #562: enforce readonly ACL for static pairing slot ────────
+        # The static slot is documented `acl: readonly` (browse/core/pairing.py).
+        # Reject ALL mutating /api/operator/* requests from static-slot callers
+        # centrally so individual handlers cannot accidentally accept a static
+        # token for create/delete/prompt/adopt/confirm/refresh/etc.  Read-only
+        # GETs are unaffected (handled in _handle_get_like).  Per-route guards
+        # in browse/api/pairing.py remain in place as defence in depth.
+        if session_kind == "static" and path.startswith("/api/operator/"):
+            import json as _json562  # noqa: PLC0415
+
+            body562 = _json562.dumps(
+                {
+                    "error": "static pairing slot is read-only; this endpoint is not available to demo sessions",
+                    "code": "READONLY_STATIC_SESSION",
+                }
+            ).encode("utf-8")
+            self._send(
+                body562,
+                "application/json",
+                403,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+            )
+            return
+
         if is_operator_path and cors_ok:
             # Allowlisted cross-origin request: bypass same-origin CSRF check
             is_https = is_https_request(self.headers)

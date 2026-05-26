@@ -94,15 +94,24 @@ def _classify_connection_target(raw_value: str) -> str:
     return "provider-backed-or-custom"
 
 
-def _main_db_path(db) -> str:
+def _main_db_mode(db) -> str:
+    """Return only the derived mode ('file' or 'memory') for the main DB.
+
+    Issue #561: do NOT return the absolute filesystem path — that would leak the
+    OS username and home-directory layout to any authenticated client (including
+    static/demo sessions). PRAGMA database_list[2] is read just to discriminate
+    in-memory vs file-backed; the path string itself is never returned.
+    """
     try:
         row = db.execute("PRAGMA database_list").fetchone()
         if not row or len(row) < 3:
-            return ":memory:"
+            return "memory"
         db_path = str(row[2] or "").strip()
-        return db_path or ":memory:"
+        if not db_path or db_path == ":memory:":
+            return "memory"
+        return "file"
     except Exception:
-        return ":memory:"
+        return "memory"
 
 
 def _sync_table_presence(db) -> dict:
@@ -149,12 +158,14 @@ def handle_sync_status(db, params, token, nonce) -> tuple:
         )
 
     sync_table_presence = _sync_table_presence(db)
-    db_path = _main_db_path(db)
+    db_mode = _main_db_mode(db)
     available_sync_tables = sum(1 for _name, exists in sync_table_presence.items() if exists)
     runtime = {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "db_path": db_path,
-        "db_mode": "file" if db_path != ":memory:" else "memory",
+        # NOTE: db_path is intentionally OMITTED (issue #561) — absolute paths
+        # would leak the OS username and home-directory layout.  Only the
+        # derived mode is exposed.
+        "db_mode": db_mode,
         "sync_tables": sync_table_presence,
         "sync_tables_ready": available_sync_tables == len(_SYNC_TABLES),
         "available_sync_tables": available_sync_tables,
@@ -220,7 +231,12 @@ def handle_sync_status(db, params, token, nonce) -> tuple:
         "connection": {
             "configured": configured,
             "endpoint": connection_preview or None,
-            "config_path": str(_SYNC_CONFIG_PATH),
+            # Issue #561 (Opus M-1): never emit the absolute config path —
+            # str(Path.home()/...) leaks the OS username and home-directory
+            # layout. Expose only a non-PII presence flag and a stable label
+            # that UIs can show to operators.
+            "config_path_present": _SYNC_CONFIG_PATH.is_file(),
+            "config_path_label": "~/.copilot/tools/sync-config.json",
             "target": connection_target,
         },
         "rollout": {

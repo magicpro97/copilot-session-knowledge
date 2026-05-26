@@ -401,6 +401,113 @@ test("#23: run_all_tests.py subprocess.run sets errors='replace'",
      "run_all_tests.py must pass errors='replace' to subprocess.run")
 
 
+# ─── Section 5b: #561 /api/sync/status must not expose absolute db_path ──────
+
+print("\n🔒 #561 regression — /api/sync/status redacts absolute db_path")
+
+import json as _json561
+import sqlite3 as _sqlite561
+import sys as _sys561
+import tempfile as _tempfile561
+from pathlib import Path as _Path561
+
+_sys561.path.insert(0, str(REPO))
+
+
+def _looks_absolute_path(value: str) -> bool:
+    """True if value smells like an absolute local DB path (POSIX or Windows)."""
+    if not value or not isinstance(value, str):
+        return False
+    if value.startswith(("/Users/", "/home/", "/root/", "/private/")):
+        return True
+    # Windows drive letter, e.g. C:\... or C:/...
+    if len(value) >= 3 and value[1:3] in (":\\", ":/"):
+        return True
+    return False
+
+
+def _walk_string_values(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for v in node.values():
+            yield from _walk_string_values(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_string_values(v)
+
+
+def _run_sync_status_handler(db):
+    from browse.routes.sync import handle_sync_status
+
+    body, ct, status = handle_sync_status(db, {}, "", "nonce")
+    payload = _json561.loads(body.decode("utf-8"))
+    return status, ct, payload
+
+
+# 5b-1: file-backed DB → mode is "file" but absolute db_path is NOT emitted
+with _tempfile561.TemporaryDirectory() as _tmpdir561:
+    _db_file = _Path561(_tmpdir561) / "browse_sync.db"
+    _db = _sqlite561.connect(str(_db_file))
+    try:
+        _status, _ct, _payload = _run_sync_status_handler(_db)
+        test("#561 file-backed: handler status 200", _status == 200)
+        test("#561 file-backed: content-type json", _ct == "application/json")
+        runtime = _payload.get("runtime") or {}
+        test("#561 file-backed: runtime is dict", isinstance(runtime, dict))
+        test("#561 file-backed: runtime omits db_path", "db_path" not in runtime)
+        test("#561 file-backed: top-level payload omits db_path", "db_path" not in _payload)
+        test("#561 file-backed: db_mode preserved as 'file'", runtime.get("db_mode") == "file")
+
+        # No payload value anywhere may contain the temp path or look absolute.
+        # Opus M-1 follow-up: there is NO whitelist — the previous
+        # connection.config_path leaked Path.home() (OS username + home dir),
+        # so it has been replaced with non-PII fields (config_path_present /
+        # config_path_label). Any absolute path anywhere in the payload now
+        # fails this assertion.
+        offenders = [
+            v for v in _walk_string_values(_payload)
+            if _looks_absolute_path(v) or (_tmpdir561 in v) or (str(_db_file) in v)
+        ]
+        test(
+            "#561 file-backed: no absolute filesystem paths in response body",
+            offenders == [],
+            detail=f"offenders={offenders!r}",
+        )
+
+        # Opus M-1: connection block must not carry an absolute config_path,
+        # but should still surface non-PII presence/label so operator UIs work.
+        connection_block = _payload.get("connection") or {}
+        test(
+            "#561 Opus M-1: connection.config_path absent",
+            "config_path" not in connection_block,
+            detail=f"connection={connection_block!r}",
+        )
+        test(
+            "#561 Opus M-1: connection.config_path_present is bool",
+            isinstance(connection_block.get("config_path_present"), bool),
+        )
+        test(
+            "#561 Opus M-1: connection.config_path_label is tilde-prefixed",
+            isinstance(connection_block.get("config_path_label"), str)
+            and connection_block.get("config_path_label", "").startswith("~/"),
+            detail=f"label={connection_block.get('config_path_label')!r}",
+        )
+    finally:
+        _db.close()
+
+
+# 5b-2: in-memory DB → mode is "memory" and db_path is NOT emitted either
+_db_mem = _sqlite561.connect(":memory:")
+try:
+    _status_m, _ct_m, _payload_m = _run_sync_status_handler(_db_mem)
+    runtime_m = _payload_m.get("runtime") or {}
+    test("#561 memory: runtime omits db_path", "db_path" not in runtime_m)
+    test("#561 memory: db_mode preserved as 'memory'", runtime_m.get("db_mode") == "memory")
+finally:
+    _db_mem.close()
+
+
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 
 shutil.rmtree(ARTIFACT_DIR, ignore_errors=True)

@@ -7,7 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHealth } from "@/lib/api/hooks";
-import { formatNumber } from "@/lib/formatters";
 import { useHostFeature } from "@/lib/hosts";
 import { useHostState } from "@/providers/host-provider";
 import { KnowledgeTab } from "./knowledge-tab";
@@ -133,10 +132,7 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
             ) : health.isError ? (
               <span>Health: unavailable</span>
             ) : (
-              <span>
-                {health.data?.status} · schema v{health.data?.schema_version} ·{" "}
-                {formatNumber(health.data?.sessions)} sessions
-              </span>
+              <span>Health: {health.data?.status ?? "unknown"}</span>
             )}
           </Badge>
         </div>

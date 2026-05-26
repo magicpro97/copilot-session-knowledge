@@ -1,4 +1,19 @@
-"""browse/routes/health.py — /healthz route (no auth required)."""
+"""browse/routes/health.py — /healthz route (no auth required).
+
+Issue #560: this endpoint is dispatched WITHOUT an auth token, so it must only
+expose liveness-safe fields. Activity counts (sessions, knowledge entries),
+last-indexed timestamps, and any other corpus/usage signals are forbidden — they
+would let unauthenticated hosted/local probes fingerprint operator activity.
+
+Acceptance criteria from #560:
+  - Security: only ``status`` (and at most ``schema_version``) may appear.
+  - UI/UX: hosted-shell/local-backend detection still works.
+  - Performance: O(1) and **no DB reads** for public liveness.
+
+The keep-list is therefore intentionally minimal: ``status`` plus a static
+pointer to ``/api/sync/status`` so existing hosted/local detection logic in the
+UI continues to function.
+"""
 
 import json
 import os
@@ -9,35 +24,15 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.fts import _count_sessions, _get_schema_version
 from browse.core.registry import route
-
-
-def _count_knowledge_entries(db) -> int:
-    try:
-        row = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
-        return int(row[0]) if row else 0
-    except Exception:
-        return 0
-
-
-def _get_last_indexed_at(db) -> str | None:
-    try:
-        row = db.execute("SELECT MAX(indexed_at) FROM sessions WHERE indexed_at IS NOT NULL").fetchone()
-        return str(row[0]) if row and row[0] is not None else None
-    except Exception:
-        return None
 
 
 @route("/healthz", methods=["GET"])
 def handle_healthz(db, params, token, nonce) -> tuple:
+    # Intentionally NO DB access — keep liveness O(1) (issue #560).
     payload = json.dumps(
         {
             "status": "ok",
-            "schema_version": _get_schema_version(db),
-            "sessions": _count_sessions(db),
-            "knowledge_entries": _count_knowledge_entries(db),
-            "last_indexed_at": _get_last_indexed_at(db),
             "sync_status_endpoint": "/api/sync/status",
         }
     )

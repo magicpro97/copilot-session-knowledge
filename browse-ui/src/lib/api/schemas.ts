@@ -314,13 +314,23 @@ export const compareResponseSchema = z.object({
   b: sessionCompareDataSchema,
 });
 
+/**
+ * /healthz response.
+ *
+ * Issue #560: /healthz is liveness-only and is dispatched WITHOUT an auth
+ * token, so the backend now emits only `status` (+ a static
+ * `sync_status_endpoint` pointer used by hosted/local detection). All
+ * activity/corpus fields (`schema_version`, `sessions`, `knowledge_entries`,
+ * `last_indexed_at`) are intentionally redacted. They remain typed as optional
+ * so older backends that still emit them validate without throwing.
+ */
 export const healthResponseSchema = z.object({
   status: z.string(),
-  schema_version: z.number(),
-  sessions: z.number(),
+  sync_status_endpoint: z.string().optional(),
+  schema_version: z.number().optional(),
+  sessions: z.number().optional(),
   knowledge_entries: z.number().optional(),
   last_indexed_at: z.string().nullable().optional(),
-  sync_status_endpoint: z.string().optional(),
 });
 
 /**
@@ -376,7 +386,12 @@ export const trendScoutOperatorActionSchema = operatorActionSchema.extend({
 export const syncConnectionStatusSchema = z.object({
   configured: z.boolean(),
   endpoint: z.string().nullable(),
-  config_path: z.string(),
+  // Issue #561: backend no longer emits the absolute `config_path` (it leaked
+  // the OS username + home-directory layout). Keep it optional so older
+  // backends still parse; the redacted payload uses the two fields below.
+  config_path: z.string().optional(),
+  config_path_present: z.boolean().optional(),
+  config_path_label: z.string().optional(),
   target: z.string().optional(),
 });
 
@@ -388,7 +403,9 @@ export const syncFailureInfoSchema = z.object({
 
 export const syncRuntimeStatusSchema = z.object({
   generated_at: z.string(),
-  db_path: z.string(),
+  // Issue #561: `db_path` is no longer emitted (absolute path leaks the OS
+  // username + home-directory layout). Kept optional for forward/back compat.
+  db_path: z.string().optional(),
   db_mode: z.string(),
   sync_tables: z.record(z.string(), z.boolean()),
   sync_tables_ready: z.boolean(),

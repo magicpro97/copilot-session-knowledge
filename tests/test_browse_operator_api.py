@@ -3176,6 +3176,103 @@ def run_adopt_confirm_api_tests():
         os.environ.pop("COPILOT_SESSION_STATE", None)
 
 
+# ── Issue #562: static-slot readonly ACL on mutating operator APIs ───────────
+
+
+def run_static_acl_tests() -> None:
+    """Static pairing slot is documented `acl: readonly` (browse/core/pairing.py).
+
+    Mutating operator endpoints (POST/DELETE/PATCH /api/operator/*) MUST refuse
+    static-slot callers with 403, while read-only views (GET) MUST keep working.
+    """
+    from browse.core.pairing import (
+        create_static_slot,
+        terminate_static_slot,
+    )
+
+    # Start the test server with the main operator token bound; the static
+    # slot's own token is what we'll send on the wire for the readonly checks.
+    server, port = _make_test_server()
+    try:
+        terminate_static_slot()
+        slot = create_static_slot(f"http://127.0.0.1:{port}")
+        static_token = slot["token"]
+
+        # ── SEC562-1: POST /api/operator/sessions (create) → 403 ───────────
+        resp = _post(port, "/api/operator/sessions",
+                     {"name": "static-blocked", "model": "gpt-4o", "mode": "agent"},
+                     token=static_token)
+        data = _read_json(resp)
+        test("SEC562-1: static POST create session → 403", resp.status == 403)
+        test(
+            "SEC562-1: response is JSON with FORBIDDEN-style code",
+            isinstance(data, dict) and isinstance(data.get("code"), str) and data.get("code"),
+        )
+
+        # ── SEC562-2: POST /api/operator/sessions/{id}/prompt → 403 ────────
+        resp = _post(
+            port,
+            "/api/operator/sessions/00000000-0000-0000-0000-000000000000/prompt",
+            {"prompt": "hi"},
+            token=static_token,
+        )
+        test("SEC562-2: static POST prompt → 403", resp.status == 403)
+        _ = resp.read()
+
+        # ── SEC562-3: DELETE /api/operator/sessions/{id} → 403 ─────────────
+        resp = _delete(
+            port,
+            "/api/operator/sessions/00000000-0000-0000-0000-000000000000",
+            token=static_token,
+        )
+        test("SEC562-3: static DELETE session → 403", resp.status == 403)
+        _ = resp.read()
+
+        # ── SEC562-4: POST /api/operator/sessions/{id}/delete → 403 ────────
+        resp = _post(
+            port,
+            "/api/operator/sessions/00000000-0000-0000-0000-000000000000/delete",
+            {},
+            token=static_token,
+        )
+        test("SEC562-4: static POST .../delete → 403", resp.status == 403)
+        _ = resp.read()
+
+        # ── SEC562-5: PATCH /api/operator/sessions/{id} → 403 ──────────────
+        resp = _patch(
+            port,
+            "/api/operator/sessions/00000000-0000-0000-0000-000000000000",
+            {"name": "blocked"},
+            token=static_token,
+        )
+        test("SEC562-5: static PATCH session → 403", resp.status == 403)
+        _ = resp.read()
+
+        # ── SEC562-6: POST /api/operator/sessions/adopt → 403 ──────────────
+        resp = _post(
+            port,
+            "/api/operator/sessions/adopt",
+            {"cli_session_id": "00000000-0000-0000-0000-000000000000"},
+            token=static_token,
+        )
+        test("SEC562-6: static POST adopt → 403", resp.status == 403)
+        _ = resp.read()
+
+        # ── SEC562-7: GET /api/operator/sessions (read-only) still 200 ─────
+        resp = _get(port, "/api/operator/sessions", token=static_token)
+        test("SEC562-7: static GET sessions (read-only) → 200", resp.status == 200)
+        _ = resp.read()
+
+        # ── SEC562-8: operator token can still mutate (sanity, no regress) ─
+        resp = _post(port, "/api/operator/sessions",
+                     {"name": "operator-ok", "model": "gpt-4o", "mode": "agent"})
+        test("SEC562-8: operator POST create session still → 200", resp.status == 200)
+        _ = resp.read()
+    finally:
+        terminate_static_slot()
+        server.shutdown()
+
+
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
     test_oc1_create_session_fields()
@@ -3267,6 +3364,10 @@ if __name__ == "__main__":
     print()
     print("── Issue #529: adopt/confirm API tests ──────────────────────────────")
     run_adopt_confirm_api_tests()
+
+    print()
+    print("── Issue #562: static-slot readonly ACL on mutating operator APIs ───")
+    run_static_acl_tests()
 
     print()
     print("=" * 60)

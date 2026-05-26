@@ -234,6 +234,50 @@ def test_get_healthz_no_cors_env_configured():
         server.shutdown()
 
 
+def test_get_healthz_payload_is_liveness_only():
+    """Issue #560: unauthenticated /healthz must not leak activity metadata.
+
+    The payload must NOT include session counts, knowledge-entry counts, or
+    last-indexed timestamps. Only liveness-safe fields are permitted, and the
+    handler must not perform DB reads for public liveness (e.g., schema_version
+    is also dropped to keep the endpoint O(1) and avoid DB access).
+    """
+    import json as _json
+
+    os.environ.pop("BROWSE_CORS_ORIGINS", None)
+    server, port = _make_test_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/healthz")
+        resp = conn.getresponse()
+        body = resp.read()
+
+        test("GET_healthz_liveness: status 200", resp.status == 200)
+        test(
+            "GET_healthz_liveness: content-type json",
+            "application/json" in (resp.getheader("Content-Type", "") or ""),
+        )
+        try:
+            payload = _json.loads(body.decode("utf-8", errors="replace"))
+        except Exception:
+            payload = {}
+        test("GET_healthz_liveness: payload is dict", isinstance(payload, dict))
+        test("GET_healthz_liveness: status=ok", payload.get("status") == "ok")
+        # Activity metadata MUST NOT be present.
+        for forbidden_key in ("sessions", "knowledge_entries", "last_indexed_at"):
+            test(
+                f"GET_healthz_liveness: payload omits {forbidden_key}",
+                forbidden_key not in payload,
+            )
+        # Hosted-shell/local-backend detection still works via sync_status_endpoint.
+        test(
+            "GET_healthz_liveness: keeps sync_status_endpoint pointer",
+            payload.get("sync_status_endpoint") == "/api/sync/status",
+        )
+    finally:
+        server.shutdown()
+
+
 def test_options_healthz_non_health_path_unaffected():
     """OPTIONS /some-other-path still returns 405 (non-api, non-healthz)."""
     os.environ["BROWSE_CORS_ORIGINS"] = _ALLOWED_ORIGIN
@@ -263,6 +307,7 @@ if __name__ == "__main__":
     test_get_healthz_no_origin_no_cors()
     test_get_healthz_no_cors_env_configured()
     test_options_healthz_non_health_path_unaffected()
+    test_get_healthz_payload_is_liveness_only()
 
     print(f"\n  Results: {_PASS} passed, {_FAIL} failed\n")
     sys.exit(0 if _FAIL == 0 else 1)

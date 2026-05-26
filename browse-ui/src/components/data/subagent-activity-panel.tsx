@@ -85,14 +85,81 @@ function formatTime(ts: string | null): string {
   }
 }
 
+/**
+ * Human-readable rendering for failed subagent executions.
+ *
+ * Static lookup — never renders backend-provided text. All copy is hard-coded
+ * here so the panel cannot accidentally surface raw error messages.
+ *
+ * Returns:
+ *  - `label`: short badge text shown in the outcome cell.
+ *  - `guidance`: longer explanation surfaced via tooltip / aria-label for
+ *    operators (cause + recovery steps).
+ */
+function failedOutcomeCopy(category: SubagentExecution["errorCategory"]): {
+  label: string;
+  guidance: string;
+} {
+  switch (category) {
+    case "rate_limited":
+      return {
+        label: "Rate limited",
+        guidance:
+          "Provider or CLI rate limit reached. Wait a moment, reduce sub-agent concurrency, or switch model/settings before retrying.",
+      };
+    case "timeout":
+      return {
+        label: "Timed out",
+        guidance:
+          "The sub-agent did not respond in time. Retry, or split the task into smaller steps.",
+      };
+    case "api_error":
+      return {
+        label: "API error",
+        guidance:
+          "The model provider returned an error. Retry shortly; if it persists, check provider status.",
+      };
+    case "internal_error":
+      return {
+        label: "Internal error",
+        guidance:
+          "An internal error occurred while running the sub-agent. Retry; if it persists, check the debug log.",
+      };
+    case "cancelled":
+      return {
+        label: "Cancelled",
+        guidance: "The sub-agent run was cancelled before completion.",
+      };
+    case "unknown":
+      return {
+        label: "Failed",
+        guidance:
+          "The sub-agent failed for an uncategorised reason. Check the debug log for details.",
+      };
+    default:
+      // Defensive fallback for any future category not yet mapped here.
+      return {
+        label: "Failed",
+        guidance: "The sub-agent failed. Check the debug log for details.",
+      };
+  }
+}
+
 /** Derive outcome text — never renders raw error text. */
 function outcomeText(exec: SubagentExecution): string {
   if (exec.status === "completed") return "Completed";
   if (exec.status === "failed") {
-    return exec.errorCategory ? `Failed: ${exec.errorCategory}` : "Failed";
+    if (!exec.errorCategory) return "Failed";
+    return failedOutcomeCopy(exec.errorCategory).label;
   }
   if (exec.status === "running") return "Running...";
   return "Unknown";
+}
+
+/** Static, render-time guidance for a failed execution. Returns null when not applicable. */
+function outcomeGuidance(exec: SubagentExecution): string | null {
+  if (exec.status !== "failed" || !exec.errorCategory) return null;
+  return failedOutcomeCopy(exec.errorCategory).guidance;
 }
 
 /** Map execution status to data-status attribute value. */
@@ -682,7 +749,25 @@ export const SubagentActivityPanel = forwardRef<HTMLDivElement, SubagentActivity
 
                         {/* Outcome — never raw error text */}
                         <td data-testid={`${rowId}-outcome`} className="px-2 py-1.5">
-                          {outcomeText(exec)}
+                          {(() => {
+                            const text = outcomeText(exec);
+                            const guidance = outcomeGuidance(exec);
+                            if (exec.status === "failed" && exec.errorCategory) {
+                              return (
+                                <span
+                                  data-testid={`${rowId}-outcome-badge`}
+                                  data-error-category={exec.errorCategory}
+                                  role="status"
+                                  aria-label={guidance ?? text}
+                                  title={guidance ?? undefined}
+                                  className="inline-flex items-center rounded border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300"
+                                >
+                                  {text}
+                                </span>
+                              );
+                            }
+                            return text;
+                          })()}
                         </td>
 
                         {/* Jump button */}

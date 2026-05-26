@@ -219,7 +219,7 @@ describe("SubagentActivityPanel — completed execution row", () => {
 // ── Failed row ────────────────────────────────────────────────────────────────
 
 describe("SubagentActivityPanel — failed execution row", () => {
-  it("has data-status=error and shows Failed: rate_limited in outcome cell", () => {
+  it("has data-status=error and shows humanized 'Rate limited' badge with recovery guidance", () => {
     const entry = makeEntry({
       span_id: "span-fail",
       status: "failed",
@@ -234,11 +234,64 @@ describe("SubagentActivityPanel — failed execution row", () => {
 
     const row = screen.getByTestId("subagent-activity-row-span-fail");
     expect(row).toHaveAttribute("data-status", "error");
-    expect(screen.getByTestId("subagent-activity-row-span-fail-outcome")).toHaveTextContent(
-      "Failed: rate_limited"
-    );
+
+    const outcomeCell = screen.getByTestId("subagent-activity-row-span-fail-outcome");
+    expect(outcomeCell).toHaveTextContent("Rate limited");
+    // Raw enum text must NOT appear in the outcome cell
+    expect(outcomeCell.textContent).not.toMatch(/rate_limited/);
+
+    const badge = screen.getByTestId("subagent-activity-row-span-fail-outcome-badge");
+    expect(badge).toHaveAttribute("data-error-category", "rate_limited");
+    // Recovery guidance is surfaced via accessible label + tooltip
+    expect(badge.getAttribute("aria-label") ?? "").toMatch(/rate limit/i);
+    expect(badge.getAttribute("aria-label") ?? "").toMatch(/wait|concurrency|model/i);
+    expect(badge).toHaveAttribute("title");
+
     // error_preview must NOT be rendered
     expect(screen.queryByText("[REDACTED]")).not.toBeInTheDocument();
+  });
+
+  it("uses safe humanized labels for other known categories (timeout, api_error, cancelled)", () => {
+    const entries = [
+      makeEntry({ span_id: "span-to", status: "failed", error_category: "timeout" }),
+      makeEntry({ span_id: "span-api", status: "failed", error_category: "api_error" }),
+      makeEntry({ span_id: "span-cx", status: "failed", error_category: "cancelled" }),
+    ];
+    const { executions, summary } = fromEntries(entries);
+    render(<SubagentActivityPanel executions={executions} summary={summary} />);
+
+    expect(screen.getByTestId("subagent-activity-row-span-to-outcome")).toHaveTextContent(
+      "Timed out"
+    );
+    expect(screen.getByTestId("subagent-activity-row-span-api-outcome")).toHaveTextContent(
+      "API error"
+    );
+    expect(screen.getByTestId("subagent-activity-row-span-cx-outcome")).toHaveTextContent(
+      "Cancelled"
+    );
+
+    // None of the outcome cells should leak the raw enum tokens
+    for (const id of ["span-to", "span-api", "span-cx"]) {
+      const cell = screen.getByTestId(`subagent-activity-row-${id}-outcome`);
+      expect(cell.textContent).not.toMatch(/_/);
+    }
+  });
+
+  it("renders plain 'Failed' fallback (no badge) when error_category is 'unknown'", () => {
+    const entry = makeEntry({
+      span_id: "span-funk",
+      status: "failed",
+      error_category: "unknown",
+    });
+    const { executions, summary } = fromEntries([entry]);
+    render(<SubagentActivityPanel executions={executions} summary={summary} />);
+    const outcome = screen.getByTestId("subagent-activity-row-span-funk-outcome");
+    expect(outcome).toHaveTextContent("Failed");
+    // Badge still appears (category present, but rendered as 'Failed')
+    expect(screen.getByTestId("subagent-activity-row-span-funk-outcome-badge")).toHaveAttribute(
+      "data-error-category",
+      "unknown"
+    );
   });
 
   it("shows summary-failed count when failures exist", () => {

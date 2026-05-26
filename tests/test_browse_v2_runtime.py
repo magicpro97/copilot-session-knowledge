@@ -652,8 +652,10 @@ def _run_new_endpoint_tests() -> int:
         server13.shutdown()
         db13.close()
 
-    # V14: /healthz returns the core fields rendered by the settings page health card
-    print("\n-- V14: /healthz settings-page health-card fields")
+    # V14: /healthz returns liveness-only payload (issue #560).  Activity
+    # counts (sessions, knowledge_entries), last-indexed timestamps, and
+    # schema_version are NO LONGER exposed on this unauthenticated endpoint.
+    print("\n-- V14: /healthz liveness-only payload (#560)")
     db14 = _make_test_db()
     server14, host14, port14 = _start_server(db14, token="tok")
     try:
@@ -665,16 +667,16 @@ def _run_new_endpoint_tests() -> int:
         )
         payload14 = json.loads(body14.decode("utf-8", errors="replace"))
         test("V14: payload has status field", isinstance(payload14.get("status"), str))
-        test("V14: payload has schema_version int", isinstance(payload14.get("schema_version"), int))
-        test("V14: payload has sessions int", isinstance(payload14.get("sessions"), int))
         test(
-            "V14: payload has knowledge_entries (optional int)",
-            payload14.get("knowledge_entries") is None or isinstance(payload14.get("knowledge_entries"), int),
+            "V14: payload keeps sync_status_endpoint pointer",
+            payload14.get("sync_status_endpoint") == "/api/sync/status",
         )
-        test(
-            "V14: payload has last_indexed_at (optional str or null)",
-            payload14.get("last_indexed_at") is None or isinstance(payload14.get("last_indexed_at"), str),
-        )
+        # Activity metadata MUST be absent on the unauthenticated endpoint.
+        for _forbidden in ("sessions", "knowledge_entries", "last_indexed_at", "schema_version"):
+            test(
+                f"V14: payload omits {_forbidden} (#560)",
+                _forbidden not in payload14,
+            )
     finally:
         server14.shutdown()
         db14.close()

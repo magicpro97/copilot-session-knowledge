@@ -354,8 +354,13 @@ export interface AuditBlock {
 
 export interface HealthResponse {
   status: string;
-  schema_version: number;
-  sessions: number;
+  /**
+   * Issue #560: /healthz is liveness-only. The following corpus/activity
+   * fields are no longer emitted by the backend but remain typed as optional
+   * so older payloads still parse.
+   */
+  schema_version?: number;
+  sessions?: number;
   knowledge_entries?: number;
   last_indexed_at?: string | null;
   sync_status_endpoint?: string;
@@ -364,7 +369,10 @@ export interface HealthResponse {
 export interface SyncConnectionStatus {
   configured: boolean;
   endpoint: string | null;
-  config_path: string;
+  /** Issue #561: redacted. Backend no longer emits an absolute path. */
+  config_path?: string;
+  config_path_present?: boolean;
+  config_path_label?: string;
   target?: string;
 }
 
@@ -376,7 +384,8 @@ export interface SyncFailureInfo {
 
 export interface SyncRuntimeStatus {
   generated_at: string;
-  db_path: string;
+  /** Issue #561: backend no longer emits absolute db_path. */
+  db_path?: string;
   db_mode: "memory" | "file" | (string & {});
   sync_tables: Record<string, boolean>;
   sync_tables_ready: boolean;

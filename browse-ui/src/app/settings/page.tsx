@@ -224,8 +224,13 @@ export default function SettingsPage() {
                     <p>
                       Config file:{" "}
                       <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
-                        {syncStatus.data.connection.config_path}
+                        {syncStatus.data.connection.config_path_label ??
+                          syncStatus.data.connection.config_path ??
+                          "—"}
                       </code>
+                      {syncStatus.data.connection.config_path_present === false ? (
+                        <span className="text-muted-foreground ml-2">(not present)</span>
+                      ) : null}
                     </p>
                   </div>
 
@@ -280,12 +285,14 @@ export default function SettingsPage() {
                         {syncStatus.data.runtime.generated_at}
                       </span>
                     </p>
-                    <p>
-                      DB path:{" "}
-                      <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
-                        {syncStatus.data.runtime.db_path}
-                      </code>
-                    </p>
+                    {syncStatus.data.runtime.db_path ? (
+                      <p>
+                        DB path:{" "}
+                        <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
+                          {syncStatus.data.runtime.db_path}
+                        </code>
+                      </p>
+                    ) : null}
                   </div>
 
                   <OperatorActionsPanel
@@ -972,7 +979,7 @@ export default function SettingsPage() {
 
               {health.data ? (
                 <>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-2 sm:grid-cols-2">
                     <div className="bg-card rounded-lg border p-3">
                       <p className="text-muted-foreground text-xs">Status</p>
                       <p className="mt-1 flex items-center gap-2 text-sm font-medium">
@@ -988,33 +995,19 @@ export default function SettingsPage() {
                       </p>
                     </div>
                     <div className="bg-card rounded-lg border p-3">
-                      <p className="text-muted-foreground text-xs">Schema version</p>
-                      <p className="mt-1 text-sm font-medium">v{health.data.schema_version}</p>
-                    </div>
-                    <div className="bg-card rounded-lg border p-3">
-                      <p className="text-muted-foreground text-xs">Indexed sessions</p>
+                      <p className="text-muted-foreground text-xs">Sync diagnostics</p>
                       <p className="mt-1 text-sm font-medium">
-                        {formatNumber(health.data.sessions)}
-                      </p>
-                    </div>
-                    <div className="bg-card rounded-lg border p-3">
-                      <p className="text-muted-foreground text-xs">Knowledge entries</p>
-                      <p className="mt-1 text-sm font-medium">
-                        {health.data.knowledge_entries !== undefined
-                          ? formatNumber(health.data.knowledge_entries)
-                          : "—"}
+                        <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
+                          {health.data.sync_status_endpoint ?? "/api/sync/status"}
+                        </code>
                       </p>
                     </div>
                   </div>
-
-                  {health.data.last_indexed_at ? (
-                    <p className="text-muted-foreground text-xs">
-                      Last indexed:{" "}
-                      <span className="text-foreground font-medium">
-                        {health.data.last_indexed_at}
-                      </span>
-                    </p>
-                  ) : null}
+                  <p className="text-muted-foreground text-xs">
+                    <code>/healthz</code> is liveness-only and does not expose corpus counts or
+                    indexed timestamps. See the Sync diagnostics section above for non-PII runtime
+                    details.
+                  </p>
                 </>
               ) : null}
             </>
