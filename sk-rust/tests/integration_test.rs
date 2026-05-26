@@ -376,6 +376,7 @@ fn learn_queues_quickly_when_db_is_locked() {
     ])
     .env("SK_DB", &db_path)
     .env("SK_LEARN_INBOX", &inbox)
+    .env("SK_LEARN_QUEUE_ON_LOCK", "1")
     .env("SK_LEARN_BUSY_TIMEOUT_MS", "1")
     .assert()
     .success()
