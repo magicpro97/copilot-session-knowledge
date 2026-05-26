@@ -1,21 +1,27 @@
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Result};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::connection::knowledge_db_path;
 
 /// Open a read-write connection to knowledge.db with WAL mode.
 pub fn open_writable(path: Option<PathBuf>) -> Result<Connection> {
+    open_writable_with_busy_timeout(path, 30_000)
+}
+
+/// Open a read-write connection with a caller-controlled SQLite busy timeout.
+pub fn open_writable_with_busy_timeout(
+    path: Option<PathBuf>,
+    busy_timeout_ms: u64,
+) -> Result<Connection> {
     let path = path.unwrap_or_else(knowledge_db_path);
     let conn = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA busy_timeout=30000;",
-    )?;
+    conn.busy_timeout(Duration::from_millis(busy_timeout_ms))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(conn)
 }
 

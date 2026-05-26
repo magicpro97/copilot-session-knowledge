@@ -8,7 +8,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::config::{python_exe, resolve_home_dir, resolve_tools_dir};
-use crate::db::write::{insert_or_update_entry, open_writable, rebuild_fts, NewEntry};
+use crate::db::write::{
+    insert_or_update_entry, open_writable_with_busy_timeout, rebuild_fts, NewEntry,
+};
+
+const DEFAULT_LEARN_DB_BUSY_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS: u64 = 250;
 
 /// Entry point called from main's dispatch for the `learn` command.
 pub fn run_learn_command(args: &[String]) -> ExitCode {
@@ -188,7 +193,7 @@ fn execute_learn(params: LearnParams) -> ExitCode {
         facts_json,
     };
 
-    let conn = match open_writable(None) {
+    let conn = match open_writable_with_busy_timeout(None, learn_write_busy_timeout_ms()) {
         Ok(c) => c,
         Err(e) => {
             if is_busy_error(&e) && queue_on_lock_enabled() {
@@ -242,6 +247,16 @@ fn queue_on_lock_enabled() -> bool {
     std::env::var("SK_LEARN_QUEUE_ON_LOCK").map_or(true, |value| value != "0")
 }
 
+fn learn_write_busy_timeout_ms() -> u64 {
+    if !queue_on_lock_enabled() {
+        return DEFAULT_LEARN_DB_BUSY_TIMEOUT_MS;
+    }
+    std::env::var("SK_LEARN_BUSY_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS)
+}
+
 fn is_busy_error(err: &rusqlite::Error) -> bool {
     match err {
         rusqlite::Error::SqliteFailure(sqlite_err, _) => {
@@ -285,7 +300,7 @@ fn queue_learn_params(params: &LearnParams) -> ExitCode {
     match write_learn_payload(params) {
         Ok(path) => {
             eprintln!(
-                "  DB busy after retries; queued learn entry for later flush: {}",
+                "  DB busy; queued learn entry for later flush: {}",
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("queued learn entry")
