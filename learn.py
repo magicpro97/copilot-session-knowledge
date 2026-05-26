@@ -57,6 +57,8 @@ TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 LEARN_INBOX = Path(os.environ.get("SK_LEARN_INBOX", str(SESSION_STATE / "learn-inbox"))).expanduser()
+DEFAULT_DB_BUSY_TIMEOUT_MS = 30_000
+DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS = 250
 
 
 def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
@@ -143,13 +145,28 @@ def _replay_queued_payload(payload: dict) -> tuple[int, int]:
     return entry_id, cerebrum_rc
 
 
-def _write_learn_entry(entry_kwargs: dict) -> int:
+def _write_learn_entry(
+    entry_kwargs: dict,
+    *,
+    max_attempts: int = 5,
+    base_delay: float = 0.5,
+    db_busy_timeout_ms: int | None = None,
+) -> int:
     """Write an entry through the standard retry path, preserving CLI call shape."""
     entry = dict(entry_kwargs)
     category = entry.pop("category")
     title = entry.pop("title")
     content = entry.pop("content")
-    return with_retry(add_entry, category, title, content, **entry)
+    return with_retry(
+        add_entry,
+        category,
+        title,
+        content,
+        max_attempts=max_attempts,
+        base_delay=base_delay,
+        db_busy_timeout_ms=db_busy_timeout_ms,
+        **entry,
+    )
 
 
 def flush_learn_inbox(limit: int = 100) -> dict:
@@ -836,20 +853,33 @@ def _auto_update_cerebrum(output_path: str, sections: str | None, *, json_mode: 
         return 1
 
 
-def get_db() -> sqlite3.Connection:
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _learn_queue_on_lock_enabled() -> bool:
+    return os.environ.get("SK_LEARN_QUEUE_ON_LOCK", "1") != "0"
+
+
+def _learn_queue_busy_timeout_ms() -> int:
+    return max(0, _env_int("SK_LEARN_BUSY_TIMEOUT_MS", DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS))
+
+
+def get_db(busy_timeout_ms: int | None = None) -> sqlite3.Connection:
     if not DB_PATH.exists():
         print("Error: Knowledge DB not found. Run build-session-index.py first.", file=sys.stderr)
         sys.exit(1)
-    # Per-connection timeout (seconds) for SQLite-level busy waiting before
-    # raising OperationalError. Combined with PRAGMA busy_timeout below.
-    # 30s is enough to ride out batch flushes from watch-sessions.py indexer
-    # service on multi-hundred-MB knowledge databases.
-    db = sqlite3.connect(str(DB_PATH), timeout=30.0)
+    timeout_ms = DEFAULT_DB_BUSY_TIMEOUT_MS if busy_timeout_ms is None else max(0, int(busy_timeout_ms))
+    # Per-connection timeout controls SQLite-level busy waiting before raising
+    # OperationalError. Normal fail-open learn writes use a short timeout and
+    # queue quickly; explicit flush/replay keeps the longer default window.
+    db = sqlite3.connect(str(DB_PATH), timeout=timeout_ms / 1000.0)
     db.row_factory = sqlite3.Row
-    # WAL mode for concurrent reads; busy_timeout lets writers retry up to 30 s
-    # before failing with SQLITE_BUSY when the indexer or sync is also writing.
+    db.execute(f"PRAGMA busy_timeout={timeout_ms}")
     db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=30000")
     return db
 
 
@@ -942,6 +972,7 @@ def add_entry(
     agent_id: str = "",
     certainty: str = "",
     caveats: str = "",
+    db_busy_timeout_ms: int | None = None,
 ) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
 
@@ -957,7 +988,7 @@ def add_entry(
     credential leaks, and invisible Unicode. Matching entries are REJECTED unless
     --skip-scan is passed (for documenting injection patterns themselves).
     """
-    db = get_db()
+    db = get_db(db_busy_timeout_ms)
     ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
     has_code_location_columns = all(
         c in ke_columns for c in ("source_file", "start_line", "end_line", "code_language", "code_snippet")
@@ -2079,9 +2110,14 @@ def main():
     }
 
     try:
-        entry_id = _write_learn_entry(entry_kwargs)
+        queue_on_lock = _learn_queue_on_lock_enabled()
+        entry_id = _write_learn_entry(
+            entry_kwargs,
+            max_attempts=1 if queue_on_lock else 5,
+            db_busy_timeout_ms=_learn_queue_busy_timeout_ms() if queue_on_lock else None,
+        )
     except sqlite3.OperationalError as exc:
-        if _is_busy_error(exc) and os.environ.get("SK_LEARN_QUEUE_ON_LOCK", "1") != "0":
+        if _is_busy_error(exc) and queue_on_lock:
             queued_path = _queue_learn_payload(
                 _build_learn_payload(
                     args,
@@ -2106,7 +2142,7 @@ def main():
                 )
             else:
                 print(
-                    f"  DB busy after retries; queued learn entry for later flush: {queued_path.name}",
+                    f"  DB busy; queued learn entry for later flush: {queued_path.name}",
                     file=sys.stderr,
                 )
                 print("  Run `sk learn --flush-inbox` to replay queued entries.", file=sys.stderr)

@@ -596,10 +596,11 @@ learn --stats              # Knowledge base statistics
 learn --mistake "Title" "Description" --json
 ```
 
-When a single-entry `learn` write still hits SQLite `database is locked` after
-the built-in retry window, it is queued under `SK_LEARN_INBOX` if set, otherwise
+When a single-entry `learn` write hits SQLite `database is locked`, it uses a
+short busy timeout and is queued under `SK_LEARN_INBOX` if set, otherwise
 `~/.copilot/session-state/learn-inbox`. Set `SK_LEARN_QUEUE_ON_LOCK=0` to fail
-instead of queueing.
+instead of queueing, or tune the fast-fail window with `SK_LEARN_BUSY_TIMEOUT_MS`
+(default: `250`).
 
 ## Palace Concepts (Wing/Room)
 

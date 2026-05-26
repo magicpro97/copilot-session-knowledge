@@ -320,6 +320,88 @@ print("FLUSH_DELEGATED")
 }
 
 #[test]
+fn learn_queues_quickly_when_db_is_locked() {
+    use std::fs;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_dir = std::env::temp_dir().join(format!("sk_learn_locked_queue_{unique}"));
+    let _guard = TempTree(test_dir.clone());
+    let db_path = test_dir.join("knowledge.db");
+    let inbox = test_dir.join("learn-inbox");
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let locker = rusqlite::Connection::open(&db_path).unwrap();
+    locker
+        .execute_batch(
+            r#"
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT,
+                tags TEXT,
+                confidence REAL,
+                session_id TEXT,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                wing TEXT,
+                room TEXT,
+                facts TEXT,
+                est_tokens INTEGER
+            );
+            BEGIN IMMEDIATE;
+            "#,
+        )
+        .unwrap();
+
+    let start = Instant::now();
+    sk().args([
+        "learn",
+        "--decision",
+        "locked db queues",
+        "A locked knowledge DB should queue the learn entry without waiting for the long DB retry window.",
+        "--tags",
+        "sqlite,locks",
+        "--wing",
+        "devops",
+        "--room",
+        "tooling",
+    ])
+    .env("SK_DB", &db_path)
+    .env("SK_LEARN_INBOX", &inbox)
+    .env("SK_LEARN_BUSY_TIMEOUT_MS", "1")
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("queued learn entry"));
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "locked DB learn should queue quickly, took {}ms",
+        elapsed.as_millis()
+    );
+    let queued_count = fs::read_dir(&inbox)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .ok()
+                .and_then(|entry| entry.path().extension().map(|ext| ext == "json"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(queued_count, 1);
+    locker.execute_batch("ROLLBACK;").unwrap();
+}
+
+#[test]
 fn watch_once_honors_home_override() {
     use std::fs;
 
