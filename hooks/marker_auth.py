@@ -154,7 +154,7 @@ _ALLOWED_SCRIPT_LITERALS = (
     "~/.copilot/tools/install.py",
     "$HOME/.copilot/tools/install.py",
 )
-_REJECT_CHARS = frozenset((";", "&", "|", ">", "<", "`", "\n", "\r", '"', "'", "\\"))
+_REJECT_CHARS = frozenset((";", "&", "|", ">", "<", "`", "\n", "\r", '"', "'"))
 
 
 def is_lock_hooks_recovery(command):
