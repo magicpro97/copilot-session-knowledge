@@ -672,3 +672,98 @@ curl -I https://api.telegram.org
 | 2026-05-23 | Hosted deploy traceability (#520, hosted-ui-cache-520): `firebase.json` now sets `Cache-Control: no-cache, must-revalidate, max-age=0` on `/`, `**/*.html`, and `/version.json` while preserving `public, max-age=31536000, immutable` for `/_next/static/**`. New `browse-ui/scripts/verify-deploy.mjs` (`pnpm verify:deploy`) performs a live post-deploy check that asserts `/version.json` `buildHash` (optionally vs `EXPECTED_SHA`), HTML revalidation headers, and immutable static-chunk caching; fails loudly with operator-actionable messages. Operator-facing guidance added to `browse-ui/README.md` and `docs/OPERATOR-PLAYBOOK.md`. Root cause this addresses: hosted `version.json` reported a fresh `buildHash` (e.g. `9468685`) but homepage HTML returned `Cache-Control: max-age=3600`, so browsers kept the pre-fix app-shell and its stale chunk references for up to an hour after a successful deploy. |
 | 2026-05-23 | #520 review fixes: (1) `verify-deploy.mjs` `revalidates()` predicate tightened to require `no-store`/`no-cache`/explicit `max-age=0`; `must-revalidate` alone no longer counts because it only forces revalidation after staleness. (2) Firebase header ordering reworked so `/_next/static/**` immutable rule is applied AFTER the shorter-cache `**/*.@(ico\|png\|jpg\|jpeg\|webp\|svg\|woff\|woff2\|ttf\|eot)` rule, ensuring hashed assets such as `/_next/static/media/*.woff2` keep `public, max-age=31536000, immutable`. (3) Explicit HTML revalidation headers added for app-shell rewrite paths (`/sessions/**`, `/settings/**`, `/diagnostics/**`); `verify-deploy.mjs` now probes `/sessions/_verify` in addition to `/`. (4) `fetchHead()` no longer returns error responses silently — HEAD/GET both failing with `>=400` raises an actionable error so error-page cache headers are never accepted as production proof. Added offline `node scripts/verify-deploy.mjs --self-check` covering 8 predicate cases. |
 | 2026-05-23 | #520 follow-up review fix: extended app-shell HTML revalidation coverage to every hosted route prefix. `firebase.json` now sets `Cache-Control: no-cache, must-revalidate, max-age=0` on `/chat/**`, `/sessions/**`, `/search/**`, `/insights/**`, `/graph/**`, `/settings/**`, and `/diagnostics/**` (previously only `/sessions/**`, `/settings/**`, `/diagnostics/**` were covered, leaving `/chat`, `/search`, `/insights`, `/graph` susceptible to default Firebase HTML caching under `cleanUrls`/`trailingSlash`). `verify-deploy.mjs` `htmlProbePaths` extended to one representative path per prefix (`/`, `/chat/`, `/sessions/_verify`, `/search/`, `/insights/`, `/graph/`, `/settings/`, `/diagnostics/`) so future per-route regressions are visible at the post-deploy gate. Operator docs (`browse-ui/README.md`, `docs/OPERATOR-PLAYBOOK.md`) updated to list the full probe set. `/_next/static/**` immutable caching and security headers unchanged. |
+
+## Host telemetry (#558)
+
+Opt-in, privacy-preserving aggregate host metrics for the operator dashboard.
+
+### Endpoint
+
+`GET /api/operator/host/metrics` — auth-gated by the global `/api/*` dispatcher
+(Bearer header, `?token=`, or cookie). Loopback open-auth follows the same rules
+as other operator routes.
+
+Optional query: `?stale=mark` — when the cached sample exceeds the staleness
+threshold (~5 s), the endpoint returns the cached payload with `stale=true`
+instead of forcing a fresh sample.
+
+### Payload shape
+
+```json
+{
+  "supported": true,
+  "sampled_at": "2026-02-01T08:00:00Z",
+  "sampled_at_epoch": 1769846400.123,
+  "min_sample_interval_s": 1.0,
+  "cpu": { "supported": true, "count": 8, "load_1m": 1.42, "load_5m": 1.1, "load_15m": 0.9, "percent": 17.8 },
+  "memory": { "supported": true, "total_bytes": 16000000000, "available_bytes": 8000000000, "used_bytes": 8000000000, "percent": 50.0 },
+  "network": { "supported": true, "rx_bytes": 12345678, "tx_bytes": 87654321 },
+  "filesystem": {
+    "supported": true,
+    "mounts": {
+      "root": { "total_bytes": 500000000000, "used_bytes": 250000000000, "free_bytes": 250000000000 },
+      "home": { "total_bytes": 500000000000, "used_bytes": 250000000000, "free_bytes": 250000000000 }
+    }
+  },
+  "stale": false
+}
+```
+
+Per-subsystem `supported` is `false` when the platform cannot sample that
+subsystem. Examples:
+
+- macOS / BSD: `cpu` and `filesystem` supported via `os.getloadavg()` and
+  `os.statvfs()`; `memory` and `network` not supported (no `/proc/meminfo`,
+  no `/proc/net/dev`).
+- Linux: all four subsystems supported.
+- Windows: none of the four subsystems supported; payload is shaped identically
+  with every `supported=False` and every numeric field `null`.
+
+### Privacy contract (hard requirement)
+
+The payload **never** contains:
+
+- Per-process command lines, PIDs, or process names
+- Environment variables, shell prompts, or session tokens
+- Absolute file paths or network interface names (filesystem keys are coarse
+  labels: `root`, `home`, `data` — never raw mount points)
+- Raw IP addresses, hostnames, or geolocation
+
+Network counters are aggregate **non-loopback** byte totals. Filesystem entries
+are de-duplicated by `st_dev` so symlinked / overlayed mounts cannot leak path
+structure via interface count.
+
+The Zod schema on the browser (`hostMetricsResponseSchema`) is `.strict()` — any
+unknown key would fail validation at parse time, which is a defence-in-depth
+check against a future backend regression.
+
+### Rate limiting
+
+- Server-side cache window: 1.0 s (`_MIN_SAMPLE_INTERVAL_S` in
+  `browse/core/host_metrics.py`).
+- Staleness threshold: 5.0 s (`_STALE_AFTER_S`).
+- UI polls every 5 s (`refetchInterval` in `useHostMetrics`).
+- A request made within the cache window returns the cached payload with
+  `stale=false`. The cache lock is a `threading.Lock` so concurrent requests
+  collapse to a single sampler invocation.
+
+### Opt-in flow
+
+1. The capability flag `host_metrics` is advertised by every backend that ships
+   the endpoint. UI calls `useHostFeature(host, "host_metrics", enabled)` to
+   gate display.
+2. The HostProfile (per-host localStorage record) carries
+   `telemetry_enabled?: boolean` (default `false`) and
+   `telemetry_consent_acked?: boolean`.
+3. On the Hosts & connections row the operator clicks the **Activity** toggle.
+   On first enable, the consent banner explains exactly what is sent and
+   requires explicit confirmation before the flag flips.
+4. The Settings page renders the Host telemetry card only when
+   `telemetry_enabled && supports(host_metrics)`. The Diagnostics surface
+   follows the same gate.
+
+### Why stdlib only
+
+`browse/core/host_metrics.py` uses only Python stdlib (`os`, `time`, `socket`,
+`platform`, `threading`). No psutil, no third-party deps. This keeps the
+hosted-shell footprint zero-dependency and avoids supply-chain surface area.

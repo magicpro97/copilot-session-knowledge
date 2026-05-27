@@ -1846,6 +1846,16 @@ export const hostProfileSchema = z.object({
    * this field are treated as "direct" for backwards compatibility.
    */
   connectivity_mode: z.enum(["direct", "tunnel", "broker"]).optional(),
+  /**
+   * #558: Opt-in host telemetry toggle. Optional — older profiles without this
+   * field are treated as `false` (telemetry disabled by default).
+   */
+  telemetry_enabled: z.boolean().optional(),
+  /**
+   * #558: Tracks whether the operator has acknowledged the first-time consent
+   * banner for telemetry on this host.
+   */
+  telemetry_consent_acked: z.boolean().optional(),
 });
 
 /**
@@ -1919,5 +1929,70 @@ export const browseRewindSnapshotsResponseSchema = z
     session_id: z.string(),
     total: z.number().int().nonnegative(),
     snapshots: z.array(browseRewindSnapshotSummarySchema),
+  })
+  .strict();
+
+// ── Host telemetry (#558) ─────────────────────────────────────────────────────
+
+const hostMetricsCpuSchema = z
+  .object({
+    supported: z.boolean(),
+    count: z.number().int().nonnegative(),
+    load_1m: z.number().nullable(),
+    load_5m: z.number().nullable(),
+    load_15m: z.number().nullable(),
+    percent: z.number().nullable(),
+  })
+  .strict();
+
+const hostMetricsMemorySchema = z
+  .object({
+    supported: z.boolean(),
+    total_bytes: z.number().nullable(),
+    available_bytes: z.number().nullable(),
+    used_bytes: z.number().nullable(),
+    percent: z.number().nullable(),
+  })
+  .strict();
+
+const hostMetricsNetworkSchema = z
+  .object({
+    supported: z.boolean(),
+    rx_bytes: z.number().nullable(),
+    tx_bytes: z.number().nullable(),
+  })
+  .strict();
+
+const hostMetricsFilesystemEntrySchema = z
+  .object({
+    total_bytes: z.number().nonnegative(),
+    used_bytes: z.number().nonnegative(),
+    free_bytes: z.number().nonnegative(),
+  })
+  .strict();
+
+const hostMetricsFilesystemSchema = z
+  .object({
+    supported: z.boolean(),
+    mounts: z.record(z.string(), hostMetricsFilesystemEntrySchema),
+  })
+  .strict();
+
+/**
+ * Response payload from `GET /api/operator/host/metrics` (#558).
+ * Strict so unknown keys are rejected — guarantees the privacy boundary
+ * documented in `browse/core/host_metrics.py` is enforced at parse time.
+ */
+export const hostMetricsResponseSchema = z
+  .object({
+    supported: z.boolean(),
+    sampled_at: z.string(),
+    sampled_at_epoch: z.number(),
+    min_sample_interval_s: z.number().positive(),
+    cpu: hostMetricsCpuSchema,
+    memory: hostMetricsMemorySchema,
+    network: hostMetricsNetworkSchema,
+    filesystem: hostMetricsFilesystemSchema,
+    stale: z.boolean(),
   })
   .strict();

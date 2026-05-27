@@ -57,6 +57,7 @@ import {
   missionAtlasBucketSchema,
   missionAtlasErrorSampleSchema,
   missionAtlasMilestoneSchema,
+  hostMetricsResponseSchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -3057,6 +3058,106 @@ describe("missionAtlasErrorSampleSchema", () => {
         event_type: "error",
         error_category: "unknown",
       })
+    ).toThrow();
+  });
+});
+
+describe("hostMetricsResponseSchema (#558)", () => {
+  // Canonical fully-populated payload that mirrors what
+  // `browse.core.host_metrics.sample_host_metrics` returns on a supported host.
+  const fullPayload = {
+    supported: true,
+    sampled_at: "2025-01-01T00:00:00Z",
+    sampled_at_epoch: 1735689600,
+    min_sample_interval_s: 1.0,
+    cpu: {
+      supported: true,
+      count: 8,
+      load_1m: 1.2,
+      load_5m: 1.1,
+      load_15m: 1.0,
+      percent: 15.0,
+    },
+    memory: {
+      supported: true,
+      total_bytes: 17179869184,
+      available_bytes: 8589934592,
+      used_bytes: 8589934592,
+      percent: 50.0,
+    },
+    network: {
+      supported: true,
+      rx_bytes: 1024,
+      tx_bytes: 2048,
+    },
+    filesystem: {
+      supported: true,
+      mounts: {
+        root: { total_bytes: 1000, used_bytes: 500, free_bytes: 500 },
+      },
+    },
+    stale: false,
+  };
+
+  it("accepts a fully-populated supported payload", () => {
+    expect(() => hostMetricsResponseSchema.parse(fullPayload)).not.toThrow();
+  });
+
+  it("accepts stale=true with an otherwise valid payload", () => {
+    const stale = { ...fullPayload, stale: true };
+    const parsed = hostMetricsResponseSchema.parse(stale);
+    expect(parsed.stale).toBe(true);
+  });
+
+  it("accepts unsupported subsystems with null counters", () => {
+    const unsupported = {
+      ...fullPayload,
+      cpu: {
+        supported: false,
+        count: 0,
+        load_1m: null,
+        load_5m: null,
+        load_15m: null,
+        percent: null,
+      },
+      memory: {
+        supported: false,
+        total_bytes: null,
+        available_bytes: null,
+        used_bytes: null,
+        percent: null,
+      },
+      network: { supported: false, rx_bytes: null, tx_bytes: null },
+      filesystem: { supported: false, mounts: {} },
+    };
+    expect(() => hostMetricsResponseSchema.parse(unsupported)).not.toThrow();
+  });
+
+  it("rejects extra keys at the top level (privacy boundary)", () => {
+    // Strict schema is intentional — surfacing an unknown top-level key would
+    // imply the backend started exporting something outside the documented
+    // privacy contract.
+    expect(() => hostMetricsResponseSchema.parse({ ...fullPayload, hostname: "leak" })).toThrow();
+  });
+
+  it("rejects extra keys inside network (e.g. interface names)", () => {
+    expect(() =>
+      hostMetricsResponseSchema.parse({
+        ...fullPayload,
+        network: { ...fullPayload.network, iface_name: "eth0" },
+      })
+    ).toThrow();
+  });
+
+  it("rejects missing required keys", () => {
+    const { stale: _stale, ...withoutStale } = fullPayload;
+    void _stale;
+    expect(() => hostMetricsResponseSchema.parse(withoutStale)).toThrow();
+  });
+
+  it("rejects non-positive min_sample_interval_s", () => {
+    expect(() =>
+      hostMetricsResponseSchema.parse({ ...fullPayload, min_sample_interval_s: 0 })
     ).toThrow();
   });
 });

@@ -17,6 +17,7 @@ import { useDensity } from "@/hooks/use-density";
 import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import {
   useHealth,
+  useHostMetrics,
   useScoutStatus,
   useSkillMetrics,
   useSyncStatus,
@@ -59,6 +60,16 @@ export default function SettingsPage() {
   const scoutStatus = useScoutStatus(host, diagnosticRequestsEnabled);
   const tentacleStatus = useTentacleStatus(host, diagnosticRequestsEnabled);
   const skillMetrics = useSkillMetrics(host, diagnosticRequestsEnabled);
+
+  // #558: Opt-in host telemetry (CPU/RAM/network/filesystem)
+  const telemetryOptedIn = host.telemetry_enabled === true;
+  const { supported: hostMetricsSupported, loading: hostMetricsCapabilityLoading } = useHostFeature(
+    host,
+    "host_metrics",
+    telemetryOptedIn
+  );
+  const hostMetricsEnabled = telemetryOptedIn && hostMetricsSupported;
+  const hostMetrics = useHostMetrics(host, hostMetricsEnabled);
 
   const activeTheme = theme ?? "system";
   const healthStatus = health.data?.status;
@@ -526,6 +537,119 @@ export default function SettingsPage() {
               ) : null}
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card data-testid="host-telemetry-card">
+        <CardHeader>
+          <CardTitle>Host telemetry</CardTitle>
+          <CardDescription>
+            Opt-in aggregate CPU / memory / network / filesystem snapshot from{" "}
+            <code>/api/operator/host/metrics</code>. Toggle on a host in{" "}
+            <strong>Hosts &amp; connections</strong> to enable. No command lines, environment
+            variables, prompt text, tokens, or absolute file paths are ever collected.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!telemetryOptedIn ? (
+            <p className="text-muted-foreground text-sm" data-testid="host-telemetry-disabled">
+              Host telemetry is disabled for the selected host. Open{" "}
+              <em>Hosts &amp; connections</em> and toggle the activity icon on a host row to enable.
+            </p>
+          ) : hostMetricsCapabilityLoading ? (
+            <p className="text-muted-foreground text-sm">Checking host telemetry support…</p>
+          ) : !hostMetricsSupported ? (
+            <p className="text-muted-foreground text-sm" data-testid="host-telemetry-unsupported">
+              The selected host does not advertise <code>host_metrics</code> capability. Upgrade the
+              remote backend to enable telemetry.
+            </p>
+          ) : hostMetrics.isLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : hostMetrics.isError ? (
+            <p className="text-destructive text-sm" data-testid="host-telemetry-error">
+              Failed to fetch host metrics.
+            </p>
+          ) : hostMetrics.data ? (
+            <div className="space-y-2 text-sm" data-testid="host-telemetry-data">
+              <div className="text-muted-foreground flex items-center gap-2 text-xs">
+                <span>
+                  Sampled:{" "}
+                  <time dateTime={hostMetrics.data.sampled_at}>{hostMetrics.data.sampled_at}</time>
+                </span>
+                {hostMetrics.data.stale && (
+                  <span
+                    className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-amber-700 uppercase dark:text-amber-300"
+                    data-testid="host-telemetry-stale-badge"
+                  >
+                    stale
+                  </span>
+                )}
+              </div>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                <dt className="text-muted-foreground">CPU</dt>
+                <dd
+                  className="font-mono"
+                  data-testid="host-telemetry-cpu"
+                  data-supported={hostMetrics.data.cpu.supported}
+                >
+                  {hostMetrics.data.cpu.supported && hostMetrics.data.cpu.percent !== null
+                    ? `${Math.round(hostMetrics.data.cpu.percent * 10) / 10}% (load ${hostMetrics.data.cpu.load_1m ?? "—"})`
+                    : "unavailable"}
+                </dd>
+                <dt className="text-muted-foreground">Memory</dt>
+                <dd
+                  className="font-mono"
+                  data-testid="host-telemetry-memory"
+                  data-supported={hostMetrics.data.memory.supported}
+                >
+                  {hostMetrics.data.memory.supported && hostMetrics.data.memory.percent !== null
+                    ? `${Math.round(hostMetrics.data.memory.percent * 10) / 10}%`
+                    : "unavailable"}
+                </dd>
+                <dt className="text-muted-foreground">Network rx</dt>
+                <dd
+                  className="font-mono"
+                  data-testid="host-telemetry-net-rx"
+                  data-supported={hostMetrics.data.network.supported}
+                >
+                  {hostMetrics.data.network.supported && hostMetrics.data.network.rx_bytes !== null
+                    ? `${formatNumber(hostMetrics.data.network.rx_bytes)} B`
+                    : "unavailable"}
+                </dd>
+                <dt className="text-muted-foreground">Network tx</dt>
+                <dd
+                  className="font-mono"
+                  data-testid="host-telemetry-net-tx"
+                  data-supported={hostMetrics.data.network.supported}
+                >
+                  {hostMetrics.data.network.supported && hostMetrics.data.network.tx_bytes !== null
+                    ? `${formatNumber(hostMetrics.data.network.tx_bytes)} B`
+                    : "unavailable"}
+                </dd>
+              </dl>
+              {hostMetrics.data.filesystem.supported &&
+                Object.keys(hostMetrics.data.filesystem.mounts).length > 0 && (
+                  <div
+                    className="border-border/50 mt-2 border-t pt-2"
+                    data-testid="host-telemetry-fs"
+                  >
+                    <p className="text-muted-foreground mb-1 text-xs">Filesystem</p>
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                      {Object.entries(hostMetrics.data.filesystem.mounts).map(([label, mount]) => {
+                        const usedPct =
+                          mount.total_bytes > 0 ? (mount.used_bytes / mount.total_bytes) * 100 : 0;
+                        return (
+                          <div key={label} className="contents">
+                            <dt className="text-muted-foreground">{label}</dt>
+                            <dd className="font-mono">{Math.round(usedPct * 10) / 10}% used</dd>
+                          </div>
+                        );
+                      })}
+                    </dl>
+                  </div>
+                )}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

@@ -21,6 +21,7 @@ import {
   graphResponseSchema,
   healthResponseSchema,
   hostCapabilitiesSchema,
+  hostMetricsResponseSchema,
   knowledgeInsightsResponseSchema,
   searchResponseSchema,
   sessionDetailResponseSchema,
@@ -74,6 +75,7 @@ import type {
   FeedbackRequest,
   FeedbackResponse,
   HostCapabilities,
+  HostMetricsResponse,
   HostProfile,
   KnowledgeInsightsResponse,
   ResearchPackResponse,
@@ -204,6 +206,12 @@ export const queryKeys = {
     ["operator-diff", hostId, pathA, pathB] as const,
   operatorModels: (hostId = LOCAL_HOST_ID) => ["operator-models", hostId] as const,
   operatorCapabilities: (hostId = LOCAL_HOST_ID) => ["operator-capabilities", hostId] as const,
+  /**
+   * #558: Per-host metrics query key. Only fetched when the operator has
+   * opted in via the `telemetry_enabled` flag on the HostProfile and the
+   * remote backend advertises the `host_metrics` capability.
+   */
+  operatorHostMetrics: (hostId = LOCAL_HOST_ID) => ["operator-host-metrics", hostId] as const,
   operatorUsage: (hostId = LOCAL_HOST_ID, sessionId?: string) =>
     ["operator-usage", hostId, sessionId] as const,
   /**
@@ -1414,6 +1422,36 @@ export function useHostCapabilities(host: HostProfile = LOCAL_HOST, enabled = tr
         host
       );
       return hostCapabilitiesSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * #558: Fetches opt-in aggregate host telemetry (CPU/RAM/network/filesystem)
+ * for the selected operator host.
+ *
+ * Polling is OFF by default; callers must pass `enabled=true` only when:
+ *   1. The operator has opted in via `host.telemetry_enabled === true`, AND
+ *   2. The backend advertises the `host_metrics` capability (via
+ *      `useHostCapabilities` / `useHostFeature(host, "host_metrics")`).
+ *
+ * Refetch cadence is 5s; the backend enforces a 1Hz minimum sample interval
+ * so polling faster would just return the cached sample.
+ */
+export function useHostMetrics(host: HostProfile = LOCAL_HOST, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorHostMetrics(host.id),
+    staleTime: 1_000,
+    gcTime: CACHE_TIMES.health,
+    refetchInterval: enabled ? 5_000 : false,
+    refetchIntervalInBackground: false,
+    enabled,
+    queryFn: async (): Promise<HostMetricsResponse> => {
+      const data = await hostFetch<HostMetricsResponse>(
+        withLeadingSlash("/api/operator/host/metrics"),
+        host
+      );
+      return hostMetricsResponseSchema.parse(data);
     },
   });
 }

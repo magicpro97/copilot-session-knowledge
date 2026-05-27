@@ -104,6 +104,11 @@ describe("api hooks helpers", () => {
     expect(queryKeys.retro()).toEqual(["retro", "repo", "local"]);
     expect(queryKeys.retro("local")).toEqual(["retro", "local", "local"]);
     expect(queryKeys.knowledgeInsights()).toEqual(["knowledge-insights", "local"]);
+    expect(queryKeys.operatorHostMetrics()).toEqual(["operator-host-metrics", "local"]);
+    expect(queryKeys.operatorHostMetrics("tunnel-1")).toEqual([
+      "operator-host-metrics",
+      "tunnel-1",
+    ]);
     expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).toEqual([
       "graph",
       "local",
@@ -1440,5 +1445,63 @@ describe("useSubmitPrompt (#556)", () => {
     const body = JSON.parse((init as RequestInit | undefined)?.body as string);
     expect(body.prompt).toBe("hello");
     expect(body.host_id).toBe(REMOTE_HOST.id);
+  });
+});
+
+describe("useHostMetrics — opt-in polling gate (#558)", () => {
+  /**
+   * The hook double-gates polling on the caller passing `enabled=true`. When
+   * disabled, React Query must not fire the queryFn — verified by asserting
+   * hostFetch is never called. This protects hosts that have not opted in
+   * (or that lack the host_metrics capability) from any background traffic
+   * to /api/operator/host/metrics.
+   */
+  it("does not invoke hostFetch when enabled=false", async () => {
+    const { useHostMetrics } = await import("@/lib/api/hooks");
+    vi.mocked(hostFetch).mockClear();
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useHostMetrics(LOCAL_HOST, false), { wrapper });
+    // Yield one microtask so React Query has a chance to (not) schedule.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(hostFetch)).not.toHaveBeenCalled();
+  });
+
+  it("invokes hostFetch against /api/operator/host/metrics when enabled=true", async () => {
+    const { useHostMetrics } = await import("@/lib/api/hooks");
+    vi.mocked(hostFetch).mockClear();
+    vi.mocked(hostFetch).mockResolvedValue({
+      sampled_at: "2025-01-01T00:00:00Z",
+      stale: false,
+      cpu: { supported: true, percent: 1, load_1m: 0, load_5m: 0, load_15m: 0 },
+      memory: { supported: true, percent: 1, total_bytes: 0, used_bytes: 0 },
+      network: { supported: true, rx_bytes: 0, tx_bytes: 0, iface_count: 1 },
+      filesystem: { supported: true, mounts: {} },
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useHostMetrics(LOCAL_HOST, true), { wrapper });
+    await act(async () => {
+      // Flush the React Query micro-tasks so the query has time to resolve.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+
+    expect(vi.mocked(hostFetch)).toHaveBeenCalled();
+    const [path] = vi.mocked(hostFetch).mock.calls[0] ?? [];
+    expect(path).toBe("/api/operator/host/metrics");
+    expect(result.current.isError).toBe(false);
   });
 });

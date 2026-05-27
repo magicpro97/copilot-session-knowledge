@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   useHealth,
+  useHostMetrics,
   useScoutStatus,
   useSkillMetrics,
   useSyncStatus,
@@ -16,6 +17,7 @@ import type { HostState } from "@/providers/host-provider";
 
 vi.mock("@/lib/api/hooks", () => ({
   useHealth: vi.fn(),
+  useHostMetrics: vi.fn(),
   useScoutStatus: vi.fn(),
   useSkillMetrics: vi.fn(),
   useSyncStatus: vi.fn(),
@@ -37,8 +39,16 @@ vi.mock("@/providers/host-provider", () => ({
 }));
 
 let diagnosticsSupported = true;
+let hostMetricsSupported = true;
+let hostMetricsCapabilityLoading = false;
 vi.mock("@/lib/hosts", () => ({
-  useHostFeature: vi.fn(() => ({ supported: diagnosticsSupported, loading: false })),
+  useHostFeature: vi.fn((_host: unknown, feature: string) => {
+    if (feature === "host_metrics") {
+      return { supported: hostMetricsSupported, loading: hostMetricsCapabilityLoading };
+    }
+    // Default branch covers diagnostics features and any other capability.
+    return { supported: diagnosticsSupported, loading: false };
+  }),
 }));
 
 vi.mock("@/lib/hosts/local-bootstrap", () => ({
@@ -65,6 +75,7 @@ const mockedUseHealth = vi.mocked(useHealth);
 const mockedUseSyncStatus = vi.mocked(useSyncStatus);
 const mockedUseScoutStatus = vi.mocked(useScoutStatus);
 const mockedUseSkillMetrics = vi.mocked(useSkillMetrics);
+const mockedUseHostMetrics = vi.mocked(useHostMetrics);
 const mockedUseKeyboardPlatform = vi.mocked(useKeyboardPlatform);
 
 function makeIdleQuery(): GenericQuery {
@@ -114,11 +125,14 @@ beforeEach(() => {
   localStorage.clear();
   hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
   diagnosticsSupported = true;
+  hostMetricsSupported = true;
+  hostMetricsCapabilityLoading = false;
   mockedUseKeyboardPlatform.mockReturnValue("unknown");
   mockedUseHealth.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHealth>);
   mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
   mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
   mockedUseSkillMetrics.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSkillMetrics>);
+  mockedUseHostMetrics.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHostMetrics>);
 });
 
 afterEach(() => {
@@ -509,5 +523,98 @@ describe("SettingsPage — platform-aware shortcut display", () => {
     render(<SettingsPage />);
     expect(screen.getAllByText("Esc").length).toBeGreaterThan(0);
     expect(screen.getAllByText("G then S").length).toBeGreaterThan(0);
+  });
+});
+
+describe("SettingsPage — host telemetry card (#558)", () => {
+  it("renders the disabled state when the active host has not opted into telemetry", () => {
+    // LOCAL_HOST has no telemetry_enabled → card should explain opt-in and
+    // the underlying hook must be called with enabled=false to prevent polling.
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    render(<SettingsPage />);
+
+    expect(screen.getByTestId("host-telemetry-card")).toBeInTheDocument();
+    expect(screen.getByTestId("host-telemetry-disabled")).toBeInTheDocument();
+    const lastCall = mockedUseHostMetrics.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(false);
+  });
+
+  it("renders the unsupported branch when the host lacks the host_metrics capability", () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+    };
+    hostMetricsSupported = false;
+    render(<SettingsPage />);
+
+    expect(screen.getByTestId("host-telemetry-unsupported")).toBeInTheDocument();
+    const lastCall = mockedUseHostMetrics.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(false);
+  });
+
+  it("renders the error branch when the metrics query fails", () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+    };
+    mockedUseHostMetrics.mockReturnValue({
+      ...makeIdleQuery(),
+      isError: true,
+    } as unknown as ReturnType<typeof useHostMetrics>);
+
+    render(<SettingsPage />);
+
+    expect(screen.getByTestId("host-telemetry-error")).toBeInTheDocument();
+  });
+
+  it("renders aggregate CPU/RAM/network rows when metrics data is available", () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+    };
+    mockedUseHostMetrics.mockReturnValue({
+      ...makeIdleQuery(),
+      isSuccess: true,
+      data: {
+        sampled_at: "2025-01-01T00:00:00Z",
+        stale: false,
+        cpu: { supported: true, percent: 12.3, load_1m: 0.5, load_5m: 0.5, load_15m: 0.5 },
+        memory: { supported: true, percent: 45.6, total_bytes: 0, used_bytes: 0 },
+        network: { supported: true, rx_bytes: 1024, tx_bytes: 2048, iface_count: 1 },
+        filesystem: { supported: true, mounts: {} },
+      },
+    } as unknown as ReturnType<typeof useHostMetrics>);
+
+    render(<SettingsPage />);
+
+    expect(screen.getByTestId("host-telemetry-data")).toBeInTheDocument();
+    expect(screen.getByTestId("host-telemetry-cpu")).toHaveTextContent("12.3%");
+    expect(screen.getByTestId("host-telemetry-memory")).toHaveTextContent("45.6%");
+    expect(screen.queryByTestId("host-telemetry-stale-badge")).not.toBeInTheDocument();
+    const lastCall = mockedUseHostMetrics.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(true);
+  });
+
+  it("renders the stale badge when the payload is marked stale", () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+    };
+    mockedUseHostMetrics.mockReturnValue({
+      ...makeIdleQuery(),
+      isSuccess: true,
+      data: {
+        sampled_at: "2025-01-01T00:00:00Z",
+        stale: true,
+        cpu: { supported: true, percent: 1, load_1m: 0, load_5m: 0, load_15m: 0 },
+        memory: { supported: true, percent: 1, total_bytes: 0, used_bytes: 0 },
+        network: { supported: true, rx_bytes: 0, tx_bytes: 0, iface_count: 1 },
+        filesystem: { supported: true, mounts: {} },
+      },
+    } as unknown as ReturnType<typeof useHostMetrics>);
+
+    render(<SettingsPage />);
+
+    expect(screen.getByTestId("host-telemetry-stale-badge")).toBeInTheDocument();
   });
 });

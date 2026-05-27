@@ -609,3 +609,103 @@ describe("HostManagement — detect local backend affordance", () => {
     expect(resetLocalBootstrapCache).toHaveBeenCalled();
   });
 });
+
+describe("HostManagement — telemetry toggle and consent (#558)", () => {
+  const REMOTE_ID = "remote-acme";
+  const PROFILES_STORAGE_KEY = "browse_host_profiles";
+
+  /** Seed a remote host into storage so the telemetry toggle is rendered. */
+  function seedRemoteHost(overrides: Record<string, unknown> = {}): void {
+    const profile = {
+      id: REMOTE_ID,
+      label: "Acme remote",
+      base_url: "https://acme.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+      ...overrides,
+    };
+    localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify([profile]));
+  }
+
+  /** Read the stored remote host back from localStorage. */
+  function readRemoteHost(): Record<string, unknown> | null {
+    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
+    if (!raw) return null;
+    const arr = JSON.parse(raw) as Array<Record<string, unknown>>;
+    return arr.find((p) => p.id === REMOTE_ID) ?? null;
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("shows the consent banner on first opt-in and does not flip telemetry_enabled yet", () => {
+    seedRemoteHost();
+    renderHostManagement();
+
+    expect(screen.queryByTestId("telemetry-consent-banner")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`host-telemetry-toggle-${REMOTE_ID}`));
+
+    expect(screen.getByTestId("telemetry-consent-banner")).toBeInTheDocument();
+    // Storage must NOT yet reflect telemetry_enabled=true — consent gates the flip.
+    const stored = readRemoteHost();
+    expect(stored?.telemetry_enabled).not.toBe(true);
+  });
+
+  it("enables telemetry and marks consent acked when the operator confirms", async () => {
+    seedRemoteHost();
+    renderHostManagement();
+
+    fireEvent.click(screen.getByTestId(`host-telemetry-toggle-${REMOTE_ID}`));
+    fireEvent.click(screen.getByTestId("telemetry-consent-confirm"));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("telemetry-consent-banner")).not.toBeInTheDocument()
+    );
+    const stored = readRemoteHost();
+    expect(stored?.telemetry_enabled).toBe(true);
+    expect(stored?.telemetry_consent_acked).toBe(true);
+  });
+
+  it("dismisses the banner without enabling telemetry when the operator cancels", () => {
+    seedRemoteHost();
+    renderHostManagement();
+
+    fireEvent.click(screen.getByTestId(`host-telemetry-toggle-${REMOTE_ID}`));
+    fireEvent.click(screen.getByTestId("telemetry-consent-cancel"));
+
+    expect(screen.queryByTestId("telemetry-consent-banner")).not.toBeInTheDocument();
+    const stored = readRemoteHost();
+    expect(stored?.telemetry_enabled).not.toBe(true);
+    // Consent must NOT be persisted when the operator declines.
+    expect(stored?.telemetry_consent_acked).not.toBe(true);
+  });
+
+  it("re-enables telemetry without re-prompting when consent was previously acked", () => {
+    // Operator already acked consent in a prior session and later toggled off.
+    seedRemoteHost({ telemetry_enabled: false, telemetry_consent_acked: true });
+    renderHostManagement();
+
+    fireEvent.click(screen.getByTestId(`host-telemetry-toggle-${REMOTE_ID}`));
+
+    expect(screen.queryByTestId("telemetry-consent-banner")).not.toBeInTheDocument();
+    const stored = readRemoteHost();
+    expect(stored?.telemetry_enabled).toBe(true);
+    expect(stored?.telemetry_consent_acked).toBe(true);
+  });
+
+  it("disables telemetry immediately without showing the consent banner", () => {
+    seedRemoteHost({ telemetry_enabled: true, telemetry_consent_acked: true });
+    renderHostManagement();
+
+    fireEvent.click(screen.getByTestId(`host-telemetry-toggle-${REMOTE_ID}`));
+
+    expect(screen.queryByTestId("telemetry-consent-banner")).not.toBeInTheDocument();
+    const stored = readRemoteHost();
+    expect(stored?.telemetry_enabled).toBe(false);
+    // Consent ack is preserved across toggle-off so subsequent opt-in skips the banner.
+    expect(stored?.telemetry_consent_acked).toBe(true);
+  });
+});

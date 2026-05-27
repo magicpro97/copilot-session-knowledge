@@ -1737,3 +1737,71 @@ Until all phases are verified with evidence, the goal status should be read as
 - [x] `git commit` + `git push`
 - [x] Firebase deploy (from private hosting repo)
 - [x] Hosted smoke (host dropdown, host management, session create dialog)
+
+## Enabling host telemetry (#558)
+
+Opt-in aggregate CPU / memory / network / filesystem snapshot for a remote
+operator host.
+
+### Quick start
+
+1. Open the browse UI → **Hosts & connections** card.
+2. On the row for the host you want to monitor, click the **Activity** icon
+   (next to the Trash icon). A first-time consent banner appears explaining
+   exactly what is collected.
+3. Click **Enable telemetry**. The flag persists to the host profile.
+4. Open **Settings** → **Host telemetry** to see live readings (CPU %, memory %,
+   network rx/tx bytes, filesystem usage per coarse label). The Diagnostics
+   page shows the same data.
+
+To disable later, click the Activity icon again. The toggle is reversible at
+any time; no consent re-prompt is shown on subsequent toggles for the same host.
+
+### What is and is not collected
+
+**Sent in every payload:**
+
+- CPU load averages (1m / 5m / 15m) and a derived CPU %.
+- Memory totals (total / available / used / percent).
+- Aggregate network rx/tx **byte totals** across non-loopback interfaces.
+- Filesystem totals/used/free per coarse label (`root`, `home`, `data`). Keys
+  are labels — never raw mount points.
+
+**Never sent:**
+
+- Per-process command lines, PIDs, or process names.
+- Environment variables, shell prompts, or session tokens.
+- Absolute file paths, network interface names, IP addresses, hostnames.
+
+### Rate-limit and staleness
+
+- The backend caches samples for 1.0 s; the UI polls every 5.0 s.
+- If a sample is older than 5 s and `?stale=mark` is passed, the endpoint
+  returns the cached payload with `stale=true`. The UI surfaces a `stale` badge
+  next to the sample timestamp.
+
+### Platform support matrix
+
+| Platform | CPU | Memory | Network | Filesystem |
+|----------|-----|--------|---------|------------|
+| Linux    | ✅  | ✅     | ✅      | ✅         |
+| macOS    | ✅  | ❌     | ❌      | ✅         |
+| BSD      | ✅  | ❌     | ❌      | ✅         |
+| Windows  | ❌  | ❌     | ❌      | ❌         |
+
+Unsupported subsystems return `{"supported": false}` and `null` values — the UI
+renders "unavailable" without breaking layout. The `host_metrics` capability is
+advertised on every backend that ships the endpoint, regardless of which
+subsystems are supported on the host.
+
+### Troubleshooting
+
+- **Host telemetry card shows "does not advertise host_metrics capability":**
+  the remote backend is older than #558. Upgrade `browse/api/operator.py` and
+  restart.
+- **All four subsystems unsupported:** running on Windows or in a sandbox
+  without `/proc` or `os.getloadavg()`. This is expected; only the filesystem
+  block may still be useful via `os.statvfs()` on POSIX.
+- **`stale` badge stays on:** the sampler is being polled less than every 5 s
+  by the UI. Verify the host is reachable and `useHostMetrics` is active
+  (Settings → Host telemetry visible).

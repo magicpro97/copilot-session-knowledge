@@ -4422,6 +4422,176 @@ def run_preflight_usage_tests():
     test_usage_endpoint_returns_no_prompt_content()
 
 
+# ── Issue #558: opt-in aggregate host telemetry ───────────────────────────────
+
+
+def test_hm1_sampler_returns_fixed_shape():
+    """HM1: sample_host_metrics() returns a stable dict shape with required keys."""
+    from browse.core import host_metrics
+
+    host_metrics._reset_cache_for_tests()
+    sample = host_metrics.sample_host_metrics()
+    for key in (
+        "supported",
+        "sampled_at",
+        "sampled_at_epoch",
+        "cpu",
+        "memory",
+        "network",
+        "filesystem",
+        "stale",
+        "min_sample_interval_s",
+    ):
+        test(f"HM1: '{key}' in sample", key in sample)
+    test("HM1: cpu block has 'supported' key", isinstance(sample["cpu"].get("supported"), bool))
+    test("HM1: memory block has 'supported' key", isinstance(sample["memory"].get("supported"), bool))
+    test("HM1: network block has 'supported' key", isinstance(sample["network"].get("supported"), bool))
+    test("HM1: filesystem.mounts is dict", isinstance(sample["filesystem"].get("mounts"), dict))
+    test("HM1: stale defaults to False on fresh sample", sample["stale"] is False)
+
+
+def test_hm2_sampler_rate_limit_caches_within_1hz():
+    """HM2: A second call within _MIN_SAMPLE_INTERVAL_S returns the cached payload (same epoch)."""
+    from browse.core import host_metrics
+
+    host_metrics._reset_cache_for_tests()
+    s1 = host_metrics.sample_host_metrics(now=1_000_000.0)
+    s2 = host_metrics.sample_host_metrics(now=1_000_000.5)  # 0.5 s later
+    test(
+        "HM2: cached payload returned within rate-limit window",
+        s1["sampled_at_epoch"] == s2["sampled_at_epoch"],
+    )
+    # Beyond the window — fresh sample.
+    s3 = host_metrics.sample_host_metrics(now=1_000_001.5)
+    test("HM2: fresh sample beyond rate-limit window", s3["sampled_at_epoch"] != s1["sampled_at_epoch"])
+
+
+def test_hm3_stale_marker_after_threshold():
+    """HM3: report_stale_or_resample marks the cached sample stale after _STALE_AFTER_S."""
+    from browse.core import host_metrics
+
+    host_metrics._reset_cache_for_tests()
+    host_metrics.sample_host_metrics(now=1_000_000.0)
+    stale = host_metrics.report_stale_or_resample(now=1_000_000.0 + host_metrics._STALE_AFTER_S)
+    test("HM3: stale marker set when cache exceeds threshold", stale["stale"] is True)
+    test(
+        "HM3: stale payload reflects the cached sampled_at_epoch",
+        stale["sampled_at_epoch"] == 1_000_000.0,
+    )
+
+
+def test_hm4_payload_excludes_sensitive_fields():
+    """HM4: payload contains no env vars, command lines, interface names, or absolute paths.
+
+    Issue #558 acceptance: "no per-process command lines by default", no
+    env vars, no tokens, no absolute file paths.
+    """
+    from browse.core import host_metrics
+
+    host_metrics._reset_cache_for_tests()
+    sample = host_metrics.sample_host_metrics()
+    raw = json.dumps(sample)
+    forbidden_substrings = ("HOME=", "PATH=", "argv", "cmdline", "command_line", "/proc/self/")
+    for needle in forbidden_substrings:
+        test(f"HM4: payload omits '{needle}'", needle not in raw)
+    # Filesystem keys are coarse labels — never absolute paths.
+    for label in sample["filesystem"]["mounts"].keys():
+        test(
+            f"HM4: filesystem key '{label}' is a coarse label (no path separator)",
+            "/" not in label and "\\" not in label,
+        )
+
+
+def test_hm5_capabilities_advertise_host_metrics():
+    """HM5: 'host_metrics' is advertised in /api/operator/capabilities supported_features."""
+    from browse.api.operator import handle_capabilities
+
+    resp_body, _ct, status = handle_capabilities(None, {}, None, None)
+    test("HM5: capabilities returns 200", status == 200)
+    data = json.loads(resp_body)
+    test("HM5: host_metrics in supported_features", "host_metrics" in data.get("supported_features", []))
+
+
+def test_hm6_route_returns_payload():
+    """HM6: GET /api/operator/host/metrics returns the sampler payload."""
+    from browse.api.operator import handle_host_metrics
+    from browse.core import host_metrics
+
+    host_metrics._reset_cache_for_tests()
+    body, ct, status = handle_host_metrics(None, {}, None, None)
+    test("HM6: 200 status", status == 200)
+    test("HM6: application/json content type", ct == "application/json")
+    data = json.loads(body)
+    for key in ("cpu", "memory", "network", "filesystem", "sampled_at", "stale"):
+        test(f"HM6: '{key}' present", key in data)
+
+
+def test_hm7_route_stale_query_returns_stale_marker():
+    """HM7: GET /api/operator/host/metrics?stale=mark returns stale=True after threshold."""
+    from browse.api.operator import handle_host_metrics
+    from browse.core import host_metrics
+
+    host_metrics._reset_cache_for_tests()
+    # Prime the cache.
+    host_metrics.sample_host_metrics(now=1_000_000.0)
+    # Manually age the cache so the stale branch triggers.
+    host_metrics._CACHED_TS = 1_000_000.0
+    # The route doesn't take a 'now' param — patch the module clock.
+    orig_now = host_metrics._now
+    try:
+        host_metrics._now = lambda: 1_000_000.0 + host_metrics._STALE_AFTER_S + 1.0
+        body, _ct, _status = handle_host_metrics(None, {"stale": ["mark"]}, None, None)
+        data = json.loads(body)
+        test("HM7: stale=mark sets stale=True", data.get("stale") is True)
+    finally:
+        host_metrics._now = orig_now
+        host_metrics._reset_cache_for_tests()
+
+
+def test_hm8_unsupported_metric_returns_supported_false():
+    """HM8: Unavailable subsystems are reported as supported=False with null fields.
+
+    Simulates the "no /proc, no getloadavg" path by stubbing the readers and
+    verifying the response shape still validates.
+    """
+    from browse.core import host_metrics
+
+    orig_load = host_metrics._read_proc_loadavg
+    orig_mem = host_metrics._read_proc_meminfo
+    orig_net = host_metrics._read_proc_net_dev
+    orig_fs = host_metrics._sample_filesystems
+    try:
+        host_metrics._read_proc_loadavg = lambda: None
+        host_metrics._read_proc_meminfo = lambda: None
+        host_metrics._read_proc_net_dev = lambda: None
+        host_metrics._sample_filesystems = lambda: {}
+        host_metrics._reset_cache_for_tests()
+        sample = host_metrics.sample_host_metrics()
+        test("HM8: cpu.supported=False", sample["cpu"]["supported"] is False)
+        test("HM8: memory.supported=False", sample["memory"]["supported"] is False)
+        test("HM8: network.supported=False", sample["network"]["supported"] is False)
+        test("HM8: filesystem.supported=False", sample["filesystem"]["supported"] is False)
+        test("HM8: top-level supported=False when nothing available", sample["supported"] is False)
+        test("HM8: cpu.percent is null on unsupported host", sample["cpu"]["percent"] is None)
+    finally:
+        host_metrics._read_proc_loadavg = orig_load
+        host_metrics._read_proc_meminfo = orig_mem
+        host_metrics._read_proc_net_dev = orig_net
+        host_metrics._sample_filesystems = orig_fs
+        host_metrics._reset_cache_for_tests()
+
+
+def run_host_metrics_tests():
+    test_hm1_sampler_returns_fixed_shape()
+    test_hm2_sampler_rate_limit_caches_within_1hz()
+    test_hm3_stale_marker_after_threshold()
+    test_hm4_payload_excludes_sensitive_fields()
+    test_hm5_capabilities_advertise_host_metrics()
+    test_hm6_route_returns_payload()
+    test_hm7_route_stale_query_returns_stale_marker()
+    test_hm8_unsupported_metric_returns_supported_false()
+
+
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
     test_oc1_create_session_fields()
@@ -4547,6 +4717,10 @@ if __name__ == "__main__":
     print()
     print("── Issue #557 / #556: preflight + usage ledger / override ───────────")
     run_preflight_usage_tests()
+
+    print()
+    print("── Issue #558: opt-in aggregate host telemetry ──────────────────────")
+    run_host_metrics_tests()
 
     print()
     print("=" * 60)

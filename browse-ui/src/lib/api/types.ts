@@ -1434,6 +1434,26 @@ export interface HostProfile {
    * `"direct"` for backwards compatibility.
    */
   connectivity_mode?: "direct" | "tunnel" | "broker";
+  /**
+   * #558: Opt-in host telemetry toggle.
+   *
+   * When `true` the UI may poll `GET /api/operator/host/metrics` for this host
+   * and surface aggregate CPU/RAM/network/filesystem status. Default is `false`
+   * (or absent → treated as `false`) so newly-added hosts never trigger a
+   * background poll until the operator explicitly enables telemetry from
+   * Settings → Hosts.
+   *
+   * The backend always serves the metrics endpoint when auth succeeds; this
+   * flag governs only whether the UI makes background requests.
+   */
+  telemetry_enabled?: boolean;
+  /**
+   * #558: When `true`, the first-time consent banner has been acknowledged for
+   * this host. The banner is shown the first time the operator enables
+   * telemetry and explains what is collected (aggregate CPU/RAM/network/fs
+   * counters; never command lines, env vars, prompts, paths, or tokens).
+   */
+  telemetry_consent_acked?: boolean;
 }
 
 /**
@@ -1979,4 +1999,75 @@ export interface SessionMissionAtlasResponse {
   error_sample: MissionAtlasErrorSample[];
   caps: MissionAtlasCaps;
   truncated: MissionAtlasTruncated;
+}
+
+// ── Host telemetry (#558) ─────────────────────────────────────────────────────
+
+/**
+ * Per-subsystem block reported by `GET /api/operator/host/metrics`.
+ * `supported` is `false` when the host cannot sample that subsystem (e.g.
+ * Windows has no loadavg → `cpu.supported === false`).
+ */
+export interface HostMetricsCpu {
+  supported: boolean;
+  count: number;
+  /** 1-minute load average. Null when unsupported. */
+  load_1m: number | null;
+  load_5m: number | null;
+  load_15m: number | null;
+  /** Derived percent (load_1m / cpu_count) clamped to [0, 100]. Null when unsupported. */
+  percent: number | null;
+}
+
+export interface HostMetricsMemory {
+  supported: boolean;
+  total_bytes: number | null;
+  available_bytes: number | null;
+  used_bytes: number | null;
+  percent: number | null;
+}
+
+export interface HostMetricsNetwork {
+  supported: boolean;
+  /** Aggregate rx bytes across non-loopback interfaces. Null when unsupported. */
+  rx_bytes: number | null;
+  /** Aggregate tx bytes across non-loopback interfaces. Null when unsupported. */
+  tx_bytes: number | null;
+}
+
+/** Coarse filesystem mount metrics keyed by label ("root" / "home" / "data"). */
+export interface HostMetricsFilesystemEntry {
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+}
+
+export interface HostMetricsFilesystem {
+  supported: boolean;
+  mounts: Record<string, HostMetricsFilesystemEntry>;
+}
+
+/**
+ * Response payload from `GET /api/operator/host/metrics`.
+ *
+ * The payload is intentionally bounded — no per-process command lines, env
+ * vars, prompt text, tokens, or absolute file paths are ever included.
+ * Filesystem keys are coarse labels only (e.g. "root" / "home" / "data") so
+ * the operator's mount layout is not exposed.
+ */
+export interface HostMetricsResponse {
+  /** True when at least one subsystem could be sampled. */
+  supported: boolean;
+  /** ISO-8601 UTC timestamp ('Z' suffix) of the cached sample. */
+  sampled_at: string;
+  /** POSIX timestamp of the cached sample. */
+  sampled_at_epoch: number;
+  /** Backend-enforced minimum sampling interval in seconds (>= 1.0). */
+  min_sample_interval_s: number;
+  cpu: HostMetricsCpu;
+  memory: HostMetricsMemory;
+  network: HostMetricsNetwork;
+  filesystem: HostMetricsFilesystem;
+  /** True when the cached sample has exceeded the staleness threshold. */
+  stale: boolean;
 }

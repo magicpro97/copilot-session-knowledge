@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ComponentProps } from "react";
 import {
+  Activity,
   AlertCircle,
   Check,
   CheckCircle2,
@@ -162,6 +163,14 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   const [detectedUrl, setDetectedUrl] = useState<string | null>(null);
 
   const [hostedOrigin, setHostedOrigin] = useState<string | null>(null);
+
+  // ── Telemetry consent state (#558) ─────────────────────────────────────────
+  /**
+   * When non-null, the operator is about to enable telemetry on this host for
+   * the first time. The first-time consent banner / dialog requires explicit
+   * acknowledgement before `telemetry_enabled` flips to `true`.
+   */
+  const [telemetryConsentHostId, setTelemetryConsentHostId] = useState<string | null>(null);
   // Defer hosted-origin detection to after mount to avoid SSR/hydration mismatch.
   // getHostedOrigin() reads window.location.origin which is unavailable on the server;
   // calling it synchronously during render causes React hydration error #418 when the
@@ -440,6 +449,45 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     refresh();
   }
 
+  /**
+   * #558: Toggle the opt-in `telemetry_enabled` flag on a host profile.
+   *
+   * - When turning OFF, persist immediately (no consent needed to stop polling).
+   * - When turning ON for the first time (consent not yet acknowledged for this
+   *   host), open the first-time consent dialog. The actual flip happens in
+   *   `handleTelemetryConsentConfirm` after the operator clicks "Enable".
+   * - When turning ON for a host that has already acknowledged consent (e.g.
+   *   the user previously disabled it), persist immediately.
+   */
+  function handleToggleTelemetry(host: HostProfile) {
+    if (host.telemetry_enabled) {
+      saveHostProfile({ ...host, telemetry_enabled: false });
+      refresh();
+      return;
+    }
+    if (host.telemetry_consent_acked) {
+      saveHostProfile({ ...host, telemetry_enabled: true });
+      refresh();
+      return;
+    }
+    setTelemetryConsentHostId(host.id);
+  }
+
+  function handleTelemetryConsentConfirm(id: string) {
+    const profile = allHosts.find((p) => p.id === id);
+    if (!profile) {
+      setTelemetryConsentHostId(null);
+      return;
+    }
+    saveHostProfile({
+      ...profile,
+      telemetry_enabled: true,
+      telemetry_consent_acked: true,
+    });
+    setTelemetryConsentHostId(null);
+    refresh();
+  }
+
   const activeId = selectedId ?? allHosts.find((h) => h.is_default)?.id ?? LOCAL_HOST_ID;
   const remoteHosts = allHosts.filter((h) => h.id !== LOCAL_HOST_ID);
 
@@ -586,6 +634,32 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                 type="button"
                 variant="ghost"
                 size="icon"
+                className={cn(
+                  "size-7",
+                  host.telemetry_enabled
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-muted-foreground"
+                )}
+                onClick={() => handleToggleTelemetry(host)}
+                aria-label={
+                  host.telemetry_enabled
+                    ? `Disable host telemetry for ${host.label}`
+                    : `Enable host telemetry for ${host.label}`
+                }
+                aria-pressed={host.telemetry_enabled === true}
+                title={
+                  host.telemetry_enabled
+                    ? "Host telemetry enabled — aggregate CPU/RAM/network/filesystem. Click to disable."
+                    : "Enable opt-in aggregate host telemetry (CPU/RAM/network/filesystem). No command lines, env vars, prompts, paths, or tokens are sent."
+                }
+                data-testid={`host-telemetry-toggle-${host.id}`}
+              >
+                <Activity className="size-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
                 className="text-destructive/70 hover:text-destructive size-7"
                 onClick={() => handleRemove(host.id)}
                 aria-label={`Remove host ${host.label}`}
@@ -603,6 +677,53 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
           >
             No remote hosts saved. Add a public tunnel URL below to connect to a remote CLI agent.
           </p>
+        )}
+
+        {/* #558: First-time telemetry consent banner */}
+        {telemetryConsentHostId !== null && (
+          <div
+            className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby="telemetry-consent-title"
+            data-testid="telemetry-consent-banner"
+          >
+            <p
+              id="telemetry-consent-title"
+              className="mb-1 font-medium text-amber-900 dark:text-amber-200"
+            >
+              Enable host telemetry?
+            </p>
+            <p className="text-muted-foreground mb-2">
+              The UI will poll <code className="font-mono">/api/operator/host/metrics</code> on this
+              host every 5 seconds and display aggregate CPU load, memory %, network counter totals,
+              and coarse filesystem usage (root / home / data). Sampling is capped at 1 Hz by the
+              backend.
+            </p>
+            <p className="text-muted-foreground mb-3">
+              <strong>Never sent:</strong> command lines, environment variables, prompt text,
+              tokens, absolute file paths, or network interface names.
+            </p>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => handleTelemetryConsentConfirm(telemetryConsentHostId)}
+                data-testid="telemetry-consent-confirm"
+              >
+                Enable telemetry
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setTelemetryConsentHostId(null)}
+                data-testid="telemetry-consent-cancel"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
         )}
       </div>
 

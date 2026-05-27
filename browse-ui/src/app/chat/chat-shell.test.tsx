@@ -111,6 +111,11 @@ vi.mock("@/lib/api/hooks", () => ({
     mutate: vi.fn(),
     isPending: false,
   })),
+  useHostMetrics: vi.fn(() => ({
+    data: null,
+    isLoading: false,
+    isError: false,
+  })),
   useUsageOverride: vi.fn(() => ({
     mutateAsync: vi.fn(),
     mutate: vi.fn(),
@@ -134,6 +139,18 @@ let hostStateMock: HostState = {
 };
 vi.mock("@/providers/host-provider", () => ({
   useHostState: vi.fn(() => hostStateMock),
+}));
+
+// Mocked at module scope so individual tests can override the supported flag
+// to assert the unsupported branch of the active-host telemetry chip. Default
+// returns supported=true so unrelated features (e.g. cli_adopt) keep working.
+const useHostFeatureMock = vi.fn((_host: unknown, _feature: string, _enabled?: boolean) => ({
+  supported: true,
+  loading: false,
+}));
+vi.mock("@/lib/hosts", () => ({
+  useHostFeature: (host: unknown, feature: string, enabled?: boolean) =>
+    useHostFeatureMock(host, feature, enabled),
 }));
 
 import { ChatShell } from "@/components/chat/chat-shell";
@@ -1696,5 +1713,144 @@ describe("SessionList — adopted session badge", () => {
     render(<ChatShell />);
 
     expect(screen.getByTitle(/Adopted from CLI history \(confirmed\)/i)).toBeInTheDocument();
+  });
+});
+
+describe("ChatShell — active host telemetry chip", () => {
+  beforeEach(() => {
+    // Reset mocks back to defaults for each test (vitest does not reset module
+    // mocks automatically between tests defined in the same file).
+    useHostFeatureMock.mockImplementation(() => ({ supported: true, loading: false }));
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true, localDiagnosticsEnabled: true };
+  });
+
+  it("renders the disabled chip when the active host has not opted into telemetry", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const useHostMetricsSpy = vi.mocked(hooks.useHostMetrics);
+    useHostMetricsSpy.mockClear();
+
+    // LOCAL_HOST has no `telemetry_enabled`, so the chip must render the
+    // muted "off" state and the metrics hook must be called with enabled=false
+    // so React Query never polls /api/operator/host/metrics.
+    render(<ChatShell />);
+
+    expect(screen.getByTestId("active-host-telemetry-disabled")).toBeInTheDocument();
+    expect(useHostMetricsSpy).toHaveBeenCalled();
+    const lastCall = useHostMetricsSpy.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(false);
+  });
+
+  it("renders the unsupported chip when telemetry is opted in but capability is missing", async () => {
+    useHostFeatureMock.mockImplementation((_h, feature: string) => {
+      if (feature === "host_metrics") return { supported: false, loading: false };
+      return { supported: true, loading: false };
+    });
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+      localDiagnosticsEnabled: true,
+    };
+    const hooks = await import("@/lib/api/hooks");
+    const useHostMetricsSpy = vi.mocked(hooks.useHostMetrics);
+    useHostMetricsSpy.mockClear();
+
+    render(<ChatShell />);
+
+    expect(screen.getByTestId("active-host-telemetry-unsupported")).toBeInTheDocument();
+    // No polling when capability is missing.
+    const lastCall = useHostMetricsSpy.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(false);
+  });
+
+  it("renders the unavailable chip when the metrics query errors", async () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+      localDiagnosticsEnabled: true,
+    };
+    const hooks = await import("@/lib/api/hooks");
+    vi.mocked(hooks.useHostMetrics).mockReturnValueOnce({
+      data: null,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof hooks.useHostMetrics>);
+
+    render(<ChatShell />);
+
+    expect(screen.getByTestId("active-host-telemetry-error")).toBeInTheDocument();
+  });
+
+  it("renders aggregate CPU/RAM/network when data is available", async () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+      localDiagnosticsEnabled: true,
+    };
+    const hooks = await import("@/lib/api/hooks");
+    vi.mocked(hooks.useHostMetrics).mockReturnValueOnce({
+      data: {
+        sampled_at: "2025-01-01T00:00:00Z",
+        stale: false,
+        cpu: { supported: true, percent: 42.7, load_1m: 1.5, load_5m: 1.2, load_15m: 1.0 },
+        memory: { supported: true, percent: 63.1, total_bytes: 0, used_bytes: 0 },
+        network: { supported: true, rx_bytes: 1234567, tx_bytes: 9876, iface_count: 1 },
+        filesystem: { supported: true, mounts: {} },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof hooks.useHostMetrics>);
+
+    render(<ChatShell />);
+
+    const chip = screen.getByTestId("active-host-telemetry-data");
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveAttribute("data-stale", "false");
+    expect(screen.getByTestId("active-host-telemetry-cpu")).toHaveTextContent("cpu 43%");
+    expect(screen.getByTestId("active-host-telemetry-mem")).toHaveTextContent("ram 63%");
+    // 1234567 bytes → "1.2M", 9876 bytes → "9.9K"
+    expect(screen.getByTestId("active-host-telemetry-net")).toHaveTextContent("↓1.2M ↑9.9K");
+    expect(screen.queryByTestId("active-host-telemetry-stale")).not.toBeInTheDocument();
+  });
+
+  it("shows the stale badge when the metrics payload is marked stale", async () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+      localDiagnosticsEnabled: true,
+    };
+    const hooks = await import("@/lib/api/hooks");
+    vi.mocked(hooks.useHostMetrics).mockReturnValueOnce({
+      data: {
+        sampled_at: "2025-01-01T00:00:00Z",
+        stale: true,
+        cpu: { supported: true, percent: 10, load_1m: 0.1, load_5m: 0.1, load_15m: 0.1 },
+        memory: { supported: true, percent: 20, total_bytes: 0, used_bytes: 0 },
+        network: { supported: false, rx_bytes: null, tx_bytes: null, iface_count: 0 },
+        filesystem: { supported: false, mounts: {} },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof hooks.useHostMetrics>);
+
+    render(<ChatShell />);
+
+    expect(screen.getByTestId("active-host-telemetry-data")).toHaveAttribute("data-stale", "true");
+    expect(screen.getByTestId("active-host-telemetry-stale")).toBeInTheDocument();
+  });
+
+  it("passes enabled=true to useHostMetrics only when both opt-in and capability are present", async () => {
+    hostStateMock = {
+      host: { ...LOCAL_HOST, telemetry_enabled: true },
+      diagnosticsEnabled: true,
+      localDiagnosticsEnabled: true,
+    };
+    const hooks = await import("@/lib/api/hooks");
+    const useHostMetricsSpy = vi.mocked(hooks.useHostMetrics);
+    useHostMetricsSpy.mockClear();
+
+    render(<ChatShell />);
+
+    const lastCall = useHostMetricsSpy.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(true);
   });
 });

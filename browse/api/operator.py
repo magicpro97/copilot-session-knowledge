@@ -259,6 +259,7 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "run_health",
                 "preflight",
                 "usage",
+                "host_metrics",
             ],
         }
     )
@@ -269,6 +270,53 @@ def handle_list_browsers(db, params, token, nonce) -> tuple:
     """GET /api/operator/browsers — scan allowlisted installed browsers."""
     browsers = scan_installed_browsers()
     return json_ok({"browsers": browsers, "count": len(browsers)})
+
+
+# ── Opt-in aggregate host telemetry (#558) ────────────────────────────────────
+#
+# This route is auth-gated by the global server dispatcher (`/api/*` requires
+# Bearer/cookie/?token=auth before reaching any handler) and rate-limited at
+# the sampler layer (1 Hz minimum sample interval — extra reads return the
+# cached payload).
+#
+# Privacy contract:
+#   - Aggregate metrics only.  No per-process command lines, env vars, prompt
+#     text, tokens, or absolute file paths.
+#   - Filesystem keys are coarse labels ("root"/"home"/"data") — the operator's
+#     mount layout is NOT exposed.
+#   - Network metrics aggregate rx/tx bytes across non-loopback interfaces;
+#     interface names are NOT returned.
+#   - Default UI behaviour is opt-OUT: the frontend MUST NOT issue background
+#     polls until the operator explicitly enables telemetry on the host row.
+#   - Disabling telemetry in the UI simply stops the polls; the route remains
+#     available for one-off diagnostic checks but is harmless when unread.
+
+
+@route("/api/operator/host/metrics", methods=["GET"])
+def handle_host_metrics(db, params, token, nonce) -> tuple:
+    """GET /api/operator/host/metrics — aggregate host CPU/memory/network/fs.
+
+    Returns a stable, bounded JSON payload (see ``browse.core.host_metrics``
+    docstring for the schema).  Sampling is rate-limited server-side at 1 Hz
+    so an over-eager UI polling at 2-10 Hz cannot push the backend over the
+    1 % CPU budget.
+
+    The ``?stale=mark`` query toggle returns the *last cached* sample without
+    forcing a fresh sample, marking it ``stale: true`` when the cache has not
+    refreshed within the staleness window.  Useful for diagnostics tooling
+    that wants to render a stale badge without re-polling.
+    """
+    from browse.core.host_metrics import (  # noqa: PLC0415
+        report_stale_or_resample,
+        sample_host_metrics,
+    )
+
+    mode = _str_param(params, "stale", default="", max_len=16)
+    if mode == "mark":
+        payload = report_stale_or_resample()
+    else:
+        payload = sample_host_metrics()
+    return json_ok(payload)
 
 
 # ── Session CRUD ──────────────────────────────────────────────────────────────

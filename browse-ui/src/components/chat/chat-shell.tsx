@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import {
+  Activity,
   Bot,
   Globe,
   Menu,
@@ -33,6 +34,7 @@ import {
   useTentacleStatus,
   useOperatorUsage,
   useGenericPromptPreflight,
+  useHostMetrics,
 } from "@/lib/api/hooks";
 import {
   getAllHostProfiles,
@@ -41,6 +43,7 @@ import {
   LOCAL_HOST_ID,
   isOperatorHostEnabled,
 } from "@/lib/host-profiles";
+import { useHostFeature } from "@/lib/hosts";
 import { useHostState } from "@/providers/host-provider";
 import { cn } from "@/lib/utils";
 import { SessionList } from "./session-list";
@@ -56,6 +59,7 @@ import { SLASH_COMMANDS } from "./slash-commands";
 import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
 import type {
   HostProfile,
+  HostMetricsResponse,
   OperatorRunInfo,
   OperatorSession,
   QueuedFile,
@@ -86,6 +90,157 @@ function getSkillCatalogUnavailableMessage(host: HostProfile): string {
     return "Connect a compatible agent host before opening installed skills from this hosted control plane.";
   }
   return `This host is not reachable from the current page. Reconnect ${host.label} with a compatible HTTPS host.`;
+}
+
+/**
+ * Format a positive byte count as a compact chip label (e.g. "1.2K", "3.4M").
+ * Privacy boundary: only ever called with aggregate counters from
+ * /api/operator/host/metrics — never with paths, hostnames, or secrets.
+ */
+function formatHostMetricsBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) {
+    return "—";
+  }
+  const abs = Math.abs(bytes);
+  if (abs >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)}G`;
+  if (abs >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(bytes / 1_000).toFixed(1)}K`;
+  return `${Math.round(bytes)}`;
+}
+
+type HostMetricsQueryShape = {
+  data: HostMetricsResponse | null | undefined;
+  isLoading: boolean;
+  isError: boolean;
+};
+
+/**
+ * Compact CPU/RAM/network telemetry chip rendered in the chat top bar.
+ *
+ * Double-gated: only fetches when both `optedIn` (per-host
+ * `telemetry_enabled` toggle) AND `supported` (host advertises the
+ * `host_metrics` capability) are true. Renders deterministic state
+ * branches with stable test-ids so acceptance tests can assert the
+ * disabled / unsupported / loading / error / stale / data shape.
+ *
+ * Privacy boundary: only aggregate counters (CPU%, RAM%, rx/tx bytes)
+ * are displayed. No paths, hostnames, tokens, or base_urls are surfaced
+ * beyond what the existing host chip already shows.
+ */
+function HostTelemetryChip(props: {
+  optedIn: boolean;
+  capabilityLoading: boolean;
+  supported: boolean;
+  query: HostMetricsQueryShape;
+}): React.JSX.Element | null {
+  const { optedIn, capabilityLoading, supported, query } = props;
+
+  if (!optedIn) {
+    return (
+      <span
+        className="text-muted-foreground/60 flex items-center gap-1 font-mono text-xs"
+        data-testid="active-host-telemetry-disabled"
+        title="Host telemetry is opt-in. Enable it on a host row in Hosts & connections."
+      >
+        <Activity className="size-3 shrink-0" aria-hidden="true" />
+        <span className="sr-only">Host telemetry disabled</span>
+        off
+      </span>
+    );
+  }
+
+  if (capabilityLoading) {
+    return (
+      <span
+        className="text-muted-foreground/60 flex items-center gap-1 font-mono text-xs"
+        data-testid="active-host-telemetry-checking"
+      >
+        <Activity className="size-3 shrink-0 animate-pulse" aria-hidden="true" />
+        checking…
+      </span>
+    );
+  }
+
+  if (!supported) {
+    return (
+      <span
+        className="text-muted-foreground/70 flex items-center gap-1 font-mono text-xs"
+        data-testid="active-host-telemetry-unsupported"
+        title="This host does not advertise the host_metrics capability."
+      >
+        <Activity className="size-3 shrink-0" aria-hidden="true" />
+        unsupported
+      </span>
+    );
+  }
+
+  if (query.isLoading) {
+    return (
+      <span
+        className="text-muted-foreground/60 flex items-center gap-1 font-mono text-xs"
+        data-testid="active-host-telemetry-loading"
+      >
+        <Activity className="size-3 shrink-0 animate-pulse" aria-hidden="true" />
+        loading…
+      </span>
+    );
+  }
+
+  if (query.isError) {
+    return (
+      <span
+        className="text-destructive flex items-center gap-1 font-mono text-xs"
+        data-testid="active-host-telemetry-error"
+        title="Failed to fetch host metrics."
+      >
+        <Activity className="size-3 shrink-0" aria-hidden="true" />
+        unavailable
+      </span>
+    );
+  }
+
+  const data = query.data;
+  if (!data) {
+    return null;
+  }
+
+  const cpuLabel =
+    data.cpu.supported && data.cpu.percent !== null ? `${Math.round(data.cpu.percent)}%` : "—";
+  const memLabel =
+    data.memory.supported && data.memory.percent !== null
+      ? `${Math.round(data.memory.percent)}%`
+      : "—";
+  const rxLabel = data.network.supported ? formatHostMetricsBytes(data.network.rx_bytes) : "—";
+  const txLabel = data.network.supported ? formatHostMetricsBytes(data.network.tx_bytes) : "—";
+
+  return (
+    <span
+      className="text-muted-foreground flex items-center gap-1.5 font-mono text-xs"
+      data-testid="active-host-telemetry-data"
+      data-stale={data.stale ? "true" : "false"}
+      title={`Host telemetry · sampled ${data.sampled_at}${data.stale ? " (stale)" : ""}`}
+    >
+      <Activity
+        className={`size-3 shrink-0${data.stale ? "text-amber-500" : ""}`}
+        aria-hidden="true"
+      />
+      <span data-testid="active-host-telemetry-cpu">cpu {cpuLabel}</span>
+      <span aria-hidden="true">·</span>
+      <span data-testid="active-host-telemetry-mem">ram {memLabel}</span>
+      <span aria-hidden="true">·</span>
+      <span data-testid="active-host-telemetry-net">
+        ↓{rxLabel} ↑{txLabel}
+      </span>
+      {data.stale && (
+        <span
+          className="rounded bg-amber-500/15 px-1 text-[10px] font-medium tracking-wide text-amber-700 uppercase dark:text-amber-300"
+          data-testid="active-host-telemetry-stale"
+        >
+          stale
+        </span>
+      )}
+    </span>
+  );
 }
 
 export function ChatShell() {
@@ -227,6 +382,19 @@ export function ChatShell() {
   // Tentacle orchestration status — reuses the existing useTentacleStatus hook
   // with no additional polling loop; relies on React Query stale/gc intervals.
   const tentacleStatusQuery = useTentacleStatus(activeHost, operatorEnabled);
+
+  // #558: Active-chat host telemetry — opt-in CPU/RAM/network indicator.
+  // Polling is double-gated by (1) `telemetry_enabled` on the host profile
+  // and (2) the host advertising the `host_metrics` capability so a remote
+  // backend that lacks the route never receives a poll request.
+  const telemetryOptedIn = activeHost.telemetry_enabled === true;
+  const { supported: hostMetricsSupported, loading: hostMetricsCapabilityLoading } = useHostFeature(
+    activeHost,
+    "host_metrics",
+    telemetryOptedIn
+  );
+  const hostMetricsEnabled = telemetryOptedIn && hostMetricsSupported;
+  const hostMetricsQuery = useHostMetrics(activeHost, hostMetricsEnabled);
 
   // Select a session → update URL (preserve host param)
   const handleSelectSession = useCallback(
@@ -776,7 +944,13 @@ export function ChatShell() {
               ) : null}
             </p>
           )}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <HostTelemetryChip
+              optedIn={telemetryOptedIn}
+              capabilityLoading={hostMetricsCapabilityLoading}
+              supported={hostMetricsSupported}
+              query={hostMetricsQuery}
+            />
             <TentacleStatusChip
               data={tentacleStatusQuery.data}
               isLoading={tentacleStatusQuery.isLoading}
