@@ -335,7 +335,7 @@ pub fn is_secret_access(command: &str) -> bool {
 ///   `HOME/.copilot/tools/install.py` (matches the deny-message instructions).
 ///
 /// Rejected: any shell metacharacter (`;`, `&`, `|`, `>`, `<`, backtick,
-/// newline, carriage return), quotes, backslashes, command substitution
+/// newline, carriage return), quotes, command substitution
 /// (`$(`), `bash -c`, `env`/`VAR=value` prefixes, `--unlock-hooks`, extra
 /// arguments, or any other Python interpreter path.
 pub fn is_lock_hooks_recovery(command: &str) -> bool {
@@ -345,11 +345,14 @@ pub fn is_lock_hooks_recovery(command: &str) -> bool {
     if !command.is_ascii() {
         return false;
     }
-    // Reject shell metachars, quotes, backslash, and command substitution
-    // before tokenization so injection attempts never reach the allow-list.
+    // Reject shell metachars, quotes, and command substitution before
+    // tokenization so injection attempts never reach the allow-list. Backslash
+    // is NOT in this set so legitimate Windows absolute paths
+    // (C:\Users\x\.copilot\tools\install.py) pass; the strict 3-token,
+    // literal-script allow-list below still blocks any abuse.
     for ch in command.chars() {
         match ch {
-            ';' | '&' | '|' | '>' | '<' | '`' | '\n' | '\r' | '"' | '\'' | '\\' => {
+            ';' | '&' | '|' | '>' | '<' | '`' | '\n' | '\r' | '"' | '\'' => {
                 return false;
             }
             _ => {}
