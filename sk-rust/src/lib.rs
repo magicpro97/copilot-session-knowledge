@@ -13,6 +13,20 @@ mod config;
 #[allow(dead_code)]
 mod db;
 
+// Expose only the always-compiled `extract_schema` helper from the `index`
+// tree so that `db::writer_broker` can bootstrap fresh-DB schema in lib
+// builds (issue #572 CI fix). The bin target still pulls in the full
+// `index` module via `main.rs`; this `#[path]` alias points the lib at
+// the same `src/index/` directory while only declaring the leaf needed
+// here, keeping the lib free of feature-gated `index::extract` and the
+// other indexer-only submodules.
+#[cfg(feature = "browse-server")]
+#[allow(dead_code)]
+#[path = "index"]
+mod index {
+    pub mod extract_schema;
+}
+
 #[cfg(feature = "browse-server")]
 #[allow(dead_code)]
 mod sync;

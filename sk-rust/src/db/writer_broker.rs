@@ -11,11 +11,17 @@
 //! * **Unix:** `~/.copilot/run/sk-writer.sock` — `chmod 0600`,
 //!   owner-only Unix-domain socket.
 //! * **Windows:** `\\.\pipe\sk-writer-<user>` — local named pipe with
-//!   an explicit owner-only DACL (SDDL `D:P(A;;GA;;;OW)`) plus
+//!   an explicit owner-only DACL (SDDL `O:<sid>D:P(A;;GA;;;<sid>)`
+//!   where `<sid>` is the current process token user) plus
 //!   `PIPE_REJECT_REMOTE_CLIENTS` so no network peer can connect and
-//!   no other local user can open the pipe. The first instance is
-//!   created with `FILE_FLAG_FIRST_PIPE_INSTANCE` so the broker
-//!   refuses to start if another process is squatting on the name.
+//!   no other local user can open the pipe. Pinning the owner to the
+//!   user SID (rather than relying on Windows' default-owner rule,
+//!   which falls back to `BUILTIN\Administrators` for elevated
+//!   tokens) keeps the `ensure_owned_by_current_user` invariant
+//!   stable on Admin-elevated sessions such as CI runners. The first
+//!   instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE` so the
+//!   broker refuses to start if another process is squatting on the
+//!   name.
 //!
 //! ## Security
 //! * Local IPC only — no network listener.
@@ -250,13 +256,16 @@ pub fn run_broker_daemon() -> std::process::ExitCode {
 /// * Unix: `O_CREAT|O_EXCL` + mode `0o600` via
 ///   `OpenOptions::create_new` + `OpenOptionsExt::mode`.
 /// * Windows: `CreateFileW(CREATE_NEW, ...)` with an explicit
-///   owner-only DACL (`D:P(A;;GA;;;OW)`) supplied via
+///   owner-only DACL (`O:<sid>D:P(A;;GA;;;<sid>)`, where `<sid>` is
+///   the current process token user) supplied via
 ///   `SECURITY_ATTRIBUTES`, so the new file is **never** born with the
-///   default inheritable ACL of the parent directory. Inherited ACEs
-///   on the user profile directory are typically owner-only on a
-///   single-user box, but on shared/domain-joined hosts they may grant
-///   `Authenticated Users` or `Administrators` read access; the
-///   explicit Protected DACL forces "creator-only" regardless.
+///   default inheritable ACL of the parent directory and its owner is
+///   pinned to the current user (not `BUILTIN\Administrators` under
+///   elevation). Inherited ACEs on the user profile directory are
+///   typically owner-only on a single-user box, but on shared/
+///   domain-joined hosts they may grant `Authenticated Users` or
+///   `Administrators` read access; the explicit Protected DACL forces
+///   "creator-only" regardless.
 ///
 /// The key is never world/group-readable, even momentarily, and a
 /// racing client cannot inject a chosen key (the second creator hits
@@ -1054,12 +1063,16 @@ mod windows_impl {
     //!   SMB/network-mapped client and only `\\.\` (loopback) clients can
     //!   open the pipe.
     //! * The pipe carries an explicit **owner-only DACL** built from the
-    //!   SDDL string `D:P(A;;GA;;;OW)` — Protected (no inherited ACEs),
-    //!   one Allow ACE granting `GENERIC_ALL` to `OWNER_RIGHTS`
-    //!   (`S-1-3-4`). Because `CreateNamedPipeW` sets the creator (the
-    //!   broker's own token user) as the object owner, this maps to
-    //!   "only the user who started the broker may connect." No
-    //!   Everyone / Authenticated Users / Network ACEs are granted.
+    //!   SDDL string `O:<sid>D:P(A;;GA;;;<sid>)` — explicit Owner =
+    //!   current process token user, Protected DACL (no inherited
+    //!   ACEs), single Allow ACE granting `GENERIC_ALL` to the same
+    //!   SID. Pinning the owner directly (instead of relying on
+    //!   `OWNER_RIGHTS` / default-owner) means "only the user who
+    //!   started the broker may connect" remains true even when the
+    //!   broker process runs under an Admin-elevated token (which
+    //!   otherwise defaults the object owner to
+    //!   `BUILTIN\Administrators`). No Everyone / Authenticated Users
+    //!   / Network ACEs are granted.
     //! * The first instance is created with
     //!   `FILE_FLAG_FIRST_PIPE_INSTANCE`, so the broker fails loudly if
     //!   another process already squats on the name. The broker never
@@ -1256,6 +1269,7 @@ mod windows_impl {
             SecurityDescriptor: *mut *mut c_void,
             SecurityDescriptorSize: *mut DWORD,
         ) -> BOOL;
+        fn ConvertSidToStringSidW(Sid: *mut c_void, StringSid: *mut *mut u16) -> BOOL;
         fn GetNamedSecurityInfoW(
             pObjectName: *const u16,
             ObjectType: DWORD,
@@ -1341,12 +1355,16 @@ mod windows_impl {
     }
 
     /// Create `path` with `CREATE_NEW` disposition and an explicit
-    /// Protected, owner-only DACL (`D:P(A;;GA;;;OW)`). This is the
+    /// Protected, owner-only DACL (`O:<sid>D:P(A;;GA;;;<sid>)` where
+    /// `<sid>` is the current process token user). This is the
     /// Windows equivalent of Unix `O_CREAT|O_EXCL` + `0o600`: the
     /// file fails loudly if it already exists, and no inherited ACE
     /// from the parent directory can grant `Authenticated Users` /
     /// `Administrators` access to broker key material on shared or
-    /// domain-joined hosts.
+    /// domain-joined hosts. Pinning the owner to the user SID also
+    /// prevents Windows' default-owner rule from setting the owner
+    /// to `BUILTIN\Administrators` when the broker runs under an
+    /// elevated token.
     ///
     /// On success returns a `std::fs::File` wrapping the new handle
     /// (via `FromRawHandle`) so the rest of the broker code can
@@ -1443,13 +1461,32 @@ mod windows_impl {
         }
     }
 
-    /// Build an owner-only security descriptor:
-    /// `D:P(A;;GA;;;OW)` — Protected DACL, single Allow ACE granting
-    /// `GENERIC_ALL` to OWNER_RIGHTS (the creator/owner of the object).
-    /// Returns the LocalAlloc-owned SD pointer plus a `SECURITY_ATTRIBUTES`
-    /// wrapper ready to pass into `CreateNamedPipeW`.
+    /// Build an owner-only security descriptor whose **owner** and DACL
+    /// are both the current process token's user SID:
+    ///
+    /// `O:<sid>D:P(A;;GA;;;<sid>)` — explicit Owner = current user,
+    /// Protected DACL, single Allow ACE granting `GENERIC_ALL` to the
+    /// same SID.
+    ///
+    /// Why explicit instead of `D:P(A;;GA;;;OW)` with default owner:
+    /// when the broker runs under a token that is a member of the
+    /// `Administrators` group (e.g. on GitHub Actions Windows runners
+    /// or any UAC-elevated session), Windows' "default owner" rule
+    /// assigns ownership of newly-created objects to
+    /// `BUILTIN\Administrators` (a 16-byte SID) instead of the user
+    /// (a 28-byte SID). That breaks the
+    /// `ensure_owned_by_current_user` invariant downstream. Pinning
+    /// the owner to the current user SID in the SD itself is always
+    /// permitted (you can always own objects you create) and removes
+    /// the ambiguity without weakening the DACL.
     fn owner_only_security_descriptor() -> Result<LocalAlloc, String> {
-        let sddl = to_wide("D:P(A;;GA;;;OW)");
+        let sid = current_user_sid_string()?;
+        // SDDL accepts a SID string in place of a short alias. We
+        // splice it into both the Owner field and the single Allow
+        // ACE so the DACL is exactly `GENERIC_ALL` to the current
+        // user, with no inherited ACEs (Protected).
+        let sddl_str = format!("O:{sid}D:P(A;;GA;;;{sid})");
+        let sddl = to_wide(&sddl_str);
         let mut sd: *mut c_void = std::ptr::null_mut();
         let ok = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -1466,6 +1503,40 @@ mod windows_impl {
             ));
         }
         Ok(LocalAlloc(sd))
+    }
+
+    /// Return the current process token user's SID in SDDL string form
+    /// (e.g. `S-1-5-21-...-...-...-1001`). Used to build an
+    /// owner-only security descriptor that pins the owner to the
+    /// current user instead of relying on Windows' default-owner
+    /// fallback (which yields `BUILTIN\Administrators` for elevated
+    /// tokens).
+    fn current_user_sid_string() -> Result<String, String> {
+        let mut sid_bytes = current_user_sid_bytes()?;
+        let mut out_ptr: *mut u16 = std::ptr::null_mut();
+        let ok = unsafe {
+            ConvertSidToStringSidW(
+                sid_bytes.as_mut_ptr() as *mut c_void,
+                &mut out_ptr as *mut *mut u16,
+            )
+        };
+        if ok == 0 || out_ptr.is_null() {
+            return Err(format!("ConvertSidToStringSidW failed (err {})", unsafe {
+                GetLastError()
+            }));
+        }
+        // Count wide chars up to the NUL terminator, then convert.
+        // ConvertSidToStringSidW allocates with LocalAlloc; free via
+        // LocalAlloc-wrapped pointer on the way out.
+        let _guard = LocalAlloc(out_ptr as *mut c_void);
+        let mut len = 0usize;
+        unsafe {
+            while *out_ptr.add(len) != 0 {
+                len += 1;
+            }
+        }
+        let slice = unsafe { std::slice::from_raw_parts(out_ptr, len) };
+        Ok(String::from_utf16_lossy(slice))
     }
 
     /// Read+Write helper that wraps a raw HANDLE so we can reuse the
