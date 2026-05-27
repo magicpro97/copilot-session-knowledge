@@ -759,12 +759,22 @@ fn auto_detect_room(tags: &str, title: &str, content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Serializes tests that mutate `SK_LEARN_INBOX` (and other process-wide
+    /// env vars that `learn_inbox_dir` consults). Without this lock, cargo's
+    /// default parallel test execution can interleave set/remove calls across
+    /// threads and surface flakes such as `learn_inbox_dir_expands_tilde_env`
+    /// reading a sibling test's path. macOS/Linux usually win the race by
+    /// timing, but the Windows runner has consistently failed.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Issue #572: the default learn busy timeout was raised from 250ms
     /// to 5000ms. The override env var must still win.
     #[test]
     fn default_learn_busy_timeout_is_5000ms() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Clear the override so we observe the compiled-in default.
         // (queue-on-lock defaults to enabled.)
         std::env::remove_var("SK_LEARN_BUSY_TIMEOUT_MS");
@@ -800,6 +810,7 @@ mod tests {
 
     #[test]
     fn queued_payload_preserves_flags_and_facts() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -843,6 +854,7 @@ mod tests {
 
     #[test]
     fn learn_inbox_dir_expands_tilde_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old_inbox = std::env::var("SK_LEARN_INBOX").ok();
         std::env::set_var(
             "SK_LEARN_INBOX",
@@ -850,7 +862,15 @@ mod tests {
         );
         let resolved = learn_inbox_dir();
         assert!(!resolved.to_string_lossy().starts_with('~'));
-        assert!(resolved.ends_with(".copilot/session-state/learn-inbox-test"));
+        let expected: std::path::PathBuf = [".copilot", "session-state", "learn-inbox-test"]
+            .iter()
+            .collect();
+        assert!(
+            resolved.ends_with(&expected),
+            "resolved={:?} expected suffix={:?}",
+            resolved,
+            expected,
+        );
         match old_inbox {
             Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
             None => std::env::remove_var("SK_LEARN_INBOX"),
