@@ -2664,6 +2664,41 @@ def lock_hooks():
     secret_path = hooks_dst_dir / ".marker-secret"
 
     print("\n🔒 Lock Hooks — Tamper Protection")
+    system = platform.system()
+
+    def _unlock_for_manifest_write(path):
+        """Best-effort removal of immutable flags before rewriting manifest."""
+        if not path.is_file():
+            return True
+        if system == "Darwin":
+            is_root = os.geteuid() == 0
+            for flag in ("noschg", "nouchg"):
+                cmd = ["chflags", flag, str(path)] if is_root else ["sudo", "chflags", flag, str(path)]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    return True
+            err = result.stderr.strip() or "unknown error"
+            print(f"  {FAIL} Could not unlock existing manifest for rewrite: {err}")
+            return False
+        if system == "Linux":
+            if str(path).startswith("/mnt/"):
+                try:
+                    path.chmod(0o644)
+                    return True
+                except OSError as e:
+                    print(f"  {FAIL} Could not chmod existing manifest for rewrite: {e}")
+                    return False
+            is_root = os.geteuid() == 0
+            cmd = ["chattr", "-i", str(path)] if is_root else ["sudo", "chattr", "-i", str(path)]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return True
+            err = result.stderr.strip() or "unknown error"
+            print(f"  {FAIL} Could not unlock existing manifest for rewrite: {err}")
+            return False
+        if system == "Windows":
+            subprocess.run(["attrib", "-R", str(path)], capture_output=True, text=True)
+        return True
 
     # Collect all hook files to protect (including rules/ subdirectory)
     hook_files = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
@@ -2721,11 +2756,13 @@ def lock_hooks():
     # Save manifest
     manifest_path = hooks_dst_dir / "integrity-manifest.json"
     hooks_dst_dir.mkdir(parents=True, exist_ok=True)
+    if not _unlock_for_manifest_write(manifest_path):
+        print(f"  {WARN} Run: sudo python3 {_tilde(_SCRIPT_DIR / 'install.py')} --unlock-hooks")
+        return
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"\n  {OK} Manifest saved: {_tilde(manifest_path)}")
 
     # 2. Set OS-level immutable flags
-    system = platform.system()
     protected = 0
 
     files_to_lock = list(hook_files) + [hooks_dst, manifest_path, secret_path, config_json]
