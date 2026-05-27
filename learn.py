@@ -40,6 +40,7 @@ Auto-update cerebrum snapshot (opt-in):
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -91,7 +92,7 @@ def _queue_learn_payload(payload: dict) -> Path:
     name = f"{time.strftime('%Y%m%dT%H%M%S')}-{time.time_ns()}-{digest}.json"
     final_path = LEARN_INBOX / name
     tmp_path = LEARN_INBOX / f".{name}.tmp"
-    tmp_path.write_text(raw + "\n", encoding="utf-8")
+    tmp_path.write_bytes(raw.encode("utf-8") + b"\n")
     os.replace(tmp_path, final_path)
     return final_path
 
@@ -169,20 +170,135 @@ def _write_learn_entry(
     )
 
 
-def flush_learn_inbox(limit: int = 100) -> dict:
-    """Replay queued learn writes in FIFO order."""
-    if not LEARN_INBOX.exists():
-        return {"status": "ok", "processed": 0, "remaining": 0, "failed": 0, "cerebrum_failed": 0}
+_INBOX_FILENAME_HASH_RE = re.compile(r"-([0-9a-f]{16})\.json$")
 
-    files = sorted(LEARN_INBOX.glob("*.json"))
+
+def _inbox_filename_hash(path: Path) -> str | None:
+    """Return the 16-hex hash component embedded in a queue filename, or None."""
+    m = _INBOX_FILENAME_HASH_RE.search(path.name)
+    return m.group(1) if m else None
+
+
+def _validate_inbox_file(path: Path) -> tuple[bool, str | None, dict | None]:
+    """Return (ok, reason, payload).
+
+    Security gate for issue #573: every queued JSON file must:
+      1. Have a filename of the form `<ts>-<ns>-<16hex>.json` where `<16hex>`
+         is the first 16 hex chars of sha256(file_bytes.rstrip(b"\\n")).
+         Both the Python and Rust producers strip exactly one trailing newline,
+         so this single check covers both writers without coupling to either's
+         JSON serialization choices.
+      2. Parse as JSON with a dict body containing schema_version==1 and a
+         dict `entry` carrying string category/title/content.
+
+    The hash check rejects tampered/poisoned files (e.g. a file dropped into
+    the inbox with a hand-crafted payload that does not match its filename).
+    On validation failure the file is treated by the caller as `.rejected`.
+    """
+    try:
+        raw_bytes = path.read_bytes()
+    except OSError as exc:
+        return False, f"read_error:{exc}", None
+
+    expected_hash = _inbox_filename_hash(path)
+    if expected_hash is None:
+        return False, "filename_format_invalid", None
+
+    # Producers append exactly one trailing newline; strip CRLF (Windows
+    # legacy) and bare LF so files survive any cross-platform transport.
+    if raw_bytes.endswith(b"\r\n"):
+        stripped = raw_bytes[:-2]
+    elif raw_bytes.endswith(b"\n"):
+        stripped = raw_bytes[:-1]
+    else:
+        stripped = raw_bytes
+    actual_hash = hashlib.sha256(stripped).hexdigest()[:16]
+    if actual_hash != expected_hash:
+        return False, f"hash_mismatch:{actual_hash}!={expected_hash}", None
+
+    try:
+        payload = json.loads(stripped.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return False, f"json_decode_error:{exc}", None
+
+    if not isinstance(payload, dict):
+        return False, "payload_not_object", None
+    if payload.get("schema_version") != 1:
+        return False, f"schema_version!=1 got={payload.get('schema_version')!r}", None
+    entry = payload.get("entry")
+    if not isinstance(entry, dict):
+        return False, "entry_not_object", None
+    for required in ("category", "title", "content"):
+        if not isinstance(entry.get(required), str) or not entry.get(required):
+            return False, f"missing_field:{required}", None
+    return True, None, payload
+
+
+def flush_learn_inbox(
+    limit: int = 100,
+    min_age_s: float | None = None,
+    per_entry_timeout_s: float | None = None,
+    wall_budget_s: float | None = None,
+) -> dict:
+    """Replay queued learn writes in FIFO order by mtime.
+
+    Args:
+        limit: maximum number of files to process this call.
+        min_age_s: when set, only process files whose mtime is at least this
+            many seconds in the past. Used by auto-flush retry-stale-only mode
+            (`SK_AUTOFLUSH_MAX_AGE_S`); unset = process all ages.
+        per_entry_timeout_s: soft per-entry budget. Replay itself is not
+            cancellable (SQLite call), but elapsed >= budget causes the loop
+            to stop scheduling new entries.
+        wall_budget_s: soft total budget across all entries.
+
+    Returns dict with status, processed, remaining, failed, rejected counts.
+    Backwards-compatible — additional `rejected` key is new (defaults to 0).
+    """
+    if not LEARN_INBOX.exists():
+        return {
+            "status": "ok",
+            "processed": 0,
+            "remaining": 0,
+            "failed": 0,
+            "rejected": 0,
+            "cerebrum_failed": 0,
+        }
+
+    # FIFO by mtime (DoD #573). Falls back to name if mtime is unavailable.
+    def _sort_key(p: Path) -> tuple[float, str]:
+        try:
+            return (p.stat().st_mtime, p.name)
+        except OSError:
+            return (0.0, p.name)
+
+    files = sorted(LEARN_INBOX.glob("*.json"), key=_sort_key)
+    now = time.time()
+    if min_age_s is not None and min_age_s > 0:
+        files = [p for p in files if (now - _sort_key(p)[0]) >= min_age_s]
+
     processed = 0
     failed = 0
+    rejected = 0
     cerebrum_failed = 0
     busy = False
+    started = time.monotonic()
 
     for path in files[: max(0, limit)]:
+        if wall_budget_s is not None and (time.monotonic() - started) >= wall_budget_s:
+            break
+
+        ok, reason, payload = _validate_inbox_file(path)
+        if not ok:
+            try:
+                path.rename(path.with_suffix(path.suffix + ".rejected"))
+            except OSError:
+                pass
+            rejected += 1
+            continue
+
+        entry_started = time.monotonic()
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
             _, cerebrum_rc = _replay_queued_payload(payload)
             path.unlink()
             processed += 1
@@ -193,10 +309,20 @@ def flush_learn_inbox(limit: int = 100) -> dict:
                 busy = True
                 break
             failed += 1
-            path.rename(path.with_suffix(path.suffix + ".failed"))
+            try:
+                path.rename(path.with_suffix(path.suffix + ".failed"))
+            except OSError:
+                pass
         except Exception:
             failed += 1
-            path.rename(path.with_suffix(path.suffix + ".failed"))
+            try:
+                path.rename(path.with_suffix(path.suffix + ".failed"))
+            except OSError:
+                pass
+
+        if per_entry_timeout_s is not None and (time.monotonic() - entry_started) >= per_entry_timeout_s:
+            # Soft budget exceeded for this entry: stop scheduling new work.
+            break
 
     remaining = len(list(LEARN_INBOX.glob("*.json"))) if LEARN_INBOX.exists() else 0
     return {
@@ -204,6 +330,7 @@ def flush_learn_inbox(limit: int = 100) -> dict:
         "processed": processed,
         "remaining": remaining,
         "failed": failed,
+        "rejected": rejected,
         "cerebrum_failed": cerebrum_failed,
     }
 
@@ -1454,6 +1581,11 @@ def _update_fts(
 
 def _embed_entry(db: sqlite3.Connection, entry_id: int, title: str, content: str, quiet: bool = False):
     """Generate and store embedding for a single entry."""
+    # Fast-path bypass used by auto-flush (issue #573) so a queued-entry
+    # drain isn't blocked by per-entry embedding API latency. The next
+    # scheduled embed run will backfill missing embeddings.
+    if os.environ.get("SK_LEARN_SKIP_EMBED") == "1":
+        return
     try:
         sys.path.insert(0, str(TOOLS_DIR))
         from embed import call_embedding_api, ensure_embedding_tables, load_config, resolve_provider, serialize_vector
@@ -1747,13 +1879,22 @@ def main():
         if "--limit" in args:
             idx = args.index("--limit")
             limit = int(args[idx + 1]) if idx + 1 < len(args) else 100
-        result = flush_learn_inbox(limit)
+        min_age_s: float | None = None
+        if "--min-age-s" in args:
+            idx = args.index("--min-age-s")
+            if idx + 1 < len(args):
+                try:
+                    min_age_s = float(args[idx + 1])
+                except ValueError:
+                    min_age_s = None
+        result = flush_learn_inbox(limit, min_age_s=min_age_s)
         if "--json" in args:
             print(json.dumps(result, indent=2))
         else:
             print(
                 "Learn inbox flush: "
-                f"{result['processed']} processed, {result['remaining']} remaining, {result['failed']} failed"
+                f"{result['processed']} processed, {result['remaining']} remaining, "
+                f"{result['failed']} failed, {result.get('rejected', 0)} rejected"
             )
             if result["status"] == "busy":
                 print("  DB still busy; retry later.", file=sys.stderr)
