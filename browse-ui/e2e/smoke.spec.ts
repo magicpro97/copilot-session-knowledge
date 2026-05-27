@@ -1877,7 +1877,7 @@ test("Flight Recorder v3: timeline+debug-log render header/rail/drawers/mission 
   await expect(page.getByTestId("subagent-summary-running")).toHaveText("1 running");
   await expect(page.getByTestId("subagent-activity-row-subagent-code-review")).toBeVisible();
   await expect(page.getByTestId("subagent-activity-row-subagent-security-outcome")).toHaveText(
-    "Failed: rate_limited"
+    "Rate limited"
   );
   await page.getByTestId("subagent-activity-row-subagent-code-review").click();
   await expect(page.getByTestId("subagent-activity-row-subagent-code-review-trace")).toContainText(
