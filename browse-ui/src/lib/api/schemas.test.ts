@@ -1370,6 +1370,15 @@ describe("promptRequestSchema", () => {
   it("rejects prompt request with empty prompt", () => {
     expect(() => promptRequestSchema.parse({ prompt: "" })).toThrow();
   });
+
+  it("preserves an optional host_id (#556)", () => {
+    const parsed = promptRequestSchema.parse({ prompt: "hi", host_id: "tunnel-1" });
+    expect(parsed.host_id).toBe("tunnel-1");
+  });
+
+  it("rejects host_id longer than 64 chars (#556)", () => {
+    expect(() => promptRequestSchema.parse({ prompt: "hi", host_id: "x".repeat(65) })).toThrow();
+  });
 });
 
 describe("promptSubmitResponseSchema", () => {

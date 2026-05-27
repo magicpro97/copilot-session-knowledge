@@ -101,6 +101,21 @@ vi.mock("@/lib/api/hooks", () => ({
     isLoading: false,
     isError: false,
   })),
+  useOperatorUsage: vi.fn(() => ({
+    data: null,
+    isLoading: false,
+    isError: false,
+  })),
+  useGenericPromptPreflight: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    mutate: vi.fn(),
+    isPending: false,
+  })),
+  useUsageOverride: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    mutate: vi.fn(),
+    isPending: false,
+  })),
   createOperatorStreamPath: vi.fn(() => "/api/operator/sessions/x/stream?run=y"),
   createOperatorStreamUrl: vi.fn(
     (sessionId: string, runId: string, host: { base_url: string }) =>
@@ -1170,9 +1185,14 @@ describe("ChatShell — slash command integration", () => {
     fireEvent.change(ta, { target: { value: "/Users/linhn/project" } });
     fireEvent.submit(ta.closest("form")!);
 
-    // Should go to the server as a regular prompt, not be intercepted
+    // Should go to the server as a regular prompt, not be intercepted, and
+    // must forward the active host id so the server can group usage entries
+    // per-host (#556).
     expect(submitMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: "/Users/linhn/project" }),
+      expect.objectContaining({
+        prompt: "/Users/linhn/project",
+        host_id: LOCAL_HOST.id,
+      }),
       expect.anything()
     );
   });

@@ -256,3 +256,216 @@ describe("Composer — keyboard navigation in suggestions", () => {
     expect(ta.value).toBe("/skills");
   });
 });
+
+// ── #557/#556: Preflight chips, hard-error gate, soft-cap override ───────────
+
+import type { PreflightResponse } from "@/lib/api/types";
+import { act, waitFor } from "@testing-library/react";
+
+function basePreflight(overrides: Partial<PreflightResponse> = {}): PreflightResponse {
+  return {
+    estimated_input_tokens: 123,
+    model: "gpt-5.4",
+    model_known: true,
+    model_cost_tier: "standard",
+    model_context_window: 200_000,
+    context_fit: "fits",
+    context_fit_fraction: 0.05,
+    cost_units: 1,
+    attachment_count: 0,
+    attachment_total_bytes: 0,
+    redaction: { hits: 0, categories: [], safe_excerpts: [] },
+    warnings: [],
+    hard_errors: [],
+    within_limit: true,
+    quota_status: "ok",
+    quota_reason: "",
+    override_allowed: false,
+    usage: {
+      prompts_this_hour: 0,
+      prompts_today: 0,
+      hourly_limit: 100,
+      daily_limit: 1000,
+      remaining_hour: 100,
+      remaining_day: 1000,
+    },
+    ...overrides,
+  };
+}
+
+async function flushDebounce(ms = 350) {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  });
+}
+
+describe("Composer — preflight (#557)", () => {
+  it("renders preflight chips after a debounced preflight call", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(
+      basePreflight({
+        estimated_input_tokens: 42,
+        attachment_count: 0,
+        context_fit: "fits",
+      })
+    );
+    const onSubmit = vi.fn();
+    render(<Composer onSubmit={onSubmit} runPreflight={runPreflight} preflightDebounceMs={50} />);
+    fireEvent.change(getTextarea(), { target: { value: "Hello" } });
+    await flushDebounce(120);
+    await waitFor(() => expect(runPreflight).toHaveBeenCalled());
+    expect(runPreflight.mock.calls[0][0].prompt).toBe("Hello");
+    // Attachment metadata-only contract: no `data` field present.
+    expect(runPreflight.mock.calls[0][0].files).toEqual([]);
+    expect(await screen.findByTestId("preflight-chips")).toBeInTheDocument();
+    expect(screen.getByTestId("preflight-chip-tokens")).toHaveTextContent(/42/);
+    expect(screen.getByTestId("preflight-chip-context")).toHaveTextContent(/fits/);
+  });
+
+  it("disables Send and shows banner when preflight returns hard errors", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(
+      basePreflight({
+        within_limit: false,
+        quota_status: "block",
+        quota_reason: "GLOBAL_HOUR_HARD",
+        hard_errors: [
+          { code: "QUOTA_GLOBAL_HOUR_HARD", message: "Usage quota exceeded: GLOBAL_HOUR_HARD" },
+        ],
+      })
+    );
+    const onSubmit = vi.fn();
+    render(<Composer onSubmit={onSubmit} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "blocked" } });
+    await flushDebounce(80);
+    const banner = await screen.findByTestId("preflight-hard-error");
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent(/QUOTA_GLOBAL_HOUR_HARD/);
+    const sendBtn = screen.getByRole("button", { name: "Send prompt" });
+    expect(sendBtn).toBeDisabled();
+    // Even a submit attempt is a no-op.
+    fireEvent.submit(getTextarea().closest("form")!);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit override before submitting on soft-cap warning", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(
+      basePreflight({
+        quota_status: "warn",
+        quota_reason: "GLOBAL_HOUR_SOFT",
+        override_allowed: true,
+        warnings: [
+          {
+            code: "QUOTA_GLOBAL_HOUR_SOFT",
+            message: "Usage near limit: GLOBAL_HOUR_SOFT",
+            severity: "warn",
+          },
+        ],
+      })
+    );
+    const onSubmit = vi.fn();
+    render(<Composer onSubmit={onSubmit} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "near-quota" } });
+    await flushDebounce(80);
+
+    // Warning banner present, Send disabled until override is clicked.
+    expect(await screen.findByTestId("preflight-warning")).toBeInTheDocument();
+    const sendBtn = screen.getByRole("button", { name: "Send prompt" });
+    expect(sendBtn).toBeDisabled();
+
+    const overrideBtn = screen.getByTestId("preflight-override-button");
+    await act(async () => {
+      fireEvent.click(overrideBtn);
+    });
+
+    // #556 follow-up: clicking "Submit anyway" only acknowledges locally.
+    // The audit entry is recorded server-side by `handle_run_prompt` when
+    // the resubmit carries `override_acknowledged: true`, so the composer
+    // does NOT call any client-side audit endpoint here.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send prompt" })).not.toBeDisabled()
+    );
+    fireEvent.submit(getTextarea().closest("form")!);
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit).toHaveBeenCalledWith("near-quota", [], { overrideAcknowledged: true });
+  });
+
+  it("hides the override button when policy disallows the warning", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(
+      basePreflight({
+        quota_status: "warn",
+        quota_reason: "GLOBAL_HOUR_SOFT",
+        override_allowed: false,
+        warnings: [{ code: "QUOTA_GLOBAL_HOUR_SOFT", message: "near limit", severity: "warn" }],
+      })
+    );
+    render(<Composer onSubmit={vi.fn()} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "blocked-override" } });
+    await flushDebounce(80);
+    await screen.findByTestId("preflight-warning");
+    expect(screen.queryByTestId("preflight-override-button")).not.toBeInTheDocument();
+  });
+
+  it("re-runs preflight on prompt edit (stale invalidation)", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(basePreflight());
+    render(<Composer onSubmit={vi.fn()} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "first" } });
+    await flushDebounce(60);
+    fireEvent.change(getTextarea(), { target: { value: "second" } });
+    await flushDebounce(60);
+    await waitFor(() => expect(runPreflight).toHaveBeenCalledTimes(2));
+    expect(runPreflight.mock.calls[1][0].prompt).toBe("second");
+  });
+
+  it("does not call preflight when runPreflight is not provided", async () => {
+    const onSubmit = vi.fn();
+    render(<Composer onSubmit={onSubmit} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "no-preflight" } });
+    await flushDebounce(80);
+    expect(screen.queryByTestId("preflight-chips")).not.toBeInTheDocument();
+    fireEvent.submit(getTextarea().closest("form")!);
+    expect(onSubmit).toHaveBeenCalledWith("no-preflight", []);
+  });
+
+  it("clears preflight result when prompt is emptied", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(basePreflight());
+    render(<Composer onSubmit={vi.fn()} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "hello" } });
+    await flushDebounce(80);
+    await screen.findByTestId("preflight-chips");
+    fireEvent.change(getTextarea(), { target: { value: "" } });
+    await flushDebounce(80);
+    await waitFor(() => expect(screen.queryByTestId("preflight-chips")).not.toBeInTheDocument());
+  });
+
+  it("renders redaction chip with category preview", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(
+      basePreflight({
+        redaction: {
+          hits: 2,
+          categories: ["aws_secret", "github_pat"],
+          safe_excerpts: ["[REDACTED]", "[REDACTED]"],
+        },
+      })
+    );
+    render(<Composer onSubmit={vi.fn()} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "look at AKIA…" } });
+    await flushDebounce(80);
+    const chip = await screen.findByTestId("preflight-chip-redaction");
+    expect(chip).toHaveTextContent(/2 redacted/);
+    expect(chip).toHaveTextContent(/aws_secret/);
+    // Hard guarantee: the safe_excerpt sentinel must never expose raw bytes.
+    expect(chip.textContent).not.toMatch(/AKIA/);
+  });
+
+  it("never re-reads attachment bytes for preflight (metadata-only payload)", async () => {
+    const runPreflight = vi.fn().mockResolvedValue(basePreflight());
+    render(<Composer onSubmit={vi.fn()} runPreflight={runPreflight} preflightDebounceMs={20} />);
+    fireEvent.change(getTextarea(), { target: { value: "hello" } });
+    await flushDebounce(80);
+    await waitFor(() => expect(runPreflight).toHaveBeenCalled());
+    const payload = runPreflight.mock.calls[0][0];
+    // The contract: files contains only {name,type,size} — never `data`.
+    for (const f of payload.files ?? []) {
+      expect("data" in f).toBe(false);
+    }
+  });
+});

@@ -19,6 +19,9 @@ import {
   useCliSession,
   useAdoptCliSession,
   useConfirmAdoptedSession,
+  useGenericPromptPreflight,
+  useUsageOverride,
+  useSubmitPrompt,
 } from "@/lib/api/hooks";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 
@@ -1220,5 +1223,222 @@ describe("sessionMissionAtlas queryKeys", () => {
     const local = JSON.stringify(queryKeys.sessionMissionAtlas(SID, "local"));
     const remote = JSON.stringify(queryKeys.sessionMissionAtlas(SID, "remote-1"));
     expect(local).not.toEqual(remote);
+  });
+});
+
+// ── #557 / #556: useGenericPromptPreflight + useUsageOverride ───────────────
+
+describe("useGenericPromptPreflight (#557)", () => {
+  const BASE_PREFLIGHT = {
+    estimated_input_tokens: 50,
+    model: "claude-sonnet-4.6",
+    model_known: true,
+    model_cost_tier: "standard",
+    model_context_window: 200_000,
+    context_fit: "fits",
+    context_fit_fraction: 0.05,
+    cost_units: 1,
+    attachment_count: 0,
+    attachment_total_bytes: 0,
+    redaction: { hits: 0, categories: [], safe_excerpts: [] },
+    warnings: [],
+    hard_errors: [],
+    within_limit: true,
+    quota_status: "ok",
+    quota_reason: "",
+    override_allowed: false,
+    usage: {
+      prompts_this_hour: 0,
+      prompts_today: 0,
+      hourly_limit: 100,
+      daily_limit: 1000,
+      remaining_hour: 100,
+      remaining_day: 1000,
+    },
+  };
+
+  it("POSTs to /api/operator/prompt/preflight with metadata-only files", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(BASE_PREFLIGHT);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useGenericPromptPreflight(LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        prompt: "Hello world",
+        model: "claude-sonnet-4.6",
+        files: [{ name: "doc.txt", type: "text/plain", size: 42 }],
+      });
+    });
+
+    const [calledPath, , calledInit] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledPath).toBe("/api/operator/prompt/preflight");
+    expect((calledInit as RequestInit | undefined)?.method).toBe("POST");
+    const body = JSON.parse((calledInit as RequestInit | undefined)?.body as string);
+    expect(body.prompt).toBe("Hello world");
+    expect(body.model).toBe("claude-sonnet-4.6");
+    expect(Array.isArray(body.files)).toBe(true);
+    expect(body.files[0]).toEqual({ name: "doc.txt", type: "text/plain", size: 42 });
+    // Contract: must never send attachment bytes for preflight.
+    expect("data" in body.files[0]).toBe(false);
+  });
+
+  it("omits empty/optional fields from the request body", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(BASE_PREFLIGHT);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useGenericPromptPreflight(LOCAL_HOST), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ prompt: "hi" });
+    });
+    const [, , init] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    const body = JSON.parse((init as RequestInit | undefined)?.body as string);
+    expect(body).toEqual({ prompt: "hi" });
+  });
+});
+
+describe("useUsageOverride (#556)", () => {
+  const OVERRIDE_RESPONSE = {
+    override: {
+      ts: 1717228800,
+      ts_iso: "2026-05-01T10:00:00Z",
+      actor: "operator",
+      session_id: "sess-001",
+      host_id: "local",
+      model_id: "claude-sonnet-4.6",
+      reason: "GLOBAL_HOUR_SOFT",
+      policy: "warn-only",
+    },
+    policy: "warn-only",
+  };
+
+  it("POSTs to /api/operator/usage/override with structured reason only", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(OVERRIDE_RESPONSE);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useUsageOverride(LOCAL_HOST), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({
+        reason: "GLOBAL_HOUR_SOFT",
+        session_id: "sess-001",
+      });
+    });
+
+    const [calledPath, , calledInit] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledPath).toBe("/api/operator/usage/override");
+    expect((calledInit as RequestInit | undefined)?.method).toBe("POST");
+    const body = JSON.parse((calledInit as RequestInit | undefined)?.body as string);
+    expect(body.reason).toBe("GLOBAL_HOUR_SOFT");
+    expect(body.session_id).toBe("sess-001");
+    // Contract: no prompt content may be sent in the override audit body.
+    expect("prompt" in body).toBe(false);
+  });
+
+  it("invalidates session-scoped operatorUsage queries on success", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(OVERRIDE_RESPONSE);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    // Seed two session-scoped operator-usage queries (different session ids)
+    // and one unscoped variant, so we can prove the invalidation pattern
+    // matches every session variant via positional prefix.
+    const seededKeys = [
+      queryKeys.operatorUsage(LOCAL_HOST_ID, "sess-A"),
+      queryKeys.operatorUsage(LOCAL_HOST_ID, "sess-B"),
+      queryKeys.operatorUsage(LOCAL_HOST_ID),
+    ];
+    for (const key of seededKeys) {
+      queryClient.setQueryData(key, { sentinel: true });
+    }
+    // And one for a different host that MUST NOT be touched.
+    const otherHostKey = queryKeys.operatorUsage("other-host", "sess-A");
+    queryClient.setQueryData(otherHostKey, { sentinel: true });
+
+    const { result } = renderHook(() => useUsageOverride(LOCAL_HOST), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ reason: "GLOBAL_HOUR_SOFT" });
+    });
+
+    // Every seeded local-host variant must now be invalidated…
+    for (const key of seededKeys) {
+      const state = queryClient.getQueryState(key);
+      expect(state?.isInvalidated).toBe(true);
+    }
+    // …but the other-host query must remain untouched.
+    expect(queryClient.getQueryState(otherHostKey)?.isInvalidated).toBe(false);
+  });
+});
+
+describe("useSubmitPrompt (#556)", () => {
+  const SUBMIT_RESPONSE = {
+    run_id: "run-001",
+    session_id: "sess-001",
+    status: "running",
+  };
+
+  it("invalidates session-scoped operatorUsage queries on success", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(SUBMIT_RESPONSE);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const seededKeys = [
+      queryKeys.operatorUsage(LOCAL_HOST_ID, "sess-001"),
+      queryKeys.operatorUsage(LOCAL_HOST_ID, "sess-002"),
+      queryKeys.operatorUsage(LOCAL_HOST_ID),
+    ];
+    for (const key of seededKeys) {
+      queryClient.setQueryData(key, { sentinel: true });
+    }
+    const otherHostKey = queryKeys.operatorUsage("other-host", "sess-001");
+    queryClient.setQueryData(otherHostKey, { sentinel: true });
+
+    const { result } = renderHook(() => useSubmitPrompt("sess-001", LOCAL_HOST), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ prompt: "hello" });
+    });
+
+    for (const key of seededKeys) {
+      const state = queryClient.getQueryState(key);
+      expect(state?.isInvalidated).toBe(true);
+    }
+    expect(queryClient.getQueryState(otherHostKey)?.isInvalidated).toBe(false);
+  });
+
+  it("forwards host_id in the request body", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(SUBMIT_RESPONSE);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useSubmitPrompt("sess-001", REMOTE_HOST), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ prompt: "hello", host_id: REMOTE_HOST.id });
+    });
+
+    const [, , init] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    const body = JSON.parse((init as RequestInit | undefined)?.body as string);
+    expect(body.prompt).toBe("hello");
+    expect(body.host_id).toBe(REMOTE_HOST.id);
   });
 });

@@ -4038,6 +4038,390 @@ def run_static_acl_tests() -> None:
         server.shutdown()
 
 
+# ── Issue #557 / #556: Preflight + usage ledger / override tests ─────────────
+
+
+def _make_session_via_api(port: int, name: str = "test-quota") -> str:
+    """Create an operator session via the API and return its ID."""
+    home = str(Path.home())
+    body = {
+        "name": name,
+        "workspace": home,
+        "model": "claude-sonnet-4.6",
+        "mode": "default",
+        "add_dirs": [],
+    }
+    resp = _post(port, "/api/operator/sessions", body)
+    assert resp.status == 200, f"create_session failed: {resp.status}"
+    payload = json.loads(resp.read())
+    return payload["id"]
+
+
+def test_preflight_happy_path_returns_estimate():
+    from browse.core.usage_ledger import reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        resp = _post(
+            port,
+            "/api/operator/prompt/preflight",
+            {"prompt": "Hello world", "model": "claude-sonnet-4.6"},
+        )
+        body = json.loads(resp.read())
+        test("preflight: happy returns 200", resp.status == 200)
+        test("preflight: estimated tokens > 0", body.get("estimated_input_tokens", 0) > 0)
+        test("preflight: model echoed", body.get("model") == "claude-sonnet-4.6")
+        test("preflight: context_fit present", body.get("context_fit") in {"fits", "warn", "overflow"})
+        test("preflight: within_limit true (no warnings)", body.get("within_limit") is True)
+        test("preflight: no hard_errors on healthy prompt", body.get("hard_errors") == [])
+        test("preflight: redaction sentinel-shaped", isinstance(body.get("redaction", {}).get("safe_excerpts"), list))
+        test("preflight: usage block present", isinstance(body.get("usage"), dict))
+        test("preflight: no raw prompt body echoed", "Hello world" not in json.dumps(body))
+    finally:
+        server.shutdown()
+
+
+def test_preflight_empty_prompt_400():
+    from browse.core.usage_ledger import reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        resp = _post(port, "/api/operator/prompt/preflight", {"prompt": "   "})
+        body = json.loads(resp.read())
+        test("preflight empty: 400 status", resp.status == 400)
+        test("preflight empty: BAD_PROMPT code", body.get("code") == "BAD_PROMPT")
+    finally:
+        server.shutdown()
+
+
+def test_preflight_requires_auth_401():
+    from browse.core.usage_ledger import reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        resp = _post(port, "/api/operator/prompt/preflight", {"prompt": "hi"}, token="wrong")
+        test("preflight: 401 without valid token", resp.status == 401)
+    finally:
+        server.shutdown()
+
+
+def test_preflight_redaction_hits_use_sentinel_only():
+    """#557: safe_excerpts must NEVER expose raw bytes — only [REDACTED] sentinel."""
+    from browse.core.usage_ledger import reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        # Embed a fake-looking secret to exercise redaction.
+        secret_prompt = "leaked AKIAIOSFODNN7EXAMPLE secret"
+        resp = _post(port, "/api/operator/prompt/preflight", {"prompt": secret_prompt})
+        body = json.loads(resp.read())
+        test("preflight redaction: 200 status", resp.status == 200)
+        excerpts = body.get("redaction", {}).get("safe_excerpts", [])
+        # Every excerpt must be the sentinel; raw bytes never leak.
+        all_sentinel = all(e == "[REDACTED]" for e in excerpts)
+        test("preflight redaction: all excerpts are [REDACTED] sentinel", all_sentinel)
+        test(
+            "preflight redaction: response does not echo raw secret bytes",
+            "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body),
+        )
+    finally:
+        server.shutdown()
+
+
+def test_prompt_soft_warn_rejected_without_override():
+    """#556: soft-cap returns 429 QUOTA_WARN until override_acknowledged=true."""
+    import browse.core.usage_ledger as ul
+    from browse.core.usage_ledger import record_submission, reset_ledger
+
+    # Force a tight quota so soft-cap fires after few submissions.
+    orig_cap = ul._GLOBAL_CAP_PER_HOUR
+    orig_thresh = ul._SOFT_THRESHOLD
+    ul._GLOBAL_CAP_PER_HOUR = 5
+    ul._SOFT_THRESHOLD = 0.4  # soft warn at 2 submissions
+    try:
+        reset_ledger()
+        server, port = _make_test_server()
+        try:
+            sid = _make_session_via_api(port, "soft-cap-test")
+            # Fill ledger to soft-warn level (≥2 submissions for cap=5,thresh=0.4).
+            for _ in range(3):
+                record_submission(sid)
+            # Now a fresh submission should return 429 QUOTA_WARN.
+            resp = _post(port, f"/api/operator/sessions/{sid}/prompt", {"prompt": "near limit"})
+            body = json.loads(resp.read())
+            test("soft-cap: 429 status without override_acknowledged", resp.status == 429)
+            test("soft-cap: QUOTA_WARN code", body.get("code") == "QUOTA_WARN")
+        finally:
+            server.shutdown()
+    finally:
+        ul._GLOBAL_CAP_PER_HOUR = orig_cap
+        ul._SOFT_THRESHOLD = orig_thresh
+        reset_ledger()
+
+
+def test_prompt_hard_cap_rejected_429():
+    """#556: hard cap returns 429 QUOTA_EXCEEDED (override cannot bypass)."""
+    import browse.core.usage_ledger as ul
+    from browse.core.usage_ledger import record_submission, reset_ledger
+
+    orig_cap = ul._GLOBAL_CAP_PER_HOUR
+    ul._GLOBAL_CAP_PER_HOUR = 2
+    try:
+        reset_ledger()
+        server, port = _make_test_server()
+        try:
+            sid = _make_session_via_api(port, "hard-cap-test")
+            # Saturate quota.
+            for _ in range(3):
+                record_submission(sid)
+            resp = _post(
+                port,
+                f"/api/operator/sessions/{sid}/prompt",
+                {"prompt": "blocked", "override_acknowledged": True},
+            )
+            body = json.loads(resp.read())
+            test("hard-cap: 429 even with override_acknowledged", resp.status == 429)
+            test("hard-cap: QUOTA_EXCEEDED code", body.get("code") == "QUOTA_EXCEEDED")
+        finally:
+            server.shutdown()
+    finally:
+        ul._GLOBAL_CAP_PER_HOUR = orig_cap
+        reset_ledger()
+
+
+def test_usage_override_audit_recorded():
+    """#556: POST /api/operator/usage/override appends a structured audit entry.
+
+    Security follow-up: the audit ``actor`` is derived from the server-side
+    session_kind (``operator_token`` for the main token used in tests). The
+    body-supplied ``actor`` field is recorded only as a non-authoritative
+    ``client_hint``.
+    """
+    from browse.core.usage_ledger import reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        resp = _post(
+            port,
+            "/api/operator/usage/override",
+            {"reason": "GLOBAL_HOUR_SOFT", "actor": "tester"},
+        )
+        body = json.loads(resp.read())
+        test("override: 200 status", resp.status == 200)
+        rec = body.get("override", {})
+        test("override: reason captured", rec.get("reason") == "GLOBAL_HOUR_SOFT")
+        test("override: actor is server-derived (operator_token)", rec.get("actor") == "operator_token")
+        test("override: actor is NOT client-forged value", rec.get("actor") != "tester")
+        test("override: client_hint preserves body label", rec.get("client_hint") == "tester")
+        test("override: ts_iso present", isinstance(rec.get("ts_iso"), str) and rec["ts_iso"])
+        # Critical: prompt content never appears in audit body.
+        test("override: no prompt content in response", "prompt" not in body and "prompt" not in rec)
+        # Now GET should expose it.
+        list_resp = _get(port, "/api/operator/usage/overrides")
+        list_body = json.loads(list_resp.read())
+        overrides = list_body.get("overrides", [])
+        test("override: appears in list", any(o.get("reason") == "GLOBAL_HOUR_SOFT" for o in overrides))
+    finally:
+        server.shutdown()
+        reset_ledger()
+
+
+def test_usage_override_actor_not_client_forgeable():
+    """#556 security follow-up: client-supplied ``actor`` cannot forge audit principal.
+
+    Direct POST with ``actor: "alice"`` must record a server-derived audit
+    actor; the body label survives only as ``client_hint``.
+    """
+    from browse.core.usage_ledger import list_overrides, reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        resp = _post(
+            port,
+            "/api/operator/usage/override",
+            {"reason": "GLOBAL_HOUR_SOFT", "actor": "alice"},
+        )
+        body = json.loads(resp.read())
+        test("override-forge: 200 status", resp.status == 200)
+        rec = body.get("override", {})
+        test("override-forge: recorded actor is not 'alice'", rec.get("actor") != "alice")
+        test("override-forge: recorded actor is server-derived", rec.get("actor") == "operator_token")
+        test("override-forge: client hint preserved separately", rec.get("client_hint") == "alice")
+        # And the ledger itself reflects the same — list endpoint cannot show "alice" as actor.
+        entries = list_overrides(limit=10)
+        actors = [e.get("actor") for e in entries]
+        test("override-forge: no 'alice' in any audit actor", "alice" not in actors)
+    finally:
+        server.shutdown()
+        reset_ledger()
+
+
+def test_prompt_soft_warn_override_records_audit():
+    """#556 security follow-up: server-accepted soft-cap override is audit-authoritative.
+
+    A direct POST to ``/api/operator/sessions/{id}/prompt`` with
+    ``override_acknowledged: true`` at soft-cap MUST record an override audit
+    entry. The audit log must never depend on a separate UI-only call.
+    """
+    import browse.core.usage_ledger as ul
+    from browse.core.usage_ledger import list_overrides, record_submission, reset_ledger
+
+    orig_cap = ul._GLOBAL_CAP_PER_HOUR
+    orig_thresh = ul._SOFT_THRESHOLD
+    ul._GLOBAL_CAP_PER_HOUR = 5
+    ul._SOFT_THRESHOLD = 0.4  # soft-warn at 2 submissions
+    try:
+        reset_ledger()
+        server, port = _make_test_server()
+        try:
+            sid = _make_session_via_api(port, "soft-cap-audit")
+            for _ in range(3):
+                record_submission(sid)
+            # Soft cap is now active. Submit with override_acknowledged=true.
+            before = len(list_overrides(limit=100))
+            resp = _post(
+                port,
+                f"/api/operator/sessions/{sid}/prompt",
+                {"prompt": "near limit", "override_acknowledged": True},
+            )
+            body = json.loads(resp.read())
+            test("soft-cap-override: 200 status (admitted)", resp.status == 200)
+            test("soft-cap-override: run started", isinstance(body.get("run_id"), str) and body["run_id"])
+            after = list_overrides(limit=100)
+            test("soft-cap-override: audit entry appended", len(after) == before + 1)
+            # Newest entry is at the front of list_overrides() output.
+            newest = after[0] if after else {}
+            test(
+                "soft-cap-override: audit reason is the soft-cap code",
+                newest.get("reason", "").endswith("_SOFT"),
+            )
+            test(
+                "soft-cap-override: audit actor is server-derived (not client-controlled)",
+                newest.get("actor") == "operator_token",
+            )
+            test("soft-cap-override: audit session_id captured", newest.get("session_id") == sid)
+        finally:
+            server.shutdown()
+    finally:
+        ul._GLOBAL_CAP_PER_HOUR = orig_cap
+        ul._SOFT_THRESHOLD = orig_thresh
+        reset_ledger()
+
+
+def test_prompt_soft_warn_override_forbidden_when_policy_disallows():
+    """#556 security follow-up A: policy bypass via prompt override is rejected.
+
+    When ``BROWSE_USAGE_OVERRIDE_POLICY=none`` (or any policy where
+    ``override_allowed_for(reason)`` returns False), a direct POST to
+    ``/api/operator/sessions/{id}/prompt`` at soft-warn with
+    ``override_acknowledged: true`` MUST be rejected with 403 OVERRIDE_FORBIDDEN
+    — mirroring ``handle_usage_override`` — and MUST NOT append an audit entry.
+    """
+    import browse.core.usage_ledger as ul
+    from browse.core.usage_ledger import list_overrides, record_submission, reset_ledger
+
+    orig_cap = ul._GLOBAL_CAP_PER_HOUR
+    orig_thresh = ul._SOFT_THRESHOLD
+    orig_policy = ul._OVERRIDE_POLICY
+    ul._GLOBAL_CAP_PER_HOUR = 5
+    ul._SOFT_THRESHOLD = 0.4  # soft-warn at 2 submissions
+    ul._OVERRIDE_POLICY = "none"  # forbid all overrides
+    try:
+        reset_ledger()
+        server, port = _make_test_server()
+        try:
+            sid = _make_session_via_api(port, "soft-cap-policy-none")
+            for _ in range(3):
+                record_submission(sid)
+            before = len(list_overrides(limit=100))
+            resp = _post(
+                port,
+                f"/api/operator/sessions/{sid}/prompt",
+                {"prompt": "policy denies override", "override_acknowledged": True},
+            )
+            body = json.loads(resp.read())
+            test("soft-warn policy=none: 403 status", resp.status == 403)
+            test(
+                "soft-warn policy=none: OVERRIDE_FORBIDDEN code",
+                body.get("code") == "OVERRIDE_FORBIDDEN",
+            )
+            test("soft-warn policy=none: no run started", "run_id" not in body)
+            after = list_overrides(limit=100)
+            test(
+                "soft-warn policy=none: no audit entry appended",
+                len(after) == before,
+            )
+        finally:
+            server.shutdown()
+    finally:
+        ul._GLOBAL_CAP_PER_HOUR = orig_cap
+        ul._SOFT_THRESHOLD = orig_thresh
+        ul._OVERRIDE_POLICY = orig_policy
+        reset_ledger()
+
+
+def test_usage_override_hard_cap_forbidden_403():
+    """#556: warn-only policy forbids overriding hard-cap reasons (e.g. *_CAP)."""
+    from browse.core.usage_ledger import reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        resp = _post(
+            port,
+            "/api/operator/usage/override",
+            {"reason": "GLOBAL_HOUR_CAP", "actor": "tester"},
+        )
+        body = json.loads(resp.read())
+        test("override forbidden: 403 for hard-cap reason", resp.status == 403)
+        test("override forbidden: OVERRIDE_FORBIDDEN code", body.get("code") == "OVERRIDE_FORBIDDEN")
+    finally:
+        server.shutdown()
+
+
+def test_usage_endpoint_returns_no_prompt_content():
+    """#556: /api/operator/usage returns counts and aggregations — never prompts."""
+    from browse.core.usage_ledger import record_submission, reset_ledger
+
+    reset_ledger()
+    server, port = _make_test_server()
+    try:
+        sid = _make_session_via_api(port, "usage-shape-test")
+        record_submission(sid, host_id="local", model_id="claude-sonnet-4.6")
+        resp = _get(port, "/api/operator/usage")
+        body = json.loads(resp.read())
+        test("usage: 200 status", resp.status == 200)
+        test("usage: prompts_this_hour present", isinstance(body.get("prompts_this_hour"), int))
+        test("usage: by_session is list", isinstance(body.get("by_session"), list))
+        # Hard contract: no prompt content anywhere in payload.
+        raw = json.dumps(body)
+        test("usage: response has no 'prompt' key", '"prompt"' not in raw or '"prompts' in raw)
+    finally:
+        server.shutdown()
+        reset_ledger()
+
+
+def run_preflight_usage_tests():
+    test_preflight_happy_path_returns_estimate()
+    test_preflight_empty_prompt_400()
+    test_preflight_requires_auth_401()
+    test_preflight_redaction_hits_use_sentinel_only()
+    test_prompt_soft_warn_rejected_without_override()
+    test_prompt_hard_cap_rejected_429()
+    test_prompt_soft_warn_override_records_audit()
+    test_prompt_soft_warn_override_forbidden_when_policy_disallows()
+    test_usage_override_audit_recorded()
+    test_usage_override_actor_not_client_forgeable()
+    test_usage_override_hard_cap_forbidden_403()
+    test_usage_endpoint_returns_no_prompt_content()
+
+
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
     test_oc1_create_session_fields()
@@ -4159,6 +4543,10 @@ if __name__ == "__main__":
     test_oc77_queue_cancel_endpoint_basics()
     test_oc78_queue_cancel_throttled_and_rejected()
     test_oc79_public_run_info_no_monotonic_leak()
+
+    print()
+    print("── Issue #557 / #556: preflight + usage ledger / override ───────────")
+    run_preflight_usage_tests()
 
     print()
     print("=" * 60)

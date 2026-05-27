@@ -67,6 +67,7 @@ from browse.core.operator_console import (
     suggest_paths,
     update_session,
 )
+from browse.core.preflight import estimate_preflight
 from browse.core.registry import route
 from browse.core.run_health import (
     public_health_detail,
@@ -76,11 +77,21 @@ from browse.core.run_queue import (
     list_queue,
     public_queue_info,
 )
+from browse.core.usage_estimator import estimate_cost_units, format_usage_display
+from browse.core.usage_ledger import (
+    check_quota,
+    get_usage_summary,
+    list_overrides,
+    override_allowed_for,
+    record_override,
+    record_submission,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _MAX_PROMPT_LEN = 4096  # characters
 _MAX_ATTACHMENTS = 10  # max files per prompt submission
+_MAX_ID_LEN = 64  # identifier cap (session_id, host_id) — mirrors usage_ledger
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024  # 5 MB per decoded file
 _PRIVATE_RUN_KEYS = frozenset(
     {
@@ -246,6 +257,8 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "run_cancel",
                 "run_queue",
                 "run_health",
+                "preflight",
+                "usage",
             ],
         }
     )
@@ -382,6 +395,150 @@ def handle_update_session(db, params, token, nonce, session_id: str = "") -> tup
     return json_ok(updated)
 
 
+# ── Prompt preflight (#557) ───────────────────────────────────────────────────
+
+
+def _build_preflight_response(
+    prompt_text: str,
+    model: str,
+    files_list: object,
+    session_id: str,
+    host_id: str,
+) -> dict:
+    """Shared preflight computation used by both the session route and the
+    issue-mandated authenticated ``POST /api/operator/prompt/preflight`` route.
+
+    Reads ONLY attachment metadata (``name``/``size``/``type``) — attachment
+    content is never inspected, decoded, or persisted.
+    """
+    att_count = 0
+    att_bytes = 0
+    if isinstance(files_list, list):
+        att_count = len(files_list)
+        for f in files_list:
+            if isinstance(f, dict):
+                size = f.get("size")
+                if isinstance(size, int) and size >= 0:
+                    att_bytes += size
+
+    preflight = estimate_preflight(
+        prompt=prompt_text,
+        model=model,
+        attachment_count=att_count,
+        attachment_total_bytes=att_bytes,
+    )
+    cost_units = estimate_cost_units(preflight["estimated_input_tokens"], preflight["model_cost_tier"])
+    usage_summary = get_usage_summary(session_id=session_id or None, host_id=host_id or None)
+    usage_display = format_usage_display(usage_summary)
+
+    # Quota diagnostic — feeds the UI hard/warn chip set.
+    quota_status, quota_reason = check_quota(session_id or "", host_id=host_id, model_id=model)
+    if quota_status == "block":
+        preflight["hard_errors"].append(
+            {
+                "code": f"QUOTA_{quota_reason}",
+                "message": f"Usage quota exceeded: {quota_reason}",
+            }
+        )
+        preflight["within_limit"] = False
+    elif quota_status == "warn":
+        preflight["warnings"].append(
+            {
+                "code": f"QUOTA_{quota_reason}",
+                "message": f"Usage near limit: {quota_reason}",
+                "severity": "warn",
+            }
+        )
+
+    return {
+        **preflight,
+        "cost_units": cost_units,
+        "quota_status": quota_status,
+        "quota_reason": quota_reason,
+        "override_allowed": override_allowed_for(quota_reason) if quota_reason else False,
+        "usage": usage_display,
+    }
+
+
+@route("/api/operator/sessions/{id}/preflight", methods=["POST"])
+def handle_preflight(db, params, token, nonce, session_id: str = "") -> tuple:
+    """POST /api/operator/sessions/{id}/preflight — preflight via session id.
+
+    Returns the same structured preflight diagnostic as the issue-mandated
+    ``POST /api/operator/prompt/preflight`` route, but with the model and host
+    resolved from the session record. Does NOT persist the prompt body.
+    """
+    session = get_session(session_id)
+    if session is None:
+        return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
+
+    body, err = _parse_json_body(params)
+    if err:
+        return err
+
+    prompt_text = str(body.get("prompt", "")).strip()
+    if not prompt_text:
+        return json_error("'prompt' field is required", "BAD_PROMPT", 400)
+
+    model = str(body.get("model") or session.get("model") or "").strip()[:128]
+    host_id = str(body.get("host_id") or "").strip()[:_MAX_ID_LEN]
+    files_list = body.get("files") or []
+    payload = _build_preflight_response(
+        prompt_text=prompt_text,
+        model=model,
+        files_list=files_list,
+        session_id=session_id,
+        host_id=host_id,
+    )
+    return json_ok(payload)
+
+
+@route("/api/operator/prompt/preflight", methods=["POST"])
+def handle_prompt_preflight(db, params, token, nonce) -> tuple:
+    """POST /api/operator/prompt/preflight — authenticated preflight.
+
+    Body:
+      {
+        "prompt": "<text>",                 (required, never persisted)
+        "model": "<model_id>",              (optional — affects context window)
+        "host_id": "<host_profile_id>",    (optional — affects host aggregation)
+        "session_id": "<session_id>",      (optional — used for soft-cap eval)
+        "files": [{"name", "size", "type"}, ...]  (optional — metadata only)
+      }
+    """
+    body, err = _parse_json_body(params)
+    if err:
+        return err
+
+    prompt_text = str(body.get("prompt", "")).strip()
+    if not prompt_text:
+        return json_error("'prompt' field is required", "BAD_PROMPT", 400)
+
+    model = str(body.get("model") or "").strip()[:128]
+    host_id = str(body.get("host_id") or "").strip()[:_MAX_ID_LEN]
+    raw_session_id = str(body.get("session_id") or "").strip()[:_MAX_ID_LEN]
+
+    # Soft-resolve session_id: if supplied we use it for per-session quota
+    # evaluation; if it does not exist we still return preflight without
+    # leaking session-state details.
+    session_id_for_quota = ""
+    if raw_session_id:
+        sess = get_session(raw_session_id)
+        if sess is not None:
+            session_id_for_quota = raw_session_id
+            if not model:
+                model = str(sess.get("model") or "").strip()[:128]
+
+    payload = _build_preflight_response(
+        prompt_text=prompt_text,
+        model=model,
+        files_list=body.get("files") or [],
+        session_id=session_id_for_quota,
+        host_id=host_id,
+    )
+    return json_ok(payload)
+
+
 # ── Prompt execution ──────────────────────────────────────────────────────────
 
 
@@ -422,6 +579,53 @@ def handle_run_prompt(db, params, token, nonce, session_id: str = "") -> tuple:
             400,
         )
 
+    # #556: Quota enforcement — hard caps reject (429); soft (warn) caps require
+    # an explicit override token recorded by the client via the override route.
+    host_id_in = str(body.get("host_id") or "").strip()[:_MAX_ID_LEN]
+    quota_status, quota_reason = check_quota(session_id, host_id=host_id_in, model_id=session.get("model", ""))
+    if quota_status == "block":
+        return json_error(
+            f"usage quota exceeded: {quota_reason}",
+            "QUOTA_EXCEEDED",
+            429,
+        )
+    if quota_status == "warn":
+        override_ack = bool(body.get("override_acknowledged"))
+        if not override_ack:
+            # Soft cap with no explicit override — reject with structured code
+            # so the UI can collect confirmation and resubmit with
+            # ``override_acknowledged: true``.
+            return json_error(
+                f"usage near limit: {quota_reason}",
+                "QUOTA_WARN",
+                429,
+            )
+        # SECURITY (#556 follow-up): a server-accepted soft-cap override MUST be
+        # audit-authoritative AND policy-gated. If the active override policy
+        # disallows this reason (e.g. ``BROWSE_USAGE_OVERRIDE_POLICY=none``),
+        # reject the submission with 403 OVERRIDE_FORBIDDEN — mirroring
+        # ``handle_usage_override`` — so policy cannot be bypassed by skipping
+        # the explicit override endpoint and resubmitting the prompt directly.
+        # Hard caps remain non-overrideable via the ``block`` branch above.
+        if not override_allowed_for(quota_reason):
+            return json_error(
+                f"override not permitted by policy for reason {quota_reason!r}",
+                "OVERRIDE_FORBIDDEN",
+                403,
+            )
+        # Record the override here using a server-derived actor so direct POSTs
+        # to this endpoint cannot bypass the audit log by skipping the UI-only
+        # ``/api/operator/usage/override`` call.
+        session_kind = (params.get("_session_kind", [""])[0] or "").strip() or "unknown"
+        server_actor = f"{session_kind}_token"
+        record_override(
+            actor=server_actor,
+            session_id=session_id,
+            host_id=host_id_in,
+            model_id=str(session.get("model") or "")[:_MAX_ID_LEN],
+            reason=quota_reason,
+        )
+
     if session.get("source") == "cli_adopt":
         if not session.get("confirmed_at"):
             return json_error(
@@ -439,6 +643,13 @@ def handle_run_prompt(db, params, token, nonce, session_id: str = "") -> tuple:
     run_id = start_run(session_id, prompt_text, attachments=attachments or None)
     if run_id is None:
         return json_error("failed to start run", "RUN_START_FAILED", 500)
+
+    # #556: Record submission in usage ledger (count only, no content).
+    record_submission(
+        session_id,
+        host_id=host_id_in,
+        model_id=str(session.get("model") or "")[:_MAX_ID_LEN],
+    )
 
     return json_ok({"run_id": run_id, "session_id": session_id, "status": "running"})
 
@@ -677,6 +888,103 @@ def handle_queue_cancel(db, params, token, nonce, run_id: str = "") -> tuple:
             "cancelled": True,
         }
     )
+
+
+# ── Usage ledger (#556) ───────────────────────────────────────────────────────
+
+
+@route("/api/operator/usage", methods=["GET"])
+def handle_usage(db, params, token, nonce) -> tuple:
+    """GET /api/operator/usage — current usage counts, quotas, and aggregations.
+
+    Query params:
+      session=<id>  (optional) — include per-session counters and per-session filter
+      host=<id>     (optional) — include host filter (for client-side grouping)
+
+    Response: see usage_estimator.format_usage_display — the headline fields
+    (``prompts_this_hour``, ``prompts_today``, ``hourly_limit``, ``daily_limit``,
+    ``remaining_hour``, ``remaining_day``) are stable. Aggregations are
+    included as ``by_session``, ``by_host``, ``by_model``, ``by_day`` arrays.
+    """
+    session_id = _str_param(params, "session", max_len=_MAX_ID_LEN) or None
+    host_id = _str_param(params, "host", max_len=_MAX_ID_LEN) or None
+    summary = get_usage_summary(session_id=session_id, host_id=host_id)
+    result = format_usage_display(summary)
+
+    if session_id:
+        result["session_hour"] = summary["session_hour"]
+        result["session_remaining_hour"] = summary["session_remaining_hour"]
+        result["session_cap_hour"] = summary["session_cap_hour"]
+        result["soft_warn_threshold_session"] = summary["soft_warn_threshold_session"]
+
+    return json_ok(result)
+
+
+@route("/api/operator/usage/override", methods=["POST"])
+def handle_usage_override(db, params, token, nonce) -> tuple:
+    """POST /api/operator/usage/override — record a soft-cap override.
+
+    Body:
+      {
+        "session_id": "<id>",  (optional)
+        "host_id":    "<id>",  (optional)
+        "model_id":   "<id>",  (optional)
+        "reason":     "<structured code>",  (required — e.g. GLOBAL_HOUR_SOFT)
+        "actor":      "<display hint>"  (optional, untrusted — stored as
+                      ``client_hint``; the audit ``actor`` is server-derived)
+      }
+
+    SECURITY: the audit ``actor`` is derived from the authenticated request
+    context (``_session_kind``), NOT from the request body. A body-supplied
+    ``actor`` is captured only as a non-authoritative ``client_hint``.
+
+    Response: ``{"override": {<recorded audit entry>}, "policy": "<policy>"}``.
+    Returns 403 if policy forbids overriding the supplied reason.
+    """
+    body, err = _parse_json_body(params)
+    if err:
+        return err
+
+    reason = str(body.get("reason") or "").strip()[:64]
+    if not reason:
+        return json_error("'reason' field is required", "BAD_REASON", 400)
+    if not override_allowed_for(reason):
+        return json_error(
+            f"override not permitted by policy for reason {reason!r}",
+            "OVERRIDE_FORBIDDEN",
+            403,
+        )
+
+    # Server-derived audit principal — cannot be forged via request body.
+    session_kind = (params.get("_session_kind", [""])[0] or "").strip() or "unknown"
+    server_actor = f"{session_kind}_token"
+
+    # Untrusted body-supplied label (display only, length-capped).
+    client_hint = str(body.get("actor") or "").strip()[:64]
+
+    rec = record_override(
+        actor=server_actor,
+        session_id=str(body.get("session_id") or "").strip()[:_MAX_ID_LEN],
+        host_id=str(body.get("host_id") or "").strip()[:_MAX_ID_LEN],
+        model_id=str(body.get("model_id") or "").strip()[:_MAX_ID_LEN],
+        reason=reason,
+        client_hint=client_hint,
+    )
+    return json_ok({"override": rec, "policy": rec.get("policy", "")})
+
+
+@route("/api/operator/usage/overrides", methods=["GET"])
+def handle_usage_overrides(db, params, token, nonce) -> tuple:
+    """GET /api/operator/usage/overrides — recent override audit entries.
+
+    Query params:
+      limit=<int>   (optional, default 50, max 1000)
+    """
+    try:
+        limit = int(_str_param(params, "limit", "50", max_len=8) or "50")
+    except ValueError:
+        limit = 50
+    return json_ok({"overrides": list_overrides(limit=limit), "count": len(list_overrides(limit=limit))})
 
 
 # ── Model catalog ─────────────────────────────────────────────────────────────

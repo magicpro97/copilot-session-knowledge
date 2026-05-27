@@ -635,6 +635,171 @@ def run_browser_fallback_tests() -> None:
                 os.environ[key] = old_value
 
 
+def run_preflight_usage_security_tests() -> None:
+    """Issue #557/#556: security checks for preflight and usage routes."""
+    import http.client
+    import json
+    import sqlite3
+    import tempfile
+    from http.server import ThreadingHTTPServer
+
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from browse.core.server import _make_handler_class
+    from browse.core.usage_ledger import record_override, record_submission, reset_ledger
+
+    _TOKEN = "test-token-sec"
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "browse_test.db"
+        db = sqlite3.connect(str(db_path), check_same_thread=False)
+        db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, data TEXT)")
+        db.commit()
+
+        handler_cls = _make_handler_class(db, _TOKEN)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        host, port = server.server_address
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        time.sleep(0.05)
+
+        def _post(path: str, body: dict) -> tuple[int, dict]:
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            raw = json.dumps(body).encode("utf-8")
+            sep = "&" if "?" in path else "?"
+            conn.request(
+                "POST",
+                f"{path}{sep}token={_TOKEN}",
+                body=raw,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+            )
+            r = conn.getresponse()
+            data = r.read().decode("utf-8", errors="replace")
+            conn.close()
+            return r.status, json.loads(data) if data else {}
+
+        def _get(path: str) -> tuple[int, dict]:
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            sep = "&" if "?" in path else "?"
+            conn.request("GET", f"{path}{sep}token={_TOKEN}")
+            r = conn.getresponse()
+            data = r.read().decode("utf-8", errors="replace")
+            conn.close()
+            return r.status, json.loads(data) if data else {}
+
+        reset_ledger()
+        try:
+            # SEC-PREFLIGHT-1: prompt body never appears in preflight response.
+            print("\n-- SEC-PREFLIGHT-1: preflight response does not echo prompt body")
+            secret_prompt = "PROMPT_BODY_UNIQUE_MARKER_xyz_42"
+            status, body = _post("/api/operator/prompt/preflight", {"prompt": secret_prompt})
+            test("PREFLIGHT-1: status 200", status == 200)
+            test(
+                "PREFLIGHT-1: raw prompt body absent from response",
+                secret_prompt not in json.dumps(body),
+            )
+
+            # SEC-PREFLIGHT-2: redaction safe_excerpts are sentinel only.
+            print("\n-- SEC-PREFLIGHT-2: redaction safe_excerpts are [REDACTED] only")
+            risky = "look at my key=AKIAIOSFODNN7EXAMPLE secret"
+            status, body = _post("/api/operator/prompt/preflight", {"prompt": risky})
+            test("PREFLIGHT-2: status 200", status == 200)
+            excerpts = body.get("redaction", {}).get("safe_excerpts", [])
+            test(
+                "PREFLIGHT-2: all safe_excerpts are [REDACTED] sentinel",
+                all(e == "[REDACTED]" for e in excerpts),
+            )
+            test(
+                "PREFLIGHT-2: response body does not echo raw secret",
+                "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body),
+            )
+
+            # SEC-PREFLIGHT-3: requires auth.
+            print("\n-- SEC-PREFLIGHT-3: preflight requires auth token")
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            raw = json.dumps({"prompt": "hi"}).encode("utf-8")
+            conn.request(
+                "POST",
+                "/api/operator/prompt/preflight",
+                body=raw,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+            )
+            unauth = conn.getresponse()
+            conn.close()
+            test("PREFLIGHT-3: 401 without token", unauth.status == 401)
+
+            # SEC-USAGE-1: /api/operator/usage response never contains prompt content.
+            print("\n-- SEC-USAGE-1: usage endpoint contains no prompt content")
+            # Seed ledger with a submission — counts only, no prompt body.
+            record_submission("sess-test-001", host_id="local", model_id="claude-sonnet-4.6")
+            status, body = _get("/api/operator/usage")
+            test("USAGE-1: status 200", status == 200)
+            raw_payload = json.dumps(body)
+            # Stringify-and-scan: response must not contain *any* prompt content.
+            test(
+                "USAGE-1: response carries no 'prompt' content key",
+                '"prompt"' not in raw_payload,
+            )
+            test(
+                "USAGE-1: response is structured aggregations only",
+                isinstance(body.get("by_session"), list) and isinstance(body.get("prompts_this_hour"), int),
+            )
+
+            # SEC-OVERRIDE-1: override audit response contains no prompt content.
+            print("\n-- SEC-OVERRIDE-1: override audit response carries no prompt content")
+            status, body = _post(
+                "/api/operator/usage/override",
+                {"reason": "GLOBAL_HOUR_SOFT", "actor": "tester"},
+            )
+            test("OVERRIDE-1: status 200", status == 200)
+            test(
+                "OVERRIDE-1: override response has no 'prompt' key anywhere",
+                '"prompt"' not in json.dumps(body),
+            )
+            rec = body.get("override", {})
+            test("OVERRIDE-1: reason captured as structured code", rec.get("reason") == "GLOBAL_HOUR_SOFT")
+
+            # SEC-OVERRIDE-1b: client-supplied actor cannot forge audit principal.
+            print("\n-- SEC-OVERRIDE-1b: client 'actor' body field cannot forge audit actor")
+            status, body = _post(
+                "/api/operator/usage/override",
+                {"reason": "GLOBAL_HOUR_SOFT", "actor": "alice"},
+            )
+            test("OVERRIDE-1b: status 200", status == 200)
+            rec = body.get("override", {})
+            test(
+                "OVERRIDE-1b: recorded actor is server-derived, not 'alice'",
+                rec.get("actor") != "alice" and rec.get("actor", "").endswith("_token"),
+            )
+            test(
+                "OVERRIDE-1b: untrusted client label preserved only as client_hint",
+                rec.get("client_hint") == "alice",
+            )
+
+            # SEC-OVERRIDE-2: GET /api/operator/usage/overrides has no prompt content.
+            print("\n-- SEC-OVERRIDE-2: override list endpoint has no prompt content")
+            # Seed another override directly.
+            record_override(actor="seed", session_id="sess-x", reason="GLOBAL_DAY_SOFT")
+            status, body = _get("/api/operator/usage/overrides")
+            test("OVERRIDE-2: status 200", status == 200)
+            test(
+                "OVERRIDE-2: list response has no 'prompt' content",
+                '"prompt"' not in json.dumps(body),
+            )
+
+            # SEC-OVERRIDE-3: hard-cap codes are forbidden under warn-only default policy.
+            print("\n-- SEC-OVERRIDE-3: warn-only policy forbids overriding *_CAP codes")
+            status, body = _post(
+                "/api/operator/usage/override",
+                {"reason": "GLOBAL_HOUR_CAP", "actor": "tester"},
+            )
+            test("OVERRIDE-3: 403 status", status == 403)
+            test("OVERRIDE-3: OVERRIDE_FORBIDDEN code", body.get("code") == "OVERRIDE_FORBIDDEN")
+        finally:
+            reset_ledger()
+            server.shutdown()
+            db.close()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -649,6 +814,7 @@ def run_all_tests() -> int:
     run_dream_path_tests()
     run_active_runs_tests()
     run_browser_fallback_tests()
+    run_preflight_usage_security_tests()
 
     print("\n========================================")
     print(f"Results: {_PASS} passed, {_FAIL} failed")

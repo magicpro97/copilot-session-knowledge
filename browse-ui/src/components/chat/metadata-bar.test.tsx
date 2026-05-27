@@ -351,3 +351,88 @@ describe("MetadataBar — cli_metadata", () => {
     expect(screen.queryByTestId("cli-tools")).not.toBeInTheDocument();
   });
 });
+
+// ── #556: Usage panel (operator usage gauge + popover) ───────────────────────
+
+import type { UsageResponse } from "@/lib/api/types";
+
+function makeFullUsage(overrides: Partial<UsageResponse> = {}): UsageResponse {
+  return {
+    prompts_this_hour: 10,
+    prompts_today: 25,
+    hourly_limit: 100,
+    daily_limit: 500,
+    remaining_hour: 90,
+    remaining_day: 475,
+    soft_warn_threshold_hour: 80,
+    soft_warn_threshold_day: 400,
+    soft_warn_fraction: 0.8,
+    override_policy: "warn-only",
+    by_session: [{ key: "sess-001", count: 10 }],
+    by_host: [{ key: "host-a", count: 10 }],
+    by_model: [{ key: "claude-sonnet-4.6", count: 10 }],
+    by_day: [{ key: "2026-05-01", count: 25 }],
+    today: "2026-05-01",
+    session_hour: 5,
+    session_cap_hour: 50,
+    soft_warn_threshold_session: 40,
+    ...overrides,
+  };
+}
+
+describe("MetadataBar — usage panel (#556)", () => {
+  it("renders gauge and opens panel showing grouped usage", () => {
+    const usage = makeFullUsage();
+    render(<MetadataBar session={baseSession} usage={usage} />);
+    const gauge = screen.getByTestId("usage-gauge");
+    expect(gauge).toHaveTextContent("90/100 left");
+    fireEvent.click(gauge);
+    expect(screen.getByTestId("usage-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-group-by-session")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-group-by-host")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-group-by-model")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-group-by-day")).toBeInTheDocument();
+  });
+
+  it("applies soft-warn styling at or above the hourly threshold", () => {
+    const usage = makeFullUsage({
+      prompts_this_hour: 85,
+      remaining_hour: 15,
+      soft_warn_threshold_hour: 80,
+    });
+    render(<MetadataBar session={baseSession} usage={usage} />);
+    const gauge = screen.getByTestId("usage-gauge");
+    expect(gauge.className).toMatch(/text-amber/);
+  });
+
+  it("does not apply soft-warn styling under the threshold", () => {
+    const usage = makeFullUsage({
+      prompts_this_hour: 10,
+      soft_warn_threshold_hour: 80,
+    });
+    render(<MetadataBar session={baseSession} usage={usage} />);
+    const gauge = screen.getByTestId("usage-gauge");
+    expect(gauge.className).not.toMatch(/text-amber/);
+  });
+
+  it("renders legacy {remaining_hour, hourly_limit} usage without panel", () => {
+    render(<MetadataBar session={baseSession} usage={{ remaining_hour: 17, hourly_limit: 100 }} />);
+    const gauge = screen.getByTestId("usage-gauge");
+    expect(gauge).toHaveTextContent("17/100 left");
+    // Legacy shape: no popover panel exists.
+    expect(screen.queryByTestId("usage-panel")).not.toBeInTheDocument();
+  });
+
+  it("renders cleanly without usage prop (null / undefined)", () => {
+    render(<MetadataBar session={baseSession} usage={null} />);
+    expect(screen.queryByTestId("usage-gauge")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("usage-panel")).not.toBeInTheDocument();
+  });
+
+  it("renders session-scope row when session_hour is provided", () => {
+    const usage = makeFullUsage({ session_hour: 7, session_cap_hour: 50 });
+    render(<MetadataBar session={baseSession} usage={usage} />);
+    fireEvent.click(screen.getByTestId("usage-gauge"));
+    expect(screen.getByTestId("usage-panel")).toHaveTextContent(/7\/50/);
+  });
+});

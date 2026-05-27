@@ -1091,6 +1091,14 @@ export const runFileMetadataSchema = z.object({
 export const promptRequestSchema = z.object({
   prompt: z.string().min(1),
   files: z.array(queuedFileSchema).optional(),
+  /** #556: Soft-cap acknowledgement (resubmit-after-warn). */
+  override_acknowledged: z.boolean().optional(),
+  /**
+   * #556: Active host profile id, forwarded to the server so usage ledger
+   * entries are grouped per-host (matches preflight/override paths).
+   * Bounded to 64 chars to mirror server-side `_MAX_ID_LEN`.
+   */
+  host_id: z.string().min(1).max(64).optional(),
 });
 
 /** Response from `POST /api/operator/sessions/{id}/prompt`. */
@@ -1224,6 +1232,94 @@ export const queueCancelResponseSchema = z.object({
 export const pathSuggestResponseSchema = z.object({
   suggestions: z.array(z.string()),
   count: z.number().int().nonnegative(),
+});
+
+// ── Preflight (#557) ────────────────────────────────────────────────────────
+
+/** Single warning / hard-error diagnostic. */
+const preflightDiagSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  severity: z.string().optional(),
+});
+
+/** Response from `POST /api/operator/sessions/{id}/preflight`
+ *  and `POST /api/operator/prompt/preflight`. */
+export const preflightResponseSchema = z.object({
+  estimated_input_tokens: z.number().int().nonnegative(),
+  model: z.string(),
+  model_known: z.boolean(),
+  model_cost_tier: z.string(),
+  model_context_window: z.number().int().nonnegative(),
+  context_fit: z.enum(["fits", "warn", "overflow"]),
+  context_fit_fraction: z.number().nonnegative(),
+  cost_units: z.number().nonnegative(),
+  attachment_count: z.number().int().nonnegative(),
+  attachment_total_bytes: z.number().int().nonnegative(),
+  redaction: z.object({
+    hits: z.number().int().nonnegative(),
+    categories: z.array(z.string()),
+    safe_excerpts: z.array(z.string()),
+  }),
+  warnings: z.array(preflightDiagSchema),
+  hard_errors: z.array(preflightDiagSchema),
+  within_limit: z.boolean(),
+  quota_status: z.enum(["ok", "warn", "block"]),
+  quota_reason: z.string(),
+  override_allowed: z.boolean(),
+  usage: z.object({
+    prompts_this_hour: z.number().int().nonnegative(),
+    prompts_today: z.number().int().nonnegative(),
+    hourly_limit: z.number().int().nonnegative(),
+    daily_limit: z.number().int().nonnegative(),
+    remaining_hour: z.number().int().nonnegative(),
+    remaining_day: z.number().int().nonnegative(),
+  }),
+});
+
+// ── Usage Ledger (#556) ─────────────────────────────────────────────────────
+
+const usageGroupEntrySchema = z.object({
+  key: z.string(),
+  count: z.number().int().nonnegative(),
+});
+
+/** Response from `GET /api/operator/usage`. */
+export const usageResponseSchema = z.object({
+  prompts_this_hour: z.number().int().nonnegative(),
+  prompts_today: z.number().int().nonnegative(),
+  hourly_limit: z.number().int().nonnegative(),
+  daily_limit: z.number().int().nonnegative(),
+  remaining_hour: z.number().int().nonnegative(),
+  remaining_day: z.number().int().nonnegative(),
+  soft_warn_fraction: z.number().nonnegative(),
+  soft_warn_threshold_hour: z.number().int().nonnegative(),
+  soft_warn_threshold_day: z.number().int().nonnegative(),
+  override_policy: z.string(),
+  by_session: z.array(usageGroupEntrySchema),
+  by_host: z.array(usageGroupEntrySchema),
+  by_model: z.array(usageGroupEntrySchema),
+  by_day: z.array(usageGroupEntrySchema),
+  today: z.string(),
+  session_hour: z.number().int().nonnegative().optional(),
+  session_remaining_hour: z.number().int().nonnegative().optional(),
+  session_cap_hour: z.number().int().nonnegative().optional(),
+  soft_warn_threshold_session: z.number().int().nonnegative().optional(),
+});
+
+/** Response from `POST /api/operator/usage/override`. */
+export const usageOverrideResponseSchema = z.object({
+  override: z.object({
+    ts: z.number(),
+    ts_iso: z.string(),
+    actor: z.string(),
+    session_id: z.string(),
+    host_id: z.string(),
+    model_id: z.string(),
+    reason: z.string(),
+    policy: z.string(),
+  }),
+  policy: z.string(),
 });
 
 /** Response from `GET /api/operator/preview?path=<path>`. */

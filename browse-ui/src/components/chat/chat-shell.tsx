@@ -31,6 +31,8 @@ import {
   useAdoptCliSession,
   useConfirmAdoptedSession,
   useTentacleStatus,
+  useOperatorUsage,
+  useGenericPromptPreflight,
 } from "@/lib/api/hooks";
 import {
   getAllHostProfiles,
@@ -181,6 +183,35 @@ export function ChatShell() {
   const adoptMutation = useAdoptCliSession(activeHost);
   const confirmMutation = useConfirmAdoptedSession(activeSessionId ?? "", activeHost);
 
+  // #556/#557: Usage gauge data + generic preflight + soft-cap override.
+  // Bound to the active session so the gauge shows session-scoped fields too.
+  const usageQuery = useOperatorUsage(
+    activeSessionId ?? undefined,
+    Boolean(activeSessionId) && operatorEnabled,
+    activeHost
+  );
+  const preflightMutation = useGenericPromptPreflight(activeHost);
+
+  const runPreflight = useCallback(
+    async (req: { prompt: string; files: Array<{ name: string; type: string; size: number }> }) => {
+      return preflightMutation.mutateAsync({
+        prompt: req.prompt,
+        model: session?.model || undefined,
+        host_id: activeHost.id,
+        session_id: activeSessionId ?? undefined,
+        files: req.files,
+      });
+    },
+    [preflightMutation, session?.model, activeHost.id, activeSessionId]
+  );
+
+  // #556 follow-up: soft-cap override audit is recorded server-side by
+  // `handle_run_prompt` when the resubmit carries `override_acknowledged: true`.
+  // The standalone `/api/operator/usage/override` endpoint remains available
+  // (via `useUsageOverride`) for explicit non-prompt audit flows, but the
+  // chat composer no longer calls it — that would double-record the audit
+  // entry and halve effective retention.
+
   // Lazy-loaded skill catalog — only fetched when the /skills overlay is open.
   const skillCatalogQuery = useSkillCatalog(activeHost, skillsOpen && operatorEnabled);
   const skillCatalogMessage = useMemo(() => {
@@ -305,7 +336,7 @@ export function ChatShell() {
 
   // Submit a prompt with optional file attachments
   const handleSubmitPrompt = useCallback(
-    (prompt: string, files: QueuedFile[] = []) => {
+    (prompt: string, files: QueuedFile[] = [], options?: { overrideAcknowledged?: boolean }) => {
       if (!activeSessionId) return;
       setCommandBanner(null);
       setSubmitError(null);
@@ -318,7 +349,14 @@ export function ChatShell() {
       }));
 
       promptMutation.mutate(
-        { prompt, files: files.length > 0 ? files : undefined },
+        {
+          prompt,
+          files: files.length > 0 ? files : undefined,
+          override_acknowledged: options?.overrideAcknowledged || undefined,
+          // #556: Forward active host id so server-side usage ledger groups
+          // submissions under the correct host (not the implicit "local").
+          host_id: activeHost.id,
+        },
         {
           onSuccess: (result) => {
             setSuppressedRecoveryRunId(null);
@@ -335,7 +373,7 @@ export function ChatShell() {
         }
       );
     },
-    [activeSessionId, promptMutation]
+    [activeSessionId, activeHost.id, promptMutation]
   );
 
   // Keep the active run rendered until persisted history refresh completes to
@@ -756,6 +794,7 @@ export function ChatShell() {
             onUpdate={handleUpdateSession}
             openEditor={metadataEditorOpen}
             onEditorClose={() => setMetadataEditorOpen(false)}
+            usage={usageQuery.data ?? null}
           />
         ) : null}
 
@@ -851,6 +890,7 @@ export function ChatShell() {
               onCommand={handleCommand}
               loading={isRunning}
               disabled={composerDisabled}
+              runPreflight={runPreflight}
             />
           </>
         )}

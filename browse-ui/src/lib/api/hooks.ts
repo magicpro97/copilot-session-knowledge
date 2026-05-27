@@ -43,6 +43,9 @@ import {
   operatorActiveRunsResponseSchema,
   operatorQueueResponseSchema,
   pathSuggestResponseSchema,
+  preflightResponseSchema,
+  usageResponseSchema,
+  usageOverrideResponseSchema,
   filePreviewResponseSchema,
   fileDiffResponseSchema,
   createOperatorSessionRequestSchema,
@@ -95,6 +98,9 @@ import type {
   UpdateOperatorSessionRequest,
   PromptRequest,
   PromptSubmitResponse,
+  PreflightResponse,
+  UsageResponse,
+  UsageOverrideResponse,
   OperatorRunStatus,
   OperatorRunsResponse,
   OperatorActiveRunsResponse,
@@ -198,6 +204,15 @@ export const queryKeys = {
     ["operator-diff", hostId, pathA, pathB] as const,
   operatorModels: (hostId = LOCAL_HOST_ID) => ["operator-models", hostId] as const,
   operatorCapabilities: (hostId = LOCAL_HOST_ID) => ["operator-capabilities", hostId] as const,
+  operatorUsage: (hostId = LOCAL_HOST_ID, sessionId?: string) =>
+    ["operator-usage", hostId, sessionId] as const,
+  /**
+   * #556: Length-2 prefix used for invalidation. TanStack Query v5 prefix
+   * matching is positional, so `["operator-usage", hostId]` matches every
+   * session-scoped variant `["operator-usage", hostId, <sessionId>]`,
+   * while `operatorUsage(hostId)` (which trails with `undefined`) would not.
+   */
+  operatorUsageAll: (hostId = LOCAL_HOST_ID) => ["operator-usage", hostId] as const,
   cliSessions: (hostId = LOCAL_HOST_ID) => ["cli-sessions", hostId] as const,
   cliSession: (id: string, hostId = LOCAL_HOST_ID) => ["cli-session", hostId, id] as const,
   debugLog: (
@@ -1070,6 +1085,155 @@ export function useSubmitPrompt(sessionId: string, host: HostProfile = LOCAL_HOS
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
+      // #556: Invalidate every session-scoped operator-usage query for this host
+      // by using the length-2 prefix (positional prefix match in TanStack v5).
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorUsageAll(host.id) });
+    },
+  });
+}
+
+/**
+ * POST /api/operator/sessions/{id}/preflight — token/cost preview.
+ *
+ * #557: Provides a lightweight estimation without persisting the prompt body.
+ * Call this before submission to show the user estimated tokens and quota.
+ */
+export function usePromptPreflight(sessionId: string, host: HostProfile = LOCAL_HOST) {
+  return useMutation({
+    mutationFn: async (payload: PromptRequest): Promise<PreflightResponse> => {
+      const data = await hostFetch<PreflightResponse>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/preflight`),
+        host,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: payload.prompt, files: payload.files }),
+        }
+      );
+      return preflightResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * GET /api/operator/usage — current usage counts and quota.
+ *
+ * #556: Returns prompts this hour/today and remaining quota.
+ */
+export function useOperatorUsage(
+  sessionId?: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
+  return useQuery({
+    queryKey: queryKeys.operatorUsage(host.id, sessionId),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    enabled,
+    queryFn: async (): Promise<UsageResponse> => {
+      const qs = sessionId ? createQueryString({ session: sessionId }) : "";
+      const data = await hostFetch<UsageResponse>(
+        withLeadingSlash(`/api/operator/usage${qs}`),
+        host
+      );
+      return usageResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * #557: Request body for `POST /api/operator/prompt/preflight` — the generic
+ * (non-session-bound) preflight endpoint. Attachment payload is metadata only.
+ */
+export interface GenericPreflightRequest {
+  prompt: string;
+  model?: string;
+  host_id?: string;
+  session_id?: string;
+  files?: Array<{ name: string; type: string; size: number }>;
+}
+
+/**
+ * POST /api/operator/prompt/preflight — generic (non-session-bound) preflight.
+ *
+ * #557: Same response shape as `usePromptPreflight` but requires no existing
+ * session row. Used by the Composer to estimate tokens, context fit, and
+ * quota status as the user types, before any prompt is submitted.
+ *
+ * The prompt body is NEVER persisted. Only attachment metadata is sent
+ * (`{name, type, size}`); attachment bytes are never re-read for preflight.
+ */
+export function useGenericPromptPreflight(host: HostProfile = LOCAL_HOST) {
+  return useMutation({
+    mutationFn: async (payload: GenericPreflightRequest): Promise<PreflightResponse> => {
+      const body: Record<string, unknown> = { prompt: payload.prompt };
+      if (payload.model) body.model = payload.model;
+      if (payload.host_id) body.host_id = payload.host_id;
+      if (payload.session_id) body.session_id = payload.session_id;
+      if (payload.files && payload.files.length > 0) body.files = payload.files;
+
+      const data = await hostFetch<PreflightResponse>(
+        withLeadingSlash(`/api/operator/prompt/preflight`),
+        host,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+      return preflightResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * #556: Request body for `POST /api/operator/usage/override`. The audit record
+ * never contains prompt content — only the structured `reason` code.
+ */
+export interface UsageOverrideRequest {
+  reason: string;
+  session_id?: string;
+  host_id?: string;
+  model_id?: string;
+  actor?: string;
+}
+
+/**
+ * POST /api/operator/usage/override — record a soft-cap override.
+ *
+ * #556: The user explicitly acknowledges a near-quota warning before
+ * resubmitting with `override_acknowledged: true`. This route stores an
+ * audit record with the structured reason code (never the prompt body).
+ *
+ * On success, invalidates the `operatorUsage` query so the UI reflects
+ * the new override audit count and any policy-driven changes.
+ */
+export function useUsageOverride(host: HostProfile = LOCAL_HOST) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: UsageOverrideRequest): Promise<UsageOverrideResponse> => {
+      const body: Record<string, unknown> = { reason: payload.reason };
+      if (payload.session_id) body.session_id = payload.session_id;
+      if (payload.host_id) body.host_id = payload.host_id;
+      if (payload.model_id) body.model_id = payload.model_id;
+      if (payload.actor) body.actor = payload.actor;
+
+      const data = await hostFetch<UsageOverrideResponse>(
+        withLeadingSlash(`/api/operator/usage/override`),
+        host,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+      return usageOverrideResponseSchema.parse(data);
+    },
+    onSuccess: () => {
+      // #556: Invalidate every session-scoped operator-usage query for this host
+      // (length-2 prefix; see note on queryKeys.operatorUsageAll).
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorUsageAll(host.id) });
     },
   });
 }

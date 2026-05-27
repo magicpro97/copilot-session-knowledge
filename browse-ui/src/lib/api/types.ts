@@ -1136,6 +1136,20 @@ export interface PromptRequest {
   prompt: string;
   /** Files to stage server-side alongside this prompt. */
   files?: QueuedFile[];
+  /**
+   * #556: When the previous submit was rejected with `QUOTA_WARN`, the
+   * client may resubmit with this flag set to `true` to indicate the
+   * operator has acknowledged the soft-cap warning (after the override
+   * audit record has been written via `useUsageOverride`).
+   */
+  override_acknowledged?: boolean;
+  /**
+   * #556: Active host profile id, used server-side to group usage ledger
+   * entries per-host (matches preflight/override paths). Optional but
+   * strongly recommended; bounded to 64 chars to mirror server-side
+   * `_MAX_ID_LEN`.
+   */
+  host_id?: string;
 }
 
 /** Response from `POST /api/operator/sessions/{id}/prompt`. */
@@ -1143,6 +1157,88 @@ export interface PromptSubmitResponse {
   run_id: string;
   session_id: string;
   status: string;
+}
+
+/** #557: Usage summary included in preflight responses. */
+export interface UsageDisplay {
+  prompts_this_hour: number;
+  prompts_today: number;
+  hourly_limit: number;
+  daily_limit: number;
+  remaining_hour: number;
+  remaining_day: number;
+}
+
+/** #557: Single structured warning or hard-error diagnostic. */
+export interface PreflightDiagnostic {
+  code: string;
+  message: string;
+  severity?: string;
+}
+
+/** #557: Response from `POST /api/operator/sessions/{id}/preflight` and
+ *  `POST /api/operator/prompt/preflight`. */
+export interface PreflightResponse {
+  estimated_input_tokens: number;
+  model: string;
+  model_known: boolean;
+  model_cost_tier: string;
+  model_context_window: number;
+  context_fit: "fits" | "warn" | "overflow";
+  context_fit_fraction: number;
+  cost_units: number;
+  attachment_count: number;
+  attachment_total_bytes: number;
+  redaction: {
+    hits: number;
+    categories: string[];
+    safe_excerpts: string[];
+  };
+  warnings: PreflightDiagnostic[];
+  hard_errors: PreflightDiagnostic[];
+  within_limit: boolean;
+  quota_status: "ok" | "warn" | "block";
+  quota_reason: string;
+  override_allowed: boolean;
+  usage: UsageDisplay;
+}
+
+/** #556: One row in a usage aggregation (session/host/model/day). */
+export interface UsageGroupEntry {
+  key: string;
+  count: number;
+}
+
+/** #556: Response from `GET /api/operator/usage`. */
+export interface UsageResponse extends UsageDisplay {
+  soft_warn_fraction: number;
+  soft_warn_threshold_hour: number;
+  soft_warn_threshold_day: number;
+  override_policy: string;
+  by_session: UsageGroupEntry[];
+  by_host: UsageGroupEntry[];
+  by_model: UsageGroupEntry[];
+  by_day: UsageGroupEntry[];
+  today: string;
+  session_hour?: number;
+  session_remaining_hour?: number;
+  session_cap_hour?: number;
+  soft_warn_threshold_session?: number;
+}
+
+/** #556: Response from `POST /api/operator/usage/override`. */
+export interface UsageOverrideResponse {
+  override: {
+    ts: number;
+    ts_iso: string;
+    actor: string;
+    session_id: string;
+    host_id: string;
+    model_id: string;
+    reason: string;
+    policy: string;
+  };
+  policy: string;
 }
 
 /** Minimal run info returned inside `OperatorRunStatus`. */
