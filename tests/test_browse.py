@@ -164,11 +164,12 @@ def run_all_tests() -> int:
         test("T2: /healthz → 200", status == 200)
         data = json.loads(body)
         test("T2: status=ok", data.get("status") == "ok")
-        test("T2: schema_version present", "schema_version" in data)
-        test("T2: sessions count present", "sessions" in data)
-        test("T2: knowledge_entries count present", "knowledge_entries" in data)
-        test("T2: knowledge_entries is integer", isinstance(data.get("knowledge_entries"), int))
-        test("T2: last_indexed_at key present", "last_indexed_at" in data)
+        # Issue #560: /healthz must NOT expose corpus/usage signals to unauthenticated callers.
+        # Only liveness-safe fields are permitted (status + static sync_status_endpoint pointer).
+        test("T2: sync_status_endpoint present", data.get("sync_status_endpoint") == "/api/sync/status")
+        test("T2: no sessions count leaked", "sessions" not in data)
+        test("T2: no knowledge_entries leaked", "knowledge_entries" not in data)
+        test("T2: no last_indexed_at leaked", "last_indexed_at" not in data)
     finally:
         server.shutdown()
 

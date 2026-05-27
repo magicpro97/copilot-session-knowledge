@@ -164,6 +164,16 @@ async function mockOperatorApi(
       return;
     }
 
+    if (path === "/api/operator/runs") {
+      // Issue #564: Chat Workbench feed. Tests don't seed active runs,
+      // so return an empty allowlist response.
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ runs: [], count: 0 }),
+      });
+      return;
+    }
+
     if (session && path === `/api/operator/sessions/${session.id}`) {
       await route.fulfill({
         contentType: "application/json",

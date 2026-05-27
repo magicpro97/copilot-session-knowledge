@@ -37,6 +37,7 @@ ALLOWED_TMP_LITERAL_TESTS = {
 ALLOWED_POSIX_TOKEN_TESTS = {
     "test_install_helpers.py": "asserts generated POSIX launcher metadata, not host permissions",
     "test_install_sandbox.py": "permission test has explicit root skip guard",
+    "test_browse_cli_session_discovery.py": "test_pc6_prior_context_symlink_rejected has explicit os.name == 'nt' early-return guard at the top of the function",
 }
 
 
