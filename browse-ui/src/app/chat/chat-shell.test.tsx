@@ -96,6 +96,11 @@ vi.mock("@/lib/api/hooks", () => ({
     isLoading: false,
     isError: false,
   })),
+  useTentacleStatus: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  })),
   createOperatorStreamPath: vi.fn(() => "/api/operator/sessions/x/stream?run=y"),
   createOperatorStreamUrl: vi.fn(
     (sessionId: string, runId: string, host: { base_url: string }) =>

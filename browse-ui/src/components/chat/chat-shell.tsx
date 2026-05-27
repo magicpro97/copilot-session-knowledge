@@ -30,6 +30,7 @@ import {
   useSkillCatalog,
   useAdoptCliSession,
   useConfirmAdoptedSession,
+  useTentacleStatus,
 } from "@/lib/api/hooks";
 import {
   getAllHostProfiles,
@@ -47,6 +48,7 @@ import { Transcript } from "./transcript";
 import { Composer } from "./composer";
 import { ConfirmAdoptionPanel } from "./cli-session-picker";
 import { WorkbenchPanel } from "./workbench-panel";
+import { TentacleStatusChip } from "./tentacle-status-chip";
 import { COPILOT_MODES } from "./session-create-dialog";
 import { SLASH_COMMANDS } from "./slash-commands";
 import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
@@ -190,6 +192,10 @@ export function ChatShell() {
     }
     return null;
   }, [activeHost, operatorEnabled, skillCatalogQuery.error, skillCatalogQuery.isError]);
+
+  // Tentacle orchestration status — reuses the existing useTentacleStatus hook
+  // with no additional polling loop; relies on React Query stale/gc intervals.
+  const tentacleStatusQuery = useTentacleStatus(activeHost, operatorEnabled);
 
   // Select a session → update URL (preserve host param)
   const handleSelectSession = useCallback(
@@ -732,6 +738,13 @@ export function ChatShell() {
               ) : null}
             </p>
           )}
+          <div className="ml-auto">
+            <TentacleStatusChip
+              data={tentacleStatusQuery.data}
+              isLoading={tentacleStatusQuery.isLoading}
+              isError={tentacleStatusQuery.isError}
+            />
+          </div>
         </div>
 
         {/* Metadata bar */}
