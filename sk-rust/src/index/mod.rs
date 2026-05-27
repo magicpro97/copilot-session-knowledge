@@ -10,5 +10,10 @@
 pub mod claude;
 pub mod session;
 
+// Always-compiled fresh-DB schema bootstrap used by the writer broker.
+// Split from `extract` so callers needing only the schema helper can
+// build with `--no-default-features` (issue #572).
+pub mod extract_schema;
+
 #[cfg(feature = "native-extract")]
 pub mod extract;

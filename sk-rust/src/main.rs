@@ -205,6 +205,13 @@ fn resolve_group(group: &str, args: &[String]) -> (String, Vec<String>) {
 }
 
 fn main() -> ExitCode {
+    if std::env::var("SK_WRITER_BROKER_DAEMON")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return db::writer_broker::run_broker_daemon();
+    }
+
     let start = Instant::now();
 
     let cli = Cli::parse();

@@ -21,7 +21,21 @@ pub fn open_writable_with_busy_timeout(
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(Duration::from_millis(busy_timeout_ms))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    // Issue #572: WAL + synchronous=NORMAL + wal_autocheckpoint=1000 cuts
+    // multi-agent SQLITE_BUSY contention without giving up crash durability.
+    //  - journal_mode=WAL       : readers don't block writers; writers don't
+    //                             block readers.
+    //  - synchronous=NORMAL     : safe-by-default for WAL (recommended by
+    //                             SQLite docs); fewer fsyncs than FULL,
+    //                             still durable across application crashes.
+    //  - wal_autocheckpoint=1000: bound WAL growth so a single hot writer
+    //                             doesn't starve readers waiting for a
+    //                             checkpoint.
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;\
+         PRAGMA synchronous=NORMAL;\
+         PRAGMA wal_autocheckpoint=1000;",
+    )?;
     Ok(conn)
 }
 
@@ -447,6 +461,52 @@ mod tests {
             learn_id, extract_id,
             "extract-path stable_id must differ from learn-path (topic_key drift fix)"
         );
+    }
+
+    /// Issue #572: every writer open must enable WAL, set
+    /// synchronous=NORMAL, and set wal_autocheckpoint=1000. The default
+    /// busy timeout must also be honored.
+    #[test]
+    fn open_writable_applies_contention_pragmas() {
+        // Use a tempfile in the OS temp dir so we don't touch
+        // ~/.copilot/session-state.
+        let tmp = std::env::temp_dir().join(format!(
+            "sk_pragma_check_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Create an empty DB file first so OPEN_READ_WRITE succeeds.
+        Connection::open(&tmp).unwrap();
+
+        let conn = open_writable_with_busy_timeout(Some(tmp.clone()), 1_234).unwrap();
+
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode;", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            journal_mode.to_ascii_lowercase(),
+            "wal",
+            "writer must enable WAL journal mode"
+        );
+
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous;", [], |r| r.get(0))
+            .unwrap();
+        // SQLite reports synchronous=NORMAL as the integer 1.
+        assert_eq!(synchronous, 1, "writer must set synchronous=NORMAL");
+
+        let autoch: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint;", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            autoch, 1000,
+            "writer must set wal_autocheckpoint=1000 (#572)"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

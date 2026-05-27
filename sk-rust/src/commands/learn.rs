@@ -16,7 +16,12 @@ use crate::hooks::audit::audit_log;
 use crate::redact::{redact, Finding, RedactMode, RedactionResult};
 
 const DEFAULT_LEARN_DB_BUSY_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS: u64 = 250;
+/// Issue #572: raise the default `sk learn` busy timeout from 250ms to
+/// 5000ms. With WAL + synchronous=NORMAL applied at every writer open,
+/// 5s comfortably absorbs concurrent writes from multi-agent sessions
+/// before falling through to the queue path. Override via
+/// `SK_LEARN_BUSY_TIMEOUT_MS`.
+const DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// Exit codes per issue #571.
 const EXIT_FLUSHED: u8 = 0;
@@ -324,6 +329,46 @@ fn execute_learn(mut params: LearnParams) -> ExitCode {
         facts_json,
     };
 
+    // -- Optional writer-broker path (#572) ----------------------------
+    // SK_WRITER_BROKER=1 routes every learn write through a long-lived
+    // broker so concurrent invocations serialize through one writer.
+    // Any broker failure other than BUSY falls back to the direct
+    // path below so the command never hard-fails on broker glitches.
+    if crate::db::writer_broker::broker_enabled() {
+        use crate::db::writer_broker::{write_via_broker, BrokerError};
+        match write_via_broker(&entry) {
+            Ok(entry_id) => {
+                return emit_flushed_outcome(&params, entry_id);
+            }
+            Err(BrokerError::Busy(msg)) => {
+                if queue_on_lock_enabled() {
+                    let detail = json!({"via": "broker", "reason": msg});
+                    audit_log(
+                        "learn.broker_fallback",
+                        "sk",
+                        "learn",
+                        "queued",
+                        &detail.to_string(),
+                    );
+                    return queue_learn_params(&params);
+                }
+                // Queue disabled — fall through to direct path which
+                // will surface the busy error to the user.
+            }
+            Err(other) => {
+                let detail = json!({"via": "broker", "reason": other.to_string()});
+                audit_log(
+                    "learn.broker_fallback",
+                    "sk",
+                    "learn",
+                    "fallback",
+                    &detail.to_string(),
+                );
+                // Fall through to direct-write path.
+            }
+        }
+    }
+
     let conn = match open_writable_with_busy_timeout(None, learn_write_busy_timeout_ms()) {
         Ok(c) => c,
         Err(e) => {
@@ -350,6 +395,14 @@ fn execute_learn(mut params: LearnParams) -> ExitCode {
     // Rebuild FTS index for this entry
     let _ = rebuild_fts(&conn, entry_id);
 
+    emit_flushed_outcome(&params, entry_id)
+}
+
+/// Emit the `learn.flushed` audit event and print the user-facing
+/// receipt for an entry that has been successfully persisted (either
+/// via the direct path or via the writer broker). Returns the
+/// `EXIT_FLUSHED` exit code so callers can `return` it directly.
+fn emit_flushed_outcome(params: &LearnParams, entry_id: i64) -> ExitCode {
     let stable_id = compute_stable_id("manual", &params.category, &params.title);
     let stable_id_short = format!("sha256:{}", &stable_id[..16]);
     // Audit detail uses the bare 16-char short form (no "sha256:" prefix)
@@ -357,7 +410,6 @@ fn execute_learn(mut params: LearnParams) -> ExitCode {
     // audit writer's 200-char detail truncation (#574).
     let stable_id_audit = stable_id[..16].to_string();
 
-    // -- Audit emit: learn.flushed (best-effort) -----------------------
     let detail = json!({
         "stable_id": stable_id_audit,
         "category": params.category,
@@ -371,7 +423,6 @@ fn execute_learn(mut params: LearnParams) -> ExitCode {
         &detail.to_string(),
     );
 
-    // -- Receipt -------------------------------------------------------
     match params.receipt {
         ReceiptMode::Text => {
             let loc = if !params.wing.is_empty() || !params.room.is_empty() {
@@ -709,6 +760,22 @@ fn auto_detect_room(tags: &str, title: &str, content: &str) -> String {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Issue #572: the default learn busy timeout was raised from 250ms
+    /// to 5000ms. The override env var must still win.
+    #[test]
+    fn default_learn_busy_timeout_is_5000ms() {
+        // Clear the override so we observe the compiled-in default.
+        // (queue-on-lock defaults to enabled.)
+        std::env::remove_var("SK_LEARN_BUSY_TIMEOUT_MS");
+        std::env::remove_var("SK_LEARN_QUEUE_ON_LOCK");
+        assert_eq!(learn_write_busy_timeout_ms(), 5_000);
+
+        // Override is honored.
+        std::env::set_var("SK_LEARN_BUSY_TIMEOUT_MS", "777");
+        assert_eq!(learn_write_busy_timeout_ms(), 777);
+        std::env::remove_var("SK_LEARN_BUSY_TIMEOUT_MS");
+    }
 
     #[test]
     fn facts_json_escapes_special_characters() {
