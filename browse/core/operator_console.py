@@ -1620,6 +1620,10 @@ def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
                                 exit_code = result.get("exitCode")
                                 if isinstance(exit_code, int):
                                     run_state["exit_code"] = exit_code
+                        # #569: mark run alive on stdout progress.
+                        from browse.core.run_health import mark_alive as _mark_alive
+
+                        _mark_alive(run_state)
                         # WBS-105: append a classified debug entry for each stream event,
                         # even when the public SSE buffer has reached its cap.
                         _d_idx = run_state.get("_debug_idx", 0)
@@ -1947,6 +1951,19 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
         ):
             blocked_by_active_run = True
         else:
+            # #559: compute admission decision before insertion.
+            from browse.core.run_queue import compute_admission as _compute_admission
+
+            queue_decision = _compute_admission(
+                _ACTIVE_RUNS,
+                _ACTIVE_RUNS_CAP,
+                _TERMINAL_RUN_STATUSES,
+            )
+            run["queue"] = queue_decision
+            # #569: initial health state for admitted runs.
+            if queue_decision.get("state") == "admitted":
+                run["health"] = "alive"
+                run["_health_last_stdout_at"] = time.monotonic()
             _ACTIVE_RUNS[run_id] = run
 
     if blocked_by_active_run:
@@ -1958,8 +1975,13 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
     session["updated_at"] = now
     _write_json(_sessions_dir() / f"{session_id}.json", session)
 
-    t = threading.Thread(target=_run_copilot_thread, args=(run_id, argv, cwd), daemon=True)
-    t.start()
+    # #559: only start a subprocess for admitted runs. Throttled/rejected
+    # runs are registered but have no process — their terminal state is
+    # on the queue axis only.
+    queue_state = (run.get("queue") or {}).get("state", "admitted")
+    if queue_state == "admitted":
+        t = threading.Thread(target=_run_copilot_thread, args=(run_id, argv, cwd), daemon=True)
+        t.start()
 
     return run_id
 
@@ -2001,6 +2023,9 @@ def make_stream_generator(session_id: str, run_id: str, resume_from: int = 0):
         last_idx = max(0, resume_from)
         deadline = time.monotonic() + _EXEC_TIMEOUT + 60
         poll_tick = 0.05
+        # Track queue/health state for SSE frame emission (#559, #569).
+        _last_queue_state: str | None = None
+        _last_health: str | None = None
 
         while not stop_event.is_set():
             if time.monotonic() > deadline:
@@ -2015,6 +2040,35 @@ def make_stream_generator(session_id: str, run_id: str, resume_from: int = 0):
                 if run is None:
                     yield json.dumps({"type": "status", "status": "unknown", "exit_code": None})
                     break
+
+            # ── #559: emit queue frame on state change ────────────────────────
+            queue_info = run.get("queue") if isinstance(run, dict) else None
+            if isinstance(queue_info, dict):
+                cur_qs = queue_info.get("state")
+                if cur_qs and cur_qs != _last_queue_state:
+                    _last_queue_state = cur_qs
+                    from browse.core.run_queue import public_queue_info as _pqi
+
+                    qf: dict = {"type": "queue", "run_id": run_id, "session_id": session_id}
+                    qf["state"] = cur_qs
+                    pub_q = _pqi(queue_info)
+                    if pub_q:
+                        for _k in ("position", "reason_code", "policy_limit"):
+                            if _k in pub_q:
+                                qf[_k] = pub_q[_k]
+                    yield json.dumps(qf)
+
+            # ── #569: emit health frame on state change ───────────────────────
+            cur_health = run.get("health") if isinstance(run, dict) else None
+            if cur_health and cur_health != _last_health:
+                _last_health = cur_health
+                from browse.core.run_health import public_health_detail as _phd
+
+                hf: dict = {"type": "health", "run_id": run_id, "session_id": session_id, "health": cur_health}
+                detail = _phd(run)
+                if detail:
+                    hf["detail"] = detail
+                yield json.dumps(hf)
 
             events = run.get("events")
             if not isinstance(events, list):

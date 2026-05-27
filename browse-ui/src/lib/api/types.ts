@@ -940,8 +940,37 @@ export interface CopilotStatusFrame {
   exit_code: number | null;
 }
 
+/** #559: SSE frame for queue/admission state changes. */
+export interface CopilotQueueFrame {
+  type: "queue";
+  run_id: string;
+  session_id: string;
+  state: "queued" | "admitted" | "throttled" | "rejected" | "cancelled";
+  position?: number;
+  reason_code?: string;
+  policy_limit?: number;
+}
+
+/** #569: SSE frame for run health state changes. */
+export interface CopilotHealthFrame {
+  type: "health";
+  run_id: string;
+  session_id: string;
+  health: "alive" | "stalled" | "orphaned" | "draining";
+  detail?: {
+    backpressure?: boolean;
+    retry_count?: number;
+    drain_budget_ms?: number;
+  };
+}
+
 /** Discriminated union of all SSE frame shapes from `/api/operator/sessions/{id}/stream`. */
-export type CopilotStreamFrame = CopilotEventFrame | CopilotRawFrame | CopilotStatusFrame;
+export type CopilotStreamFrame =
+  | CopilotEventFrame
+  | CopilotRawFrame
+  | CopilotStatusFrame
+  | CopilotQueueFrame
+  | CopilotHealthFrame;
 
 /**
  * Safe metadata envelope for an adopted CLI session (issue #555).
@@ -1130,6 +1159,44 @@ export interface OperatorRunInfo {
   files?: RunFileMetadata[];
   /** Whether this run used `--resume` to carry prior conversation context. Optional for backward compatibility. */
   resume_used?: boolean;
+  /** #563: who cancelled the run. */
+  cancelled_by?: string;
+  /** #559: queue/admission axis. */
+  queue?: OperatorQueueState | null;
+  /** #569: run health axis. */
+  health?: "alive" | "stalled" | "orphaned" | "draining" | null;
+}
+
+/** #559: Queue state on a run. */
+export interface OperatorQueueState {
+  state: "queued" | "admitted" | "throttled" | "rejected" | "cancelled";
+  position?: number;
+  reason_code?: string;
+  policy_limit?: number;
+}
+
+/** #559: A single entry from `GET /api/operator/queue`. */
+export interface OperatorQueueEntry {
+  run_id: string;
+  session_id: string;
+  state: "queued" | "admitted" | "throttled" | "rejected" | "cancelled";
+  created_at?: string | null;
+  position?: number;
+  reason_code?: string;
+  policy_limit?: number;
+}
+
+/** #559: Response from `GET /api/operator/queue`. */
+export interface OperatorQueueResponse {
+  entries: OperatorQueueEntry[];
+  count: number;
+}
+
+/** #559: Response from `POST /api/operator/queue/{run_id}/cancel`. */
+export interface QueueCancelResponse {
+  run_id: string;
+  queue: OperatorQueueState | null;
+  cancelled: boolean;
 }
 
 /** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */

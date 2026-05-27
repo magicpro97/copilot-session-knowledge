@@ -920,11 +920,39 @@ export const copilotStatusFrameSchema = z.object({
   exit_code: z.number().nullable(),
 });
 
+/** #559: SSE frame for queue/admission state changes. */
+export const copilotQueueFrameSchema = z.object({
+  type: z.literal("queue"),
+  run_id: z.string(),
+  session_id: z.string(),
+  state: z.enum(["queued", "admitted", "throttled", "rejected", "cancelled"]),
+  position: z.number().int().optional(),
+  reason_code: z.string().optional(),
+  policy_limit: z.number().int().optional(),
+});
+
+/** #569: SSE frame for run health state changes. */
+export const copilotHealthFrameSchema = z.object({
+  type: z.literal("health"),
+  run_id: z.string(),
+  session_id: z.string(),
+  health: z.enum(["alive", "stalled", "orphaned", "draining"]),
+  detail: z
+    .object({
+      backpressure: z.boolean().optional(),
+      retry_count: z.number().int().optional(),
+      drain_budget_ms: z.number().int().optional(),
+    })
+    .optional(),
+});
+
 /** Union of all SSE frame shapes. */
 export const copilotStreamFrameSchema = z.union([
   copilotEventFrameSchema,
   copilotRawFrameSchema,
   copilotStatusFrameSchema,
+  copilotQueueFrameSchema,
+  copilotHealthFrameSchema,
 ]);
 
 /** Operator session as returned by create/list/get endpoints. */
@@ -1090,6 +1118,18 @@ export const operatorRunInfoSchema = z.object({
    * `"operator"`).  Absent on runs that completed normally.
    */
   cancelled_by: z.string().optional(),
+  /** #559: queue/admission axis (orthogonal to status). */
+  queue: z
+    .object({
+      state: z.enum(["queued", "admitted", "throttled", "rejected", "cancelled"]),
+      position: z.number().int().optional(),
+      reason_code: z.string().optional(),
+      policy_limit: z.number().int().optional(),
+    })
+    .nullable()
+    .optional(),
+  /** #569: run health axis (orthogonal to status and queue). */
+  health: z.enum(["alive", "stalled", "orphaned", "draining"]).nullable().optional(),
 });
 
 /**
@@ -1147,6 +1187,37 @@ export const operatorActiveRunSummarySchema = z
 export const operatorActiveRunsResponseSchema = z.object({
   runs: z.array(operatorActiveRunSummarySchema),
   count: z.number().int().nonnegative(),
+});
+
+/** #559: A single queue entry from `GET /api/operator/queue`. */
+export const operatorQueueEntrySchema = z.object({
+  run_id: z.string(),
+  session_id: z.string(),
+  state: z.enum(["queued", "admitted", "throttled", "rejected", "cancelled"]),
+  created_at: z.string().nullable().optional(),
+  position: z.number().int().optional(),
+  reason_code: z.string().optional(),
+  policy_limit: z.number().int().optional(),
+});
+
+/** #559: Response from `GET /api/operator/queue`. */
+export const operatorQueueResponseSchema = z.object({
+  entries: z.array(operatorQueueEntrySchema),
+  count: z.number().int().nonnegative(),
+});
+
+/** #559: Response from `POST /api/operator/queue/{run_id}/cancel`. */
+export const queueCancelResponseSchema = z.object({
+  run_id: z.string(),
+  queue: z
+    .object({
+      state: z.string(),
+      position: z.number().int().optional(),
+      reason_code: z.string().optional(),
+      policy_limit: z.number().int().optional(),
+    })
+    .nullable(),
+  cancelled: z.boolean(),
 });
 
 /** Response from `GET /api/operator/suggest?q=<prefix>`. */

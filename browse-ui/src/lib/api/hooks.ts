@@ -41,6 +41,7 @@ import {
   operatorRunsResponseSchema,
   cancelRunResponseSchema,
   operatorActiveRunsResponseSchema,
+  operatorQueueResponseSchema,
   pathSuggestResponseSchema,
   filePreviewResponseSchema,
   fileDiffResponseSchema,
@@ -97,6 +98,7 @@ import type {
   OperatorRunStatus,
   OperatorRunsResponse,
   OperatorActiveRunsResponse,
+  OperatorQueueResponse,
   PathSuggestResponse,
   FilePreviewResponse,
   FileDiffResponse,
@@ -187,6 +189,7 @@ export const queryKeys = {
   operatorRuns: (sessionId: string, hostId = LOCAL_HOST_ID) =>
     ["operator-runs", hostId, sessionId] as const,
   operatorActiveRuns: (hostId = LOCAL_HOST_ID) => ["operator-active-runs", hostId] as const,
+  operatorQueue: (hostId = LOCAL_HOST_ID) => ["operator-queue", hostId] as const,
   operatorSuggest: (q: string, hidden = false, hostId = LOCAL_HOST_ID) =>
     ["operator-suggest", hostId, q, hidden] as const,
   operatorPreview: (path: string, hostId = LOCAL_HOST_ID) =>
@@ -887,6 +890,39 @@ export function useOperatorActiveRuns(enabled = true, host: HostProfile = LOCAL_
       } catch (err) {
         if (err instanceof Error && err.message.includes("404")) {
           return { runs: [], count: 0 };
+        }
+        throw err;
+      }
+    },
+  });
+}
+
+/**
+ * #559: Fetch the run admission queue (`GET /api/operator/queue`).
+ * Gated by `run_queue` capability. Normalizes 404 to an empty list
+ * so older backends don't break the UI.
+ */
+export function useOperatorQueue(enabled = true, host: HostProfile = LOCAL_HOST) {
+  return useQuery({
+    queryKey: queryKeys.operatorQueue(host.id),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    refetchOnMount: "always",
+    enabled,
+    retry: (failureCount, error) => {
+      if (error instanceof Error && error.message.includes("404")) return false;
+      return failureCount < 2;
+    },
+    queryFn: async (): Promise<OperatorQueueResponse> => {
+      try {
+        const data = await hostFetch<OperatorQueueResponse>(
+          withLeadingSlash("/api/operator/queue"),
+          host
+        );
+        return operatorQueueResponseSchema.parse(data);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("404")) {
+          return { entries: [], count: 0 };
         }
         throw err;
       }

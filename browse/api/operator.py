@@ -39,6 +39,9 @@ if os.name == "nt":
 
 from browse.api._common import json_error, json_ok
 from browse.core.operator_console import (
+    _ACTIVE_RUNS,
+    _RUNS_LOCK,
+    _TERMINAL_RUN_STATUSES,
     _has_active_run,
     adopt_cli_session,
     attach_cli_metadata,
@@ -65,6 +68,14 @@ from browse.core.operator_console import (
     update_session,
 )
 from browse.core.registry import route
+from browse.core.run_health import (
+    public_health_detail,
+)
+from browse.core.run_queue import (
+    cancel_queued,
+    list_queue,
+    public_queue_info,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -79,6 +90,9 @@ _PRIVATE_RUN_KEYS = frozenset(
         "_debug_idx",
         "_debug_seq",
         "_debug_events_truncated",
+        "_health_last_stdout_at",
+        "_orphan_checked_at",
+        "_drain_budget_ms",
     }
 )
 
@@ -104,10 +118,18 @@ def _str_param(params: dict, key: str, default: str = "", max_len: int = 256) ->
 
 
 def _public_run_info(run: dict | None) -> dict | None:
-    """Strip server-only run metadata from public API responses."""
+    """Strip server-only run metadata from public API responses.
+
+    Sanitizes both top-level private keys and nested dicts that have their own
+    public projection (e.g. ``queue`` via ``public_queue_info``).
+    """
     if not isinstance(run, dict):
         return None
-    return {key: value for key, value in run.items() if key not in _PRIVATE_RUN_KEYS}
+    out = {key: value for key, value in run.items() if key not in _PRIVATE_RUN_KEYS}
+    # Sanitize nested queue dict to strip *_monotonic / _ prefixed internals.
+    if "queue" in out:
+        out["queue"] = public_queue_info(out["queue"])
+    return out
 
 
 def _parse_attachments(body: dict) -> tuple:
@@ -222,6 +244,8 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
                 "local_browser_fallback",
                 "runs_workbench",
                 "run_cancel",
+                "run_queue",
+                "run_health",
             ],
         }
     )
@@ -587,6 +611,72 @@ def handle_list_active_runs(db, params, token, nonce) -> tuple:
     """
     runs = list_active_runs_summary()
     return json_ok({"runs": runs, "count": len(runs)})
+
+
+# ── Issue #559: queue/admission endpoints ─────────────────────────────────────
+
+
+@route("/api/operator/queue", methods=["GET"])
+def handle_queue(db, params, token, nonce) -> tuple:
+    """GET /api/operator/queue — read-only queue summary.
+
+    Returns public-safe queue entries from the in-memory run registry.
+    Static-slot callers may read this endpoint (non-mutating).
+
+    Response shape:
+      ``{"entries": [...], "count": N}``
+    """
+    entries = list_queue(_ACTIVE_RUNS, _RUNS_LOCK)
+    return json_ok({"entries": entries, "count": len(entries)})
+
+
+@route("/api/operator/queue/{run_id}/cancel", methods=["POST"])
+def handle_queue_cancel(db, params, token, nonce, run_id: str = "") -> tuple:
+    """POST /api/operator/queue/{run_id}/cancel — cancel a queued (pre-admission) run.
+
+    Only cancels runs whose queue.state is queued or throttled. Admitted runs
+    must be cancelled via the per-run cancel endpoint (#563).
+
+    Auth & ACL:
+      * Standard operator auth (Bearer / cookie).
+      * Static-slot tokens are blocked with 403 (mutating endpoint).
+
+    Errors:
+      * ``RUN_NOT_FOUND`` (404) — run_id not in the registry.
+      * ``NOT_QUEUED`` (409) — run is admitted; use per-run cancel instead.
+      * ``STATIC_READONLY`` (403) — static slot cannot mutate.
+
+    Response (200):
+      ``{"run_id": "...", "queue": {...}, "cancelled": true}``
+    """
+    # Static-slot 403 guard (mutating endpoint).
+    session_kind = (params.get("_session_kind", [""])[0] or "").strip()
+    if session_kind == "static":
+        return json_error("static slot is read-only", "STATIC_READONLY", 403)
+
+    if not run_id or not run_id.strip():
+        return json_error("run_id is required", "BAD_ID", 400)
+
+    queue_snapshot, err = cancel_queued(_ACTIVE_RUNS, _RUNS_LOCK, run_id.strip())
+
+    if err == "RUN_NOT_FOUND":
+        return json_error("run not found", "RUN_NOT_FOUND", 404)
+    if err == "NOT_QUEUED":
+        return json_error(
+            "run is admitted; use per-run cancel endpoint",
+            "NOT_QUEUED",
+            409,
+        )
+    if queue_snapshot is None:
+        return json_error("failed to cancel queued run", "CANCEL_FAILED", 500)
+
+    return json_ok(
+        {
+            "run_id": run_id.strip(),
+            "queue": public_queue_info(queue_snapshot),
+            "cancelled": True,
+        }
+    )
 
 
 # ── Model catalog ─────────────────────────────────────────────────────────────

@@ -55,8 +55,8 @@ Tests:
   SEC34: GET with BROWSE_TRUSTED_PROXY=1 and forwarded HTTPS → sets Secure cookie
 """
 
-import http.client
 import hashlib
+import http.client
 import json
 import os
 import sqlite3
@@ -115,16 +115,16 @@ from browse.core.operator_console import (  # noqa: E402
     get_available_models,
     get_run_status,
     get_session,
+    launch_local_browser,
     list_active_runs_summary,
     list_runs,
     list_sessions,
-    normalize_model_id,
     make_stream_generator,
+    normalize_model_id,
     preview_diff,
     preview_file,
     probe_available_models,
     redact_secrets,
-    launch_local_browser,
     scan_installed_browsers,
     start_run,
     suggest_paths,
@@ -865,6 +865,7 @@ def test_oc45_list_runs_includes_running_in_memory_run_for_reload_reconnect():
 
 def test_oc29_persist_run_evicts_terminal_in_memory_entry():
     import uuid
+
     from browse.core.operator_console import _ACTIVE_RUNS_SSE_GRACE
 
     session = create_session("history-evict")
@@ -1781,7 +1782,10 @@ def test_oc61_scan_installed_browsers_contract():
         test("OC61: browser entry has name", isinstance(browser.get("name"), str) and bool(browser.get("name")))
         test("OC61: installed is bool", isinstance(browser.get("installed"), bool))
         test("OC61: supported is bool", isinstance(browser.get("supported"), bool))
-        test("OC61: reason is safe text", isinstance(browser.get("reason"), str) and "token=" not in browser.get("reason", ""))
+        test(
+            "OC61: reason is safe text",
+            isinstance(browser.get("reason"), str) and "token=" not in browser.get("reason", ""),
+        )
 
 
 def test_oc62_safari_reported_unsupported():
@@ -1898,8 +1902,7 @@ def test_oc65_list_active_runs_summary_excludes_terminal_and_private_fields():
             test("OC65: health passes through", item.get("health") == "ok")
             test("OC65: queue passes through", isinstance(item.get("queue"), dict))
             # Strict allowlist enforcement
-            forbidden = ("prompt", "events", "proc", "debug_events",
-                         "_debug_idx", "_debug_seq", "attachments", "files")
+            forbidden = ("prompt", "events", "proc", "debug_events", "_debug_idx", "_debug_seq", "attachments", "files")
             for key in forbidden:
                 test(f"OC65: forbidden key '{key}' absent", key not in item)
     finally:
@@ -1971,26 +1974,29 @@ def run_workbench_api_tests():
         runs = data.get("runs")
         count = data.get("count")
         test("API1564-2: runs is a list", isinstance(runs, list))
-        test("API1564-3: count matches list length",
-             isinstance(count, int) and isinstance(runs, list) and count == len(runs))
+        test(
+            "API1564-3: count matches list length",
+            isinstance(count, int) and isinstance(runs, list) and count == len(runs),
+        )
         test("API1564-4: only active run returned", isinstance(runs, list) and len(runs) == 1)
         if runs:
             r = runs[0]
-            test("API1564-5: response carries summary fields",
-                 r.get("id") == "33333333-3333-3333-3333-333333333333"
-                 and r.get("session_id") == active_id
-                 and r.get("status") == "running")
+            test(
+                "API1564-5: response carries summary fields",
+                r.get("id") == "33333333-3333-3333-3333-333333333333"
+                and r.get("session_id") == active_id
+                and r.get("status") == "running",
+            )
             test("API1564-6: session_label populated", r.get("session_label") == "workbench-api-active")
-            for key in ("prompt", "events", "proc", "debug_events", "_debug_idx",
-                        "_debug_seq", "attachments", "files"):
+            for key in ("prompt", "events", "proc", "debug_events", "_debug_idx", "_debug_seq", "attachments", "files"):
                 test(f"API1564-7: forbidden field '{key}' absent", key not in r)
         # Serialized payload must not contain leaked prompt content.
         raw_body = json.dumps(data)
-        test("API1564-8: prompt content not leaked in payload",
-             "DO-NOT-LEAK" not in raw_body)
+        test("API1564-8: prompt content not leaked in payload", "DO-NOT-LEAK" not in raw_body)
 
         # Static-slot readonly token may call this read-only endpoint.
         from browse.core.pairing import create_static_slot, terminate_static_slot
+
         terminate_static_slot()
         slot = create_static_slot(f"http://127.0.0.1:{port}")
         try:
@@ -2056,8 +2062,7 @@ def test_oc69_cancel_run_unknown_session():
         "11111111-1111-4111-8111-111111111111",
         "22222222-2222-4222-8222-222222222222",
     )
-    test("OC69: unknown session → SESSION_NOT_FOUND",
-         info is None and terminal is False and err == "SESSION_NOT_FOUND")
+    test("OC69: unknown session → SESSION_NOT_FOUND", info is None and terminal is False and err == "SESSION_NOT_FOUND")
 
 
 def test_oc70_cancel_run_unknown_run():
@@ -2065,8 +2070,7 @@ def test_oc70_cancel_run_unknown_run():
     sess = create_session("cancel-unknown-run", workspace=str(Path.home()))
     try:
         info, terminal, err = cancel_run(sess["id"], "55555555-5555-4555-8555-555555555555")
-        test("OC70: unknown run → RUN_NOT_FOUND",
-             info is None and terminal is False and err == "RUN_NOT_FOUND")
+        test("OC70: unknown run → RUN_NOT_FOUND", info is None and terminal is False and err == "RUN_NOT_FOUND")
     finally:
         delete_session(sess["id"])
 
@@ -2091,8 +2095,7 @@ def test_oc71_cancel_run_wrong_session_ownership_is_not_found():
                 "proc": None,
             }
         info, terminal, err = cancel_run(sess_b["id"], run_id)
-        test("OC71: wrong owner → RUN_NOT_FOUND",
-             info is None and terminal is False and err == "RUN_NOT_FOUND")
+        test("OC71: wrong owner → RUN_NOT_FOUND", info is None and terminal is False and err == "RUN_NOT_FOUND")
         # Defence in depth: the original run must NOT have been mutated.
         with _RUNS_LOCK:
             still_running = _ACTIVE_RUNS.get(run_id, {}).get("status")
@@ -2123,12 +2126,14 @@ def test_oc72_cancel_run_already_terminal_idempotent():
                 "proc": None,
             }
         info, terminal, err = cancel_run(sess["id"], run_id)
-        test("OC72: terminal run → ok, already_terminal=True",
-             err is None and terminal is True and isinstance(info, dict))
-        test("OC72: status preserved (not overwritten)",
-             isinstance(info, dict) and info.get("status") == "done")
-        test("OC72: no cancelled_by added to terminal-already run",
-             isinstance(info, dict) and "cancelled_by" not in info)
+        test(
+            "OC72: terminal run → ok, already_terminal=True",
+            err is None and terminal is True and isinstance(info, dict),
+        )
+        test("OC72: status preserved (not overwritten)", isinstance(info, dict) and info.get("status") == "done")
+        test(
+            "OC72: no cancelled_by added to terminal-already run", isinstance(info, dict) and "cancelled_by" not in info
+        )
     finally:
         with _RUNS_LOCK:
             _ACTIVE_RUNS.pop(run_id, None)
@@ -2156,12 +2161,12 @@ def test_oc73_cancel_run_marks_active_run_cancelled():
             }
         info, terminal, err = cancel_run(sess["id"], run_id)
         test("OC73: active run cancel → ok", err is None and terminal is False)
-        test("OC73: returned info has cancelled status",
-             isinstance(info, dict) and info.get("status") == "cancelled")
-        test("OC73: returned info has cancelled_by=operator",
-             isinstance(info, dict) and info.get("cancelled_by") == "operator")
-        test("OC73: returned info has finished_at populated",
-             isinstance(info, dict) and bool(info.get("finished_at")))
+        test("OC73: returned info has cancelled status", isinstance(info, dict) and info.get("status") == "cancelled")
+        test(
+            "OC73: returned info has cancelled_by=operator",
+            isinstance(info, dict) and info.get("cancelled_by") == "operator",
+        )
+        test("OC73: returned info has finished_at populated", isinstance(info, dict) and bool(info.get("finished_at")))
         test("OC73: SIGTERM (proc.terminate) was sent", fake.terminated is True)
         test("OC73: SIGKILL not needed when SIGTERM succeeds", fake.killed is False)
         # Registry must reflect the cancelled transition.
@@ -2170,8 +2175,7 @@ def test_oc73_cancel_run_marks_active_run_cancelled():
         test("OC73: registry status flipped to cancelled", reg.get("status") == "cancelled")
         test("OC73: registry cancelled_by populated", reg.get("cancelled_by") == "operator")
         # Public payload must NOT leak the proc handle.
-        test("OC73: returned info strips proc handle",
-             isinstance(info, dict) and "proc" not in info)
+        test("OC73: returned info strips proc handle", isinstance(info, dict) and "proc" not in info)
     finally:
         with _RUNS_LOCK:
             _ACTIVE_RUNS.pop(run_id, None)
@@ -2231,14 +2235,19 @@ def run_cancel_run_api_tests():
         test("API563-1: active cancel returns 200", resp.status == 200)
         run_field = data.get("run") if isinstance(data, dict) else None
         test("API563-1: response has run object", isinstance(run_field, dict))
-        test("API563-1: status reported as cancelled",
-             isinstance(run_field, dict) and run_field.get("status") == "cancelled")
-        test("API563-1: cancelled_by=operator",
-             isinstance(run_field, dict) and run_field.get("cancelled_by") == "operator")
-        test("API563-1: already_terminal=false on first cancel",
-             isinstance(data, dict) and data.get("already_terminal") is False)
-        test("API563-1: proc handle absent from payload",
-             isinstance(run_field, dict) and "proc" not in run_field)
+        test(
+            "API563-1: status reported as cancelled",
+            isinstance(run_field, dict) and run_field.get("status") == "cancelled",
+        )
+        test(
+            "API563-1: cancelled_by=operator",
+            isinstance(run_field, dict) and run_field.get("cancelled_by") == "operator",
+        )
+        test(
+            "API563-1: already_terminal=false on first cancel",
+            isinstance(data, dict) and data.get("already_terminal") is False,
+        )
+        test("API563-1: proc handle absent from payload", isinstance(run_field, dict) and "proc" not in run_field)
 
         # ── API563-3: cancelling an already-terminal run is idempotent ──
         # (Run before API563-2 retry because eviction can prune injected
@@ -2246,17 +2255,21 @@ def run_cancel_run_api_tests():
         resp = _post(port, f"/api/operator/sessions/{sid}/runs/{run_id_terminal}/cancel")
         data = _read_json(resp)
         test("API563-3: terminal run cancel returns 200", resp.status == 200)
-        test("API563-3: code=RUN_ALREADY_TERMINAL",
-             isinstance(data, dict) and data.get("code") == "RUN_ALREADY_TERMINAL")
+        test(
+            "API563-3: code=RUN_ALREADY_TERMINAL", isinstance(data, dict) and data.get("code") == "RUN_ALREADY_TERMINAL"
+        )
 
         # ── API563-2: second cancel is idempotent (RUN_ALREADY_TERMINAL) ─
         resp = _post(port, f"/api/operator/sessions/{sid}/runs/{run_id_active}/cancel")
         data = _read_json(resp)
         test("API563-2: idempotent retry returns 200", resp.status == 200)
-        test("API563-2: code=RUN_ALREADY_TERMINAL on retry",
-             isinstance(data, dict) and data.get("code") == "RUN_ALREADY_TERMINAL")
-        test("API563-2: already_terminal=true on retry",
-             isinstance(data, dict) and data.get("already_terminal") is True)
+        test(
+            "API563-2: code=RUN_ALREADY_TERMINAL on retry",
+            isinstance(data, dict) and data.get("code") == "RUN_ALREADY_TERMINAL",
+        )
+        test(
+            "API563-2: already_terminal=true on retry", isinstance(data, dict) and data.get("already_terminal") is True
+        )
 
         # ── API563-4: unknown run → 404 RUN_NOT_FOUND ────────────────────
         resp = _post(
@@ -2265,26 +2278,24 @@ def run_cancel_run_api_tests():
         )
         data = _read_json(resp)
         test("API563-4: unknown run → 404", resp.status == 404)
-        test("API563-4: error code RUN_NOT_FOUND",
-             isinstance(data, dict) and data.get("code") == "RUN_NOT_FOUND")
+        test("API563-4: error code RUN_NOT_FOUND", isinstance(data, dict) and data.get("code") == "RUN_NOT_FOUND")
 
         # ── API563-5: bad UUID → 400 BAD_ID ──────────────────────────────
         resp = _post(port, f"/api/operator/sessions/{sid}/runs/not-a-uuid/cancel")
         data = _read_json(resp)
         test("API563-5: bad run id → 400", resp.status == 400)
-        test("API563-5: error code BAD_ID",
-             isinstance(data, dict) and data.get("code") == "BAD_ID")
+        test("API563-5: error code BAD_ID", isinstance(data, dict) and data.get("code") == "BAD_ID")
 
         # ── API563-6: unknown session → 404 SESSION_NOT_FOUND ────────────
         resp = _post(
             port,
-            "/api/operator/sessions/cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-            f"/runs/{run_id_terminal}/cancel",
+            f"/api/operator/sessions/cccccccc-cccc-4ccc-8ccc-cccccccccccc/runs/{run_id_terminal}/cancel",
         )
         data = _read_json(resp)
         test("API563-6: unknown session → 404", resp.status == 404)
-        test("API563-6: error code SESSION_NOT_FOUND",
-             isinstance(data, dict) and data.get("code") == "SESSION_NOT_FOUND")
+        test(
+            "API563-6: error code SESSION_NOT_FOUND", isinstance(data, dict) and data.get("code") == "SESSION_NOT_FOUND"
+        )
 
         # ── API563-7: cross-session ownership leaks nothing ──────────────
         sess2 = create_session("cancel-api-other", workspace=str(Path.home()))
@@ -2295,8 +2306,10 @@ def run_cancel_run_api_tests():
             )
             data = _read_json(resp)
             test("API563-7: wrong-owner cancel → 404", resp.status == 404)
-            test("API563-7: code RUN_NOT_FOUND (no cross-session leak)",
-                 isinstance(data, dict) and data.get("code") == "RUN_NOT_FOUND")
+            test(
+                "API563-7: code RUN_NOT_FOUND (no cross-session leak)",
+                isinstance(data, dict) and data.get("code") == "RUN_NOT_FOUND",
+            )
             raw = json.dumps(data)
             test("API563-7: prompt content not leaked", "ALREADY-DONE" not in raw)
         finally:
@@ -2324,8 +2337,10 @@ def run_cancel_run_api_tests():
             )
             data = _read_json(resp)
             test("API563-9: static-slot cancel → 403", resp.status == 403)
-            test("API563-9: code READONLY_STATIC_SESSION",
-                 isinstance(data, dict) and data.get("code") == "READONLY_STATIC_SESSION")
+            test(
+                "API563-9: code READONLY_STATIC_SESSION",
+                isinstance(data, dict) and data.get("code") == "READONLY_STATIC_SESSION",
+            )
         finally:
             terminate_static_slot()
     finally:
@@ -2337,6 +2352,249 @@ def run_cancel_run_api_tests():
         except Exception:
             pass
         server.shutdown()
+
+
+def test_oc75_queue_health_capabilities_advertised():
+    """OC75: 'run_queue' and 'run_health' in /capabilities supported_features."""
+    from browse.api.operator import handle_capabilities
+
+    body, _ct, _status = handle_capabilities(None, {}, None, None)
+    data = json.loads(body)
+    features = data.get("supported_features", [])
+    test("OC75: run_queue in supported_features", "run_queue" in features)
+    test("OC75: run_health in supported_features", "run_health" in features)
+
+
+def test_oc76_queue_endpoint_returns_entries():
+    """OC76: GET /api/operator/queue returns entries from _ACTIVE_RUNS."""
+    from browse.api.operator import handle_queue
+
+    run_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    sess_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS[run_id] = {
+            "id": run_id,
+            "session_id": sess_id,
+            "prompt": "hello",
+            "status": "running",
+            "started_at": "2025-06-01T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "queue": {"state": "admitted", "position": 0},
+            "health": "alive",
+        }
+    try:
+        body, _ct, status = handle_queue(None, {}, None, None)
+        data = json.loads(body)
+        test("OC76: queue endpoint returns 200", status == 200)
+        test("OC76: entries is a list", isinstance(data.get("entries"), list))
+        test("OC76: count >= 1", data.get("count", 0) >= 1)
+        # Check that our run is present
+        ids = [e.get("run_id") for e in data.get("entries", [])]
+        test("OC76: test run_id present in entries", run_id in ids)
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+
+
+def test_oc77_queue_cancel_endpoint_basics():
+    """OC77: POST /api/operator/queue/{run_id}/cancel basic flow."""
+    from browse.api.operator import handle_queue_cancel
+
+    run_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    sess_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS[run_id] = {
+            "id": run_id,
+            "session_id": sess_id,
+            "prompt": "queued-test",
+            "status": "queued",
+            "started_at": "2025-06-01T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "queue": {"state": "queued", "position": 1},
+            "health": None,
+        }
+    try:
+        # Cancel a queued run
+        body, _ct, status = handle_queue_cancel(None, {}, None, None, run_id=run_id)
+        data = json.loads(body)
+        test("OC77: queue cancel returns 200", status == 200)
+        test("OC77: cancelled=true", data.get("cancelled") is True)
+        test("OC77: run_id in response", data.get("run_id") == run_id)
+
+        # Verify state changed in registry
+        with _RUNS_LOCK:
+            run = _ACTIVE_RUNS.get(run_id)
+        q_state = run.get("queue", {}).get("state") if run else None
+        test("OC77: queue state=cancelled in registry", q_state == "cancelled")
+
+        # Cancel again → idempotent (already terminal on queue axis), still 200
+        body2, _ct2, status2 = handle_queue_cancel(None, {}, None, None, run_id=run_id)
+        test("OC77: re-cancel idempotent returns 200", status2 == 200)
+
+        # Run that is admitted → NOT_QUEUED (409)
+        admitted_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[admitted_id] = {
+                "id": admitted_id,
+                "session_id": sess_id,
+                "prompt": "admitted-test",
+                "status": "running",
+                "started_at": "2025-06-01T00:00:00+00:00",
+                "finished_at": None,
+                "exit_code": None,
+                "queue": {"state": "admitted", "position": 0},
+                "health": "alive",
+            }
+        body3, _ct3, status3 = handle_queue_cancel(None, {}, None, None, run_id=admitted_id)
+        test("OC77: admitted run → 409 NOT_QUEUED", status3 == 409)
+
+        # Unknown run → 404
+        body4, _ct4, status4 = handle_queue_cancel(None, {}, None, None, run_id="11111111-1111-4111-8111-111111111111")
+        test("OC77: unknown run → 404", status4 == 404)
+
+        # Static-slot → 403
+        body5, _ct5, status5 = handle_queue_cancel(None, {"_session_kind": ["static"]}, None, None, run_id=run_id)
+        test("OC77: static-slot → 403", status5 == 403)
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+            _ACTIVE_RUNS.pop(admitted_id, None)
+
+
+def test_oc78_queue_cancel_throttled_and_rejected():
+    """OC78: cancel_queued actually transitions throttled/rejected → cancelled."""
+    from browse.api.operator import handle_queue_cancel
+
+    throttled_id = "cccccccc-cccc-4ccc-8ccc-cccccccccc01"
+    rejected_id = "cccccccc-cccc-4ccc-8ccc-cccccccccc02"
+    admitted_id = "cccccccc-cccc-4ccc-8ccc-cccccccccc03"
+    sess_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS[throttled_id] = {
+            "id": throttled_id,
+            "session_id": sess_id,
+            "prompt": "throttled-test",
+            "status": "running",
+            "started_at": "2025-06-01T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "queue": {"state": "throttled", "position": 2, "reason_code": "CONCURRENCY_LIMIT"},
+            "health": None,
+        }
+        _ACTIVE_RUNS[rejected_id] = {
+            "id": rejected_id,
+            "session_id": sess_id,
+            "prompt": "rejected-test",
+            "status": "running",
+            "started_at": "2025-06-01T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "queue": {"state": "rejected", "reason_code": "REGISTRY_FULL"},
+            "health": None,
+        }
+        _ACTIVE_RUNS[admitted_id] = {
+            "id": admitted_id,
+            "session_id": sess_id,
+            "prompt": "admitted-test",
+            "status": "running",
+            "started_at": "2025-06-01T00:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "queue": {"state": "admitted"},
+            "health": "alive",
+        }
+    try:
+        # Cancel throttled run → should succeed and actually change state
+        body, _ct, status = handle_queue_cancel(None, {}, None, None, run_id=throttled_id)
+        data = json.loads(body)
+        test("OC78: throttled cancel returns 200", status == 200)
+        test("OC78: throttled cancelled=true", data.get("cancelled") is True)
+        with _RUNS_LOCK:
+            run = _ACTIVE_RUNS.get(throttled_id)
+        test("OC78: throttled queue.state→cancelled", run.get("queue", {}).get("state") == "cancelled")
+        test("OC78: throttled status→cancelled", run.get("status") == "cancelled")
+        test("OC78: throttled cancelled_by=operator", run.get("cancelled_by") == "operator")
+
+        # Cancel rejected run → should succeed and actually change state
+        body2, _ct2, status2 = handle_queue_cancel(None, {}, None, None, run_id=rejected_id)
+        data2 = json.loads(body2)
+        test("OC78: rejected cancel returns 200", status2 == 200)
+        test("OC78: rejected cancelled=true", data2.get("cancelled") is True)
+        with _RUNS_LOCK:
+            run2 = _ACTIVE_RUNS.get(rejected_id)
+        test("OC78: rejected queue.state→cancelled", run2.get("queue", {}).get("state") == "cancelled")
+        test("OC78: rejected status→cancelled", run2.get("status") == "cancelled")
+        test("OC78: rejected cancelled_by=operator", run2.get("cancelled_by") == "operator")
+
+        # Admitted run → still returns NOT_QUEUED / 409
+        body3, _ct3, status3 = handle_queue_cancel(None, {}, None, None, run_id=admitted_id)
+        test("OC78: admitted run → 409", status3 == 409)
+        data3 = json.loads(body3)
+        test("OC78: admitted code=NOT_QUEUED", data3.get("code") == "NOT_QUEUED")
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(throttled_id, None)
+            _ACTIVE_RUNS.pop(rejected_id, None)
+            _ACTIVE_RUNS.pop(admitted_id, None)
+
+
+def test_oc79_public_run_info_no_monotonic_leak():
+    """OC79: _public_run_info must strip *_monotonic keys from nested queue dict."""
+    from browse.api.operator import _public_run_info
+    from browse.core.run_queue import public_queue_info
+
+    # Simulate a cancelled queued run with internal monotonic timestamps.
+    fake_run = {
+        "run_id": "r-test-leak",
+        "session_id": "s-test-leak",
+        "status": "cancelled",
+        "queue": {
+            "state": "cancelled",
+            "enqueued_at": "2025-01-01T00:00:00Z",
+            "enqueued_at_monotonic": 12345.678,
+            "cancelled_at_monotonic": 12350.0,
+            "position": 0,
+        },
+        "cancelled_by": "operator",
+    }
+
+    public = _public_run_info(fake_run)
+
+    # No key ending in _monotonic anywhere in the response (flat or nested).
+    def _find_monotonic_keys(obj, path=""):
+        found = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.endswith("_monotonic"):
+                    found.append(f"{path}.{k}" if path else k)
+                found.extend(_find_monotonic_keys(v, f"{path}.{k}" if path else k))
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                found.extend(_find_monotonic_keys(item, f"{path}[{i}]"))
+        return found
+
+    leaked = _find_monotonic_keys(public)
+    test("OC79: no *_monotonic keys in _public_run_info output", leaked == [])
+    test("OC79: queue.state preserved in public output", public.get("queue", {}).get("state") == "cancelled")
+    test(
+        "OC79: queue.enqueued_at preserved in public output",
+        public.get("queue", {}).get("enqueued_at") == "2025-01-01T00:00:00Z",
+    )
+    test(
+        "OC79: cancelled_at_monotonic NOT in public queue", "cancelled_at_monotonic" not in (public.get("queue") or {})
+    )
+    test("OC79: enqueued_at_monotonic NOT in public queue", "enqueued_at_monotonic" not in (public.get("queue") or {}))
+
+    # Verify public_queue_info directly is consistent.
+    q_public = public_queue_info(fake_run["queue"])
+    test("OC79: public_queue_info strips monotonic keys", all(not k.endswith("_monotonic") for k in (q_public or {})))
+
+    # Edge: run with no queue key at all.
+    no_queue_run = {"run_id": "r-noq", "status": "running"}
+    pub2 = _public_run_info(no_queue_run)
+    test("OC79: run without queue key passes cleanly", pub2 is not None and "queue" not in pub2)
 
 
 def _run_api_tests(port: int):
@@ -3301,7 +3559,9 @@ def _run_api_tests(port: int):
 # ── Issue #529: adopt/confirm tests ───────────────────────────────────────────
 
 
-def _post_raw(port: int, path: str, body_bytes: bytes, content_type: str = "", token: str = _TOKEN) -> http.client.HTTPResponse:
+def _post_raw(
+    port: int, path: str, body_bytes: bytes, content_type: str = "", token: str = _TOKEN
+) -> http.client.HTTPResponse:
     """POST with explicit Content-Type (or none) for testing content-type rejection."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     sep = "&" if "?" in path else "?"
@@ -3315,6 +3575,7 @@ def _post_raw(port: int, path: str, body_bytes: bytes, content_type: str = "", t
 def _setup_cli_session_fixture():
     """Create a temp CLI session directory with workspace.yaml for adopt tests."""
     import uuid as _uuid
+
     cli_id = str(_uuid.uuid4())
     cli_state_dir = Path(tempfile.mkdtemp())
     os.environ["COPILOT_SESSION_STATE"] = str(cli_state_dir)
@@ -3339,12 +3600,12 @@ def _hash_tree(root: Path) -> str:
 def run_adopt_confirm_tests():
     """Run issue #529 adopt/confirm API tests."""
     from browse.core.operator_console import (
-        _is_denied_operator_path,
         _SESSIONS_LOCK,
-        adopt_cli_session,
-        confirm_adopted_session,
         _build_copilot_argv,
         _has_active_run,
+        _is_denied_operator_path,
+        adopt_cli_session,
+        confirm_adopted_session,
         get_session,
     )
 
@@ -3379,6 +3640,7 @@ def run_adopt_confirm_tests():
 
     # Missing CLI session
     import uuid as _uuid
+
     fake_uuid = str(_uuid.uuid4())
     _, code4, status4 = adopt_cli_session(fake_uuid)
     test("ADOPT4: missing CLI session → 404", status4 == 404)
@@ -3392,14 +3654,16 @@ def run_adopt_confirm_tests():
     test("ADOPT5: _is_denied_operator_path(.ssh)", _is_denied_operator_path(home.resolve() / ".ssh"))
     test("ADOPT5: _is_denied_operator_path(.aws)", _is_denied_operator_path(home.resolve() / ".aws"))
     test("ADOPT5: _is_denied_operator_path(.gnupg)", _is_denied_operator_path(home.resolve() / ".gnupg"))
-    test("ADOPT5: _is_denied_operator_path(.copilot/session-state)",
-         _is_denied_operator_path(home.resolve() / ".copilot" / "session-state"))
-    test("ADOPT5: _is_denied_operator_path(.copilot/auth)",
-         _is_denied_operator_path(home.resolve() / ".copilot" / "auth"))
-    test("ADOPT5: safe path NOT denied",
-         not _is_denied_operator_path(home.resolve() / "projects" / "foo"))
-    test("ADOPT5: .copilot itself NOT denied",
-         not _is_denied_operator_path(home.resolve() / ".copilot"))
+    test(
+        "ADOPT5: _is_denied_operator_path(.copilot/session-state)",
+        _is_denied_operator_path(home.resolve() / ".copilot" / "session-state"),
+    )
+    test(
+        "ADOPT5: _is_denied_operator_path(.copilot/auth)",
+        _is_denied_operator_path(home.resolve() / ".copilot" / "auth"),
+    )
+    test("ADOPT5: safe path NOT denied", not _is_denied_operator_path(home.resolve() / "projects" / "foo"))
+    test("ADOPT5: .copilot itself NOT denied", not _is_denied_operator_path(home.resolve() / ".copilot"))
 
     cli_id_denied = str(_uuid.uuid4())
     session_dir_denied = cli_state_dir / cli_id_denied
@@ -3507,10 +3771,10 @@ def run_adopt_confirm_tests():
     # ── Delete isolation: operator delete does not touch CLI session dir ───────
     cli_dir_digest_before = _hash_tree(cli_state_dir / cli_id)
     from browse.core.operator_console import delete_session as _del_sess
+
     _del_sess(adopted_session_id)
     cli_dir_digest_after = _hash_tree(cli_state_dir / cli_id)
-    test("DELETE_ISO: CLI session dir unchanged after operator delete",
-         cli_dir_digest_before == cli_dir_digest_after)
+    test("DELETE_ISO: CLI session dir unchanged after operator delete", cli_dir_digest_before == cli_dir_digest_after)
 
     # Cleanup env
     os.environ.pop("COPILOT_SESSION_STATE", None)
@@ -3529,56 +3793,53 @@ def run_adopt_confirm_api_tests():
         print("  ── adopt/confirm API HTTP tests ──")
 
         # Wrong content type → 415
-        resp = _post_raw(port, "/api/operator/sessions/adopt", b'{"cli_session_id":"x"}',
-                         content_type="text/plain")
+        resp = _post_raw(port, "/api/operator/sessions/adopt", b'{"cli_session_id":"x"}', content_type="text/plain")
         test("API_ADOPT1: wrong content-type → 415", resp.status == 415)
         data = _read_json(resp)
         test("API_ADOPT1: UNSUPPORTED_MEDIA_TYPE code", data.get("code") == "UNSUPPORTED_MEDIA_TYPE")
 
         # No content type → 415
-        resp = _post_raw(port, "/api/operator/sessions/adopt", b'{"cli_session_id":"x"}',
-                         content_type="")
+        resp = _post_raw(port, "/api/operator/sessions/adopt", b'{"cli_session_id":"x"}', content_type="")
         test("API_ADOPT2: missing content-type → 415", resp.status == 415)
         _ = resp.read()
 
         # Auth required (no token)
-        resp = _post_raw(port, "/api/operator/sessions/adopt",
-                         json.dumps({"cli_session_id": cli_id}).encode(),
-                         content_type="application/json", token="bad-token")
+        resp = _post_raw(
+            port,
+            "/api/operator/sessions/adopt",
+            json.dumps({"cli_session_id": cli_id}).encode(),
+            content_type="application/json",
+            token="bad-token",
+        )
         test("API_ADOPT3: bad token → 401", resp.status == 401)
         _ = resp.read()
 
         # Prompt in body rejected
-        resp = _post(port, "/api/operator/sessions/adopt",
-                     {"cli_session_id": cli_id, "prompt": "hello"})
+        resp = _post(port, "/api/operator/sessions/adopt", {"cli_session_id": cli_id, "prompt": "hello"})
         test("API_ADOPT4: prompt in body → 400", resp.status == 400)
         data4 = _read_json(resp)
         test("API_ADOPT4: UNEXPECTED_FIELDS", data4.get("code") == "UNEXPECTED_FIELDS")
 
         # resume_target in body rejected
-        resp = _post(port, "/api/operator/sessions/adopt",
-                     {"cli_session_id": cli_id, "resume_target": "x"})
+        resp = _post(port, "/api/operator/sessions/adopt", {"cli_session_id": cli_id, "resume_target": "x"})
         test("API_ADOPT5: resume_target in body → 400", resp.status == 400)
         data5 = _read_json(resp)
         test("API_ADOPT5: UNEXPECTED_FIELDS", data5.get("code") == "UNEXPECTED_FIELDS")
 
         # Bad UUID
-        resp = _post(port, "/api/operator/sessions/adopt",
-                     {"cli_session_id": "not-valid"})
+        resp = _post(port, "/api/operator/sessions/adopt", {"cli_session_id": "not-valid"})
         test("API_ADOPT6: bad UUID → 400", resp.status == 400)
         data6 = _read_json(resp)
         test("API_ADOPT6: INVALID_CLI_SESSION_ID", data6.get("code") == "INVALID_CLI_SESSION_ID")
 
         # Missing CLI session
-        resp = _post(port, "/api/operator/sessions/adopt",
-                     {"cli_session_id": str(_uuid.uuid4())})
+        resp = _post(port, "/api/operator/sessions/adopt", {"cli_session_id": str(_uuid.uuid4())})
         test("API_ADOPT7: missing CLI session → 404", resp.status == 404)
         data7 = _read_json(resp)
         test("API_ADOPT7: CLI_SESSION_NOT_FOUND", data7.get("code") == "CLI_SESSION_NOT_FOUND")
 
         # Happy path adopt
-        resp = _post(port, "/api/operator/sessions/adopt",
-                     {"cli_session_id": cli_id})
+        resp = _post(port, "/api/operator/sessions/adopt", {"cli_session_id": cli_id})
         test("API_ADOPT8: adopt happy → 201", resp.status == 201)
         data8 = _read_json(resp)
         test("API_ADOPT8: operator id != cli id", data8.get("id") != cli_id)
@@ -3587,21 +3848,18 @@ def run_adopt_confirm_api_tests():
         adopted_id = data8.get("id", "")
 
         # Unconfirmed prompt rejected
-        resp = _post(port, f"/api/operator/sessions/{adopted_id}/prompt",
-                     {"prompt": "hello"})
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/prompt", {"prompt": "hello"})
         test("API_ADOPT9: unconfirmed prompt → 409", resp.status == 409)
         data9 = _read_json(resp)
         test("API_ADOPT9: UNCONFIRMED_ADOPTION", data9.get("code") == "UNCONFIRMED_ADOPTION")
 
         # Confirm wrong content type
-        resp = _post_raw(port, f"/api/operator/sessions/{adopted_id}/confirm",
-                         b'{}', content_type="text/html")
+        resp = _post_raw(port, f"/api/operator/sessions/{adopted_id}/confirm", b"{}", content_type="text/html")
         test("API_CONFIRM1: wrong content-type → 415", resp.status == 415)
         _ = resp.read()
 
         # Confirm with unexpected fields
-        resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm",
-                     {"prompt": "inject"})
+        resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm", {"prompt": "inject"})
         test("API_CONFIRM2: unexpected fields → 400", resp.status == 400)
         data_c2 = _read_json(resp)
         test("API_CONFIRM2: UNEXPECTED_FIELDS", data_c2.get("code") == "UNEXPECTED_FIELDS")
@@ -3617,19 +3875,18 @@ def run_adopt_confirm_api_tests():
         resp = _post(port, f"/api/operator/sessions/{adopted_id}/confirm", {})
         test("API_CONFIRM4: idempotent confirm → 200", resp.status == 200)
         data_c4 = _read_json(resp)
-        test("API_CONFIRM4: confirmed_at unchanged",
-             data_c4.get("confirmed_at") == data_c3.get("confirmed_at"))
+        test("API_CONFIRM4: confirmed_at unchanged", data_c4.get("confirmed_at") == data_c3.get("confirmed_at"))
 
         # Duplicate adopt after confirm → 409
-        resp = _post(port, "/api/operator/sessions/adopt",
-                     {"cli_session_id": cli_id})
+        resp = _post(port, "/api/operator/sessions/adopt", {"cli_session_id": cli_id})
         test("API_ADOPT10: duplicate after confirm → 409", resp.status == 409)
         data10 = _read_json(resp)
         test("API_ADOPT10: ALREADY_ADOPTED", data10.get("code") == "ALREADY_ADOPTED")
 
         # Query string cli_session_id without JSON body not accepted
-        resp = _post_raw(port, f"/api/operator/sessions/adopt?cli_session_id={cli_id}",
-                         b'', content_type="application/json")
+        resp = _post_raw(
+            port, f"/api/operator/sessions/adopt?cli_session_id={cli_id}", b"", content_type="application/json"
+        )
         test("API_ADOPT11: query-string cli_session_id rejected → 400", resp.status == 400)
         data11 = _read_json(resp)
         test("API_ADOPT11: QUERY_FIELDS_NOT_ALLOWED", data11.get("code") == "QUERY_FIELDS_NOT_ALLOWED")
@@ -3705,9 +3962,12 @@ def run_static_acl_tests() -> None:
         static_token = slot["token"]
 
         # ── SEC562-1: POST /api/operator/sessions (create) → 403 ───────────
-        resp = _post(port, "/api/operator/sessions",
-                     {"name": "static-blocked", "model": "gpt-4o", "mode": "agent"},
-                     token=static_token)
+        resp = _post(
+            port,
+            "/api/operator/sessions",
+            {"name": "static-blocked", "model": "gpt-4o", "mode": "agent"},
+            token=static_token,
+        )
         data = _read_json(resp)
         test("SEC562-1: static POST create session → 403", resp.status == 403)
         test(
@@ -3770,8 +4030,7 @@ def run_static_acl_tests() -> None:
         _ = resp.read()
 
         # ── SEC562-8: operator token can still mutate (sanity, no regress) ─
-        resp = _post(port, "/api/operator/sessions",
-                     {"name": "operator-ok", "model": "gpt-4o", "mode": "agent"})
+        resp = _post(port, "/api/operator/sessions", {"name": "operator-ok", "model": "gpt-4o", "mode": "agent"})
         test("SEC562-8: operator POST create session still → 200", resp.status == 200)
         _ = resp.read()
     finally:
@@ -3892,6 +4151,14 @@ if __name__ == "__main__":
     test_oc73_cancel_run_marks_active_run_cancelled()
     test_oc74_cancel_run_capability_advertised()
     run_cancel_run_api_tests()
+
+    print()
+    print("── Issue #559/#569: queue/health endpoints ───────────────────────────")
+    test_oc75_queue_health_capabilities_advertised()
+    test_oc76_queue_endpoint_returns_entries()
+    test_oc77_queue_cancel_endpoint_basics()
+    test_oc78_queue_cancel_throttled_and_rejected()
+    test_oc79_public_run_info_no_monotonic_leak()
 
     print()
     print("=" * 60)
