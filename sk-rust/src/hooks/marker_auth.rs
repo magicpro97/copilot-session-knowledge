@@ -360,7 +360,7 @@ pub fn is_lock_hooks_recovery(command: &str) -> bool {
     }
 
     let mut tokens: Vec<&str> = command
-        .split(|c: char| c == ' ' || c == '\t')
+        .split([' ', '\t'])
         .filter(|s| !s.is_empty())
         .collect();
     if tokens.is_empty() {
