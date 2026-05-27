@@ -889,6 +889,15 @@ impl HookRule for EnforceLearnRule {
             .unwrap_or_default();
 
         if marker_auth::check_tamper_marker() {
+            if tool_name == "bash" {
+                let command = tool_args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if marker_auth::is_lock_hooks_recovery(command) {
+                    return None;
+                }
+            }
             return Some(deny(
                 "\u{1f6a8} HOOKS TAMPERED: All modifications blocked. Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks",
             ));
@@ -946,5 +955,248 @@ impl HookRule for EnforceLearnRule {
         }
 
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AutoFlushLearnInboxRule (issue #573)
+// ---------------------------------------------------------------------------
+
+/// Auto-flush queued `learn-inbox` entries before the agent finishes a turn.
+///
+/// Fires on two timing points:
+///   - `sessionEnd`                       — drains anything stuck before shutdown.
+///   - `preToolUse` with `tool=task_complete` — drains BEFORE `task_complete`
+///     returns, so lessons queued during the turn are never lost.
+///     `postToolUse` for `task_complete` is too late — `task_complete` ends
+///     the model turn before any postToolUse fires.
+///
+/// Environment variables:
+///   - `SK_AUTOFLUSH=0`                   — disable (rule becomes no-op).
+///   - `SK_AUTOFLUSH_MAX_AGE_S=<n>`       — retry-stale-only mode: only files
+///     whose mtime is at least `n` seconds in the past are flushed. Unset =
+///     flush all ages (the common case for the task_complete trigger).
+///   - `SK_LEARN_INBOX=<dir>`             — overrides the default inbox path.
+///
+/// Mechanics:
+///   - Empty inbox → fast return (no subprocess), single audit line.
+///   - Non-empty → spawn `python <tools>/learn.py --flush-inbox --json
+///     [--min-age-s n]` with a 10s wall-clock budget. Reader thread drains
+///     stdout to avoid pipe-buffer deadlock.
+///   - On stdout JSON parse, audit `flushed=<processed> queued=<remaining>
+///     failed=<failed> rejected=<rejected>` and emit an info message.
+///   - On subprocess failure or timeout: audit a failure detail; never block
+///     shutdown (preToolUse never returns `deny`).
+///
+/// Security (DoD #573):
+///   - The Python flush path validates each file's filename hash against
+///     `sha256(file_bytes.rstrip(b"\n"))[:16]` before insert and rejects
+///     mismatches as `.rejected`. The Rust rule does not bypass that gate.
+pub struct AutoFlushLearnInboxRule;
+
+fn autoflush_enabled() -> bool {
+    std::env::var("SK_AUTOFLUSH").map_or(true, |v| v != "0")
+}
+
+fn autoflush_min_age_s() -> Option<f64> {
+    std::env::var("SK_AUTOFLUSH_MAX_AGE_S")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|n| *n > 0.0)
+}
+
+fn autoflush_inbox_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("SK_LEARN_INBOX") {
+        let raw: &str = &path;
+        if raw == "~" {
+            return resolve_home_dir().unwrap_or_else(|| PathBuf::from(raw));
+        }
+        if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+            if let Some(home) = resolve_home_dir() {
+                return home.join(rest);
+            }
+        }
+        return PathBuf::from(path);
+    }
+    resolve_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".copilot")
+        .join("session-state")
+        .join("learn-inbox")
+}
+
+fn count_inbox_json(inbox: &Path) -> usize {
+    if !inbox.is_dir() {
+        return 0;
+    }
+    match fs::read_dir(inbox) {
+        Ok(entries) => entries
+            .flatten()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|ext| ext == "json")
+            })
+            .count(),
+        Err(_) => 0,
+    }
+}
+
+impl HookRule for AutoFlushLearnInboxRule {
+    fn name(&self) -> &'static str {
+        "auto-flush-learn-inbox"
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        &["sessionEnd", "preToolUse"]
+    }
+
+    fn tools(&self) -> &'static [&'static str] {
+        // Empty = match all tools at the dispatcher level. We filter the
+        // preToolUse-only case (`task_complete`) inside `evaluate` so the
+        // sessionEnd path (which has no `toolName`) is not accidentally
+        // filtered out.
+        &[]
+    }
+
+    fn evaluate(&self, event: &str, data: &Value) -> Option<Value> {
+        // preToolUse: only fire on task_complete. Cheap early bail for every
+        // other tool invocation.
+        if event == "preToolUse" {
+            let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
+            if tool_name != "task_complete" {
+                return None;
+            }
+        }
+
+        if !autoflush_enabled() {
+            crate::hooks::audit::audit_log(
+                event,
+                "task_complete",
+                self.name(),
+                "info",
+                "disabled SK_AUTOFLUSH=0",
+            );
+            return None;
+        }
+
+        let inbox = autoflush_inbox_dir();
+        let before = count_inbox_json(&inbox);
+        if before == 0 {
+            crate::hooks::audit::audit_log(
+                event,
+                "task_complete",
+                self.name(),
+                "info",
+                "flushed=0 queued=0 failed=0 rejected=0 (empty)",
+            );
+            return None;
+        }
+
+        // Non-empty: invoke learn.py --flush-inbox under a 10s wall budget.
+        use crate::config::{python_exe, resolve_tools_dir};
+        let learn_py = resolve_tools_dir().join("learn.py");
+        if !learn_py.is_file() {
+            crate::hooks::audit::audit_log(
+                event,
+                "task_complete",
+                self.name(),
+                "error",
+                "learn.py missing",
+            );
+            return None;
+        }
+
+        let mut cmd = Command::new(python_exe());
+        cmd.arg(&learn_py)
+            .arg("--flush-inbox")
+            .arg("--json")
+            .arg("--limit")
+            .arg("100");
+        if let Some(min_age) = autoflush_min_age_s() {
+            cmd.arg("--min-age-s").arg(format!("{min_age}"));
+        }
+        // Recursion guard: prevent the spawned learn.py from re-triggering
+        // hooks or producing user-facing learn reminders. Also skip embedding
+        // so a 50-entry drain stays within the 10s wall budget — embeddings
+        // are recomputed by the next scheduled embed run (issue #573 perf DoD).
+        cmd.env("COPILOT_HOOKS_SUPPRESS", "1");
+        cmd.env("SK_LEARN_SKIP_EMBED", "1");
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(err) => {
+                crate::hooks::audit::audit_log(
+                    event,
+                    "task_complete",
+                    self.name(),
+                    "error",
+                    &format!("spawn_failed:{err}"),
+                );
+                return None;
+            }
+        };
+
+        let reader = child.stdout.take().map(|mut out| {
+            std::thread::spawn(move || -> Vec<u8> {
+                let mut buf = Vec::new();
+                let _ = out.read_to_end(&mut buf);
+                buf
+            })
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut timed_out = false;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+
+        let stdout_bytes = reader.and_then(|h| h.join().ok()).unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+
+        if timed_out {
+            let after = count_inbox_json(&inbox);
+            let drained = before.saturating_sub(after);
+            let detail =
+                format!("timeout flushed={drained} queued={after} failed=? rejected=? wall=10s");
+            crate::hooks::audit::audit_log(event, "task_complete", self.name(), "info", &detail);
+            return Some(info(&format!(
+                "[sk] learn-inbox auto-flush timed out: {detail}"
+            )));
+        }
+
+        let parsed: Option<serde_json::Value> = serde_json::from_str(stdout.trim()).ok();
+        let (processed, remaining, failed, rejected) = match parsed {
+            Some(v) => (
+                v.get("processed").and_then(|x| x.as_u64()).unwrap_or(0),
+                v.get("remaining").and_then(|x| x.as_u64()).unwrap_or(0),
+                v.get("failed").and_then(|x| x.as_u64()).unwrap_or(0),
+                v.get("rejected").and_then(|x| x.as_u64()).unwrap_or(0),
+            ),
+            None => {
+                // Fall back to before/after counts.
+                let after = count_inbox_json(&inbox) as u64;
+                ((before as u64).saturating_sub(after), after, 0, 0)
+            }
+        };
+
+        let detail =
+            format!("flushed={processed} queued={remaining} failed={failed} rejected={rejected}");
+        crate::hooks::audit::audit_log(event, "task_complete", self.name(), "info", &detail);
+        Some(info(&format!("[sk] learn-inbox auto-flush: {detail}")))
     }
 }

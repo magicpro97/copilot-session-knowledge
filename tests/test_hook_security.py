@@ -372,9 +372,175 @@ def test_fts_operator_input_is_sanitized_before_match_use() -> None:
     )
 
 
+print("\n-- Lock-hooks recovery allow-list ------------------------------------")
+
+
+def _load_marker_auth_module():
+    loader = importlib.machinery.SourceFileLoader(
+        "marker_auth_for_security",
+        str(REPO / "hooks" / "marker_auth.py"),
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_lock_hooks_recovery_allow_and_reject_vectors() -> None:
+    home = _isolated_home("hook-security-lockrec-")
+    saved_home = os.environ.get("HOME")
+    saved_userprofile = os.environ.get("USERPROFILE")
+    try:
+        os.environ["HOME"] = str(home)
+        os.environ["USERPROFILE"] = str(home)
+        marker_auth = _load_marker_auth_module()
+        recover = marker_auth.is_lock_hooks_recovery
+        abs_install = str(Path(os.environ["HOME"]) / ".copilot" / "tools" / "install.py")
+
+        allow = [
+            "python3 ~/.copilot/tools/install.py --lock-hooks",
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks",
+            "sudo -E /usr/bin/python3 $HOME/.copilot/tools/install.py --lock-hooks",
+            "sudo /usr/bin/python3 ~/.copilot/tools/install.py --lock-hooks",
+            "/usr/local/bin/python3 $HOME/.copilot/tools/install.py --lock-hooks",
+            f"sudo python3 {abs_install} --lock-hooks",
+            f"/usr/local/bin/python3 {abs_install} --lock-hooks",
+        ]
+        for cmd in allow:
+            test(f"recovery ALLOW: {cmd!r}", recover(cmd), f"helper rejected {cmd!r}")
+
+        reject = [
+            ("empty", ""),
+            ("ls", "ls"),
+            ("echo hello", "echo hello"),
+            ("unlock flag", "sudo python3 ~/.copilot/tools/install.py --unlock-hooks"),
+            ("extra arg", "sudo python3 ~/.copilot/tools/install.py --lock-hooks extra"),
+            ("extra flag", "sudo python3 ~/.copilot/tools/install.py --lock-hooks --force"),
+            ("chained ;", "sudo python3 ~/.copilot/tools/install.py --lock-hooks; rm -rf /"),
+            ("chained &&", "sudo python3 ~/.copilot/tools/install.py --lock-hooks && rm -rf /"),
+            ("pipe", "sudo python3 ~/.copilot/tools/install.py --lock-hooks | tee /tmp/x"),
+            ("redirect >", "sudo python3 ~/.copilot/tools/install.py --lock-hooks > /tmp/log"),
+            ("redirect <", "sudo python3 ~/.copilot/tools/install.py --lock-hooks < /etc/hosts"),
+            ("backtick", "sudo python3 ~/.copilot/tools/install.py `whoami`"),
+            ("command sub", "sudo python3 ~/.copilot/tools/install.py $(whoami) --lock-hooks"),
+            ("double quote", 'sudo python3 "~/.copilot/tools/install.py" --lock-hooks'),
+            ("single quote", "sudo python3 '~/.copilot/tools/install.py' --lock-hooks"),
+            ("backslash path", "sudo python3 ~/.copilot\\tools\\install.py --lock-hooks"),
+            ("bash -c", "bash -c sudo python3 ~/.copilot/tools/install.py --lock-hooks"),
+            ("env prefix", "env python3 ~/.copilot/tools/install.py --lock-hooks"),
+            ("VAR= prefix", "PYTHONPATH=x python3 ~/.copilot/tools/install.py --lock-hooks"),
+            ("python2-style", "python ~/.copilot/tools/install.py --lock-hooks"),
+            ("alt path /tmp", "python3 /tmp/install.py --lock-hooks"),
+            ("alt path /etc", "sudo python3 /etc/install.py --lock-hooks"),
+            ("typo path", "sudo python3 ~/copilot/tools/install.py --lock-hooks"),
+            ("newline injection", "python3 ~/.copilot/tools/install.py --lock-hooks\nrm -rf /"),
+        ]
+        for label, cmd in reject:
+            test(f"recovery REJECT: {label}", not recover(cmd), f"helper accepted {cmd!r}")
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home
+        if saved_userprofile is None:
+            os.environ.pop("USERPROFILE", None)
+        else:
+            os.environ["USERPROFILE"] = saved_userprofile
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_tamper_marker_allows_recovery_but_blocks_other_ops() -> None:
+    home = _isolated_home("hook-security-tamper-")
+    saved_home = os.environ.get("HOME")
+    saved_userprofile = os.environ.get("USERPROFILE")
+    try:
+        gen = subprocess.run(
+            [sys.executable, str(REPO / "hooks" / "marker_auth.py"), "gen-secret"],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO),
+            env=_env_for_home(home),
+            timeout=10,
+        )
+        if gen.returncode != 0:
+            test("tamper-recovery: secret gen", False, gen.stderr[:300])
+            return
+
+        os.environ["HOME"] = str(home)
+        os.environ["USERPROFILE"] = str(home)
+        marker_auth = _load_marker_auth_module()
+        marker_auth.create_tamper_marker()
+        test(
+            "tamper-recovery: marker created and verifies",
+            marker_auth.check_tamper_marker(),
+            "tamper marker did not verify under test HOME",
+        )
+
+        recover_cmd = "sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+        recovery = _run_hook(
+            "preToolUse",
+            {"toolName": "bash", "toolArgs": {"command": recover_cmd}, "sessionId": "tamper-allow"},
+            home=home,
+        )
+        recovery_out = recovery.stdout + recovery.stderr
+        test(
+            "tamper-recovery: bash recovery NOT denied",
+            recovery.returncode == 0 and "HOOKS TAMPERED" not in recovery_out,
+            f"returncode={recovery.returncode}, output={recovery_out[:300]}",
+        )
+
+        denied_bash = _run_hook(
+            "preToolUse",
+            {"toolName": "bash", "toolArgs": {"command": "ls"}, "sessionId": "tamper-deny-bash"},
+            home=home,
+        )
+        denied_bash_out = denied_bash.stdout + denied_bash.stderr
+        test(
+            "tamper-recovery: unrelated bash IS denied",
+            "HOOKS TAMPERED" in denied_bash_out,
+            f"returncode={denied_bash.returncode}, output={denied_bash_out[:300]}",
+        )
+
+        denied_edit = _run_hook(
+            "preToolUse",
+            {"toolName": "edit", "toolArgs": {"path": "x.py"}, "sessionId": "tamper-deny-edit"},
+            home=home,
+        )
+        denied_edit_out = denied_edit.stdout + denied_edit.stderr
+        test(
+            "tamper-recovery: edit IS denied",
+            "HOOKS TAMPERED" in denied_edit_out,
+            f"returncode={denied_edit.returncode}, output={denied_edit_out[:300]}",
+        )
+
+        denied_complete = _run_hook(
+            "preToolUse",
+            {"toolName": "task_complete", "toolArgs": {}, "sessionId": "tamper-deny-tc"},
+            home=home,
+        )
+        denied_complete_out = denied_complete.stdout + denied_complete.stderr
+        test(
+            "tamper-recovery: task_complete IS denied",
+            "HOOKS TAMPERED" in denied_complete_out or "LEARN REQUIRED" in denied_complete_out,
+            f"returncode={denied_complete.returncode}, output={denied_complete_out[:300]}",
+        )
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home
+        if saved_userprofile is None:
+            os.environ.pop("USERPROFILE", None)
+        else:
+            os.environ["USERPROFILE"] = saved_userprofile
+        shutil.rmtree(home, ignore_errors=True)
+
+
 test_concurrent_skill_usage_hooks_do_not_surface_sqlite_locked()
 test_path_traversal_session_id_stays_inside_markers_dir()
 test_fts_operator_input_is_sanitized_before_match_use()
+test_lock_hooks_recovery_allow_and_reject_vectors()
+test_tamper_marker_allows_recovery_but_blocks_other_ops()
 
 print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")

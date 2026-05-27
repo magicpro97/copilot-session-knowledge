@@ -149,6 +149,45 @@ def is_secret_access(command):
     return False
 
 
+_ALLOWED_PYTHON_BINS = ("python3", "/usr/bin/python3", "/usr/local/bin/python3")
+_ALLOWED_SCRIPT_LITERALS = (
+    "~/.copilot/tools/install.py",
+    "$HOME/.copilot/tools/install.py",
+)
+_REJECT_CHARS = frozenset((";", "&", "|", ">", "<", "`", "\n", "\r", '"', "'", "\\"))
+
+
+def is_lock_hooks_recovery(command):
+    """Return True only for the official lock-hooks tamper recovery command."""
+    if not command:
+        return False
+    for ch in command:
+        if ch in _REJECT_CHARS:
+            return False
+    if "$(" in command:
+        return False
+
+    tokens = command.split()
+    if not tokens:
+        return False
+    if tokens[0] == "sudo":
+        tokens = tokens[1:]
+        if tokens and tokens[0] == "-E":
+            tokens = tokens[1:]
+    if len(tokens) != 3:
+        return False
+
+    python_bin, script, flag = tokens
+    if python_bin not in _ALLOWED_PYTHON_BINS:
+        return False
+    if flag != "--lock-hooks":
+        return False
+    if script in _ALLOWED_SCRIPT_LITERALS:
+        return True
+    abs_install = str(Path.home() / ".copilot" / "tools" / "install.py")
+    return script == abs_install
+
+
 def check_tamper_marker():
     tamper_path = MARKERS_DIR / "hooks-tampered"
     return verify_marker(tamper_path, "hooks-tampered")

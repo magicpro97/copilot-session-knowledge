@@ -10,6 +10,7 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 mod all_rules;
+mod auto_flush_learn;
 mod edit_track;
 mod guard;
 mod learn;

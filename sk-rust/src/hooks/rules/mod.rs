@@ -132,6 +132,7 @@ pub fn all_rules() -> Vec<Box<dyn HookRule>> {
         Box::new(AutoBriefingRule),
         Box::new(IntegrityRule),
         Box::new(EnforceBriefingRule),
+        Box::new(AutoFlushLearnInboxRule),
         Box::new(EnforceLearnRule),
         Box::new(TentacleEnforceRule),
         Box::new(SubagentGitGuardRule),

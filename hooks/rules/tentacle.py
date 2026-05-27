@@ -20,7 +20,14 @@ from .common import CODE_EXTENSIONS, MARKERS_DIR, deny, get_module, info, is_ses
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from marker_auth import check_tamper_marker, is_secret_access, sign_list_marker, verify_list_marker, verify_marker
+    from marker_auth import (
+        check_tamper_marker,
+        is_lock_hooks_recovery,
+        is_secret_access,
+        sign_list_marker,
+        verify_list_marker,
+        verify_marker,
+    )
 except ImportError:
 
     def verify_marker(p, n):
@@ -37,6 +44,9 @@ except ImportError:
         return True
 
     def check_tamper_marker():
+        return False
+
+    def is_lock_hooks_recovery(c):
         return False
 
 
@@ -142,8 +152,12 @@ class TentacleEnforceRule(Rule):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        # Kill-switch
+        # Kill-switch. Allow only the official recovery bash command.
         if check_tamper_marker():
+            if tool_name == "bash":
+                command = tool_args.get("command", "")
+                if is_lock_hooks_recovery(command):
+                    return None
             return deny(
                 "\U0001f6a8 HOOKS TAMPERED: All modifications blocked. "
                 "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"

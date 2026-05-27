@@ -449,6 +449,15 @@ impl HookRule for TentacleEnforceRule {
 
         // Kill-switch: hooks-tampered → deny all modifications.
         if marker_auth::check_tamper_marker() {
+            if tool_name == "bash" {
+                let command = tool_args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if marker_auth::is_lock_hooks_recovery(command) {
+                    return None;
+                }
+            }
             return Some(deny(
                 "\u{1f6a8} HOOKS TAMPERED: All modifications blocked. Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks",
             ));

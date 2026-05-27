@@ -106,7 +106,13 @@ def _load_memory_md(cwd=None, max_age_secs=None, token_budget=None):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from marker_auth import check_tamper_marker, is_secret_access, sign_marker, verify_marker
+    from marker_auth import (
+        check_tamper_marker,
+        is_lock_hooks_recovery,
+        is_secret_access,
+        sign_marker,
+        verify_marker,
+    )
 except ImportError:
 
     def sign_marker(p, n):
@@ -120,6 +126,9 @@ except ImportError:
         return True
 
     def check_tamper_marker():
+        return False
+
+    def is_lock_hooks_recovery(c):
         return False
 
 
@@ -388,8 +397,12 @@ class EnforceBriefingRule(Rule):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        # Kill-switch: deny if hooks tampered
+        # Kill-switch: deny if hooks tampered, except the official recovery command.
         if check_tamper_marker():
+            if tool_name == "bash":
+                command = tool_args.get("command", "")
+                if is_lock_hooks_recovery(command):
+                    return None
             return deny(
                 "\U0001f6a8 HOOKS TAMPERED: All modifications blocked. "
                 "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"

@@ -15,6 +15,14 @@ fn learn_reminder_returns_none_for_bash_without_learn_py() {
 #[test]
 fn learn_reminder_emits_skill_followup_for_bash_with_learn_py() {
     // bash + learn.py detected: marker written and skill follow-up emitted.
+    let _guard = env_lock();
+    let tmp = std::env::temp_dir().join("sk_learn_reminder_learn_py");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let old_home = std::env::var_os("HOME");
+    let old_up = std::env::var_os("USERPROFILE");
+    std::env::set_var("HOME", &tmp);
+    std::env::set_var("USERPROFILE", &tmp);
+
     let rule = LearnReminderRule;
     let data = json!({
         "toolName": "bash",
@@ -22,6 +30,17 @@ fn learn_reminder_emits_skill_followup_for_bash_with_learn_py() {
         "toolResult": {"resultType": "success"}
     });
     let result = rule.evaluate("postToolUse", &data);
+
+    match old_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    match old_up {
+        Some(v) => std::env::set_var("USERPROFILE", v),
+        None => std::env::remove_var("USERPROFILE"),
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
     let text = result
         .expect("bash + learn.py must emit skill follow-up")
         .get("message")
@@ -36,6 +55,14 @@ fn learn_reminder_emits_skill_followup_for_bash_with_learn_py() {
 
 #[test]
 fn learn_reminder_emits_skill_followup_for_bash_with_sk_learn() {
+    let _guard = env_lock();
+    let tmp = std::env::temp_dir().join("sk_learn_reminder_sk_learn");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let old_home = std::env::var_os("HOME");
+    let old_up = std::env::var_os("USERPROFILE");
+    std::env::set_var("HOME", &tmp);
+    std::env::set_var("USERPROFILE", &tmp);
+
     let rule = LearnReminderRule;
     let data = json!({
         "toolName": "bash",
@@ -43,6 +70,17 @@ fn learn_reminder_emits_skill_followup_for_bash_with_sk_learn() {
         "toolResult": {"resultType": "success"}
     });
     let result = rule.evaluate("postToolUse", &data);
+
+    match old_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    match old_up {
+        Some(v) => std::env::set_var("USERPROFILE", v),
+        None => std::env::remove_var("USERPROFILE"),
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
     let text = result
         .expect("bash + sk learn must emit skill follow-up")
         .get("message")
@@ -494,6 +532,70 @@ fn enforce_learn_denies_when_tamper_marker_present() {
             .unwrap_or("")
             .contains("HOOKS TAMPERED"),
         "tamper deny reason must mention HOOKS TAMPERED"
+    );
+}
+
+#[test]
+fn enforce_learn_tamper_marker_allows_lock_hooks_recovery_only() {
+    let _guard = env_lock();
+    let tmp = std::env::temp_dir().join("sk_enforce_learn_recovery");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mdir = tmp.join(".copilot").join("markers");
+    std::fs::create_dir_all(&mdir).expect("create markers dir");
+    marker_auth::sign_marker(&mdir.join("hooks-tampered"), "hooks-tampered")
+        .expect("sign tamper marker");
+
+    let old_home = std::env::var_os("HOME");
+    let old_up = std::env::var_os("USERPROFILE");
+    std::env::set_var("HOME", &tmp);
+    std::env::set_var("USERPROFILE", &tmp);
+
+    let rule = EnforceLearnRule;
+
+    let recovery = json!({
+        "toolName": "bash",
+        "toolArgs": {"command": "sudo python3 $HOME/.copilot/tools/install.py --lock-hooks"}
+    });
+    let recovery_result = rule.evaluate("preToolUse", &recovery);
+
+    let ls = json!({"toolName": "bash", "toolArgs": {"command": "ls -la"}});
+    let ls_result = rule.evaluate("preToolUse", &ls);
+
+    let chained = json!({
+        "toolName": "bash",
+        "toolArgs": {"command": "sudo python3 $HOME/.copilot/tools/install.py --lock-hooks && echo done"}
+    });
+    let chained_result = rule.evaluate("preToolUse", &chained);
+
+    match old_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    match old_up {
+        Some(v) => std::env::set_var("USERPROFILE", v),
+        None => std::env::remove_var("USERPROFILE"),
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        recovery_result.is_none(),
+        "official --lock-hooks recovery command must bypass tamper deny"
+    );
+    let ls_value = ls_result.expect("ls under tamper must deny");
+    assert!(
+        ls_value["permissionDecisionReason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("HOOKS TAMPERED"),
+        "ls under tamper must keep HOOKS TAMPERED reason"
+    );
+    let chained_value = chained_result.expect("chained recovery must deny");
+    assert!(
+        chained_value["permissionDecisionReason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("HOOKS TAMPERED"),
+        "chained recovery must keep HOOKS TAMPERED reason"
     );
 }
 

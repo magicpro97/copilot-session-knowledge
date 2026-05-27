@@ -321,6 +321,82 @@ pub fn is_secret_access(command: &str) -> bool {
     PROTECTED_PATTERNS.iter().any(|&p| command.contains(p))
 }
 
+/// Return `true` iff *command* is the exact official `--lock-hooks` recovery
+/// invocation.  Used by hooks-tampered enforcement rules to allow only the
+/// documented recovery command through the kill-switch while denying every
+/// other modification.
+///
+/// Accepted shapes (strict whitespace tokenization; no shell parsing):
+///   [sudo [-E]] <python>  <install.py>  --lock-hooks
+///
+/// * `<python>` ∈ { `python3`, `/usr/bin/python3`, `/usr/local/bin/python3` }
+/// * `<install.py>` ∈ literal `~/.copilot/tools/install.py`,
+///   literal `$HOME/.copilot/tools/install.py`, or the absolute expansion of
+///   `HOME/.copilot/tools/install.py` (matches the deny-message instructions).
+///
+/// Rejected: any shell metacharacter (`;`, `&`, `|`, `>`, `<`, backtick,
+/// newline, carriage return), quotes, backslashes, command substitution
+/// (`$(`), `bash -c`, `env`/`VAR=value` prefixes, `--unlock-hooks`, extra
+/// arguments, or any other Python interpreter path.
+pub fn is_lock_hooks_recovery(command: &str) -> bool {
+    if command.is_empty() {
+        return false;
+    }
+    // Reject shell metachars, quotes, backslash, and command substitution
+    // before tokenization so injection attempts never reach the allow-list.
+    for ch in command.chars() {
+        match ch {
+            ';' | '&' | '|' | '>' | '<' | '`' | '\n' | '\r' | '"' | '\'' | '\\' => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    if command.contains("$(") {
+        return false;
+    }
+
+    let mut tokens: Vec<&str> = command.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    if tokens[0] == "sudo" {
+        tokens.remove(0);
+        if tokens.first() == Some(&"-E") {
+            tokens.remove(0);
+        }
+    }
+    if tokens.len() != 3 {
+        return false;
+    }
+    let python_bin = tokens[0];
+    let script = tokens[1];
+    let flag = tokens[2];
+
+    if !matches!(
+        python_bin,
+        "python3" | "/usr/bin/python3" | "/usr/local/bin/python3"
+    ) {
+        return false;
+    }
+    if flag != "--lock-hooks" {
+        return false;
+    }
+
+    if script == "~/.copilot/tools/install.py" || script == "$HOME/.copilot/tools/install.py" {
+        return true;
+    }
+    if let Some(home) = resolve_home_dir() {
+        let abs = home.join(".copilot").join("tools").join("install.py");
+        if let Some(abs_str) = abs.to_str() {
+            if abs_str == script {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Return `true` if the `hooks-tampered` marker is present and valid.
 /// Mirrors `check_tamper_marker()`.
 pub fn check_tamper_marker() -> bool {
@@ -734,6 +810,140 @@ mod tests {
     fn create_tamper_marker_does_not_panic() {
         // Best-effort — must not panic.
         create_tamper_marker();
+    }
+
+    // -----------------------------------------------------------------------
+    // is_lock_hooks_recovery — strict allow-list
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lock_hooks_recovery_allows_canonical_command() {
+        assert!(is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_allows_without_sudo() {
+        assert!(is_lock_hooks_recovery(
+            "python3 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_allows_sudo_dash_e() {
+        assert!(is_lock_hooks_recovery(
+            "sudo -E python3 $HOME/.copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_allows_explicit_python_paths() {
+        assert!(is_lock_hooks_recovery(
+            "sudo /usr/bin/python3 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+        assert!(is_lock_hooks_recovery(
+            "/usr/local/bin/python3 $HOME/.copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_allows_absolute_home_path() {
+        // The literal expansion of HOME/.copilot/tools/install.py must be accepted
+        // so tooling that already expanded ~ is not blocked.
+        if let Some(home) = resolve_home_dir() {
+            let abs = home.join(".copilot").join("tools").join("install.py");
+            let cmd = format!("sudo python3 {} --lock-hooks", abs.to_string_lossy());
+            assert!(
+                is_lock_hooks_recovery(&cmd),
+                "absolute HOME install.py path must be allowed: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_unlock_flag() {
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --unlock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_unrelated_commands() {
+        assert!(!is_lock_hooks_recovery("ls"));
+        assert!(!is_lock_hooks_recovery("echo hello"));
+        assert!(!is_lock_hooks_recovery(""));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python2 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_chained_commands() {
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks; rm -rf /"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks && rm -rf /"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks | tee /tmp/x"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_redirection_and_substitution() {
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks > /tmp/log"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks < /etc/hosts"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py `whoami`"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py $(whoami)"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_bash_c_wrapper() {
+        assert!(!is_lock_hooks_recovery(
+            "bash -c sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sh -c sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_env_prefix_and_extra_args() {
+        assert!(!is_lock_hooks_recovery(
+            "FOO=1 python3 ~/.copilot/tools/install.py --lock-hooks"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks extra"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/.copilot/tools/install.py --lock-hooks --force"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_quotes_and_alt_paths() {
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 \"~/.copilot/tools/install.py\" --lock-hooks"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 '~/.copilot/tools/install.py' --lock-hooks"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 /etc/install.py --lock-hooks"
+        ));
+        assert!(!is_lock_hooks_recovery(
+            "sudo python3 ~/copilot/tools/install.py --lock-hooks"
+        ));
     }
 
     // -----------------------------------------------------------------------

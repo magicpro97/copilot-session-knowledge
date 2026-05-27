@@ -19,7 +19,7 @@ if os.name == "nt":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from marker_auth import check_tamper_marker, is_secret_access, verify_marker
+    from marker_auth import check_tamper_marker, is_lock_hooks_recovery, is_secret_access, verify_marker
 except ImportError:
 
     def verify_marker(p, n):
@@ -29,6 +29,9 @@ except ImportError:
         return True
 
     def check_tamper_marker():
+        return False
+
+    def is_lock_hooks_recovery(c):
         return False
 
 
@@ -148,8 +151,12 @@ def main():
     if not isinstance(tool_args, dict):
         tool_args = {}
 
-    # Kill-switch: deny if hooks tampered
+    # Kill-switch: deny if hooks tampered, except the official recovery command.
     if check_tamper_marker():
+        if tool_name == "bash":
+            command = tool_args.get("command", "")
+            if is_lock_hooks_recovery(command):
+                return
         if tool_name in ("edit", "create", "bash"):
             print(
                 json.dumps(
