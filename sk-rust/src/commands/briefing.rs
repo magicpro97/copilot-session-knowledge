@@ -6,6 +6,7 @@ use crate::db::fts::{
     sanitize_fts_query, search_by_wing_room, search_fts_filtered, search_recent_by_category,
     search_top_by_category, KnowledgeEntry,
 };
+use crate::hooks::audit::audit_log;
 
 /// Entry point called from main's dispatch.
 /// Inspects args: if any native flag is present (--wakeup, --auto, --compact),
@@ -96,8 +97,18 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
     };
 
     let fts_query = sanitize_fts_query(&query);
-    let safe_task = xml_escape(&query[..query.len().min(100)]);
+    // #577: cap the briefing task at 100 bytes but slice on a char boundary so
+    // multi-byte (CJK/emoji) queries never panic. `floor_char_boundary` is
+    // unstable, so we walk backwards from the byte cap to the nearest boundary.
+    let mut cut = query.len().min(100);
+    while cut > 0 && !query.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let safe_task = xml_escape(&query[..cut]);
     println!("<briefing task=\"{safe_task}\">\n");
+
+    let mut total_entries: usize = 0;
+    let mut stable_ids: Vec<String> = Vec::new();
 
     let categories = ["mistake", "pattern", "decision", "tool"];
     for cat in categories {
@@ -115,6 +126,15 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
             continue;
         }
 
+        total_entries += entries.len();
+        for e in &entries {
+            // #574: keep the audit detail under the 200-char truncation
+            // applied by `audit_log`. We use the same 16-char short form
+            // that `learn` emits, so the latency pair can join on it.
+            let full = crate::db::write::compute_stable_id("manual", cat, &e.title);
+            stable_ids.push(full[..16].to_string());
+        }
+
         println!("<{cat}s>");
         for entry in &entries {
             let title = truncate(&entry.title, 80);
@@ -125,6 +145,63 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
     }
 
     println!("</briefing>");
+
+    // #574: emit briefing.served or briefing.empty audit event.
+    if total_entries == 0 {
+        // #577 BLOCKER A: `query`, `wing`, and `room` are all
+        // user/git-derived free-form text that lands in
+        // `~/.copilot/markers/audit.jsonl` and is exposed by
+        // `sk audit-log --event briefing.empty`. Redact every field
+        // before it ever touches the audit JSON so a raw token/secret
+        // in any of them is never persisted. Findings are reduced to
+        // bounded `{kind}` metadata — never the raw secret.
+        let redacted_query = crate::redact::redact(&query);
+        let redacted_wing = wing.map(crate::redact::redact);
+        let redacted_room = room.map(crate::redact::redact);
+        let mut kinds: Vec<&str> = Vec::new();
+        for f in &redacted_query.findings {
+            kinds.push(f.kind.as_str());
+        }
+        if let Some(r) = redacted_wing.as_ref() {
+            for f in &r.findings {
+                kinds.push(f.kind.as_str());
+            }
+        }
+        if let Some(r) = redacted_room.as_ref() {
+            for f in &r.findings {
+                kinds.push(f.kind.as_str());
+            }
+        }
+        let detail = serde_json::json!({
+            "query": redacted_query.redacted,
+            "wing": redacted_wing.as_ref().map(|r| r.redacted.as_str()),
+            "room": redacted_room.as_ref().map(|r| r.redacted.as_str()),
+            "redaction_kinds": kinds,
+        });
+        audit_log(
+            "briefing.empty",
+            "sk",
+            "briefing",
+            "empty",
+            &detail.to_string(),
+        );
+    } else {
+        // Cap stable_ids and use 16-char short ids so the rendered
+        // detail JSON stays under the 200-char truncation applied by
+        // `audit_log` (#574). 4 × 16-char ids ≈ 90 chars including
+        // JSON envelope, leaving headroom for `n`.
+        let capped: Vec<&str> = stable_ids.iter().take(4).map(|s| s.as_str()).collect();
+        let detail = serde_json::json!({"n": total_entries, "stable_ids": capped});
+        let detail_str = detail.to_string();
+        debug_assert!(
+            detail_str.len() <= 200,
+            "briefing.served detail exceeds audit truncation limit: {} chars: {}",
+            detail_str.len(),
+            detail_str
+        );
+        audit_log("briefing.served", "sk", "briefing", "served", &detail_str);
+    }
+
     ExitCode::SUCCESS
 }
 

@@ -7,6 +7,7 @@ mod embeddings;
 mod hooks;
 mod index;
 mod providers;
+mod redact;
 mod sync;
 
 use std::process::ExitCode;
@@ -152,6 +153,12 @@ enum Commands {
     /// Audit hook effectiveness from audit.jsonl
     #[command(name = "audit-hooks")]
     AuditHooks {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Query audit log for learn/briefing/hook events and latency
+    #[command(name = "audit-log")]
+    AuditLog {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -311,6 +318,7 @@ fn main() -> ExitCode {
         Some(Commands::SkillSuggest { args }) => run_fallback("skill-suggest.py", &args),
         Some(Commands::SkillPatch { args }) => run_fallback("skill-patch.py", &args),
         Some(Commands::AuditHooks { args }) => run_fallback("audit-hooks.py", &args),
+        Some(Commands::AuditLog { args }) => commands::audit_log::run_audit_log_command(&args),
     };
 
     if cli.time {

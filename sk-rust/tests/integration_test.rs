@@ -362,7 +362,7 @@ fn learn_queues_quickly_when_db_is_locked() {
         .unwrap();
 
     let start = Instant::now();
-    sk().args([
+    let assert = sk().args([
         "learn",
         "--decision",
         "locked db queues",
@@ -378,9 +378,12 @@ fn learn_queues_quickly_when_db_is_locked() {
     .env("SK_LEARN_INBOX", &inbox)
     .env("SK_LEARN_QUEUE_ON_LOCK", "1")
     .env("SK_LEARN_BUSY_TIMEOUT_MS", "1")
+    .env_remove("SK_LEARN_STRICT")
     .assert()
-    .success()
+    // #571: queue fallback now exits with code 2 (queued), not 0.
+    .code(2)
     .stderr(predicate::str::contains("queued learn entry"));
+    let _ = assert;
     let elapsed = start.elapsed();
 
     assert!(

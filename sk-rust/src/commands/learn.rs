@@ -9,11 +9,30 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{python_exe, resolve_home_dir, resolve_tools_dir};
 use crate::db::write::{
-    insert_or_update_entry, open_writable_with_busy_timeout, rebuild_fts, NewEntry,
+    compute_stable_id, insert_or_update_entry, open_writable_with_busy_timeout, rebuild_fts,
+    NewEntry,
 };
+use crate::hooks::audit::audit_log;
+use crate::redact::{redact, Finding, RedactMode, RedactionResult};
 
 const DEFAULT_LEARN_DB_BUSY_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS: u64 = 250;
+
+/// Exit codes per issue #571.
+const EXIT_FLUSHED: u8 = 0;
+const EXIT_QUEUED: u8 = 2;
+const EXIT_FATAL: u8 = 1;
+/// Reserved per issue #571 for "blocked by a learn gate".
+#[allow(dead_code)]
+const EXIT_BLOCKED_BY_GATE: u8 = 3;
+/// Used by issue #577 when SK_REDACT=deny finds secrets.
+const EXIT_REDACT_DENY: u8 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptMode {
+    Text,
+    Json,
+}
 
 /// Entry point called from main's dispatch for the `learn` command.
 pub fn run_learn_command(args: &[String]) -> ExitCode {
@@ -27,7 +46,10 @@ pub fn run_learn_command(args: &[String]) -> ExitCode {
             eprintln!("sk learn: {msg}");
             eprintln!("Usage: sk learn --mistake|--pattern|--decision|--discovery|--feature|--refactor|--tool \"Title\" \"Description\"");
             eprintln!("       [--tags \"tag1,tag2\"] [--wing WING] [--room ROOM] [--confidence 0.7] [--fact \"fact\"]");
-            ExitCode::from(1)
+            eprintln!(
+                "       [--receipt text|json] (env: SK_LEARN_STRICT, SK_REDACT=off|warn|deny)"
+            );
+            ExitCode::from(EXIT_FATAL)
         }
     }
 }
@@ -44,6 +66,7 @@ struct LearnParams {
     argv: Vec<String>,
     skip_gate: bool,
     skip_scan: bool,
+    receipt: ReceiptMode,
 }
 
 /// Default confidence per category (mirrors Python learn.py).
@@ -68,6 +91,7 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
     let mut facts: Vec<String> = Vec::new();
     let mut skip_gate = false;
     let mut skip_scan = false;
+    let mut receipt = ReceiptMode::Text;
 
     let category_flags = [
         "--mistake",
@@ -130,6 +154,17 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
                 skip_scan = true;
                 i += 1;
             }
+            "--receipt" => {
+                let v = args.get(i + 1).cloned().unwrap_or_default();
+                receipt = match v.as_str() {
+                    "json" => ReceiptMode::Json,
+                    "text" | "" => ReceiptMode::Text,
+                    other => {
+                        return Err(format!("--receipt expects 'text' or 'json'; got '{other}'"));
+                    }
+                };
+                i += 2;
+            }
             // Skip unknown flags we don't handle.
             s if s.starts_with("--") => {
                 i += 2; // skip flag + value
@@ -176,10 +211,106 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
         argv: args.to_vec(),
         skip_gate,
         skip_scan,
+        receipt,
     })
 }
 
-fn execute_learn(params: LearnParams) -> ExitCode {
+/// Apply `crate::redact::redact` to every free-form text field, mutating
+/// `params` in place. Returns the aggregated findings across all fields
+/// (deduped by `(kind, hash)`) so the caller can decide whether to log,
+/// warn, or deny.
+fn redact_params_in_place(params: &mut LearnParams) -> Vec<Finding> {
+    fn apply(field: &mut String, all: &mut Vec<Finding>) {
+        let r: RedactionResult = redact(field);
+        if !r.findings.is_empty() {
+            *field = r.redacted;
+            all.extend(r.findings);
+        }
+    }
+    let mut findings: Vec<Finding> = Vec::new();
+    apply(&mut params.title, &mut findings);
+    apply(&mut params.description, &mut findings);
+    apply(&mut params.tags, &mut findings);
+    apply(&mut params.wing, &mut findings);
+    apply(&mut params.room, &mut findings);
+    for fact in params.facts.iter_mut() {
+        apply(fact, &mut findings);
+    }
+    // #577 BLOCKER FIX: redact every argv element so the queued JSON
+    // payload (`write_learn_payload` writes `argv` verbatim) cannot
+    // contain raw secrets that a user typed on the CLI (e.g.
+    // `--description "password=hunter2hunter2"` or an AWS key in a
+    // free-form positional arg). Without this, SK_REDACT=warn would
+    // scrub `entry.*` fields but leak the same secret via `argv`.
+    for arg in params.argv.iter_mut() {
+        apply(arg, &mut findings);
+    }
+    // Deduplicate by (kind, hash) so a single secret repeated across
+    // fields is counted once in the summary surface.
+    findings.sort_by(|a, b| {
+        (a.kind.as_str(), a.hash.as_str()).cmp(&(b.kind.as_str(), b.hash.as_str()))
+    });
+    findings.dedup_by(|a, b| a.kind == b.kind && a.hash == b.hash);
+    findings
+}
+
+fn findings_summary(findings: &[Finding]) -> String {
+    let parts: Vec<String> = findings
+        .iter()
+        .map(|f| format!("{}:{}", f.kind, f.hash))
+        .collect();
+    parts.join(",")
+}
+
+fn execute_learn(mut params: LearnParams) -> ExitCode {
+    // -- Redaction: applied BEFORE any DB write or queue write ---------
+    let mode = RedactMode::from_env();
+    let findings = match mode {
+        RedactMode::Off => Vec::new(),
+        RedactMode::Warn | RedactMode::Deny => redact_params_in_place(&mut params),
+    };
+    if !findings.is_empty() {
+        let summary = findings_summary(&findings);
+        match mode {
+            RedactMode::Warn => {
+                eprintln!(
+                    "sk learn: redacted {} secret pattern(s): {summary}",
+                    findings.len()
+                );
+            }
+            RedactMode::Deny => {
+                eprintln!(
+                    "sk learn: SK_REDACT=deny; refused write: {} secret pattern(s): {summary}",
+                    findings.len()
+                );
+                // Emit a deny audit event (hash-only, no raw secret).
+                let detail = json!({
+                    "kinds": findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+                    "n": findings.len(),
+                });
+                audit_log("learn.deny", "sk", "redact", "deny", &detail.to_string());
+                if matches!(params.receipt, ReceiptMode::Json) {
+                    let receipt = json!({
+                        "status": "denied",
+                        "reason": "secrets_redacted",
+                        "findings": findings
+                            .iter()
+                            .map(|f| json!({"kind": f.kind, "hash": f.hash}))
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{receipt}");
+                }
+                return ExitCode::from(EXIT_REDACT_DENY);
+            }
+            RedactMode::Off => {}
+        }
+    }
+
+    // -- Test seam: force queue path -----------------------------------
+    if std::env::var("SK_LEARN_FORCE_QUEUE").is_ok_and(|v| v != "0") {
+        return queue_learn_params(&params);
+    }
+
     let facts_json = params.facts_json();
 
     let entry = NewEntry {
@@ -201,7 +332,7 @@ fn execute_learn(params: LearnParams) -> ExitCode {
             }
             eprintln!("sk learn: cannot open knowledge.db for writing: {e}");
             eprintln!("Hint: Run 'sk index build' first to initialize the database.");
-            return ExitCode::from(1);
+            return ExitCode::from(EXIT_FATAL);
         }
     };
 
@@ -212,22 +343,55 @@ fn execute_learn(params: LearnParams) -> ExitCode {
                 return queue_learn_params(&params);
             }
             eprintln!("sk learn: DB write failed: {e}");
-            return ExitCode::from(1);
+            return ExitCode::from(EXIT_FATAL);
         }
     };
 
     // Rebuild FTS index for this entry
     let _ = rebuild_fts(&conn, entry_id);
 
-    // Print confirmation matching Python format
-    let loc = if !params.wing.is_empty() || !params.room.is_empty() {
-        format!(" [{}/{}]", params.wing, params.room)
-    } else {
-        String::new()
-    };
-    println!("  Added new {} #{}{}", params.category, entry_id, loc);
+    let stable_id = compute_stable_id("manual", &params.category, &params.title);
+    let stable_id_short = format!("sha256:{}", &stable_id[..16]);
+    // Audit detail uses the bare 16-char short form (no "sha256:" prefix)
+    // so it pairs with briefing.served's `stable_ids` array under the
+    // audit writer's 200-char detail truncation (#574).
+    let stable_id_audit = stable_id[..16].to_string();
 
-    ExitCode::SUCCESS
+    // -- Audit emit: learn.flushed (best-effort) -----------------------
+    let detail = json!({
+        "stable_id": stable_id_audit,
+        "category": params.category,
+        "entry_id": entry_id,
+    });
+    audit_log(
+        "learn.flushed",
+        "sk",
+        "learn",
+        "flushed",
+        &detail.to_string(),
+    );
+
+    // -- Receipt -------------------------------------------------------
+    match params.receipt {
+        ReceiptMode::Text => {
+            let loc = if !params.wing.is_empty() || !params.room.is_empty() {
+                format!(" [{}/{}]", params.wing, params.room)
+            } else {
+                String::new()
+            };
+            println!("  Added new {} #{}{}", params.category, entry_id, loc);
+        }
+        ReceiptMode::Json => {
+            let receipt = json!({
+                "status": "flushed",
+                "id": entry_id,
+                "stable_id": stable_id_short,
+            });
+            println!("{receipt}");
+        }
+    }
+
+    ExitCode::from(EXIT_FLUSHED)
 }
 
 fn delegate_to_python_learn(args: &[String]) -> ExitCode {
@@ -235,16 +399,20 @@ fn delegate_to_python_learn(args: &[String]) -> ExitCode {
     let status = Command::new(python_exe()).arg(learn_py).args(args).status();
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::from(1),
+        Ok(_) => ExitCode::from(EXIT_FATAL),
         Err(err) => {
             eprintln!("sk learn: failed to run learn.py for --flush-inbox: {err}");
-            ExitCode::from(1)
+            ExitCode::from(EXIT_FATAL)
         }
     }
 }
 
 fn queue_on_lock_enabled() -> bool {
     std::env::var("SK_LEARN_QUEUE_ON_LOCK").map_or(true, |value| value != "0")
+}
+
+fn strict_mode() -> bool {
+    std::env::var("SK_LEARN_STRICT").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 fn learn_write_busy_timeout_ms() -> u64 {
@@ -299,18 +467,54 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
 fn queue_learn_params(params: &LearnParams) -> ExitCode {
     match write_learn_payload(params) {
         Ok(path) => {
-            eprintln!(
-                "  DB busy; queued learn entry for later flush: {}",
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("queued learn entry")
-            );
-            eprintln!("  Run `sk learn --flush-inbox` to replay queued entries.");
-            ExitCode::SUCCESS
+            let queue_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("queued")
+                .to_string();
+            let stable_id = compute_stable_id("manual", &params.category, &params.title);
+            let stable_id_short = format!("sha256:{}", &stable_id[..16]);
+            let stable_id_audit = stable_id[..16].to_string();
+
+            // -- Audit emit: learn.queued (best-effort) -----------------
+            let detail = json!({
+                "stable_id": stable_id_audit,
+                "category": params.category,
+                "queue_id": queue_id,
+            });
+            audit_log("learn.queued", "sk", "learn", "queued", &detail.to_string());
+
+            // -- Receipt ------------------------------------------------
+            match params.receipt {
+                ReceiptMode::Text => {
+                    eprintln!(
+                        "  DB busy; queued learn entry for later flush: {}",
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("queued learn entry")
+                    );
+                    eprintln!("  Run `sk learn --flush-inbox` to replay queued entries.");
+                }
+                ReceiptMode::Json => {
+                    let receipt = json!({
+                        "status": "queued",
+                        "queue_id": queue_id,
+                        "path": path.display().to_string(),
+                        "stable_id": stable_id_short,
+                    });
+                    println!("{receipt}");
+                }
+            }
+
+            if strict_mode() {
+                ExitCode::from(EXIT_FATAL)
+            } else {
+                ExitCode::from(EXIT_QUEUED)
+            }
         }
         Err(err) => {
             eprintln!("sk learn: DB locked and failed to queue entry: {err}");
-            ExitCode::from(1)
+            ExitCode::from(EXIT_FATAL)
         }
     }
 }
@@ -387,13 +591,26 @@ impl LearnParams {
     }
 }
 
+/// Return a prefix of `s` containing at most `max_bytes`, ending on a UTF-8
+/// char boundary. Prevents panics when byte caps land mid-codepoint.
+fn utf8_safe_prefix(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Simplified wing auto-detection (mirrors Python _WING_RULES).
 fn auto_detect_wing(tags: &str, title: &str, content: &str) -> String {
     let text = format!(
         "{} {} {}",
         tags.to_lowercase(),
         title.to_lowercase(),
-        &content[..content.len().min(200)].to_lowercase()
+        utf8_safe_prefix(content, 200).to_lowercase()
     );
     let tag_set: std::collections::HashSet<&str> = tags.split(',').map(|t| t.trim()).collect();
 
@@ -461,7 +678,7 @@ fn auto_detect_room(tags: &str, title: &str, content: &str) -> String {
         "{} {} {}",
         tags.to_lowercase(),
         title.to_lowercase(),
-        &content[..content.len().min(300)].to_lowercase()
+        utf8_safe_prefix(content, 300).to_lowercase()
     );
     let tag_set: std::collections::HashSet<&str> = tags.split(',').map(|t| t.trim()).collect();
 
@@ -507,6 +724,7 @@ mod tests {
             argv: vec![],
             skip_gate: false,
             skip_scan: false,
+            receipt: ReceiptMode::Text,
         };
 
         let parsed: Vec<String> = serde_json::from_str(&params.facts_json()).unwrap();
@@ -539,6 +757,7 @@ mod tests {
             ],
             skip_gate: false,
             skip_scan: true,
+            receipt: ReceiptMode::Text,
         };
 
         let queued = write_learn_payload(&params).unwrap();
@@ -569,5 +788,39 @@ mod tests {
             Some(value) => std::env::set_var("SK_LEARN_INBOX", value),
             None => std::env::remove_var("SK_LEARN_INBOX"),
         }
+    }
+
+    #[test]
+    fn utf8_safe_prefix_keeps_short_ascii_unchanged() {
+        let s = "hello world";
+        assert_eq!(utf8_safe_prefix(s, 200), s);
+        assert_eq!(utf8_safe_prefix(s, 5), "hello");
+    }
+
+    #[test]
+    fn auto_detect_wing_does_not_panic_on_cjk_around_cap() {
+        // Each CJK char is 3 bytes in UTF-8; produce >200 bytes of CJK so the
+        // 200-byte cap is likely to land mid-codepoint.
+        let cjk: String = "中文测试内容".repeat(20);
+        assert!(cjk.len() > 200);
+        // Must not panic regardless of where the cap lands.
+        let _ = auto_detect_wing("", "", &cjk);
+        // Mixed: ASCII keyword inside cap should still be detected.
+        let mixed = format!("lambda {}", cjk);
+        assert_eq!(auto_detect_wing("", "", &mixed), "backend");
+    }
+
+    #[test]
+    fn auto_detect_room_does_not_panic_on_emoji_and_cjk_around_cap() {
+        // Emoji are 4 bytes; CJK are 3 bytes. Both will straddle 300 bytes.
+        let emoji: String = "🚀🔥✨".repeat(40);
+        assert!(emoji.len() > 300);
+        let _ = auto_detect_room("", "", &emoji);
+        let cjk: String = "数据库患者".repeat(30);
+        assert!(cjk.len() > 300);
+        let _ = auto_detect_room("", "", &cjk);
+        // ASCII keyword within cap still detected.
+        let mixed = format!("patient {}", cjk);
+        assert_eq!(auto_detect_room("", "", &mixed), "patient");
     }
 }

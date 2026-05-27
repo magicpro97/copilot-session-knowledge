@@ -46,8 +46,17 @@ fn try_audit_log(
         .unwrap_or_default()
         .as_secs();
 
-    let truncated = if detail.len() > 200 {
-        &detail[..200]
+    // Char-boundary-safe truncation: byte-slicing `&detail[..200]` can
+    // panic if byte 200 lands inside a multi-byte UTF-8 codepoint
+    // (e.g. user-supplied `briefing.empty` query in CJK / emoji). Walk
+    // back to the nearest char boundary <= 200 so we never split a
+    // codepoint. Preserves the best-effort/no-panic contract.
+    let truncated: &str = if detail.len() > 200 {
+        let mut end = 200;
+        while end > 0 && !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        &detail[..end]
     } else {
         detail
     };
@@ -80,5 +89,28 @@ mod tests {
         // (best-effort). We cannot assert side-effects here without touching FS state,
         // but the important contract is: it never panics.
         audit_log("preToolUse", "bash", "test-rule", "deny", "test detail");
+    }
+
+    #[test]
+    fn audit_log_truncates_on_char_boundary_with_multibyte_detail() {
+        // Regression for Opus blocker #574: byte-slicing `&detail[..200]`
+        // panics when byte index 200 lands inside a multi-byte UTF-8
+        // codepoint (CJK / emoji). User-controlled detail (e.g. the
+        // `briefing.empty` query) must NEVER abort `sk` with a panic.
+        //
+        // Build a detail string whose byte length is well over 200 and
+        // whose codepoint boundaries do not align with byte 200. Each
+        // CJK char here is 3 bytes in UTF-8, so 100 of them = 300 bytes
+        // and boundary 200 lands mid-codepoint.
+        let detail: String = "中".repeat(100);
+        assert!(detail.len() > 200);
+        assert!(!detail.is_char_boundary(200));
+
+        // Must not panic. Direct call exercises the truncation branch.
+        audit_log("briefing.empty", "sk", "-", "-", &detail);
+
+        // Also exercise an emoji-heavy detail to cover 4-byte codepoints.
+        let emoji: String = "🚀".repeat(80); // 320 bytes
+        audit_log("briefing.empty", "sk", "-", "-", &emoji);
     }
 }
