@@ -206,6 +206,32 @@ async function mockOperatorApi(
       return;
     }
 
+    if (path === "/api/operator/usage") {
+      // Issue #556: Usage polling. Tests don't seed any prompts,
+      // so return a zeroed-but-schema-valid response.
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          prompts_this_hour: 0,
+          prompts_today: 0,
+          hourly_limit: 100,
+          daily_limit: 1000,
+          remaining_hour: 100,
+          remaining_day: 1000,
+          soft_warn_fraction: 0.8,
+          soft_warn_threshold_hour: 80,
+          soft_warn_threshold_day: 800,
+          override_policy: "warn-only",
+          by_session: [],
+          by_host: [],
+          by_model: [],
+          by_day: [],
+          today: "1970-01-01",
+        }),
+      });
+      return;
+    }
+
     if (path === "/api/operator/preview") {
       const preview = previewByPath[url.searchParams.get("path") || ""];
       if (!preview) {
