@@ -161,6 +161,8 @@ def is_lock_hooks_recovery(command):
     """Return True only for the official lock-hooks tamper recovery command."""
     if not command:
         return False
+    if not command.isascii():
+        return False
     for ch in command:
         if ch in _REJECT_CHARS:
             return False

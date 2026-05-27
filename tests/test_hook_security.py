@@ -434,6 +434,8 @@ def test_lock_hooks_recovery_allow_and_reject_vectors() -> None:
             ("alt path /etc", "sudo python3 /etc/install.py --lock-hooks"),
             ("typo path", "sudo python3 ~/copilot/tools/install.py --lock-hooks"),
             ("newline injection", "python3 ~/.copilot/tools/install.py --lock-hooks\nrm -rf /"),
+            ("nbsp tokenization", "python3\u00a0~/.copilot/tools/install.py --lock-hooks"),
+            ("nbsp leading", "\u00a0python3 ~/.copilot/tools/install.py --lock-hooks"),
         ]
         for label, cmd in reject:
             test(f"recovery REJECT: {label}", not recover(cmd), f"helper accepted {cmd!r}")

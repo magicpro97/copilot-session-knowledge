@@ -342,6 +342,9 @@ pub fn is_lock_hooks_recovery(command: &str) -> bool {
     if command.is_empty() {
         return false;
     }
+    if !command.is_ascii() {
+        return false;
+    }
     // Reject shell metachars, quotes, backslash, and command substitution
     // before tokenization so injection attempts never reach the allow-list.
     for ch in command.chars() {
@@ -356,7 +359,10 @@ pub fn is_lock_hooks_recovery(command: &str) -> bool {
         return false;
     }
 
-    let mut tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut tokens: Vec<&str> = command
+        .split(|c: char| c == ' ' || c == '\t')
+        .filter(|s| !s.is_empty())
+        .collect();
     if tokens.is_empty() {
         return false;
     }
@@ -943,6 +949,18 @@ mod tests {
         ));
         assert!(!is_lock_hooks_recovery(
             "sudo python3 ~/copilot/tools/install.py --lock-hooks"
+        ));
+    }
+
+    #[test]
+    fn lock_hooks_recovery_rejects_non_ascii_whitespace() {
+        // NBSP (U+00A0) between tokens — must not tokenize as separator.
+        assert!(!is_lock_hooks_recovery(
+            "python3\u{00a0}~/.copilot/tools/install.py --lock-hooks"
+        ));
+        // NBSP leading prefix.
+        assert!(!is_lock_hooks_recovery(
+            "\u{00a0}python3 ~/.copilot/tools/install.py --lock-hooks"
         ));
     }
 
