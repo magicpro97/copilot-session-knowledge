@@ -1,9 +1,13 @@
 """CommandMeta: metadata wrapper for sk.py _DIRECT entries."""
 from __future__ import annotations
-import os, sys
+
+import os
+import sys
+
 if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8")
 from dataclasses import dataclass
+
 
 @dataclass(frozen=True)
 class CommandMeta:

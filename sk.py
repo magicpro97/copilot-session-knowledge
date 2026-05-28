@@ -63,6 +63,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
 from harness.meta import CommandMeta
 
 if os.name == "nt":
