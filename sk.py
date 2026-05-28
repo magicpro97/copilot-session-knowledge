@@ -637,6 +637,91 @@ def _harness_check(args: list[str]) -> int:
     return 1
 
 
+def _harness_doctor(args: list[str]) -> int:
+    """In-process handler for 'sk harness doctor [--json]'.
+
+    Runs 5 checks: scripts, DB, project root, hooks dir, Python version.
+    """
+    import sqlite3
+
+    as_json = "--json" in args
+    tools_dir, _ = _resolve_tools_dir()
+
+    # 1. Scripts check (reuse _harness_check logic without printing)
+    missing_scripts: list[dict] = []
+    for cmd, meta in _DIRECT.items():
+        if not (tools_dir / str(meta)).exists():
+            missing_scripts.append({"cmd": f"sk {cmd}", "script": str(meta)})
+    for group, subs in _GROUPS.items():
+        for sub, script in subs.items():
+            if not (tools_dir / script).exists():
+                missing_scripts.append({"cmd": f"sk {group} {sub}", "script": script})
+    total_scripts = len(_DIRECT) + sum(len(v) for v in _GROUPS.values())
+    scripts_ok = len(missing_scripts) == 0
+
+    # 2. DB check
+    db_path = Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    db_ok = False
+    db_size_mb = 0.0
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=2)
+        conn.execute("SELECT 1")
+        conn.close()
+        db_ok = True
+        if db_path.exists():
+            db_size_mb = round(db_path.stat().st_size / 1_048_576, 1)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 3. Project root
+    root_ok = (tools_dir / "sk.py").exists()
+
+    # 4. Hooks dir
+    hooks_dir = Path.home() / ".copilot" / "hooks"
+    hooks_count = len(list(hooks_dir.glob("*"))) if hooks_dir.exists() else 0
+    hooks_ok = hooks_dir.exists()
+
+    # 5. Python version
+    py_version = sys.version.split()[0]
+    py_parts = [int(x) for x in py_version.split(".")[:2]]
+    py_ok = py_parts >= [3, 10]
+
+    all_ok = scripts_ok and db_ok and root_ok and hooks_ok and py_ok
+    passed = sum([scripts_ok, db_ok, root_ok, hooks_ok, py_ok])
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "scripts": {"ok": total_scripts - len(missing_scripts), "missing": len(missing_scripts)},
+                    "db": {"path": str(db_path), "ok": db_ok, "size_mb": db_size_mb},
+                    "project_root": {"path": str(tools_dir), "ok": root_ok},
+                    "hooks": {"path": str(hooks_dir), "ok": hooks_ok, "count": hooks_count},
+                    "python_version": py_version,
+                    "all_ok": all_ok,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0 if all_ok else 1
+
+    script_label = (
+        f"{total_scripts - len(missing_scripts)}/{total_scripts} OK"
+        if scripts_ok
+        else f"{len(missing_scripts)} MISSING"
+    )
+    print(f"[doctor] Scripts:      {script_label}")
+    db_label = f"{db_path} OK ({db_size_mb} MB)" if db_ok else f"{db_path} NOT ACCESSIBLE"
+    print(f"[doctor] DB:           {db_label}")
+    print(f"[doctor] Project root: {tools_dir}")
+    hooks_label = f"installed ({hooks_count} files in {hooks_dir})" if hooks_ok else f"missing ({hooks_dir})"
+    print(f"[doctor] Hooks:        {hooks_label}")
+    py_label = f"{py_version} >= 3.10 OK" if py_ok else f"{py_version} < 3.10 FAIL"
+    print(f"[doctor] Python:       {py_label}")
+    print(f"[doctor] {'All 5 checks passed' if all_ok else f'{passed}/5 checks passed'}")
+    return 0 if all_ok else 1
+
+
 def _run_harness(args: list[str]) -> int:
     """In-process handler for 'sk harness <subcommand>'."""
     sub = args[0] if args else "help"
@@ -646,10 +731,13 @@ def _run_harness(args: list[str]) -> int:
         return _harness_show(args[1:])
     if sub == "check":
         return _harness_check(args[1:])
+    if sub == "doctor":
+        return _harness_doctor(args[1:])
     print("sk harness subcommands: config, show, check, doctor")
     print("  sk harness config list|get|set  Manage SK_HARNESS/SK_DRY_RUN/SK_DEBUG_TIMING/SK_TOOLS_DIR")
     print("  sk harness show [--tag TAG] [--json]  List all registered commands with metadata")
     print("  sk harness check [--json]  Verify all registered scripts exist on disk")
+    print("  sk harness doctor [--json]  Comprehensive self-check (scripts, DB, hooks, Python)")
     return 0
 
 
