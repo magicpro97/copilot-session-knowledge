@@ -577,6 +577,42 @@ def _harness_show(args: list[str]) -> int:
     return 0
 
 
+def _harness_check(args: list[str]) -> int:
+    """In-process handler for 'sk harness check [--json]'.
+
+    Verifies every script in _DIRECT and _GROUPS exists on disk.
+    Exit 0 when all present, exit 1 when any missing.
+    """
+    as_json = "--json" in args
+    tools_dir, _ = _resolve_tools_dir()
+
+    missing = []
+    for cmd, meta in _DIRECT.items():
+        script = str(meta)
+        if not (tools_dir / script).exists():
+            missing.append({"cmd": f"sk {cmd}", "script": script})
+
+    for group, subs in _GROUPS.items():
+        for sub, script in subs.items():
+            if not (tools_dir / script).exists():
+                missing.append({"cmd": f"sk {group} {sub}", "script": script})
+
+    total = len(_DIRECT) + sum(len(v) for v in _GROUPS.values())
+
+    if as_json:
+        print(json.dumps({"ok": total - len(missing), "missing": missing}, ensure_ascii=False))
+        return 0 if not missing else 1
+
+    if not missing:
+        print(f"[harness check] all {total} scripts OK")
+        return 0
+
+    print(f"[harness check] {len(missing)} missing scripts:")
+    for item in missing:
+        print(f"  {item['cmd']}: {item['script']} NOT FOUND")
+    return 1
+
+
 def _run_harness(args: list[str]) -> int:
     """In-process handler for 'sk harness <subcommand>'."""
     sub = args[0] if args else "help"
@@ -585,10 +621,13 @@ def _run_harness(args: list[str]) -> int:
         return _harness_config(args[1:])
     if sub == "show":
         return _harness_show(args[1:])
-    # check / doctor come in H-005/H-006
+    if sub == "check":
+        return _harness_check(args[1:])
+    # doctor comes in H-006
     print("sk harness subcommands: config, show, check, doctor")
     print("  sk harness config list|get|set")
     print("  sk harness show [--tag TAG] [--json]  List all registered commands with metadata")
+    print("  sk harness check [--json]  Verify all registered scripts exist on disk")
     return 0
 
 
@@ -637,6 +676,7 @@ def _print_help() -> None:
         f"{_help_groups()}\n"
         "  sk harness config    Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING, SK_TOOLS_DIR)\n"
         "  sk harness show      List all registered commands with metadata [--tag TAG] [--json]\n"
+        "  sk harness check     Verify all registered scripts exist [--json]\n"
         "\nUse `sk <command> --help` to see help for a specific script.\n"
         "All direct `python3 ~/.copilot/tools/*.py` invocations still work.\n"
     )
