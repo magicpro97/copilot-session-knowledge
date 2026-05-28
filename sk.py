@@ -63,6 +63,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from harness.meta import CommandMeta
 
 if os.name == "nt":
     for _stream in (sys.stdout, sys.stderr):
@@ -94,39 +95,39 @@ _PROJECT_DB_SCRIPTS = {
 # ---------------------------------------------------------------------------
 
 # Top-level direct commands: (script_name,)
-_DIRECT: dict[str, str] = {
-    "briefing": "briefing.py",
-    "query": "query-session.py",
-    "learn": "learn.py",
-    "clarify": "clarify.py",
-    "specify": "specify.py",
-    "plan": "specify.py",
-    "tasks": "specify.py",
-    "task": "task.py",
-    "tentacle": "tentacle.py",
-    "install": "install.py",
-    "setup": "setup-project.py",
-    "update": "auto-update-tools.py",
-    "browse": "browse.py",
-    "benchmark": "benchmark.py",
-    "retro": "retro.py",
-    "heal": "copilot-cli-healer.py",
-    "doctor": "install.py",
-    "watch": "watch-sessions.py",
-    "export-buglog": "buglog-export.py",
-    "buglog": "buglog-export.py",  # alias for export-buglog (backward compat)
-    "export-cerebrum": "export-cerebrum.py",
-    "cerebrum": "export-cerebrum.py",  # alias for export-cerebrum (short form)
-    "dream": "dream.py",
-    "anatomy": "anatomy-map.py",
-    "skill-suggest": "skill-suggest.py",
-    "skill-patch": "skill-patch.py",
-    "skill-curator": "skill-curator.py",
-    "audit-hooks": "audit-hooks.py",
-    "audit-instructions": "audit-instructions.py",
-    "improvement-signals": "improvement-signals.py",
-    "status": "statusline.py",       # show session token usage + quota summary
-    "statusline": "statusline.py",   # alias for status
+_DIRECT: dict[str, CommandMeta] = {
+    "briefing":            CommandMeta("briefing.py",            "Surface past session knowledge and mistakes",          ("session", "recall", "index")),
+    "query":               CommandMeta("query-session.py",       "Semantic search over knowledge base",                  ("index", "search")),
+    "learn":               CommandMeta("learn.py",               "Record mistakes, patterns, features, decisions",       ("session", "learn")),
+    "clarify":             CommandMeta("clarify.py",             "Clarify ambiguous task specs before coding",           ("planning",)),
+    "specify":             CommandMeta("specify.py",             "Generate structured task specification",               ("planning",)),
+    "plan":                CommandMeta("specify.py",             "Alias: generate task plan",                           ("planning",), aliases=("specify",)),
+    "tasks":               CommandMeta("specify.py",             "Alias: generate task list",                           ("planning",), aliases=("specify",)),
+    "task":                CommandMeta("task.py",                "Track and manage individual tasks",                    ("planning",)),
+    "tentacle":            CommandMeta("tentacle.py",            "Orchestrate multi-agent tentacle workflows",           ("orchestration", "agents")),
+    "install":             CommandMeta("install.py",             "Install or update sk tools and hooks",                 ("install", "setup")),
+    "setup":               CommandMeta("setup-project.py",       "Initialize project for session knowledge",             ("install", "setup")),
+    "update":              CommandMeta("auto-update-tools.py",   "Auto-update all tools from remote",                   ("install", "update")),
+    "browse":              CommandMeta("browse.py",              "Launch browse-ui session explorer",                    ("browse", "ui")),
+    "benchmark":           CommandMeta("benchmark.py",           "Benchmark tool and model performance",                 ("benchmark",)),
+    "retro":               CommandMeta("retro.py",               "Generate retrospective from session history",          ("session", "retro")),
+    "heal":                CommandMeta("copilot-cli-healer.py",  "Diagnose and fix common sk installation issues",       ("install", "doctor")),
+    "doctor":              CommandMeta("install.py",             "Run installation health checks",                       ("install", "doctor")),
+    "watch":               CommandMeta("watch-sessions.py",      "Watch and auto-index new CLI sessions",                ("watch", "index")),
+    "export-buglog":       CommandMeta("buglog-export.py",       "Export bug log entries",                               ("export", "buglog")),
+    "buglog":              CommandMeta("buglog-export.py",       "Alias: export bug log",                               ("export", "buglog"), aliases=("export-buglog",)),
+    "export-cerebrum":     CommandMeta("export-cerebrum.py",     "Export cerebrum knowledge graph",                      ("export", "cerebrum")),
+    "cerebrum":            CommandMeta("export-cerebrum.py",     "Alias: export cerebrum",                              ("export", "cerebrum"), aliases=("export-cerebrum",)),
+    "dream":               CommandMeta("dream.py",               "Generate dream-mode creative session summaries",       ("session", "creative")),
+    "anatomy":             CommandMeta("anatomy-map.py",         "Map codebase anatomy and structure",                   ("index", "map")),
+    "skill-suggest":       CommandMeta("skill-suggest.py",       "Suggest relevant skills for current task",             ("skills",)),
+    "skill-patch":         CommandMeta("skill-patch.py",         "Patch and update installed skills",                   ("skills", "update")),
+    "skill-curator":       CommandMeta("skill-curator.py",       "Curate and manage skill library",                      ("skills",)),
+    "audit-hooks":         CommandMeta("audit-hooks.py",         "Audit hook installation and configuration",            ("hooks", "audit")),
+    "audit-instructions":  CommandMeta("audit-instructions.py",  "Audit agent instruction files",                        ("docs", "audit")),
+    "improvement-signals": CommandMeta("improvement-signals.py", "Surface improvement signal patterns",                  ("session", "analytics")),
+    "status":              CommandMeta("statusline.py",          "Show session token usage and AI cost summary",          ("session", "cost")),
+    "statusline":          CommandMeta("statusline.py",          "Alias: session token usage footer",                   ("session", "cost"), aliases=("status",)),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -493,7 +494,10 @@ def _run_cron(extra_args: list[str]) -> int:
 
 
 def _print_help() -> None:
-    direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
+    direct_list = "  " + "\n  ".join(
+        f"sk {cmd:<20} {str(meta.description):<40} {','.join(meta.tags[:2])}"
+        for cmd, meta in _DIRECT.items()
+    )
     print(
         f"sk {__version__} — copilot-session-knowledge unified CLI\n"
         "\nDirect commands:\n"
@@ -539,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "init":
         return _run("setup-project.py", ["--init-mode"] + rest)
     if cmd in _DIRECT:
-        return _run(_DIRECT[cmd], rest)
+        return _run(str(_DIRECT[cmd]), rest)
 
     # Grouped namespace?
     if cmd in _GROUPS:

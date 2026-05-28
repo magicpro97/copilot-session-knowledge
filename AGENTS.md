@@ -41,7 +41,7 @@ See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-
 
 ## Architecture Key Facts
 
-- **Standalone scripts by default** — avoid inter-script imports unless a documented helper exception such as `_tentacle_core.py`, `_tentacle_goal.py`, `_tentacle_pr.py`, `_tentacle_dispatch.py`, or `_tentacle_review.py` preserves an existing contract
+- **Standalone scripts by default** — avoid inter-script imports unless a documented helper exception such as `_tentacle_core.py`, `_tentacle_goal.py`, `_tentacle_pr.py`, `_tentacle_dispatch.py`, or `_tentacle_review.py` preserves an existing contract; `harness/meta.py` — `CommandMeta` dataclass registry; imported by `sk.py` for `_DIRECT` metadata (do not remove this import exception)
 - **Pure stdlib Python 3.10+** — zero pip dependencies; `scikit-learn` / embedding keys are optional
 - **Parameterized SQL only** — `?` placeholders; never interpolate user input into SQL
 - **JSON serialization only** — never use pickle
