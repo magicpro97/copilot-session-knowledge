@@ -108,6 +108,24 @@ def install_agents() -> int:
             print(line)
     else:
         log("  (none running yet)")
+
+    # Deploy global skills on install so ~/.copilot/skills/ is populated immediately.
+    global_skills_dir = Path.home() / ".copilot" / "skills"
+    existing_skills = list(global_skills_dir.glob("*/SKILL.md")) if global_skills_dir.exists() else []
+    if not existing_skills:
+        log("")
+        log("Deploying global skills to ~/.copilot/skills/ ...")
+        install_py = LAUNCHD_DIR.parent / "install.py"
+        if install_py.is_file():
+            r = subprocess.run(
+                [python_bin, str(install_py), "--deploy-global-skills"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                ok("Global skills deployed")
+            else:
+                warn(f"Global skills deploy failed: {r.stderr.strip()[:200]}")
+
     return 0
 
 

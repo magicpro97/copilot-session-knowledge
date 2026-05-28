@@ -684,7 +684,9 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
             refresh_global_instructions()
 
         # 5. Skill sources or installer changed → initialize/refresh global skills
-        if changes.get("global_skills"):
+        global_skills_dir = HOME / ".copilot" / "skills"
+        skills_missing = not global_skills_dir.exists() or not any(global_skills_dir.glob("*/SKILL.md"))
+        if changes.get("global_skills") or skills_missing:
             refresh_global_skills()
 
         # 5b. Template/SKILL.md changed → redeploy project skills
