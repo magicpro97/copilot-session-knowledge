@@ -1,0 +1,661 @@
+{
+  "version": 1,
+  "commands": {
+    "briefing": {
+      "script": "briefing.py",
+      "description": "Surface past session knowledge and mistakes",
+      "tags": [
+        "session",
+        "recall",
+        "index"
+      ],
+      "group": "direct"
+    },
+    "query": {
+      "script": "query-session.py",
+      "description": "Semantic search over knowledge base",
+      "tags": [
+        "index",
+        "search"
+      ],
+      "group": "direct"
+    },
+    "learn": {
+      "script": "learn.py",
+      "description": "Record mistakes, patterns, features, decisions",
+      "tags": [
+        "session",
+        "learn"
+      ],
+      "group": "direct"
+    },
+    "clarify": {
+      "script": "clarify.py",
+      "description": "Clarify ambiguous task specs before coding",
+      "tags": [
+        "planning"
+      ],
+      "group": "direct"
+    },
+    "specify": {
+      "script": "specify.py",
+      "description": "Generate structured task specification",
+      "tags": [
+        "planning"
+      ],
+      "group": "direct"
+    },
+    "plan": {
+      "script": "specify.py",
+      "description": "Alias: generate task plan",
+      "tags": [
+        "planning"
+      ],
+      "group": "direct",
+      "aliases": [
+        "specify"
+      ]
+    },
+    "tasks": {
+      "script": "specify.py",
+      "description": "Alias: generate task list",
+      "tags": [
+        "planning"
+      ],
+      "group": "direct",
+      "aliases": [
+        "specify"
+      ]
+    },
+    "task": {
+      "script": "task.py",
+      "description": "Track and manage individual tasks",
+      "tags": [
+        "planning"
+      ],
+      "group": "direct"
+    },
+    "tentacle": {
+      "script": "tentacle.py",
+      "description": "Orchestrate multi-agent tentacle workflows",
+      "tags": [
+        "orchestration",
+        "agents"
+      ],
+      "group": "direct"
+    },
+    "install": {
+      "script": "install.py",
+      "description": "Install or update sk tools and hooks",
+      "tags": [
+        "install",
+        "setup"
+      ],
+      "group": "direct"
+    },
+    "setup": {
+      "script": "setup-project.py",
+      "description": "Initialize project for session knowledge",
+      "tags": [
+        "install",
+        "setup"
+      ],
+      "group": "direct"
+    },
+    "update": {
+      "script": "auto-update-tools.py",
+      "description": "Auto-update all tools from remote",
+      "tags": [
+        "install",
+        "update"
+      ],
+      "group": "direct"
+    },
+    "browse": {
+      "script": "browse.py",
+      "description": "Launch browse-ui session explorer",
+      "tags": [
+        "browse",
+        "ui"
+      ],
+      "group": "direct"
+    },
+    "benchmark": {
+      "script": "benchmark.py",
+      "description": "Benchmark tool and model performance",
+      "tags": [
+        "benchmark"
+      ],
+      "group": "direct"
+    },
+    "retro": {
+      "script": "retro.py",
+      "description": "Generate retrospective from session history",
+      "tags": [
+        "session",
+        "retro"
+      ],
+      "group": "direct"
+    },
+    "heal": {
+      "script": "copilot-cli-healer.py",
+      "description": "Diagnose and fix common sk installation issues",
+      "tags": [
+        "install",
+        "doctor"
+      ],
+      "group": "direct"
+    },
+    "doctor": {
+      "script": "install.py",
+      "description": "Run installation health checks",
+      "tags": [
+        "install",
+        "doctor"
+      ],
+      "group": "direct"
+    },
+    "watch": {
+      "script": "watch-sessions.py",
+      "description": "Watch and auto-index new CLI sessions",
+      "tags": [
+        "watch",
+        "index"
+      ],
+      "group": "direct"
+    },
+    "export-buglog": {
+      "script": "buglog-export.py",
+      "description": "Export bug log entries",
+      "tags": [
+        "export",
+        "buglog"
+      ],
+      "group": "direct"
+    },
+    "buglog": {
+      "script": "buglog-export.py",
+      "description": "Alias: export bug log",
+      "tags": [
+        "export",
+        "buglog"
+      ],
+      "group": "direct",
+      "aliases": [
+        "export-buglog"
+      ]
+    },
+    "export-cerebrum": {
+      "script": "export-cerebrum.py",
+      "description": "Export cerebrum knowledge graph",
+      "tags": [
+        "export",
+        "cerebrum"
+      ],
+      "group": "direct"
+    },
+    "cerebrum": {
+      "script": "export-cerebrum.py",
+      "description": "Alias: export cerebrum",
+      "tags": [
+        "export",
+        "cerebrum"
+      ],
+      "group": "direct",
+      "aliases": [
+        "export-cerebrum"
+      ]
+    },
+    "dream": {
+      "script": "dream.py",
+      "description": "Generate dream-mode creative session summaries",
+      "tags": [
+        "session",
+        "creative"
+      ],
+      "group": "direct"
+    },
+    "anatomy": {
+      "script": "anatomy-map.py",
+      "description": "Map codebase anatomy and structure",
+      "tags": [
+        "index",
+        "map"
+      ],
+      "group": "direct"
+    },
+    "skill-suggest": {
+      "script": "skill-suggest.py",
+      "description": "Suggest relevant skills for current task",
+      "tags": [
+        "skills"
+      ],
+      "group": "direct"
+    },
+    "skill-patch": {
+      "script": "skill-patch.py",
+      "description": "Patch and update installed skills",
+      "tags": [
+        "skills",
+        "update"
+      ],
+      "group": "direct"
+    },
+    "skill-curator": {
+      "script": "skill-curator.py",
+      "description": "Curate and manage skill library",
+      "tags": [
+        "skills"
+      ],
+      "group": "direct"
+    },
+    "audit-hooks": {
+      "script": "audit-hooks.py",
+      "description": "Audit hook installation and configuration",
+      "tags": [
+        "hooks",
+        "audit"
+      ],
+      "group": "direct"
+    },
+    "audit-instructions": {
+      "script": "audit-instructions.py",
+      "description": "Audit agent instruction files",
+      "tags": [
+        "docs",
+        "audit"
+      ],
+      "group": "direct"
+    },
+    "improvement-signals": {
+      "script": "improvement-signals.py",
+      "description": "Surface improvement signal patterns",
+      "tags": [
+        "session",
+        "analytics"
+      ],
+      "group": "direct"
+    },
+    "status": {
+      "script": "statusline.py",
+      "description": "Show session token usage and AI cost summary",
+      "tags": [
+        "session",
+        "cost"
+      ],
+      "group": "direct"
+    },
+    "statusline": {
+      "script": "statusline.py",
+      "description": "Alias: session token usage footer",
+      "tags": [
+        "session",
+        "cost"
+      ],
+      "group": "direct",
+      "aliases": [
+        "status"
+      ]
+    },
+    "index build": {
+      "script": "build-session-index.py",
+      "description": "index build",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "index extract": {
+      "script": "extract-knowledge.py",
+      "description": "index extract",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "index migrate": {
+      "script": "migrate.py",
+      "description": "index migrate",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "index status": {
+      "script": "index-status.py",
+      "description": "index status",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "index health": {
+      "script": "knowledge-health.py",
+      "description": "index health",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "index embed": {
+      "script": "embed.py",
+      "description": "index embed",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "index tag": {
+      "script": "tag-entries.py",
+      "description": "index tag",
+      "tags": [
+        "index"
+      ],
+      "group": "index"
+    },
+    "sync run": {
+      "script": "sync-daemon.py",
+      "description": "sync run",
+      "tags": [
+        "sync"
+      ],
+      "group": "sync"
+    },
+    "sync config": {
+      "script": "sync-config.py",
+      "description": "sync config",
+      "tags": [
+        "sync"
+      ],
+      "group": "sync"
+    },
+    "sync status": {
+      "script": "sync-status.py",
+      "description": "sync status",
+      "tags": [
+        "sync"
+      ],
+      "group": "sync"
+    },
+    "sync gateway": {
+      "script": "sync-gateway.py",
+      "description": "sync gateway",
+      "tags": [
+        "sync"
+      ],
+      "group": "sync"
+    },
+    "sync merge": {
+      "script": "sync-knowledge.py",
+      "description": "sync merge",
+      "tags": [
+        "sync"
+      ],
+      "group": "sync"
+    },
+    "checkpoint save": {
+      "script": "checkpoint-save.py",
+      "description": "checkpoint save",
+      "tags": [
+        "checkpoint"
+      ],
+      "group": "checkpoint"
+    },
+    "checkpoint restore": {
+      "script": "checkpoint-restore.py",
+      "description": "checkpoint restore",
+      "tags": [
+        "checkpoint"
+      ],
+      "group": "checkpoint"
+    },
+    "checkpoint diff": {
+      "script": "checkpoint-diff.py",
+      "description": "checkpoint diff",
+      "tags": [
+        "checkpoint"
+      ],
+      "group": "checkpoint"
+    },
+    "constitution init": {
+      "script": "constitution.py",
+      "description": "constitution init",
+      "tags": [
+        "constitution"
+      ],
+      "group": "constitution"
+    },
+    "constitution check": {
+      "script": "constitution.py",
+      "description": "constitution check",
+      "tags": [
+        "constitution"
+      ],
+      "group": "constitution"
+    },
+    "constitution amend": {
+      "script": "constitution.py",
+      "description": "constitution amend",
+      "tags": [
+        "constitution"
+      ],
+      "group": "constitution"
+    },
+    "profile build": {
+      "script": "profile-builder.py",
+      "description": "profile build",
+      "tags": [
+        "profile"
+      ],
+      "group": "profile"
+    },
+    "profile import": {
+      "script": "profile-import.py",
+      "description": "profile import",
+      "tags": [
+        "profile"
+      ],
+      "group": "profile"
+    },
+    "profile export": {
+      "script": "profile-export.py",
+      "description": "profile export",
+      "tags": [
+        "profile"
+      ],
+      "group": "profile"
+    },
+    "preset add": {
+      "script": "preset-manager.py",
+      "description": "preset add",
+      "tags": [
+        "preset"
+      ],
+      "group": "preset"
+    },
+    "preset remove": {
+      "script": "preset-manager.py",
+      "description": "preset remove",
+      "tags": [
+        "preset"
+      ],
+      "group": "preset"
+    },
+    "preset list": {
+      "script": "preset-manager.py",
+      "description": "preset list",
+      "tags": [
+        "preset"
+      ],
+      "group": "preset"
+    },
+    "context project": {
+      "script": "project-context.py",
+      "description": "context project",
+      "tags": [
+        "context"
+      ],
+      "group": "context"
+    },
+    "context map": {
+      "script": "codebase-map.py",
+      "description": "context map",
+      "tags": [
+        "context"
+      ],
+      "group": "context"
+    },
+    "context upsert": {
+      "script": "context-blocks.py",
+      "description": "context upsert",
+      "tags": [
+        "context"
+      ],
+      "group": "context"
+    },
+    "context remove": {
+      "script": "context-blocks.py",
+      "description": "context remove",
+      "tags": [
+        "context"
+      ],
+      "group": "context"
+    },
+    "scout run": {
+      "script": "trend-scout.py",
+      "description": "scout run",
+      "tags": [
+        "scout"
+      ],
+      "group": "scout"
+    },
+    "scout config": {
+      "script": "scout-config.py",
+      "description": "scout config",
+      "tags": [
+        "scout"
+      ],
+      "group": "scout"
+    },
+    "scout status": {
+      "script": "scout-status.py",
+      "description": "scout status",
+      "tags": [
+        "scout"
+      ],
+      "group": "scout"
+    },
+    "cron add": {
+      "script": "cron-tasks.py",
+      "description": "cron add",
+      "tags": [
+        "cron"
+      ],
+      "group": "cron"
+    },
+    "cron remove": {
+      "script": "cron-tasks.py",
+      "description": "cron remove",
+      "tags": [
+        "cron"
+      ],
+      "group": "cron"
+    },
+    "cron list": {
+      "script": "cron-tasks.py",
+      "description": "cron list",
+      "tags": [
+        "cron"
+      ],
+      "group": "cron"
+    },
+    "cron run": {
+      "script": "cron-tasks.py",
+      "description": "cron run",
+      "tags": [
+        "cron"
+      ],
+      "group": "cron"
+    },
+    "project add": {
+      "script": "project-registry.py",
+      "description": "project add",
+      "tags": [
+        "project"
+      ],
+      "group": "project"
+    },
+    "project remove": {
+      "script": "project-registry.py",
+      "description": "project remove",
+      "tags": [
+        "project"
+      ],
+      "group": "project"
+    },
+    "project list": {
+      "script": "project-registry.py",
+      "description": "project list",
+      "tags": [
+        "project"
+      ],
+      "group": "project"
+    },
+    "skill catalog": {
+      "script": "skill-catalog.py",
+      "description": "skill catalog",
+      "tags": [
+        "skill"
+      ],
+      "group": "skill"
+    },
+    "skill add": {
+      "script": "skill-catalog.py",
+      "description": "skill add",
+      "tags": [
+        "skill"
+      ],
+      "group": "skill"
+    },
+    "skill remove": {
+      "script": "skill-catalog.py",
+      "description": "skill remove",
+      "tags": [
+        "skill"
+      ],
+      "group": "skill"
+    },
+    "events append": {
+      "script": "events.py",
+      "description": "events append",
+      "tags": [
+        "events"
+      ],
+      "group": "events"
+    },
+    "events status": {
+      "script": "events.py",
+      "description": "events status",
+      "tags": [
+        "events"
+      ],
+      "group": "events"
+    },
+    "events replay": {
+      "script": "events.py",
+      "description": "events replay",
+      "tags": [
+        "events"
+      ],
+      "group": "events"
+    },
+    "events tail": {
+      "script": "events.py",
+      "description": "events tail",
+      "tags": [
+        "events"
+      ],
+      "group": "events"
+    }
+  }
+}
