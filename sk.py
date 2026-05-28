@@ -506,6 +506,108 @@ def _run_cron(extra_args: list[str]) -> int:
     return _run("cron-tasks.py", extra_args)
 
 
+_HARNESS_ENV_VARS: dict[str, str] = {
+    "SK_HARNESS": "Enable middleware hooks (0/1)",
+    "SK_DEBUG_TIMING": "Verbose timing to stderr (0/1)",
+    "SK_DRY_RUN": "Print commands without running (0/1)",
+    "SK_TOOLS_DIR": "Override tools directory path",
+}
+
+
+def _harness_config(args: list[str]) -> int:
+    """In-process handler for 'sk harness config list|get|set'."""
+    action = args[0] if args else "list"
+    if action == "list":
+        for var, desc in _HARNESS_ENV_VARS.items():
+            val = os.environ.get(var, "(unset)")
+            print(f"  {var:<22} = {val:<12}  # {desc}")
+        return 0
+    if action == "get":
+        if len(args) < 2:
+            print("Usage: sk harness config get <VAR>", file=sys.stderr)
+            return 1
+        print(os.environ.get(args[1], "(unset)"))
+        return 0
+    if action == "set":
+        if len(args) < 3:
+            print("Usage: sk harness config set <VAR> <VALUE>", file=sys.stderr)
+            return 1
+        var, value = args[1], args[2]
+        if var not in _HARNESS_ENV_VARS:
+            print(f"[sk harness] warning: unknown var {var!r}", file=sys.stderr)
+        os.environ[var] = value
+        print(f"{var}={value}")
+        return 0
+    print(f"Unknown config action: {action!r}. Use list, get, or set.", file=sys.stderr)
+    return 1
+
+
+def _harness_show(args: list[str]) -> int:
+    """In-process handler for 'sk harness show [--tag TAG] [--json]'."""
+    tag_filter: str | None = None
+    as_json = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--json":
+            as_json = True
+        elif args[i] == "--tag" and i + 1 < len(args):
+            i += 1
+            tag_filter = args[i]
+        i += 1
+
+    # Merge _DIRECT entries; overlay manifest extras if available
+    from harness.manifest import load_manifest
+
+    tools_dir, _ = _resolve_tools_dir()
+    manifest = load_manifest(str(tools_dir))
+    manifest_cmds: dict = manifest.get("commands", {})
+
+    entries = []
+    for cmd, meta in _DIRECT.items():
+        tags = list(meta.tags)
+        if tag_filter and tag_filter not in tags:
+            continue
+        entries.append({"cmd": cmd, "script": str(meta), "description": str(meta.description), "tags": tags})
+
+    # Add group entries from manifest that are not in _DIRECT
+    for key, info in manifest_cmds.items():
+        if " " in key:  # group sub entries like "index build"
+            tags = info.get("tags", [])
+            if tag_filter and tag_filter not in tags:
+                continue
+            entries.append(
+                {
+                    "cmd": f"sk {key}",
+                    "script": info.get("script", ""),
+                    "description": info.get("description", ""),
+                    "tags": tags,
+                }
+            )
+
+    if as_json:
+        print(json.dumps(entries, ensure_ascii=False))
+        return 0
+
+    for e in entries:
+        tag_str = "[" + ", ".join(e["tags"][:3]) + "]"
+        cmd_label = f"sk {e['cmd']}" if not e["cmd"].startswith("sk ") else e["cmd"]
+        print(f"  {cmd_label:<30} {e['description']:<45} {tag_str}")
+    return 0
+
+
+def _run_harness(args: list[str]) -> int:
+    """In-process handler for 'sk harness <subcommand>'."""
+    sub = args[0] if args else "help"
+    if sub == "config":
+        return _harness_config(args[1:])
+    if sub == "show":
+        return _harness_show(args[1:])
+    print("sk harness subcommands: config, show, check, doctor")
+    print("  sk harness config list|get|set  Manage SK_HARNESS/SK_DRY_RUN/SK_DEBUG_TIMING/SK_TOOLS_DIR")
+    print("  sk harness show [--tag TAG] [--json]  List all registered commands with metadata")
+    return 0
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(
         f"sk {cmd:<20} {str(meta.description):<40} {','.join(meta.tags[:2])}" for cmd, meta in _DIRECT.items()
@@ -516,6 +618,8 @@ def _print_help() -> None:
         f"{direct_list}\n"
         "\nGrouped namespaces:\n"
         f"{_help_groups()}\n"
+        "  sk harness config           Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING)\n"
+        "  sk harness show             List all registered commands with metadata\n"
         "\nUse `sk <command> --help` to see help for a specific script.\n"
         "All direct `python3 ~/.copilot/tools/*.py` invocations still work.\n"
     )
@@ -538,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
     # Direct command?
     if cmd == "hooks":
         return _run_hooks(rest)
+    if cmd == "harness":
+        return _run_harness(rest)
     if cmd == "project":
         return _run_project(rest)
     if cmd == "constitution":
