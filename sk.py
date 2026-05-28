@@ -40,6 +40,8 @@ Usage:
     sk audit-hooks  [<args>...]       Run audit-hooks.py
     sk audit-instructions [<args>...] Run audit-instructions.py
     sk improvement-signals [<args>...] Run improvement-signals.py
+    sk status       [--quota]         Show session token usage + quota summary
+    sk statusline   [--quota]         Alias for sk status (also usable as Copilot CLI footer script)
 
     sk index  build|extract|migrate|status|health|embed|tag [<args>...]
     sk sync   run|config|status|gateway|merge [<args>...]
@@ -123,6 +125,8 @@ _DIRECT: dict[str, str] = {
     "audit-hooks": "audit-hooks.py",
     "audit-instructions": "audit-instructions.py",
     "improvement-signals": "improvement-signals.py",
+    "status": "statusline.py",       # show session token usage + quota summary
+    "statusline": "statusline.py",   # alias for status
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}

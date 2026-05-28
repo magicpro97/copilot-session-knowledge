@@ -30,12 +30,19 @@ Always start with the lightest fetch, then escalate only when a hit is relevant:
 | Task complexity | Recommended command | Approx tokens |
 |----------------|---------------------|---------------|
 | Trivial / session start | `briefing.py --wakeup` | ~170 |
-| Moderate (bug fix, small feature) | `briefing.py --auto --compact` | ~500 |
+| Moderate (bug fix, small feature) | `briefing.py "specific task description" --compact` | ~500 |
+| General orientation (not task-specific) | `briefing.py --auto --compact` | ~500 |
 | Complex / unfamiliar area | `briefing.py "task" --full` | ~3K |
 | Drill into one entry | `query-session.py --detail <id>` | varies |
 
 **Do not load `--full` when `--compact` shows no relevant hits.** A large briefing that
 surfaces nothing useful costs tokens without benefit.
+
+**`--auto` extracts keywords from git diff** — good for session orientation, but off-topic
+for targeted task recall. Prefer `briefing.py "your actual task" --compact` for any specific task.
+
+**`--compact` truncates to ~180 chars per entry.** Always follow up with `--detail <id>`
+on any entry whose title looks relevant — the actual fix/solution is usually in the truncated part.
 
 ## Core Commands
 
@@ -312,6 +319,35 @@ User: "Getting 'SSL: CERTIFICATE_VERIFY_FAILED' on CI — has this come up befor
      --tags "ssl,ci,proxy" --wing devops --room ci
    ```
 </example>
+
+## Search Quality Rules
+
+**Use specific, task-relevant keywords.** Vague searches waste tokens and miss knowledge:
+
+```bash
+# ❌ BAD — too vague
+sk query "fix" --compact
+sk query "error" --compact
+
+# ✅ GOOD — specific to the actual problem
+sk query "WASAPI loopback buffer underflow" --compact
+sk query "tokio runtime thread panicked" --compact
+sk query "ratatui crossterm Windows resize" --compact
+```
+
+**`--compact` is step 1 only.** It outputs titles (~20 tokens each). You MUST follow up with
+`--detail <id>` on any hit whose title looks relevant to your task:
+
+```bash
+# Step 1
+sk query "docker compose networking" --compact
+# Step 2 — drill into relevant hits
+sk query --detail 1842
+```
+
+❌ NEVER stop after `--compact` without `--detail <id>` on relevant-looking hits.
+❌ NEVER search with generic words like "fix", "error", "issue" — use specific tech/module terms.
+✅ If first search returns < 3 hits, expand with 1–2 related keyword variants.
 
 ## Semantic Search (if embeddings configured)
 

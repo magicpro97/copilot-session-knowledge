@@ -234,6 +234,7 @@ TOOL_FILES = [
     "skill-catalog.py",
     "preset-manager.py",
     "install.py",
+    "statusline.py",
 ]
 
 SUPPORT_FILES = [
