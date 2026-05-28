@@ -19,6 +19,7 @@ use super::marker_auth;
 mod edit_track;
 mod guard;
 mod learn;
+pub mod retry;
 mod session;
 mod tentacle;
 mod verification;
@@ -155,6 +156,7 @@ pub fn all_rules() -> Vec<Box<dyn HookRule>> {
         Box::new(SessionEndRule),
         Box::new(RecurrenceDetectorRule),
         Box::new(AgentStopRule),
+        Box::new(retry::RateLimitRetryRule),
         Box::new(ErrorOccurredRule),
     ]
 }

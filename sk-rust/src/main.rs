@@ -162,6 +162,11 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Inspect or clear queued rate-limit retry telemetry
+    Retry {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -326,6 +331,7 @@ fn main() -> ExitCode {
         Some(Commands::SkillPatch { args }) => run_fallback("skill-patch.py", &args),
         Some(Commands::AuditHooks { args }) => run_fallback("audit-hooks.py", &args),
         Some(Commands::AuditLog { args }) => commands::audit_log::run_audit_log_command(&args),
+        Some(Commands::Retry { args }) => commands::retry::run_retry_command(&args),
     };
 
     if cli.time {

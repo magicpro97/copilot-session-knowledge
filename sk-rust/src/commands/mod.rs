@@ -7,6 +7,7 @@ pub mod index_native;
 pub mod learn;
 pub mod project;
 pub mod query;
+pub mod retry;
 pub mod sync_native;
 pub mod sync_run;
 pub mod watch;

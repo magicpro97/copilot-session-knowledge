@@ -62,6 +62,7 @@ hooks/
 | `token-tracker` | postToolUse | Estimates per-session token usage from `view`/`edit`/`create`, stores totals plus `files_read` metadata in shared session state, and emits one-time budget warnings (default 80% / 95%; `TOKEN_BUDGET` override). |
 | `episode-batcher` | postToolUse | Opt-in (`SK_EPISODE_BATCH_ENABLED=1`) deterministic episode batching that writes compact tool-use summaries to the knowledge DB after a threshold; fail-open and never blocks. |
 | `error-fix-nudge` | postToolUse | After an `errorOccurred` marker, reminds on bash/edit/create to record the eventual fix with `sk learn`; clears automatically when learn is detected. |
+| `429-retry` | errorOccurred | Detects provider rate-limit / throttle errors, records HMAC-protected retry telemetry in `~/.copilot/markers/retry-queue.jsonl`, and surfaces `sk retry list` recovery guidance. Uses issue #614 defaults: 5 attempts, 1s base, 60s cap, 1.6 multiplier, 300s budget; `Retry-After` in `(0, 60]` wins directly. |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
 | `session-compiler` | sessionEnd | Opt-in (`SK_SESSION_COMPILE_ENABLED=1`) deterministic session-end compiler that consolidates raw knowledge entries into higher-level compiled entries; fail-open. |
 | `skill-improvement-advisor` | sessionEnd | Analyzes session knowledge: mistakes/patterns recorded recently, high-recurrence entries (briefed but recurring), and `improvement_signals` entries (missed_match / wrong_skill / outdated). Writes up to 5 actionable skill-improvement suggestions to `~/.copilot/markers/skill-improvement-pending.json`. The next session's `auto-briefing` (sessionStart) reads, surfaces, and deletes the queue file — suggestions appear once. Data sources: `knowledge.db` entries from the last 4 hours. Fail-open; never blocks session end. |
@@ -139,6 +140,7 @@ The **actual platform sends `toolArgs` as a parsed JSON object (dict)**, not a s
 - **Fail-open** — rule errors/crashes don't block the agent
 - **HMAC-signed counters** — all counters use HMAC (fixes plain counter bug)
 - **Audit logging** — all decisions logged to `~/.copilot/markers/audit.jsonl`
+- **Rate-limit retry telemetry** — `sk retry list|status|clear` inspects the HMAC-verified retry queue written by the native `429-retry` rule
 - **Dry-run mode** — set `HOOK_DRY_RUN=1` to test without blocking
 - **Merged duplicates** — tentacle enforce+suggest, track+test share code
 
