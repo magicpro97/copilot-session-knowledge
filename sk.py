@@ -358,15 +358,19 @@ def _project_env_for_script(script: str) -> dict[str, str] | None:
     return env
 
 
-def _run(script: str, extra_args: list[str]) -> int:
+def _run(script: str, extra_args: list[str], cmd: str = "") -> int:
     """Delegate to a standalone script via subprocess."""
     tools_dir, from_env = _resolve_tools_dir()
     script_path = tools_dir / script
     if not script_path.exists():
         _print_missing_script_error(tools_dir, script, from_env=from_env)
         return 2
-    cmd = [sys.executable, str(script_path)] + extra_args
-    result = subprocess.run(cmd, env=_project_env_for_script(script))
+    if os.environ.get("SK_HARNESS") == "1":
+        from harness.dispatch import run_with_hooks  # noqa: PLC0415
+
+        return run_with_hooks(cmd, script, extra_args, str(tools_dir))
+    proc_cmd = [sys.executable, str(script_path)] + extra_args
+    result = subprocess.run(proc_cmd, env=_project_env_for_script(script))
     return result.returncode
 
 
@@ -512,6 +516,59 @@ def _run_cron(extra_args: list[str]) -> int:
     return _run("cron-tasks.py", extra_args)
 
 
+_HARNESS_ENV_VARS: dict[str, str] = {
+    "SK_HARNESS": "Enable middleware hooks (0/1)",
+    "SK_DEBUG_TIMING": "Verbose timing to stderr (0/1)",
+    "SK_DRY_RUN": "Print commands without running (0/1)",
+    "SK_TOOLS_DIR": "Override tools directory path",
+}
+
+
+def _run_harness(args: list[str]) -> int:
+    """In-process handler for 'sk harness <subcommand>'."""
+    sub = args[0] if args else "help"
+
+    if sub == "config":
+        return _harness_config(args[1:])
+    # show / check / doctor come in H-004/H-005/H-006
+    print("sk harness subcommands: config, show, check, doctor")
+    print("  sk harness config list|get|set")
+    return 0
+
+
+def _harness_config(args: list[str]) -> int:
+    """Manage harness env vars in-process."""
+    action = args[0] if args else "list"
+
+    if action == "list":
+        for var, desc in _HARNESS_ENV_VARS.items():
+            val = os.environ.get(var, "(unset)")
+            print(f"  {var:<22} = {val:<12}  # {desc}")
+        return 0
+
+    if action == "get":
+        if len(args) < 2:
+            print("Usage: sk harness config get <VAR>", file=sys.stderr)
+            return 1
+        val = os.environ.get(args[1], "(unset)")
+        print(val)
+        return 0
+
+    if action == "set":
+        if len(args) < 3:
+            print("Usage: sk harness config set <VAR> <VALUE>", file=sys.stderr)
+            return 1
+        var, value = args[1], args[2]
+        if var not in _HARNESS_ENV_VARS:
+            print(f"[sk harness] warning: unknown var {var!r}", file=sys.stderr)
+        os.environ[var] = value
+        print(f"{var}={value}")
+        return 0
+
+    print(f"Unknown config action: {action!r}. Use list, get, or set.", file=sys.stderr)
+    return 1
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(
         f"sk {cmd:<20} {str(meta.description):<40} {','.join(meta.tags[:2])}" for cmd, meta in _DIRECT.items()
@@ -522,6 +579,7 @@ def _print_help() -> None:
         f"{direct_list}\n"
         "\nGrouped namespaces:\n"
         f"{_help_groups()}\n"
+        "  sk harness config    Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING, SK_TOOLS_DIR)\n"
         "\nUse `sk <command> --help` to see help for a specific script.\n"
         "All direct `python3 ~/.copilot/tools/*.py` invocations still work.\n"
     )
@@ -542,6 +600,8 @@ def main(argv: list[str] | None = None) -> int:
     rest = args[1:]
 
     # Direct command?
+    if cmd == "harness":
+        return _run_harness(rest)
     if cmd == "hooks":
         return _run_hooks(rest)
     if cmd == "project":
@@ -561,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "init":
         return _run("setup-project.py", ["--init-mode"] + rest)
     if cmd in _DIRECT:
-        return _run(str(_DIRECT[cmd]), rest)
+        return _run(str(_DIRECT[cmd]), rest, cmd=cmd)
 
     # Grouped namespace?
     if cmd in _GROUPS:
