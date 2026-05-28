@@ -64,6 +64,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Ensure sk.py's own directory is on sys.path so `harness` package is importable
+# when sk.py is loaded via importlib (e.g. in tests) rather than run directly.
+_SK_DIR = str(Path(__file__).parent.resolve())
+if _SK_DIR not in sys.path:
+    sys.path.insert(0, _SK_DIR)
+
 from harness.meta import CommandMeta
 
 if os.name == "nt":
