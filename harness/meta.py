@@ -1,4 +1,5 @@
 """CommandMeta: metadata wrapper for sk.py _DIRECT entries."""
+
 from __future__ import annotations
 
 import os
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class CommandMeta:
     """Immutable metadata for a single sk command."""
+
     script: str
     description: str = ""
     tags: tuple[str, ...] = ()
