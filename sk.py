@@ -125,8 +125,8 @@ _DIRECT: dict[str, str] = {
     "audit-hooks": "audit-hooks.py",
     "audit-instructions": "audit-instructions.py",
     "improvement-signals": "improvement-signals.py",
-    "status": "statusline.py",       # show session token usage + quota summary
-    "statusline": "statusline.py",   # alias for status
+    "status": "statusline.py",  # show session token usage + quota summary
+    "statusline": "statusline.py",  # alias for status
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
