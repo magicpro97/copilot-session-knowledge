@@ -4,6 +4,20 @@
 >
 > These rules are **non-negotiable** and apply to every agent — main session, sub-agent, explore, task, or general-purpose. They are also enforced via `.github/copilot-instructions.md` (injected into every Copilot CLI session) and partially enforced at the hook level.
 
+## Harness Engineering Principles
+
+The 7 Harness Engineering principles are documented in `AGENTS.md § 🛡️ Harness Engineering Principles` with AI enforcement annotations. These principles govern all agent work in this project:
+
+1. **No-Ship-Bugs** — never commit without passing tests
+2. **Follow-Workflow** — Clarify→Plan→Execute→Verify→Close
+3. **Quality-Over-Speed** — verify all surfaces before closeout
+4. **Tentacle-Orchestration** — ≥3 files/≥2 modules requires tentacle
+5. **No-Abandon** — research loop instead of BLOCKED
+6. **Rules-First** — read AGENTS.md before every task
+7. **Knowledge-Recording** — `sk learn` after every fix
+
+See also: `templates/copilot-instructions.md` for the original Vietnamese source.
+
 ## Rule 1 — Investigate Before Acting
 
 **NEVER modify code without reading it first.** Before any edit:
