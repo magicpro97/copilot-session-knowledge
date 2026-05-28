@@ -524,15 +524,71 @@ _HARNESS_ENV_VARS: dict[str, str] = {
 }
 
 
+def _harness_show(args: list[str]) -> int:
+    """In-process handler for 'sk harness show [--tag TAG] [--json]'."""
+    import json as _json
+
+    tag_filter: str | None = None
+    as_json = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--json":
+            as_json = True
+        elif args[i] == "--tag" and i + 1 < len(args):
+            i += 1
+            tag_filter = args[i]
+        i += 1
+
+    from harness.manifest import load_manifest  # noqa: PLC0415
+
+    tools_dir, _ = _resolve_tools_dir()
+    manifest = load_manifest(str(tools_dir))
+    manifest_cmds: dict = manifest.get("commands", {})
+
+    entries = []
+    for cmd, meta in _DIRECT.items():
+        tags = list(meta.tags)
+        if tag_filter and tag_filter not in tags:
+            continue
+        entries.append({"cmd": cmd, "script": str(meta), "description": str(meta.description), "tags": tags})
+
+    for key, info in manifest_cmds.items():
+        if " " in key:  # group sub entries like "index build"
+            tags = info.get("tags", [])
+            if tag_filter and tag_filter not in tags:
+                continue
+            entries.append(
+                {
+                    "cmd": f"sk {key}",
+                    "script": info.get("script", ""),
+                    "description": info.get("description", ""),
+                    "tags": tags,
+                }
+            )
+
+    if as_json:
+        print(_json.dumps(entries, ensure_ascii=False))
+        return 0
+
+    for e in entries:
+        tag_str = "[" + ", ".join(e["tags"][:3]) + "]"
+        cmd_label = f"sk {e['cmd']}" if not e["cmd"].startswith("sk ") else e["cmd"]
+        print(f"  {cmd_label:<30} {e['description']:<45} {tag_str}")
+    return 0
+
+
 def _run_harness(args: list[str]) -> int:
     """In-process handler for 'sk harness <subcommand>'."""
     sub = args[0] if args else "help"
 
     if sub == "config":
         return _harness_config(args[1:])
-    # show / check / doctor come in H-004/H-005/H-006
+    if sub == "show":
+        return _harness_show(args[1:])
+    # check / doctor come in H-005/H-006
     print("sk harness subcommands: config, show, check, doctor")
     print("  sk harness config list|get|set")
+    print("  sk harness show [--tag TAG] [--json]  List all registered commands with metadata")
     return 0
 
 
@@ -580,6 +636,7 @@ def _print_help() -> None:
         "\nGrouped namespaces:\n"
         f"{_help_groups()}\n"
         "  sk harness config    Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING, SK_TOOLS_DIR)\n"
+        "  sk harness show      List all registered commands with metadata [--tag TAG] [--json]\n"
         "\nUse `sk <command> --help` to see help for a specific script.\n"
         "All direct `python3 ~/.copilot/tools/*.py` invocations still work.\n"
     )
