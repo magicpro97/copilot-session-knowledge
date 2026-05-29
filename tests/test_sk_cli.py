@@ -91,7 +91,7 @@ class TestSkDirectCommands(unittest.TestCase):
         with patch.object(sk, "_run", return_value=0) as mock_run:
             rc = sk.main([cmd] + extra)
         self.assertEqual(rc, 0)
-        mock_run.assert_called_once_with(expected_script, extra)
+        mock_run.assert_called_once_with(expected_script, extra, cmd=cmd)
 
     def test_briefing(self):
         self._assert_routes("briefing", "briefing.py", ["--auto"])
@@ -996,7 +996,7 @@ class TestSkNativeRoutingPreconditions(unittest.TestCase):
         with patch.object(sk, "_run", return_value=0) as mock_run:
             rc = sk.main(["watch", "--service"])
         self.assertEqual(rc, 0)
-        mock_run.assert_called_once_with("watch-sessions.py", ["--service"])
+        mock_run.assert_called_once_with("watch-sessions.py", ["--service"], cmd="watch")
 
     def test_hooks_json_prefers_sk_hooks_run(self):
         """The managed hooks.json must use 'sk hooks run' as the preferred command."""
