@@ -2169,6 +2169,300 @@ def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str 
         db.close()
 
 
+# ---- Auto-PR helpers (Issue #612) -----------------------------------------
+
+
+def _autopr_parse_toml(path: Path) -> dict:
+    """Parse a minimal flat TOML file. Falls back to line-by-line on Python <3.11."""
+    try:
+        import tomllib  # Python 3.11+
+
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except ImportError:
+        pass
+    result: dict = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip()
+        if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+            result[key] = val[1:-1]
+        elif val.lower() == "true":
+            result[key] = True
+        elif val.lower() == "false":
+            result[key] = False
+        elif val.startswith("[") and val.endswith("]"):
+            result[key] = [s.strip().strip("\"'") for s in val[1:-1].split(",") if s.strip()]
+        else:
+            try:
+                result[key] = float(val)
+            except ValueError:
+                result[key] = val
+    return result
+
+
+def _autopr_load_config(threshold_override: float | None = None) -> dict:
+    """Load ~/.copilot/sk-autopr.toml with sensible defaults."""
+    cfg: dict = {
+        "repo_root": str(TOOLS_DIR),
+        "target_path": "docs/learnings",
+        "base_branch": "main",
+        "confidence_threshold": 0.85,
+        "categories": ["decision", "pattern"],
+        "dry_run": False,
+    }
+    config_path = Path.home() / ".copilot" / "sk-autopr.toml"
+    if config_path.is_file():
+        try:
+            cfg.update(_autopr_parse_toml(config_path))
+        except Exception:
+            pass
+    if threshold_override is not None:
+        cfg["confidence_threshold"] = threshold_override
+    if isinstance(cfg.get("categories"), str):
+        cfg["categories"] = [c.strip() for c in str(cfg["categories"]).split(",")]
+    return cfg
+
+
+# Mirrors the pattern set from sk-rust/src/redact.rs (Issue #612 HARD REQUIREMENT).
+_AUTOPR_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?s)-----BEGIN [A-Z ]+PRIVATE KEY-----.*?-----END [A-Z ]+PRIVATE KEY-----"), "pem_private_key"),
+    (re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), "jwt"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), "github_token"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "aws_key"),
+    (
+        re.compile(r"""(?i)(?:password|passwd|secret|token|api[_\-]?key)\s*[=:]\s*['"]?([^\s'",;]{6,})['"]?"""),
+        "credential_kv",
+    ),
+]
+
+
+def _autopr_redactor_gate(text: str) -> tuple[bool, str]:
+    """Check text for secrets. Returns (passed, reason). passed=False means blocked."""
+    findings = [kind for pat, kind in _AUTOPR_SECRET_PATTERNS if pat.search(text)]
+    if findings:
+        return False, f"redactor found secret pattern(s): {', '.join(findings)}"
+    return True, ""
+
+
+def _autopr_render_markdown(
+    stable_id: str,
+    title: str,
+    content: str,
+    facts: list,
+    wing: str,
+    room: str,
+    confidence: float,
+    tags: str,
+    session_id: str | None,
+    category: str,
+) -> str:
+    """Render the canonical markdown template for a learning entry."""
+    tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    tags_yaml = "[" + ", ".join(tags_list) + "]"
+    facts_section = "\n".join(f"- {f}" for f in facts) if facts else "_none_"
+    sid = session_id or "unknown"
+    return (
+        f"---\nstable_id: {stable_id}\nwing: {wing or 'general'}\n"
+        f"room: {room or 'general'}\nconfidence: {confidence:.2f}\n"
+        f"tags: {tags_yaml}\ncategory: {category}\n---\n"
+        f"# {title}\n\n{content}\n\n## Facts\n{facts_section}\n\n## Source\nSession: {sid}\n"
+    )
+
+
+def _autopr_default_confidence(category: str) -> float:
+    """Mirror default confidence lookup from _write_learn_entry."""
+    return {"decision": 0.8, "tool": 0.5, "refactor": 0.6, "discovery": 0.6}.get(category, 0.7)
+
+
+def _autopr_run_git(cmd: list[str], repo_root: str) -> tuple[int, str, str]:
+    """Run a git command in repo_root. Returns (returncode, stdout, stderr)."""
+    result = subprocess.run(["git"] + cmd, cwd=repo_root, capture_output=True, text=True)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def _autopr_branch_exists(branch: str, repo_root: str) -> bool:
+    """Return True if the local git branch already exists."""
+    rc, out, _ = _autopr_run_git(["branch", "--list", branch], repo_root)
+    return rc == 0 and branch in out
+
+
+def _autopr_pr_url(branch: str, repo_root: str) -> str | None:
+    """Return existing open PR URL for the branch, or None if not found."""
+    try:
+        res = subprocess.run(
+            ["gh", "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if res.returncode == 0:
+            url = res.stdout.strip()
+            return url if url and url.startswith("http") else None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _autopr_write_file(file_path: Path, md_content: str) -> None:
+    """Atomically write markdown to file_path, creating parent dirs as needed."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = file_path.with_suffix(".tmp")
+    tmp.write_text(md_content, encoding="utf-8")
+    os.replace(tmp, file_path)
+
+
+def _autopr_git_branch_and_commit(
+    stable_id: str,
+    branch: str,
+    file_path: Path,
+    title: str,
+    repo_root: str,
+    md_content: str,
+    amend: bool,
+) -> tuple[bool, str]:
+    """Switch to/create branch, write file, stage and commit. Returns (ok, error_msg)."""
+    if amend:
+        rc, _, err = _autopr_run_git(["switch", branch], repo_root)
+    else:
+        rc, _, err = _autopr_run_git(["switch", "-c", branch], repo_root)
+    if rc != 0:
+        return False, f"git switch failed: {err}"
+    _autopr_write_file(file_path, md_content)
+    rel_path = str(file_path.relative_to(Path(repo_root)))
+    _autopr_run_git(["add", rel_path], repo_root)
+    commit_msg = f"docs(learnings): add {title[:80]}"
+    commit_cmd = ["commit", "--amend", "--no-edit"] if amend else ["commit", "-m", commit_msg]
+    rc, _, err = _autopr_run_git(commit_cmd, repo_root)
+    if rc != 0:
+        return False, f"git commit failed: {err}"
+    return True, ""
+
+
+def _autopr_build_pr_cmd(branch: str, base_branch: str, title: str, pr_body: str) -> list[str]:
+    """Build the gh pr create command list."""
+    return [
+        "gh",
+        "pr",
+        "create",
+        "--draft",
+        "--head",
+        branch,
+        "--base",
+        base_branch,
+        "--title",
+        title[:120],
+        "--body",
+        pr_body,
+    ]
+
+
+def _autopr_try_gh(cmd: list[str], repo_root: str) -> tuple[bool, str]:
+    """Run gh pr create. Returns (ok, url_or_error_message)."""
+    try:
+        res = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, timeout=30)
+        if res.returncode == 0:
+            return True, res.stdout.strip()
+        return False, res.stderr.strip()
+    except FileNotFoundError:
+        return False, "gh not found"
+    except subprocess.TimeoutExpired:
+        return False, "gh timed out"
+
+
+def _autopr_execute(
+    branch: str,
+    file_path: Path,
+    title: str,
+    repo_root: str,
+    md_content: str,
+    pr_cmd: list[str],
+    stable_id: str,
+) -> None:
+    """Perform git ops and PR creation for the non-dry-run path."""
+    existing_url = _autopr_pr_url(branch, repo_root)
+    if existing_url:
+        print(f"  auto-pr: PR already open: {existing_url}")
+        return
+    amend = _autopr_branch_exists(branch, repo_root)
+    ok, err = _autopr_git_branch_and_commit(stable_id, branch, file_path, title, repo_root, md_content, amend)
+    if not ok:
+        print(f"  auto-pr: git error — {err}", file=sys.stderr)
+        return
+    ok, result = _autopr_try_gh(pr_cmd, repo_root)
+    if ok:
+        print(f"  auto-pr: PR created: {result}")
+    elif "not found" in result:
+        print(f"  auto-pr: gh not available. Run manually:\n    {' '.join(pr_cmd)}")
+    else:
+        print(f"  auto-pr: gh error — {result}", file=sys.stderr)
+
+
+def _maybe_autopr(
+    *,
+    category: str,
+    title: str,
+    content: str,
+    confidence: float,
+    wing: str,
+    room: str,
+    tags: str,
+    facts: list,
+    session_id: str | None,
+    threshold_override: float | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Orchestrate auto-PR after a successful sk learn insert (Issue #612).
+
+    Gate order: token present → config check → confidence threshold → category
+    allowed → redactor → git branch → commit → gh pr create --draft.
+    """
+    token_present = bool(os.environ.get("SK_AUTOPR_TOKEN"))
+    if not token_present and not dry_run:
+        dry_run = True  # No token → same as dry-run per spec
+    cfg = _autopr_load_config(threshold_override)
+    if cfg.get("dry_run"):
+        dry_run = True
+    threshold = float(cfg["confidence_threshold"])
+    allowed = [c.lower() for c in (cfg.get("categories") or [])]
+    if confidence < threshold:
+        print(f"  auto-pr: skipped (confidence {confidence:.2f} < threshold {threshold:.2f})", file=sys.stderr)
+        return
+    if category.lower() not in allowed:
+        print(f"  auto-pr: skipped (category '{category}' not in {allowed})", file=sys.stderr)
+        return
+    passed, reason = _autopr_redactor_gate(content + " " + title)
+    if not passed:
+        print(f"  auto-pr: REFUSED — {reason}", file=sys.stderr)
+        return
+    stable_id = _knowledge_stable_id(session_id or "", category, title)
+    wing_part = wing or "general"
+    room_part = room or "general"
+    repo_root = str(cfg["repo_root"])
+    file_path = Path(repo_root) / str(cfg["target_path"]) / wing_part / room_part / f"{stable_id}.md"
+    branch = f"sk-learning/{stable_id}"
+    md_content = _autopr_render_markdown(
+        stable_id, title, content, facts, wing, room, confidence, tags, session_id, category
+    )
+    pr_body = (
+        f"## Learning: {title}\n\n**Category:** {category}  \n**Confidence:** {confidence:.2f}  \n"
+        f"**Wing/Room:** {wing_part}/{room_part}\n\n{content}\n\nCloses #612 (auto-pr learning)"
+    )
+    pr_cmd = _autopr_build_pr_cmd(branch, str(cfg["base_branch"]), f"docs(learnings): {title[:80]}", pr_body)
+    if dry_run:
+        print(f"  auto-pr [dry-run]: branch={branch}")
+        print(f"  auto-pr [dry-run]: file={file_path}")
+        print(f"  auto-pr [dry-run]: {' '.join(pr_cmd)}")
+        return
+    _autopr_execute(branch, file_path, title, repo_root, md_content, pr_cmd, stable_id)
+
+
+# ---- End Auto-PR helpers ---------------------------------------------------
+
+
 def main():
     args = sys.argv[1:]
 
@@ -2577,6 +2871,7 @@ def main():
             "--supersedes",
             "--cerebrum-output",
             "--cerebrum-sections",
+            "--confidence-threshold",
         ):
             _next = args[i + 1] if i + 1 < len(args) else None
             skip_next = bool(_next and not _next.startswith("--"))
@@ -2598,6 +2893,16 @@ def main():
     skip_scan = "--skip-scan" in args
     json_mode = "--json" in args
     update_cerebrum = "--update-cerebrum" in args
+
+    # Auto-PR flags (Issue #612)
+    auto_pr = "--auto-pr" in args
+    auto_pr_threshold: float | None = None
+    if "--confidence-threshold" in args:
+        _ct_idx = args.index("--confidence-threshold")
+        try:
+            auto_pr_threshold = float(args[_ct_idx + 1]) if _ct_idx + 1 < len(args) else None
+        except (ValueError, IndexError):
+            auto_pr_threshold = None
 
     cerebrum_output = "CEREBRUM.md"
     if "--cerebrum-output" in args:
@@ -2732,6 +3037,22 @@ def main():
 
     if supersedes_id is not None and entry_id >= 0:
         _insert_supersedes_relation(entry_id, supersedes_id, session_id)
+
+    # Auto-PR post-write hook (Issue #612)
+    if auto_pr and entry_id >= 0:
+        eff_conf = confidence if confidence is not None else _autopr_default_confidence(category)
+        _maybe_autopr(
+            category=category,
+            title=title,
+            content=content,
+            confidence=eff_conf,
+            wing=wing,
+            room=room,
+            tags=tags,
+            facts=facts,
+            session_id=session_id,
+            threshold_override=auto_pr_threshold,
+        )
 
     if json_mode:
         # Machine-readable output: emit structured JSON with write result
