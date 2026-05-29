@@ -143,6 +143,7 @@ _DIRECT: dict[str, CommandMeta] = {
     "improvement-signals": CommandMeta(
         "improvement-signals.py", "Surface improvement signal patterns", ("session", "analytics")
     ),
+    "taxonomy": CommandMeta("taxonomy.py", "Taxonomy management", ("admin",)),
     "status": CommandMeta("statusline.py", "Show session token usage and AI cost summary", ("session", "cost")),
     "statusline": CommandMeta(
         "statusline.py", "Alias: session token usage footer", ("session", "cost"), aliases=("status",)
@@ -219,6 +220,9 @@ _GROUPS: dict[str, dict[str, str]] = {
         "status": "events.py",
         "replay": "events.py",
         "tail": "events.py",
+    },
+    "retry": {
+        "stats": "retry-stats.py",
     },
 }
 
