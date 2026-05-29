@@ -1901,6 +1901,47 @@ _TEMPLATES_DIR = _SCRIPT_DIR / "templates"
 _INSTRUCTIONS_TEMPLATES = _TEMPLATES_DIR / "instructions"
 
 
+def inject_statusline_config(quiet: bool = False) -> None:
+    """Inject statusLine config into ~/.copilot/settings.json if absent.
+
+    Uses ``python <path>`` prefix on Windows so the script executes correctly.
+    Idempotent: skips injection when the ``statusLine`` key already exists.
+    """
+    settings_path = COPILOT_DIR / "settings.json"
+    statusline_script = TOOLS_DIR / "statusline.py"
+
+    if not statusline_script.is_file():
+        if not quiet:
+            print(f"  {INFO} statusline.py not found — skipping statusLine config")
+        return
+
+    # Build the platform-appropriate command string.
+    if os.name == "nt":
+        cmd = f"python {statusline_script.as_posix()}"
+    else:
+        cmd = str(statusline_script)
+
+    # Load or create settings.json.
+    if settings_path.is_file():
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = {}
+    else:
+        COPILOT_DIR.mkdir(parents=True, exist_ok=True)
+        data = {}
+
+    if "statusLine" in data:
+        if not quiet:
+            print(f"  {INFO} statusLine — already configured")
+        return
+
+    data["statusLine"] = {"type": "command", "command": cmd, "padding": 1}
+    _atomic_write_text(settings_path, json.dumps(data, indent=2) + "\n")
+    if not quiet:
+        print(f"  {OK} statusLine config injected into {_tilde(settings_path)}")
+
+
 def deploy_hooks():
     """Deploy hooks.json and Python hook scripts to ~/.copilot/hooks/.
 
@@ -2046,6 +2087,7 @@ def deploy_instructions():
 
     _record_managed_paths(manifest_paths)
     print(f"\n  Deployed {deployed} file(s) to {_tilde(github_dir)}")
+    inject_statusline_config()
 
 
 def inject_global():
@@ -2433,6 +2475,7 @@ def install():
     print("\n  Installing sk launcher...")
     install_sk_launcher()
     deploy_global_skills()
+    inject_statusline_config()
     _record_managed_paths(managed_paths)
     _show_usage_hints()
 
@@ -3119,6 +3162,10 @@ def main():
 
     if "--deploy-instructions" in args:
         deploy_instructions()
+        return
+
+    if "--inject-statusline" in args:
+        inject_statusline_config()
         return
 
     if "--inject-global" in args:
