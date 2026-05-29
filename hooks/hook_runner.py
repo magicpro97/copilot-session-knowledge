@@ -181,6 +181,8 @@ def main():
         _audit_log(event, tool_name, "", "import-error", str(e))
         return
 
+    hook_errors = 0
+
     for rule in rules:
         # Tool matching (empty tools list = match all)
         if rule.tools and tool_name not in rule.tools:
@@ -190,6 +192,7 @@ def main():
             result = rule.evaluate(event, data)
         except Exception as e:
             # Fail-open: rule error → skip this rule
+            hook_errors += 1
             _audit_log(event, tool_name, rule.name, "error", str(e))
             if verbose:
                 print(f"  [HOOK DEBUG] Rule {rule.name} error: {e}", file=sys.stderr)
@@ -240,12 +243,14 @@ def main():
     if event in {"postToolUse", "sessionEnd"}:
         _record_sync_signal(event, data)
 
-    # Track hook invocation count in session state (best-effort, fail-open)
+    # Track hook invocation count and errors in session state (best-effort, fail-open)
     try:
         from rules.common import update_session_state
 
         def _inc_hooks(state):
             state["hooks_called"] = state.get("hooks_called", 0) + 1
+            if hook_errors > 0:
+                state["hooks_error"] = state.get("hooks_error", 0) + hook_errors
 
         update_session_state(_inc_hooks, data)
     except Exception:

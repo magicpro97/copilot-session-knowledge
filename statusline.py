@@ -422,7 +422,15 @@ def _render_statusline(payload: dict) -> str:
             seg_tools = f" {SEP} {tc_color}{tc_error}/{tc_total}{_ansi(RST)}{_ansi(DIM)}err{_ansi(RST)}"
 
         if hk_count > 0:
-            seg_hooks = f" {SEP} {_ansi(DIM)}{_HOOK_ICON}{_ansi(RST)}{_ansi(C)}{hk_count}{_ansi(RST)}"
+            hk_error = ss.get("hooks_error", 0)
+            hk_ratio = hk_error / hk_count if hk_count else 0
+            if hk_ratio > 0.3:
+                hk_color = _ansi(R)
+            elif hk_ratio > 0.1:
+                hk_color = _ansi(Y)
+            else:
+                hk_color = _ansi(G)
+            seg_hooks = f" {SEP} {_HOOK_ICON}{hk_color}{hk_error}/{hk_count}{_ansi(RST)}"
     except Exception:
         pass
 
