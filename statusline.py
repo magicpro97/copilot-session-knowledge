@@ -114,6 +114,17 @@ BOLD = "\033[1m"
 RST = "\033[0m"  # noqa: E702
 SEP = f"{DIM}│{RST}"
 
+# ASCII fallbacks for terminals that cannot render Unicode
+try:
+    "│⟳📊".encode(sys.stdout.encoding or "utf-8")
+except (UnicodeEncodeError, LookupError):
+    SEP = f"{DIM}|{RST}"
+    _SYNC_ICON = "~"
+    _CHART_ICON = "#"
+else:
+    _SYNC_ICON = "⟳"
+    _CHART_ICON = "📊"
+
 
 def _no_color() -> bool:
     """Return True when color output should be suppressed."""
@@ -347,7 +358,7 @@ def _render_statusline(payload: dict) -> str:
     seg_out = f"{_ansi(DIM)}↓{_ansi(RST)}{_ansi(G)}{_fmt_tokens(last_out)}{_ansi(RST)}"
     seg_tokens = f"{seg_in} {seg_out}"
     if cached_in > 0:
-        seg_tokens += f" {_ansi(DIM)}⟳{_ansi(RST)}{_ansi(Y)}{_fmt_tokens(cached_in)}{_ansi(RST)}"
+        seg_tokens += f" {_ansi(DIM)}{_SYNC_ICON}{_ansi(RST)}{_ansi(Y)}{_fmt_tokens(cached_in)}{_ansi(RST)}"
 
     # ── Context window ────────────────────────────────────────────────────────
     ctx_col = _ansi(R) if ctx_pct > 80 else _ansi(Y) if ctx_pct > 50 else _ansi(G)
@@ -396,7 +407,7 @@ def _print_status_table(force_quota: bool = False) -> None:
     pct = round(total_tokens / budget * 100) if budget else 0
     files_read = state.get("files_read", {})
 
-    print(f"\n{_ansi(BOLD)}📊 Copilot Session Status{_ansi(RST)}")
+    print(f"\n{_ansi(BOLD)}{_CHART_ICON} Copilot Session Status{_ansi(RST)}")
     print(f"  Session : {_ansi(DIM)}{_sanitize_sid(sid)}{_ansi(RST)}")
 
     if total_tokens > 0:

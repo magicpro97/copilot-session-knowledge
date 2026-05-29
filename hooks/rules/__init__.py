@@ -36,6 +36,7 @@ def get_rules_for_event(event):
     from .new_file_advisory import NewFileAdvisoryRule
     from .nextjs_typecheck import NextjsTypecheckRule
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
+    from .prompt_context import UserPromptContextRule
     from .read_before_edit import ReadBeforeEditRule
     from .read_tracker import ReadTrackerRule
     from .recurrence_detector import RecurrenceDetectorRule
@@ -98,6 +99,7 @@ def get_rules_for_event(event):
         SubagentStopRule(),
         # userPromptSubmitted (WBS-025)
         UserPromptAuditRule(),
+        UserPromptContextRule(),  # Issue #666: dynamic CONTEXT.md injection
     ]
 
     return [r for r in ALL_RULES if event in r.events]

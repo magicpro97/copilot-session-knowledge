@@ -67,6 +67,7 @@ hooks/
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
 | `session-compiler` | sessionEnd | Opt-in (`SK_SESSION_COMPILE_ENABLED=1`) deterministic session-end compiler that consolidates raw knowledge entries into higher-level compiled entries; fail-open. |
 | `skill-improvement-advisor` | sessionEnd | Analyzes session knowledge: mistakes/patterns recorded recently, high-recurrence entries (briefed but recurring), and `improvement_signals` entries (missed_match / wrong_skill / outdated). Writes up to 5 actionable skill-improvement suggestions to `~/.copilot/markers/skill-improvement-pending.json`. The next session's `auto-briefing` (sessionStart) reads, surfaces, and deletes the queue file — suggestions appear once. Data sources: `knowledge.db` entries from the last 4 hours. Fail-open; never blocks session end. |
+| `prompt-context` | userPromptSubmitted | Reads `.copilot/CONTEXT.md` (project-local) or `~/.copilot/CONTEXT.md` (global fallback) and injects content as `additionalContext`. Truncates to configurable max tokens (`prompt_context_max_tokens`, default 1000). Opt-out: set `prompt_context_enabled: false` in `~/.copilot/hooks-config.json`. Fail-open. |
 | `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs `scripts/check_syntax.py` on **all** staged `.py` files — fail-open when `check_syntax.py` is absent; (4) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (5) runs `scripts/check_complexity.py` as a non-blocking advisory on staged `.py` files; (6) runs Prettier format check on supported staged files under `browse-ui/src/`. Checks (3)–(6) are **fail-open** — they silently skip when the respective tool is not installed. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
@@ -121,7 +122,7 @@ The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs
 
 | Event | Available since | Status | Notes |
 |-------|----------------|--------|-------|
-| `userPromptSubmitted` | 2024 | **Not handled** — no rules registered | Fires when user submits a prompt; input includes `prompt` field. Could be used for prompt logging/auditing. Deliberately excluded for now; add a rule in `hooks/rules/` to use it. |
+| `userPromptSubmitted` | 2024 | **Handled** — `user-prompt-audit` + `prompt-context` | Fires when user submits a prompt; `user-prompt-audit` logs sanitized metadata (opt-out: `SK_PROMPT_AUDIT=0`); `prompt-context` injects project CONTEXT.md as additionalContext (config: `prompt_context_enabled`, `prompt_context_max_tokens` in `~/.copilot/hooks-config.json`). |
 
 `agentStop` and `subagentStop` are handled by `SubagentStopRule` in `hooks/rules/session_lifecycle.py` and are registered in `hooks/hooks.json` for best-effort dispatched-subagent marker cleanup.
 
