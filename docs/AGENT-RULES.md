@@ -292,6 +292,21 @@ Recovery sequence:
 
 ---
 
+## Shell Tool Preferences (Windows)
+
+On Windows (PowerShell), apply these rules to reduce token consumption:
+
+1. **Native tools first** — Use `grep`/`glob`/`view`/`lsp` instead of PowerShell equivalents:
+   - `grep` (not `Select-String`), `glob` (not `Get-ChildItem`), `view`+`view_range` (not `Get-Content`)
+2. **Limit output** — Always add `| Select-Object -First N` or `| Select-Object -Last N`
+3. **Use aliases** — `gci`, `?`, `%`, `select`, `sort`, `gc` (not full cmdlet names)
+4. **No pager** — `git --no-pager`, `gh --no-pager` for all git/gh commands
+5. **Chain commands** — Use `;` to combine related commands in one tool call
+6. **Suppress noise** — `$ProgressPreference='SilentlyContinue'` before downloads
+7. **Encoding** — Ensure `[Console]::OutputEncoding = [Text.Encoding]::UTF8` for Unicode output
+
+---
+
 ## Quality Checklist
 
 > Canonical preflight/edit/verification/closeout checklist for every agent. Mirror a concise version in `AGENTS.md` and `.github/copilot-instructions.md`. Source of truth: this section.
