@@ -9,11 +9,13 @@ Detection strategy
 * Computes a SHA-256 signature of ``json.dumps(sorted({tool_name, args}))``
   with transient metadata keys stripped.
 * Tracks consecutive identical-signature calls via session state.
+* Skips detection when tool arguments are absent/empty (fail-open; prevents
+  false positives when the hook event payload omits tool arguments).
 
 Thresholds
 ----------
-* **Soft** (default 3): ``info()`` warning — non-blocking, fires ONCE per streak.
-* **Hard** (default 5): ``deny()`` — blocks the tool call.
+* **Soft** (default 3): ``info()`` warning -- non-blocking, fires ONCE per streak.
+* **Hard** (default 5): ``deny()`` -- blocks the tool call.
 
 Configuration
 -------------
@@ -33,7 +35,7 @@ from .common import deny, info, update_session_state
 _DEFAULT_SOFT = 3
 _DEFAULT_HARD = 5
 
-# Metadata keys stripped before hashing — transient per-invocation fields.
+# Metadata keys stripped before hashing -- transient per-invocation fields.
 _STRIP_KEYS = frozenset(
     {
         "_session_id",
@@ -80,11 +82,16 @@ class LoopDetectorRule(Rule):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
+        # Skip detection when args are absent/empty -- cannot distinguish calls.
+        # Prevents false positives when the hook event payload omits tool args.
+        if not tool_args:
+            return None
+
         sig = _compute_signature(tool_name, tool_args)
         soft = _get_threshold("LOOP_SOFT_THRESHOLD", _DEFAULT_SOFT)
         hard = _get_threshold("LOOP_HARD_THRESHOLD", _DEFAULT_HARD)
 
-        # Mutable closure result — populated inside the updater.
+        # Mutable closure result -- populated inside the updater.
         result = {"action": None}
 
         def updater(state):
@@ -100,7 +107,7 @@ class LoopDetectorRule(Rule):
             if sig == ld.get("last_sig", ""):
                 ld["streak"] = ld.get("streak", 0) + 1
             else:
-                # Signature changed — reset streak.
+                # Signature changed -- reset streak.
                 ld["last_sig"] = sig
                 ld["streak"] = 1
                 ld["soft_warned"] = False
@@ -116,7 +123,7 @@ class LoopDetectorRule(Rule):
             elif streak >= soft and not ld.get("soft_warned", False):
                 ld["soft_warned"] = True
                 result["action"] = info(
-                    f"  ⚠ Possible loop: tool '{tool_name}' called {streak} "
+                    f"  Warning: tool '{tool_name}' called {streak} "
                     f"times with identical arguments. Consider varying your "
                     f"approach before the hard limit ({hard})."
                 )
