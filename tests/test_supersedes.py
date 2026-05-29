@@ -42,6 +42,7 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 
 # ── Minimal DB factory ────────────────────────────────────────────────────────
 
+
 def _make_test_db(path: str) -> sqlite3.Connection:
     """Create a minimal knowledge DB matching production schema used by tests."""
     db = sqlite3.connect(path)
@@ -139,6 +140,7 @@ def _insert_supersedes(db: sqlite3.Connection, source_id: int, target_id: int) -
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -147,6 +149,7 @@ def _load_module(name: str, path: Path):
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
 
 def test_migration_v32_adds_session_id():
     """Migration v32 adds session_id column to knowledge_relations."""
@@ -185,9 +188,11 @@ def test_migration_v32_adds_session_id():
 
         # Run migrate.py
         import subprocess
+
         result = subprocess.run(
             [sys.executable, str(REPO / "migrate.py"), db_path],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         test("migrate.py exits 0", result.returncode == 0, result.stderr[:200])
 
@@ -234,9 +239,7 @@ def test_briefing_excludes_superseded():
         os.environ["SK_DB_PATH"] = db_path
         try:
             briefing = _load_module("briefing", REPO / "briefing.py")
-            output, _ = briefing.generate_briefing(
-                "fromprevious", limit=10, fmt="compact", with_meta=True
-            )
+            output, _ = briefing.generate_briefing("fromprevious", limit=10, fmt="compact", with_meta=True)
             test(
                 "superseded entry not in default briefing output",
                 "old pattern fromprevious" not in output.lower(),
@@ -266,8 +269,7 @@ def test_briefing_include_superseded():
         try:
             briefing = _load_module("briefing", REPO / "briefing.py")
             output, _ = briefing.generate_briefing(
-                "Xoldentry123", limit=10, fmt="compact", with_meta=True,
-                include_superseded=True
+                "Xoldentry123", limit=10, fmt="compact", with_meta=True, include_superseded=True
             )
             # With include_superseded=True the old entry should be reachable by the query
             # (it won't be filtered out); it may or may not appear depending on FTS ranking
@@ -277,12 +279,10 @@ def test_briefing_include_superseded():
             # Verify default run DOES suppress the old entry — check title not in entry blocks
             # (the query text may appear in "No relevant past experience found for: ..." footer)
             output_default, _ = briefing.generate_briefing(
-                "Xoldentry123", limit=10, fmt="compact", with_meta=True,
-                include_superseded=False
+                "Xoldentry123", limit=10, fmt="compact", with_meta=True, include_superseded=False
             )
             # Strip any footer lines that echo back the query before checking
-            content_lines = [ln for ln in output_default.splitlines()
-                             if not ln.lower().startswith("no relevant")]
+            content_lines = [ln for ln in output_default.splitlines() if not ln.lower().startswith("no relevant")]
             content_without_footer = "\n".join(content_lines).lower()
             test(
                 "generate_briefing default suppresses xoldentry123 title",
@@ -303,6 +303,7 @@ def test_insert_supersedes_relation_validates_target():
         db.close()
 
         import subprocess, json as _json
+
         script = f"""
 import sys, os
 os.environ['SK_DB_PATH'] = {db_path!r}
@@ -355,6 +356,7 @@ def test_show_detail_supersedes_labels():
     """show_detail prints Supersedes and Superseded by labels."""
     print("\n[show_detail supersedes labels]")
     import io
+
     with tempfile.TemporaryDirectory() as td:
         db_path = str(Path(td) / "test.db")
         db = _make_test_db(db_path)

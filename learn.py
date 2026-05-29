@@ -1894,10 +1894,7 @@ def batch_ingest_from_checkpoint(filepath: str, *, dry_run: bool = False, tags: 
     result = batch_ingest_sections(sections, source_key, dry_run=dry_run, tags=tags)
 
     if not dry_run:
-        print(
-            f"  Checkpoint ingest: {result['inserted']} inserted, "
-            f"{result['skipped']} skipped from {filepath}"
-        )
+        print(f"  Checkpoint ingest: {result['inserted']} inserted, {result['skipped']} skipped from {filepath}")
 
     return result["inserted"]
 
@@ -1962,10 +1959,7 @@ def batch_ingest_from_pr(pr_ref: str, *, dry_run: bool = False, tags: str = "") 
     result = batch_ingest_sections(sections, source_key, dry_run=dry_run, tags=ingest_tags)
 
     if not dry_run:
-        print(
-            f"  PR #{pr_num_int} ingest: {result['inserted']} inserted, "
-            f"{result['skipped']} skipped"
-        )
+        print(f"  PR #{pr_num_int} ingest: {result['inserted']} inserted, {result['skipped']} skipped")
 
     return result["inserted"]
 
@@ -2633,6 +2627,7 @@ def main():
         _taxonomy_script = Path(__file__).with_name("taxonomy.py")
         if _taxonomy_script.is_file():
             import subprocess as _sp
+
             _tx_result = _sp.run(
                 [sys.executable, str(_taxonomy_script), "validate"],
                 capture_output=True,
@@ -2640,7 +2635,10 @@ def main():
             )
             if _tx_result.returncode != 0:
                 print(f"Taxonomy validation failed: {_tx_result.stderr.strip()}", file=sys.stderr)
-                print("Use `python taxonomy.py add <wing> <room>` to register, or omit --strict-taxonomy.", file=sys.stderr)
+                print(
+                    "Use `python taxonomy.py add <wing> <room>` to register, or omit --strict-taxonomy.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
         else:
             print("Warning: taxonomy.py not found; --strict-taxonomy skipped.", file=sys.stderr)
