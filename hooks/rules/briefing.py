@@ -12,6 +12,7 @@ from .common import (
     TOOLS_DIR,
     _is_pid_running,
     bash_writes_source_files,
+    context,
     deny,
     get_session_marker_suffix,
     info,
@@ -381,7 +382,7 @@ class AutoBriefingRule(Rule):
         sign_marker(MARKER, "briefing-done")
         session_marker = MARKERS_DIR / f"briefing-done-{session_id}"
         sign_marker(session_marker, f"briefing-done-{session_id}")
-        return info("\n".join(lines))
+        return context("\n".join(lines))
 
 
 class EnforceBriefingRule(Rule):

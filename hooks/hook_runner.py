@@ -221,11 +221,21 @@ def main():
                 if verbose:
                     _audit_log(event, tool_name, rule.name, "allow", msg[:100] if msg else "")
         else:
-            # postToolUse/sessionStart/sessionEnd/agentStop/subagentStop/errorOccurred: informational
-            msg = result.get("message", "")
-            if msg:
-                print(msg)
-            _audit_log(event, tool_name, rule.name, "info", msg[:100] if msg else "")
+            # postToolUse/sessionStart/sessionEnd/agentStop/subagentStop/errorOccurred
+            # Structured JSON keys the Copilot CLI SDK expects on stdout:
+            _STRUCTURED_KEYS = ("additionalContext", "sessionSummary", "modifiedPrompt")
+            has_structured = any(k in result for k in _STRUCTURED_KEYS)
+            if has_structured:
+                # Emit structured JSON so the SDK can inject context into the LLM
+                print(json.dumps(result))
+                detail = next((result[k][:100] for k in _STRUCTURED_KEYS if k in result), "")
+                _audit_log(event, tool_name, rule.name, "context", detail)
+            else:
+                # Backward-compatible: plain text info() results display as-is
+                msg = result.get("message", "")
+                if msg:
+                    print(msg)
+                _audit_log(event, tool_name, rule.name, "info", msg[:100] if msg else "")
 
     if event in {"postToolUse", "sessionEnd"}:
         _record_sync_signal(event, data)
