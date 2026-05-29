@@ -100,6 +100,8 @@ pub enum StopReason {
     XShouldRetryFalse,
     /// Error text is empty (truly unclassifiable).
     NonRetryable,
+    /// An external retry listener requested that the sequence be aborted.
+    ListenerAbort,
 }
 
 // ── Pattern indices (must stay in sync with PATTERNS array below) ─────────────
