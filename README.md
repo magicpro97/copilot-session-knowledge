@@ -139,7 +139,6 @@ qs --session-raw <session-id>        # Dump raw events for a session
 
 ```bash
 sk index status          # Row counts, FTS integrity, offset coverage
-# fallback: python3 ~/.copilot/tools/index-status.py
 ```
 
 ### Recall Telemetry (Phase 5)
@@ -147,7 +146,6 @@ sk index status          # Row counts, FTS integrity, offset coverage
 ```bash
 sk index health --recall         # Recall-only telemetry dashboard
 sk index health --recall --json  # Recall-only JSON stats
-# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
 ```
 
 - Telemetry is intentionally lean (`recall_events`): counts/IDs/size only, no verbose output bodies.
@@ -251,7 +249,6 @@ sk context project --stdout       # Print to stdout only
 sk context project --output PATH  # Write to explicit path
 sk context project --profile python  # Force a preset profile
 sk context project --list-profiles   # Show available profiles
-# fallback: python3 ~/.copilot/tools/project-context.py <args>
 ```
 
 No AI generation, no network access. The artifact is derived purely from repo/profile facts and is deterministic for the same repo state.
@@ -393,7 +390,6 @@ sk update --force          # Force update now
 sk update --doctor         # Health check
 sk update --restart-watch  # Restart watcher
 sk update --watch-status   # Watcher status
-# fallback: python3 ~/.copilot/tools/auto-update-tools.py [flags]
 ```
 
 Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook auto-triggers on `git pull`.
