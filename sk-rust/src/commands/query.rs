@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::process::ExitCode;
 
 use crate::db::connection::KnowledgeDb;
-use crate::db::fts::sanitize_fts_query;
+use crate::db::fts::{hybrid_search_ke, rrf_k_from_env, sanitize_fts_query, RankMode, ScoredEntry};
 
 type DetailRow = (
     i64,
@@ -71,6 +71,7 @@ pub fn run_query_command(args: &[String]) -> ExitCode {
             params.verbose,
             params.wing_filter.as_deref(),
             params.room_filter.as_deref(),
+            params.rank_mode,
         );
     }
 
@@ -88,6 +89,7 @@ struct QueryParams {
     verbose: bool,
     wing_filter: Option<String>,
     room_filter: Option<String>,
+    rank_mode: RankMode,
 }
 
 fn parse_query_args(args: &[String]) -> QueryParams {
@@ -100,6 +102,7 @@ fn parse_query_args(args: &[String]) -> QueryParams {
     let mut verbose = false;
     let mut wing_filter: Option<String> = None;
     let mut room_filter: Option<String> = None;
+    let mut rank_mode = RankMode::Hybrid;
 
     let mut i = 0;
     while i < args.len() {
@@ -160,6 +163,12 @@ fn parse_query_args(args: &[String]) -> QueryParams {
                 room_filter = args.get(i + 1).cloned();
                 i += 2;
             }
+            "--rank" => {
+                if let Some(v) = args.get(i + 1) {
+                    rank_mode = RankMode::from_str(v);
+                }
+                i += 2;
+            }
             s if !s.starts_with('-') => {
                 if search_terms.is_empty() {
                     search_terms = s.to_string();
@@ -184,6 +193,7 @@ fn parse_query_args(args: &[String]) -> QueryParams {
         verbose,
         wing_filter,
         room_filter,
+        rank_mode,
     }
 }
 
@@ -398,8 +408,29 @@ fn show_by_category(
     ExitCode::SUCCESS
 }
 
-/// Full-text search across knowledge entries. Matches Python search_knowledge().
+/// Full-text search across knowledge entries — routes to hybrid or legacy FTS.
 fn search_fts_cmd(
+    db: &KnowledgeDb,
+    query: &str,
+    limit: usize,
+    verbose: bool,
+    wing: Option<&str>,
+    room: Option<&str>,
+    rank_mode: RankMode,
+) -> ExitCode {
+    if rank_mode != RankMode::Fts {
+        let scored = hybrid_search_ke(&db.conn, query, None, limit);
+        if scored.is_empty() {
+            return search_fts_cmd_legacy(db, query, limit, verbose, wing, room);
+        }
+        print_hybrid_rows(query, &scored, verbose);
+        return ExitCode::SUCCESS;
+    }
+    search_fts_cmd_legacy(db, query, limit, verbose, wing, room)
+}
+
+/// Legacy BM25-only FTS path (pre-§611).
+fn search_fts_cmd_legacy(
     db: &KnowledgeDb,
     query: &str,
     limit: usize,
@@ -440,6 +471,37 @@ fn search_fts_cmd(
 
     print_knowledge_rows(query, &rows, verbose);
     ExitCode::SUCCESS
+}
+
+/// Print hybrid search results; includes RRF scores when --verbose is set.
+fn print_hybrid_rows(query: &str, scored: &[ScoredEntry], verbose: bool) {
+    println!("Knowledge entries matching '{query}':\n");
+    for se in scored {
+        let e = &se.entry;
+        let cat_abbr = match e.tags.as_str() {
+            t if t.contains("mistake") => "M",
+            t if t.contains("pattern") => "P",
+            t if t.contains("decision") => "D",
+            _ => "K",
+        };
+        println!(
+            "[{}] #{} {} — {}",
+            cat_abbr,
+            e.id,
+            e.title,
+            e.content.lines().next().unwrap_or("")
+        );
+        if verbose {
+            let bm = se.bm25_rank.map_or("-".to_string(), |r| r.to_string());
+            let td = se.tfidf_rank.map_or("-".to_string(), |r| r.to_string());
+            println!(
+                "    rrf={:.4} bm25_rank={} tfidf_rank={}",
+                se.rrf_score, bm, td
+            );
+        }
+    }
+    let k = rrf_k_from_env();
+    println!("\nHybrid FTS+TF-IDF+RRF (k={k:.0}). Use --rank fts for legacy BM25-only.");
 }
 
 fn search_knowledge_rows(

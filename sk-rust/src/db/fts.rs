@@ -1,7 +1,9 @@
+use std::sync::{Arc, Mutex};
+
 use rusqlite::Connection;
 
 /// A knowledge entry row returned from queries.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct KnowledgeEntry {
     pub id: i64,
@@ -449,6 +451,271 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
     })
 }
 
+// ── §611 Hybrid FTS5 + TF-IDF + RRF retrieval ────────────────────────────
+
+use crate::embeddings::tfidf::{build_tfidf_model, TfIdfModel};
+
+/// Ranking mode selectable via `--rank` flag.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RankMode {
+    #[default]
+    Hybrid,
+    Fts,
+    Tfidf,
+}
+
+impl RankMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "fts" => Self::Fts,
+            "tfidf" => Self::Tfidf,
+            _ => Self::Hybrid,
+        }
+    }
+}
+
+/// A knowledge entry augmented with retrieval scores.
+#[derive(Debug, Clone)]
+pub struct ScoredEntry {
+    pub entry: KnowledgeEntry,
+    pub rrf_score: f64,
+    pub bm25_rank: Option<usize>,
+    pub tfidf_rank: Option<usize>,
+}
+
+struct KeModelCache {
+    entry_count: i64,
+    model: Arc<TfIdfModel>,
+}
+
+static KE_TFIDF_CACHE: Mutex<Option<KeModelCache>> = Mutex::new(None);
+
+/// Read `SK_RRF_K` env var (default 60).
+pub fn rrf_k_from_env() -> f64 {
+    std::env::var("SK_RRF_K")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(60.0)
+}
+
+/// Return up to `limit` BM25-ranked entry IDs for `query` (optional category).
+pub fn search_fts_bm25_ids(
+    conn: &Connection,
+    query: &str,
+    category: Option<&str>,
+    limit: usize,
+) -> Vec<i64> {
+    let sq = sanitize_fts_query(query);
+    let has_del = has_soft_delete(conn);
+    let del_clause = if has_del {
+        "AND ke.deleted_at IS NULL"
+    } else {
+        ""
+    };
+    let cat_clause = if category.is_some() {
+        "AND ke.category = ?"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT ke.id FROM ke_fts f \
+         JOIN knowledge_entries ke ON ke.id = f.rowid \
+         WHERE ke_fts MATCH ? {del_clause} {cat_clause} \
+         ORDER BY rank LIMIT ?"
+    );
+    let limit_i = limit as i64;
+    let ids: Vec<i64> = if let Some(cat) = category {
+        let mut st = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        st.query_map(rusqlite::params![sq, cat, limit_i], |r| r.get(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    } else {
+        let mut st = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        st.query_map(rusqlite::params![sq, limit_i], |r| r.get(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    };
+    ids
+}
+
+/// Fetch full KnowledgeEntry rows for a list of IDs (order preserved).
+pub fn fetch_ke_by_ids(conn: &Connection, ids: &[i64]) -> Vec<KnowledgeEntry> {
+    if ids.is_empty() {
+        return vec![];
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT id, title, content, tags, confidence, wing, room \
+         FROM knowledge_entries WHERE id IN ({placeholders})"
+    );
+    let mut st = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows: Vec<KnowledgeEntry> = st
+        .query_map(rusqlite::params_from_iter(ids.iter()), row_to_entry)
+        .map(|rs| rs.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    // Restore caller-specified order
+    let mut out: Vec<KnowledgeEntry> = Vec::with_capacity(ids.len());
+    for &id in ids {
+        if let Some(e) = rows.iter().find(|e| e.id == id) {
+            out.push(e.clone());
+        }
+    }
+    out
+}
+
+/// Get or build the in-memory KE TF-IDF model (cached by entry count).
+fn get_or_build_ke_tfidf(conn: &Connection) -> Option<Arc<TfIdfModel>> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM knowledge_entries", [], |r| r.get(0))
+        .unwrap_or(0);
+    if count == 0 {
+        return None;
+    }
+    let guard = KE_TFIDF_CACHE.lock().ok()?;
+    if let Some(ref c) = *guard {
+        if c.entry_count == count {
+            return Some(Arc::clone(&c.model));
+        }
+    }
+    drop(guard);
+    build_and_cache_ke_tfidf(conn, count)
+}
+
+/// Build a TF-IDF model from KE content and store it in the static cache.
+fn build_and_cache_ke_tfidf(conn: &Connection, count: i64) -> Option<Arc<TfIdfModel>> {
+    let cap = 2000_i64;
+    let mut st = conn
+        .prepare(
+            "SELECT id, title || ' ' || COALESCE(tags,'') || ' ' || content \
+             FROM knowledge_entries WHERE deleted_at IS NULL \
+             ORDER BY id DESC LIMIT ?",
+        )
+        .ok()?;
+    let rows: Vec<(i64, String)> = st
+        .query_map(rusqlite::params![cap], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let docs: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
+    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+    let blob = build_tfidf_model(&docs, &ids);
+    let model = TfIdfModel::from_json_blob(&blob)?;
+    let arc = Arc::new(model);
+    let mut guard = KE_TFIDF_CACHE.lock().ok()?;
+    *guard = Some(KeModelCache {
+        entry_count: count,
+        model: Arc::clone(&arc),
+    });
+    Some(arc)
+}
+
+/// Return up to `limit` TF-IDF-ranked entry IDs for `query`.
+pub fn search_tfidf_ke_ids(conn: &Connection, query: &str, limit: usize) -> Vec<i64> {
+    let model = match get_or_build_ke_tfidf(conn) {
+        Some(m) => m,
+        None => return vec![],
+    };
+    model
+        .search(query, limit)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Merge two ranked ID lists using Reciprocal Rank Fusion.
+pub fn rrf_merge_ke(bm25_ids: &[i64], tfidf_ids: &[i64], k: f64) -> Vec<i64> {
+    use std::collections::HashMap;
+    let mut scores: HashMap<i64, f64> = HashMap::new();
+    for (rank, &id) in bm25_ids.iter().enumerate() {
+        *scores.entry(id).or_insert(0.0) += 1.0 / (k + (rank + 1) as f64);
+    }
+    for (rank, &id) in tfidf_ids.iter().enumerate() {
+        *scores.entry(id).or_insert(0.0) += 1.0 / (k + (rank + 1) as f64);
+    }
+    let mut pairs: Vec<(i64, f64)> = scores.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.into_iter().map(|(id, _)| id).collect()
+}
+
+/// Build a `ScoredEntry` list from merged IDs plus rank information.
+fn build_scored(
+    entries: Vec<KnowledgeEntry>,
+    bm25_ids: &[i64],
+    tfidf_ids: &[i64],
+    rrf_ids: &[i64],
+    rrf_k: f64,
+) -> Vec<ScoredEntry> {
+    use std::collections::HashMap;
+    let mut rrf_scores: HashMap<i64, f64> = HashMap::new();
+    for (rank, &id) in bm25_ids.iter().enumerate() {
+        *rrf_scores.entry(id).or_insert(0.0) += 1.0 / (rrf_k + (rank + 1) as f64);
+    }
+    for (rank, &id) in tfidf_ids.iter().enumerate() {
+        *rrf_scores.entry(id).or_insert(0.0) += 1.0 / (rrf_k + (rank + 1) as f64);
+    }
+    let bm25_pos: HashMap<i64, usize> = bm25_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i + 1))
+        .collect();
+    let tfidf_pos: HashMap<i64, usize> = tfidf_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i + 1))
+        .collect();
+    // Preserve rrf_ids order
+    rrf_ids
+        .iter()
+        .filter_map(|id| entries.iter().find(|e| &e.id == id))
+        .map(|e| ScoredEntry {
+            entry: e.clone(),
+            rrf_score: *rrf_scores.get(&e.id).unwrap_or(&0.0),
+            bm25_rank: bm25_pos.get(&e.id).copied(),
+            tfidf_rank: tfidf_pos.get(&e.id).copied(),
+        })
+        .collect()
+}
+
+/// Fuse two ranked ID lists, returning (merged_ids, bm25_ids, tfidf_ids).
+fn fuse_ranks(
+    conn: &Connection,
+    query: &str,
+    category: Option<&str>,
+    limit: usize,
+    rrf_k: f64,
+) -> (Vec<i64>, Vec<i64>, Vec<i64>) {
+    let bm25 = search_fts_bm25_ids(conn, query, category, 100);
+    let tfidf = search_tfidf_ke_ids(conn, query, 100);
+    let merged = rrf_merge_ke(&bm25, &tfidf, rrf_k);
+    let top: Vec<i64> = merged.into_iter().take(limit).collect();
+    (top, bm25, tfidf)
+}
+
+/// Main hybrid search entry point. Returns scored entries ranked by RRF.
+pub fn hybrid_search_ke(
+    conn: &Connection,
+    query: &str,
+    category: Option<&str>,
+    limit: usize,
+) -> Vec<ScoredEntry> {
+    let rrf_k = rrf_k_from_env();
+    let (top_ids, bm25_ids, tfidf_ids) = fuse_ranks(conn, query, category, limit, rrf_k);
+    let entries = fetch_ke_by_ids(conn, &top_ids);
+    build_scored(entries, &bm25_ids, &tfidf_ids, &top_ids, rrf_k)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,5 +1035,81 @@ mod tests {
             !combined.contains("Hidden entry"),
             "soft-deleted entry must not appear in snippets"
         );
+    }
+
+    // ── §611 Hybrid retrieval tests ───────────────────────────────────────
+
+    #[test]
+    fn rrf_k_env_var_default_and_custom() {
+        // Run sequentially: set custom, verify, remove, verify default
+        std::env::remove_var("SK_RRF_K");
+        assert!(
+            (rrf_k_from_env() - 60.0).abs() < f64::EPSILON,
+            "default must be 60.0"
+        );
+        std::env::set_var("SK_RRF_K", "30");
+        assert!(
+            (rrf_k_from_env() - 30.0).abs() < f64::EPSILON,
+            "must read SK_RRF_K=30"
+        );
+        std::env::remove_var("SK_RRF_K");
+    }
+
+    #[test]
+    fn rrf_merge_ke_combines_ranks() {
+        // Items in both lists get higher score than items in only one
+        let bm25 = vec![1, 2, 3];
+        let tfidf = vec![2, 4, 5];
+        let merged = rrf_merge_ke(&bm25, &tfidf, 60.0);
+        // id=2 appears in both lists — must be ranked first
+        assert_eq!(merged[0], 2, "id in both lists should rank first");
+        // All 5 unique IDs must appear in merged
+        assert_eq!(merged.len(), 5);
+    }
+
+    #[test]
+    fn rrf_merge_ke_top_wins() {
+        // Item ranked #1 in both lists must beat item ranked last in each
+        let bm25 = vec![10, 20, 30];
+        let tfidf = vec![10, 40, 50];
+        let merged = rrf_merge_ke(&bm25, &tfidf, 60.0);
+        assert_eq!(merged[0], 10, "top of both lists wins");
+    }
+
+    #[test]
+    fn fetch_ke_by_ids_preserves_order() {
+        let conn = make_ke_with_soft_delete();
+        insert_entry(&conn, 10, "cat", "Entry Ten", "content ten", None);
+        insert_entry(&conn, 20, "cat", "Entry Twenty", "content twenty", None);
+        insert_entry(&conn, 30, "cat", "Entry Thirty", "content thirty", None);
+
+        // Request in reverse DB insertion order
+        let ids = vec![30_i64, 10, 20];
+        let entries = fetch_ke_by_ids(&conn, &ids);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].id, 30);
+        assert_eq!(entries[1].id, 10);
+        assert_eq!(entries[2].id, 20);
+    }
+
+    #[test]
+    fn search_fts_bm25_ids_returns_matching_ids() {
+        let conn = make_ke_with_soft_delete();
+        insert_entry(&conn, 1, "rust", "Async Rust", "async await content", None);
+        insert_entry(&conn, 2, "rust", "Sync Rust", "synchronous content", None);
+        insert_entry(&conn, 3, "python", "Python asyncio", "asyncio loop", None);
+
+        let ids = search_fts_bm25_ids(&conn, "async", None, 10);
+        assert!(!ids.is_empty(), "should find async entries");
+        // ids 1 and 3 both contain 'async'; id=2 does not
+        assert!(!ids.contains(&2), "sync-only entry should not match async");
+    }
+
+    #[test]
+    fn hybrid_search_ke_empty_db_returns_empty() {
+        let conn = make_ke_with_soft_delete();
+        // No entries seeded — must return empty vec without panic
+        let results = hybrid_search_ke(&conn, "anything", None, 10);
+        assert!(results.is_empty(), "empty DB should yield empty results");
     }
 }
