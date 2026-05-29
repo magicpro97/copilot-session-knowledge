@@ -11,6 +11,11 @@ use super::{invoke_retry_listener, ListenerDecision, RetryListenerPayload};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+fn lock_test() -> std::sync::MutexGuard<'static, ()> {
+    // Recover from poison — a prior panicking test must not block other tests.
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn sample_payload() -> RetryListenerPayload {
     RetryListenerPayload {
         ts: "2025-01-01T00:00:00Z".to_string(),
@@ -21,9 +26,9 @@ fn sample_payload() -> RetryListenerPayload {
         detected_pattern: "RateLimitError".to_string(),
         status_code: Some(429),
         retry_after_hint_seconds: None,
-        computed_delay_seconds: 3.14,
+        computed_delay_seconds: 3.0,
         delay_source: "exponential".to_string(),
-        elapsed_total_seconds: 4.27,
+        elapsed_total_seconds: 4.5,
         outcome: "queued".to_string(),
     }
 }
@@ -49,7 +54,7 @@ fn write_script(dir: &std::path::Path, name: &str, content: &str) -> std::path::
 #[test]
 #[cfg(unix)]
 fn test_missing_listener_is_noop() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = lock_test();
 
     // Point HOME to a fresh temp dir so the default path doesn't exist.
     let tmp = tempdir();
@@ -84,7 +89,7 @@ fn test_missing_listener_is_noop() {
 #[test]
 #[cfg(unix)]
 fn test_always_abort_listener() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = lock_test();
     let tmp = tempdir();
 
     let script = write_script(&tmp, "abort.sh", r#"printf '{"abort":true}\n'"#);
@@ -105,7 +110,7 @@ fn test_always_abort_listener() {
 #[test]
 #[cfg(unix)]
 fn test_delay_override_listener() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = lock_test();
     let tmp = tempdir();
 
     let script = write_script(
@@ -131,7 +136,7 @@ fn test_delay_override_listener() {
 #[test]
 #[cfg(unix)]
 fn test_bad_json_listener() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = lock_test();
     let tmp = tempdir();
 
     let script = write_script(&tmp, "bad_json.sh", "printf 'not-json-at-all!!!'");
@@ -151,7 +156,7 @@ fn test_bad_json_listener() {
 #[test]
 #[cfg(unix)]
 fn test_slow_listener_timeout() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = lock_test();
     let tmp = tempdir();
 
     let script = write_script(&tmp, "slow.sh", "sleep 5");
