@@ -11,6 +11,7 @@ Exit codes:
     1 — IO error
     2 — threshold exceeded
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,6 +34,7 @@ _MARKERS_DIR = Path.home() / ".copilot" / "markers"
 # Timestamp helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_ts(ts_raw: object) -> datetime | None:
     """Return UTC datetime from either 'unix:<epoch>' or ISO-8601 string."""
     if not isinstance(ts_raw, str):
@@ -54,6 +56,7 @@ def _parse_ts(ts_raw: object) -> datetime | None:
 # Duration parsing
 # ---------------------------------------------------------------------------
 
+
 def _parse_duration(dur: str) -> timedelta:
     """Parse e.g. '7d', '24h', '30d', '1h' into a timedelta."""
     dur = dur.strip().lower()
@@ -67,6 +70,7 @@ def _parse_duration(dur: str) -> timedelta:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
+
 
 def _load_events(since: datetime | None, agent_filter: str | None) -> list[dict]:
     """Load all events from retry-queue*.jsonl files."""
@@ -107,6 +111,7 @@ def _load_events(since: datetime | None, agent_filter: str | None) -> list[dict]
 # Grouping key
 # ---------------------------------------------------------------------------
 
+
 def _group_key(rec: dict, by: str) -> str:
     if by == "provider":
         return str(rec.get("provider") or rec.get("agent") or "unknown")
@@ -123,6 +128,7 @@ def _group_key(rec: dict, by: str) -> str:
 # ---------------------------------------------------------------------------
 # Is-429 detection
 # ---------------------------------------------------------------------------
+
 
 def _is_429(rec: dict) -> bool:
     """Detect rate-limit events regardless of exact field naming."""
@@ -147,27 +153,26 @@ def _is_exhausted(rec: dict) -> bool:
     outcome = str(rec.get("outcome") or "")
     stop_reason = str(rec.get("stop_reason") or "")
     event = str(rec.get("event") or "")
-    return (
-        "exhaust" in outcome.lower()
-        or "exhaust" in stop_reason.lower()
-        or "exhaust" in event.lower()
-    )
+    return "exhaust" in outcome.lower() or "exhaust" in stop_reason.lower() or "exhaust" in event.lower()
 
 
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
 
+
 def _aggregate(events: list[dict], by: str) -> list[dict]:
     """Return list of group stats dicts, sorted by total desc."""
-    groups: dict[str, dict] = defaultdict(lambda: {
-        "total": 0,
-        "is_429_count": 0,
-        "delays_ms": [],
-        "exhausted": 0,
-        "patterns": [],
-        "ts_list": [],
-    })
+    groups: dict[str, dict] = defaultdict(
+        lambda: {
+            "total": 0,
+            "is_429_count": 0,
+            "delays_ms": [],
+            "exhausted": 0,
+            "patterns": [],
+            "ts_list": [],
+        }
+    )
 
     for rec in events:
         key = _group_key(rec, by)
@@ -207,24 +212,26 @@ def _aggregate(events: list[dict], by: str) -> list[dict]:
         # 429/h rate: use actual time span covered or 1h minimum
         ts_list = g["ts_list"]
         if ts_list and len(ts_list) >= 2:
-            span_h = max((max(ts_list) - min(ts_list)).total_seconds() / 3600.0, 1/60)
+            span_h = max((max(ts_list) - min(ts_list)).total_seconds() / 3600.0, 1 / 60)
         else:
             span_h = 1.0
         rate_429_per_h = round(count_429 / span_h, 2)
 
         top3_patterns = [pat for pat, _ in Counter(g["patterns"]).most_common(3)]
 
-        result.append({
-            "group": group_name,
-            "total": total,
-            "count_429": count_429,
-            "rate_429_per_h": rate_429_per_h,
-            "p50_ms": p50,
-            "p95_ms": p95,
-            "exhausted": exhausted,
-            "exhausted_pct": exhausted_pct,
-            "top_patterns": top3_patterns,
-        })
+        result.append(
+            {
+                "group": group_name,
+                "total": total,
+                "count_429": count_429,
+                "rate_429_per_h": rate_429_per_h,
+                "p50_ms": p50,
+                "p95_ms": p95,
+                "exhausted": exhausted,
+                "exhausted_pct": exhausted_pct,
+                "top_patterns": top3_patterns,
+            }
+        )
 
     result.sort(key=lambda r: r["total"], reverse=True)
     return result
@@ -235,6 +242,7 @@ def _aggregate(events: list[dict], by: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 _COL_WIDTHS = {"group": 24, "events": 7, "429/h": 7, "p50ms": 7, "p95ms": 7, "exhaust%": 9}
+
 
 def _print_table(rows: list[dict]) -> None:
     header = f"{'group':<24} {'events':>7} {'429/h':>7} {'p50ms':>7} {'p95ms':>7} {'exhaust%':>9}"
@@ -257,21 +265,32 @@ def _print_json(rows: list[dict]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="retry-stats",
         description="Aggregate JSONL retry telemetry from ~/.copilot/markers/retry-queue*.jsonl",
     )
-    parser.add_argument("--since", metavar="DURATION", default=None,
-                        help="Filter to last N days/hours e.g. 7d, 24h, 30d, 1h")
-    parser.add_argument("--agent", metavar="NAME", default=None,
-                        help="Filter to a specific agent name (substring match)")
-    parser.add_argument("--by", choices=["provider", "pattern", "hour"], default="provider",
-                        help="Group results by provider (default), pattern, or hour")
-    parser.add_argument("--json", action="store_true", dest="json_output",
-                        help="Output NDJSON instead of a TTY table")
-    parser.add_argument("--threshold-429-per-hour", metavar="N", type=float, default=None,
-                        help="Exit 2 if any group exceeds this 429/h rate")
+    parser.add_argument(
+        "--since", metavar="DURATION", default=None, help="Filter to last N days/hours e.g. 7d, 24h, 30d, 1h"
+    )
+    parser.add_argument(
+        "--agent", metavar="NAME", default=None, help="Filter to a specific agent name (substring match)"
+    )
+    parser.add_argument(
+        "--by",
+        choices=["provider", "pattern", "hour"],
+        default="provider",
+        help="Group results by provider (default), pattern, or hour",
+    )
+    parser.add_argument("--json", action="store_true", dest="json_output", help="Output NDJSON instead of a TTY table")
+    parser.add_argument(
+        "--threshold-429-per-hour",
+        metavar="N",
+        type=float,
+        default=None,
+        help="Exit 2 if any group exceeds this 429/h rate",
+    )
     args = parser.parse_args(argv)
 
     since: datetime | None = None
