@@ -242,7 +242,7 @@ class AutoBriefingRule(Rule):
     """Run briefing.py at session start and create HMAC-signed marker."""
 
     name = "auto-briefing"
-    events = ["sessionStart"]
+    events = ["sessionStart", "postCompact"]
 
     def evaluate(self, event, data):
         # Clean up only THIS session's stale markers, not other sessions'
