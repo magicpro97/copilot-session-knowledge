@@ -58,6 +58,7 @@ spec.loader.exec_module(rs)  # type: ignore[union-attr]
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_event(
     *,
     ts_epoch: int | None = None,
@@ -115,6 +116,7 @@ def _run_main(argv: list[str], monkeypatch_markers: Path) -> tuple[int, str, str
 # Test suite
 # ---------------------------------------------------------------------------
 
+
 def test_syntax() -> None:
     print("Syntax / importability")
     src = _SCRIPT.read_text(encoding="utf-8")
@@ -137,10 +139,9 @@ def test_empty_queue(markers_dir: Path) -> None:
 def test_balanced_traffic(markers_dir: Path) -> None:
     print("BalancedTraffic — 10 mixed events")
     now = int(time.time())
-    events = (
-        [_make_event(ts_epoch=now - i * 60, status_code=429, detected_pattern="rate_limit") for i in range(3)]
-        + [_make_event(ts_epoch=now - i * 60, detected_pattern="server_error") for i in range(7)]
-    )
+    events = [_make_event(ts_epoch=now - i * 60, status_code=429, detected_pattern="rate_limit") for i in range(3)] + [
+        _make_event(ts_epoch=now - i * 60, detected_pattern="server_error") for i in range(7)
+    ]
     fpath = markers_dir / "retry-queue.jsonl"
     _write_jsonl(fpath, events)
 
@@ -164,10 +165,7 @@ def test_balanced_traffic(markers_dir: Path) -> None:
 def test_burst_429(markers_dir: Path) -> None:
     print("Burst429 — 30 rate-limit events in 1h → threshold exceeded")
     now = int(time.time())
-    events = [
-        _make_event(ts_epoch=now - i * 60, status_code=429, detected_pattern="rate_limit")
-        for i in range(30)
-    ]
+    events = [_make_event(ts_epoch=now - i * 60, status_code=429, detected_pattern="rate_limit") for i in range(30)]
     fpath = markers_dir / "retry-queue.jsonl"
     _write_jsonl(fpath, events)
 
@@ -201,10 +199,9 @@ def test_rotated_files(markers_dir: Path) -> None:
 def test_agent_filter(markers_dir: Path) -> None:
     print("AgentFilter — --agent filters by agent name")
     now = int(time.time())
-    events = (
-        [_make_event(ts_epoch=now - i * 60, agent="copilot") for i in range(4)]
-        + [_make_event(ts_epoch=now - i * 60, agent="gemini") for i in range(6)]
-    )
+    events = [_make_event(ts_epoch=now - i * 60, agent="copilot") for i in range(4)] + [
+        _make_event(ts_epoch=now - i * 60, agent="gemini") for i in range(6)
+    ]
     fpath = markers_dir / "retry-queue.jsonl"
     _write_jsonl(fpath, events)
 
@@ -219,10 +216,9 @@ def test_agent_filter(markers_dir: Path) -> None:
 def test_by_pattern(markers_dir: Path) -> None:
     print("ByPattern — --by pattern groups by detected_pattern")
     now = int(time.time())
-    events = (
-        [_make_event(ts_epoch=now - i * 60, detected_pattern="rate_limit") for i in range(3)]
-        + [_make_event(ts_epoch=now - i * 60, detected_pattern="server_error") for i in range(2)]
-    )
+    events = [_make_event(ts_epoch=now - i * 60, detected_pattern="rate_limit") for i in range(3)] + [
+        _make_event(ts_epoch=now - i * 60, detected_pattern="server_error") for i in range(2)
+    ]
     fpath = markers_dir / "retry-queue.jsonl"
     _write_jsonl(fpath, events)
 
@@ -257,6 +253,7 @@ def test_malformed_lines(markers_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print("=" * 60)
