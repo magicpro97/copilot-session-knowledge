@@ -240,6 +240,17 @@ def main():
     if event in {"postToolUse", "sessionEnd"}:
         _record_sync_signal(event, data)
 
+    # Track hook invocation count in session state (best-effort, fail-open)
+    try:
+        from rules.common import update_session_state
+
+        def _inc_hooks(state):
+            state["hooks_called"] = state.get("hooks_called", 0) + 1
+
+        update_session_state(_inc_hooks, data)
+    except Exception:
+        pass
+
 
 if __name__ == "__main__":
     main()

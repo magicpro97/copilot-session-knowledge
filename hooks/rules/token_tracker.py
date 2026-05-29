@@ -77,6 +77,33 @@ def _extract_path(data: dict) -> str:
     return ""
 
 
+def _is_tool_error(data: dict) -> bool:
+    """Return True when the toolResult indicates an error/failure.
+
+    Checks ``resultType``, ``exitCode``, and ``isError`` fields that the
+    Copilot CLI may populate in the postToolUse payload.  Fail-open: any
+    exception -> assume success (not an error).
+    """
+    try:
+        tr = data.get("toolResult")
+        if tr is None:
+            return False
+        if isinstance(tr, dict):
+            if tr.get("resultType") == "error":
+                return True
+            if tr.get("isError") is True:
+                return True
+            ec = tr.get("exitCode") or tr.get("exit_code")
+            if ec is not None and ec != 0:
+                return True
+        elif isinstance(tr, str):
+            if tr.startswith("Error:") or tr.startswith("error:"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 class TokenTrackerRule(Rule):
     """Track per-session token usage and emit a warning near budget exhaustion."""
 
@@ -93,9 +120,11 @@ class TokenTrackerRule(Rule):
     def _run(self, data: dict):
         tool = data.get("toolName", "")
         tool_input = data.get("toolInput") or data.get("toolArgs") or {}
+        is_error = _is_tool_error(data)
 
         est_tokens = 0
         read_path = ""
+        has_token_estimate = True
 
         if tool == "view":
             read_path = tool_input.get("path", "") or _extract_path(data)
@@ -111,13 +140,20 @@ class TokenTrackerRule(Rule):
             est_tokens = _estimate_from_text(file_text)
 
         else:
-            # grep, glob, bash, etc. — no reliable proxy; skip.
-            return None
+            has_token_estimate = False
 
         budget = _parse_token_budget()
         result_holder = [None]
 
         def _updater(state, under_lock):
+            # ── Tool call counting (always, for all tools) ──
+            state["tool_calls_total"] = state.get("tool_calls_total", 0) + 1
+            if is_error:
+                state["tool_calls_error"] = state.get("tool_calls_error", 0) + 1
+
+            if not has_token_estimate:
+                return
+
             prev_total = state.get("total_tokens", 0)
             new_total = prev_total + est_tokens
             state["total_tokens"] = new_total

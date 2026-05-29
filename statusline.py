@@ -116,14 +116,16 @@ SEP = f"{DIM}│{RST}"
 
 # ASCII fallbacks for terminals that cannot render Unicode
 try:
-    "│⟳📊".encode(sys.stdout.encoding or "utf-8")
+    "│⟳📊🪝".encode(sys.stdout.encoding or "utf-8")
 except (UnicodeEncodeError, LookupError):
     SEP = f"{DIM}|{RST}"
     _SYNC_ICON = "~"
     _CHART_ICON = "#"
+    _HOOK_ICON = "h"
 else:
     _SYNC_ICON = "⟳"
     _CHART_ICON = "📊"
+    _HOOK_ICON = "🪝"
 
 
 def _no_color() -> bool:
@@ -390,6 +392,8 @@ def _render_statusline(payload: dict) -> str:
 
     # ── Workflow phase (advisory) ────────────────────────────────────────────
     seg_phase = ""
+    seg_tools = ""
+    seg_hooks = ""
     try:
         sid = _get_session_id()
         safe_sid = _sanitize_sid(sid)
@@ -400,11 +404,30 @@ def _render_statusline(payload: dict) -> str:
             _icons = {"idle": "💤", "clarify": "❓", "plan": "📋", "execute": "⚡", "verify": "✅", "close": "🏁"}
             if phase in _icons:
                 seg_phase = f" {SEP} {_icons[phase]}{_ansi(DIM)}{phase}{_ansi(RST)}"
+
+        # Tool call stats and hook count from session state
+        ss = _load_session_state(safe_sid)
+        tc_total = ss.get("tool_calls_total", 0)
+        tc_error = ss.get("tool_calls_error", 0)
+        hk_count = ss.get("hooks_called", 0)
+
+        if tc_total > 0:
+            error_ratio = tc_error / tc_total
+            if error_ratio > 0.3:
+                tc_color = _ansi(R)
+            elif error_ratio > 0.1:
+                tc_color = _ansi(Y)
+            else:
+                tc_color = _ansi(G)
+            seg_tools = f" {SEP} {tc_color}{tc_error}/{tc_total}{_ansi(RST)}{_ansi(DIM)}err{_ansi(RST)}"
+
+        if hk_count > 0:
+            seg_hooks = f" {SEP} {_ansi(DIM)}{_HOOK_ICON}{_ansi(RST)}{_ansi(C)}{hk_count}{_ansi(RST)}"
     except Exception:
         pass
 
     parts = [seg_model, seg_tokens, seg_ctx, seg_cost, seg_pru]
-    return f" {SEP} ".join(parts) + seg_phase + seg_quota
+    return f" {SEP} ".join(parts) + seg_tools + seg_hooks + seg_phase + seg_quota
 
 
 # ---------------------------------------------------------------------------
