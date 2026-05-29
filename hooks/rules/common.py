@@ -210,8 +210,36 @@ def deny(reason):
 
 
 def info(message):
-    """Create an informational message result."""
+    """Create an informational message result (plain text display)."""
     return {"message": message}
+
+
+def context(message):
+    """Create a structured additionalContext result for LLM injection.
+
+    The Copilot CLI SDK reads this JSON field from hook stdout and injects
+    its value into the model's system context, making it visible to the LLM.
+    Use for sessionStart payloads like MEMORY.md, briefing output, etc.
+    """
+    return {"additionalContext": message}
+
+
+def session_summary(message):
+    """Create a structured sessionSummary result for sessionEnd.
+
+    The Copilot CLI SDK reads this JSON field at session end and uses it
+    as the session summary for the model.
+    """
+    return {"sessionSummary": message}
+
+
+def modified_prompt(prompt):
+    """Create a structured modifiedPrompt result.
+
+    The Copilot CLI SDK reads this JSON field and replaces the user's
+    prompt with the modified version before sending to the model.
+    """
+    return {"modifiedPrompt": prompt}
 
 
 # ── Shared per-session state helpers (used by token_tracker and read_tracker) ──
