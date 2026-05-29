@@ -76,9 +76,7 @@ class TestLoadTaxonomy(unittest.TestCase):
         fd, reg_path = tempfile.mkstemp(suffix=".json", prefix="txreg_", dir=TOOLS_DIR)
         os.close(fd)
         try:
-            Path(reg_path).write_text(
-                json.dumps({"custom-wing": ["custom-room"]}), encoding="utf-8"
-            )
+            Path(reg_path).write_text(json.dumps({"custom-wing": ["custom-room"]}), encoding="utf-8")
             mod = _load_module(":memory:", registry_path=reg_path)
             tx = mod._load_taxonomy()
             self.assertIn("custom-wing", tx)
@@ -101,6 +99,7 @@ class TestCmdList(unittest.TestCase):
             mod = _load_module(db_path, registry_path="/nonexistent/taxonomy.json")
             import io
             from contextlib import redirect_stdout
+
             buf = io.StringIO()
             with redirect_stdout(buf):
                 mod.cmd_list()
@@ -118,6 +117,7 @@ class TestCmdList(unittest.TestCase):
             mod = _load_module(db_path, registry_path="/nonexistent/taxonomy.json")
             import io
             from contextlib import redirect_stdout
+
             buf = io.StringIO()
             with redirect_stdout(buf):
                 mod.cmd_list()
@@ -238,6 +238,7 @@ class TestScriptExists(unittest.TestCase):
 
     def test_script_parses(self):
         import ast
+
         src = SCRIPT_PATH.read_text(encoding="utf-8")
         try:
             ast.parse(src)
