@@ -38,7 +38,6 @@ def get_rules_for_event(event):
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
     from .read_before_edit import ReadBeforeEditRule
     from .read_tracker import ReadTrackerRule
-    from .loop_detector import LoopDetectorRule
     from .recurrence_detector import RecurrenceDetectorRule
     from .session_compiler import SessionCompilerRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
