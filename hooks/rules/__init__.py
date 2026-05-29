@@ -52,10 +52,12 @@ def get_rules_for_event(event):
     from .token_tracker import TokenTrackerRule
     from .user_prompt_audit import UserPromptAuditRule
     from .verification_gate import VerificationGateRule
+    from .workflow_state import WorkflowStateRule
 
     ALL_RULES = [
-        # sessionStart (order: briefing first, then integrity)
+        # sessionStart (order: briefing first, then workflow state, then integrity)
         AutoBriefingRule(),
+        WorkflowStateRule(),
         IntegrityRule(),
         # preToolUse (order matters — first deny wins)
         EnforceBriefingRule(),
