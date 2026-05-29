@@ -167,6 +167,11 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Start MCP stdio server (MCP 2024-11-05 / JSON-RPC 2.0)
+    Mcp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -332,6 +337,7 @@ fn main() -> ExitCode {
         Some(Commands::AuditHooks { args }) => run_fallback("audit-hooks.py", &args),
         Some(Commands::AuditLog { args }) => commands::audit_log::run_audit_log_command(&args),
         Some(Commands::Retry { args }) => commands::retry::run_retry_command(&args),
+        Some(Commands::Mcp { args }) => commands::mcp::run_mcp_command(&args),
     };
 
     if cli.time {
