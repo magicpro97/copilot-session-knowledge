@@ -13,14 +13,14 @@
       }
     ],
     "sessionEnd": [
-      {
-        "type": "command",
-        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run sessionEnd; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd; fi",
-        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run sessionEnd } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd }",
-        "comment": "[GLOBAL] Unified hook runner — marker cleanup + sync flush signal (prefers native sk)",
-        "timeoutSec": 5
-      }
-    ],
+        {
+          "type": "command",
+          "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run sessionEnd; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd; fi",
+          "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run sessionEnd } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd }",
+          "comment": "[GLOBAL] Unified hook runner — marker cleanup + sync flush signal (prefers native sk)",
+          "timeoutSec": 5
+        }
+      ],
     "preToolUse": [
       {
         "type": "command",
@@ -31,14 +31,14 @@
       }
     ],
     "postToolUse": [
-      {
-        "type": "command",
-        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run postToolUse; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse; fi",
-        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run postToolUse } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse }",
-        "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + sync nudge (prefers native sk)",
-        "timeoutSec": 10
-      }
-    ],
+        {
+          "type": "command",
+          "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run postToolUse; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse; fi",
+          "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run postToolUse } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse }",
+          "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + sync nudge (prefers native sk)",
+          "timeoutSec": 10
+        }
+      ],
     "agentStop": [
       {
         "type": "command",
@@ -55,6 +55,15 @@
         "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run subagentStop } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" subagentStop }",
         "comment": "[GLOBAL] Unified hook runner — marker cleanup after subagent stop (prefers native sk)",
         "timeoutSec": 5
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run userPromptSubmitted; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" userPromptSubmitted; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run userPromptSubmitted } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" userPromptSubmitted }",
+        "comment": "[GLOBAL] Unified hook runner — prompt audit logging (prefers native sk)",
+        "timeoutSec": 10
       }
     ],
     "errorOccurred": [
