@@ -1410,6 +1410,8 @@ _ALLOWED_HOOK_EVENTS = {
     "subagentStop",
     "errorOccurred",
     "userPromptSubmitted",
+    "preCompact",
+    "postCompact",
 }
 _ALLOWED_HOOK_ENTRY_KEYS = {"type", "bash", "powershell", "cwd", "env", "timeoutSec", "comment"}
 

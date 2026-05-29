@@ -23,6 +23,7 @@ def get_rules_for_event(event):
     from .block_edit_dist import BlockEditDistRule
     from .block_unsafe_html import BlockUnsafeHtmlRule
     from .briefing import AutoBriefingRule, EnforceBriefingRule
+    from .compact_lifecycle import CompactLifecycleRule
     from .confidence_gate import ConfidenceGateRule
     from .constitution_gate import ConstitutionGateRule
     from .edit_tracker import TestReminderRule, TrackEditsRule
@@ -95,6 +96,8 @@ def get_rules_for_event(event):
         RecurrenceDetectorRule(),
         SessionCompilerRule(),  # Issue #395: session compiler (opt-in)
         SkillImprovementAdvisorRule(),  # Skill improvement queue (sessionEnd)
+        # preCompact / postCompact
+        CompactLifecycleRule(),  # Issue #665: goal pause + context restore on compaction
         # agentStop / subagentStop
         SubagentStopRule(),
         # userPromptSubmitted (WBS-025)

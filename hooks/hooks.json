@@ -74,6 +74,24 @@
         "comment": "[GLOBAL] Unified hook runner — KB error search (prefers native sk)",
         "timeoutSec": 10
       }
+    ],
+    "preCompact": [
+      {
+        "type": "command",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run preCompact; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" preCompact; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run preCompact } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" preCompact }",
+        "comment": "[GLOBAL] Unified hook runner — goal pause before compaction (prefers native sk)",
+        "timeoutSec": 10
+      }
+    ],
+    "postCompact": [
+      {
+        "type": "command",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run postCompact; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postCompact; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run postCompact } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postCompact }",
+        "comment": "[GLOBAL] Unified hook runner — context restoration after compaction (prefers native sk)",
+        "timeoutSec": 15
+      }
     ]
   }
 }
