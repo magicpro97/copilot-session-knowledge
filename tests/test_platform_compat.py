@@ -32,6 +32,7 @@ ALLOWED_TMP_LITERAL_TESTS = {
     "test_retro.py": "mock config path fixture",
     "test_session_surface.py": "SQLite fixture row only; no filesystem dependency",
     "test_tentacle_runtime.py": "marker isolation fixture paths",
+    "test_autopr.py": "repo_root fixture strings only; no filesystem access",
 }
 
 ALLOWED_POSIX_TOKEN_TESTS = {
