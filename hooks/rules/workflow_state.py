@@ -39,12 +39,12 @@ PHASE_ICONS = {
 MAX_HISTORY = 50
 
 
-def _state_path(session_id: str) → Path:
+def _state_path(session_id: str) -> Path:
     """Return path to workflow state file for given session."""
     return MARKERS_DIR / f"workflow-state-{session_id}.json"
 
 
-def get_workflow_state(session_id: str) → dict:
+def get_workflow_state(session_id: str) -> dict:
     """Load workflow state or return default (idle)."""
     try:
         p = _state_path(session_id)
@@ -57,7 +57,7 @@ def get_workflow_state(session_id: str) → dict:
     return _default_state()
 
 
-def _default_state() → dict:
+def _default_state() -> dict:
     return {
         "phase": "idle",
         "phase_entered_at": datetime.now(timezone.utc).isoformat(),
@@ -67,7 +67,7 @@ def _default_state() → dict:
     }
 
 
-def transition(state: dict, to_phase: str, trigger: str) → bool:
+def transition(state: dict, to_phase: str, trigger: str) -> bool:
     """Validate and apply transition. Returns True if transition occurred."""
     current = state.get("phase", "idle")
     if to_phase not in TRANSITIONS.get(current, set()):
@@ -87,7 +87,7 @@ def transition(state: dict, to_phase: str, trigger: str) → bool:
     return True
 
 
-def save_workflow_state(session_id: str, state: dict) → bool:
+def save_workflow_state(session_id: str, state: dict) -> bool:
     """Atomic write of workflow state. Returns True on success."""
     try:
         MARKERS_DIR.mkdir(parents=True, exist_ok=True)
