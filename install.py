@@ -3110,6 +3110,65 @@ def _dispatch_healer(flag: str) -> None:
     _sp.run([sys.executable, str(healer), flag])
 
 
+def setup_windows(dry_run: bool = False, quiet: bool = False) -> bool:
+    """Configure settings.json for Windows-optimized statusline and compact paste.
+
+    Idempotent: safe to run multiple times. Only runs on Windows.
+    """
+    if os.name != "nt":
+        if not quiet:
+            print(f"  {INFO} --setup-windows only applies on Windows. Skipping.")
+        return False
+
+    settings_path = Path.home() / ".copilot" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing settings
+    settings: dict = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            if not quiet:
+                print(f"  {WARN} Could not parse existing settings.json — creating fresh.")
+            settings = {}
+
+    # Build statusLine command with forward slashes
+    home_fwd = str(Path.home()).replace("\\", "/")
+    statusline_cmd = f"python {home_fwd}/.copilot/tools/statusline.py"
+
+    # Inject statusLine config
+    settings["statusLine"] = {
+        "type": "command",
+        "command": statusline_cmd,
+        "padding": 1,
+    }
+
+    # Set compactPaste if not already set
+    if "compactPaste" not in settings:
+        settings["compactPaste"] = True
+
+    if dry_run:
+        if not quiet:
+            print(f"  [DRY-RUN] Would write settings to {_tilde(settings_path)}")
+            print(f"    statusLine.command = {statusline_cmd}")
+            print(f"    compactPaste = {settings.get('compactPaste')}")
+        return True
+
+    # Write back atomically (overwrite with merged content)
+    settings_path.write_text(
+        json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    if not quiet:
+        print(f"  {OK} Updated {_tilde(settings_path)}")
+        print(f"    statusLine.command = {statusline_cmd}")
+        print(f"    compactPaste = {settings.get('compactPaste')}")
+
+    return True
+
+
 def main():
     args = sys.argv[1:]
 
@@ -3228,6 +3287,13 @@ def main():
 
     if "--deploy-statusline" in args:
         inject_statusline_config()
+        return
+
+    if "--setup-windows" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nConfiguring Windows-optimized settings...")
+        setup_windows(dry_run=dry_run, quiet=quiet)
         return
 
     if "--test" in args:
