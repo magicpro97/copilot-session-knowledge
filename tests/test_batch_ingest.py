@@ -101,6 +101,7 @@ def _make_test_db(tmp_dir: Path) -> Path:
 
 # ── Unit tests ────────────────────────────────────────────────────────────────
 
+
 def test_parse_markdown_sections():
     """_parse_markdown_sections extracts headings and maps categories."""
     learn = _load_learn()
@@ -180,6 +181,7 @@ def test_heading_to_category_mapping():
 
 # ── Integration tests (require test DB) ───────────────────────────────────────
 
+
 def test_from_checkpoint_inserts_rows():
     """batch_ingest_sections inserts rows from the fixture file."""
     sample = FIXTURES / "sample.md"
@@ -206,10 +208,12 @@ def test_from_checkpoint_inserts_rows():
             db.close()
 
             test("from_checkpoint: inserts ≥3 rows", count >= 3, f"got {count}")
-            test("from_checkpoint: inserted==DB count", result["inserted"] == count,
-                 f"result={result['inserted']} DB={count}")
-            test("from_checkpoint: no skipped on first run", result["skipped"] == 0,
-                 f"skipped={result['skipped']}")
+            test(
+                "from_checkpoint: inserted==DB count",
+                result["inserted"] == count,
+                f"result={result['inserted']} DB={count}",
+            )
+            test("from_checkpoint: no skipped on first run", result["skipped"] == 0, f"skipped={result['skipped']}")
             test("from_checkpoint: dry_run=False", result["dry_run"] is False)
         finally:
             learn.DB_PATH = orig_db
@@ -244,12 +248,13 @@ def test_idempotent_reingest():
             count2 = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
             db.close()
 
-            test("idempotency: row count unchanged", count1 == count2,
-                 f"first={count1} second={count2}")
-            test("idempotency: second run inserts 0", r2["inserted"] == 0,
-                 f"got {r2['inserted']}")
-            test("idempotency: second run skips all", r2["skipped"] == len(sections),
-                 f"skipped={r2['skipped']} expected={len(sections)}")
+            test("idempotency: row count unchanged", count1 == count2, f"first={count1} second={count2}")
+            test("idempotency: second run inserts 0", r2["inserted"] == 0, f"got {r2['inserted']}")
+            test(
+                "idempotency: second run skips all",
+                r2["skipped"] == len(sections),
+                f"skipped={r2['skipped']} expected={len(sections)}",
+            )
         finally:
             learn.DB_PATH = orig_db
 
@@ -278,8 +283,11 @@ def test_dry_run_no_insert():
 
             test("dry_run: no rows inserted", count == 0, f"got {count}")
             test("dry_run: result dry_run=True", result.get("dry_run") is True)
-            test("dry_run: total matches section count", result["total"] == len(sections),
-                 f"total={result['total']} sections={len(sections)}")
+            test(
+                "dry_run: total matches section count",
+                result["total"] == len(sections),
+                f"total={result['total']} sections={len(sections)}",
+            )
             test("dry_run: inserted=0", result["inserted"] == 0, f"got {result['inserted']}")
             test("dry_run: rows list populated", len(result.get("rows", [])) == len(sections))
         finally:
@@ -304,9 +312,11 @@ def test_stable_id_overwrite_after_insert():
             db.close()
 
             test("stable_id overwrite: entry inserted", result["inserted"] == 1)
-            test("stable_id overwrite: stable_id is batch value",
-                 row is not None and row[0] == expected_sid,
-                 f"got {row[0] if row else 'None'}")
+            test(
+                "stable_id overwrite: stable_id is batch value",
+                row is not None and row[0] == expected_sid,
+                f"got {row[0] if row else 'None'}",
+            )
         finally:
             learn.DB_PATH = orig_db
 
