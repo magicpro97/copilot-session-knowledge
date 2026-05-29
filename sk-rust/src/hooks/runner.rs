@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::hooks::audit::audit_log;
 use crate::hooks::rules::{all_rules, HookRule};
+use crate::hooks::session_state::{self, DispatchStats};
 use crate::hooks::sync_markers::record_sync_signal;
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,10 @@ pub fn run_hook(event: &str) {
         return;
     }
 
-    dispatch_rules(event, &data);
+    let stats = dispatch_rules(event, &data);
+
+    // Record hook/tool call metrics in session state (best-effort, fail-open).
+    session_state::record_metrics(event, &data, &stats);
 
     // Sync markers (best-effort, after rule dispatch).
     if event == "postToolUse" || event == "sessionEnd" {
@@ -162,7 +166,7 @@ pub fn run_hook(event: &str) {
 ///
 /// Separated from `run_hook` so unit tests can call it directly without
 /// needing to set up stdin.
-pub(crate) fn dispatch_rules(event: &str, data: &Value) {
+pub(crate) fn dispatch_rules(event: &str, data: &Value) -> DispatchStats {
     let dry_run = std::env::var("HOOK_DRY_RUN").is_ok_and(|v| v == "1");
     let verbose = std::env::var("HOOK_LOG_LEVEL").is_ok_and(|v| v == "DEBUG");
 
@@ -174,6 +178,8 @@ pub(crate) fn dispatch_rules(event: &str, data: &Value) {
         .map(|r| r.as_ref())
         .filter(|r| r.events().contains(&event))
         .collect();
+
+    let mut panicked_rules = 0usize;
 
     for rule in matching {
         // Tool filter: empty list means "all tools".
@@ -189,6 +195,7 @@ pub(crate) fn dispatch_rules(event: &str, data: &Value) {
             Ok(r) => r,
             Err(_) => {
                 audit_log(event, tool_name, rule.name(), "error", "panic");
+                panicked_rules += 1;
                 continue; // fail-open
             }
         };
@@ -217,7 +224,7 @@ pub(crate) fn dispatch_rules(event: &str, data: &Value) {
                     // Emit deny JSON to stdout and stop — first deny wins.
                     println!("{}", serde_json::to_string(&result).unwrap_or_default());
                     audit_log(event, tool_name, rule.name(), "deny", reason);
-                    return; // ← first-deny-wins short-circuit
+                    return DispatchStats { panicked_rules }; // ← first-deny-wins short-circuit
                 }
             } else if verbose {
                 audit_log(event, tool_name, rule.name(), "allow", "");
@@ -239,6 +246,8 @@ pub(crate) fn dispatch_rules(event: &str, data: &Value) {
             audit_log(event, tool_name, rule.name(), "info", truncated);
         }
     }
+
+    DispatchStats { panicked_rules }
 }
 
 // ---------------------------------------------------------------------------

@@ -11,4 +11,5 @@ pub mod audit;
 pub mod marker_auth;
 pub mod rules;
 pub mod runner;
+pub mod session_state;
 pub mod sync_markers;
