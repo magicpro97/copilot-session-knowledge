@@ -8,6 +8,7 @@ mod hooks;
 mod index;
 mod providers;
 mod redact;
+mod retry;
 mod sync;
 
 use std::process::ExitCode;
