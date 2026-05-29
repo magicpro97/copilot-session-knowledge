@@ -97,6 +97,34 @@ pub fn run_index_status_command(args: &[String]) -> ExitCode {
     let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
     let db_size_display = format_bytes(db_size_bytes);
 
+    // Browse server URL (read from ~/.copilot/run/browse.port)
+    let home_dir = resolve_home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let port_file = home_dir.join(".copilot/run/browse.port");
+    let browse_url = if port_file.exists() {
+        std::fs::read_to_string(&port_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .map(|p| format!("http://localhost:{p}"))
+            .unwrap_or_else(|| "not running".to_string())
+    } else {
+        "not running".to_string()
+    };
+
+    // Learn-inbox depth (count *.json in ~/.copilot/session-state/learn-inbox/)
+    let inbox_dir = home_dir.join(".copilot/session-state/learn-inbox");
+    let inbox_count: usize = if inbox_dir.exists() {
+        std::fs::read_dir(&inbox_dir)
+            .ok()
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                    .count()
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     // Embeddings
     let emb_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
@@ -127,6 +155,8 @@ pub fn run_index_status_command(args: &[String]) -> ExitCode {
             "last_indexed_at": last_indexed,
             "db_size": db_size_display,
             "db_path": db_path.display().to_string(),
+            "browse_url": browse_url,
+            "inbox_depth": inbox_count,
         });
         println!(
             "{}",
@@ -148,6 +178,9 @@ pub fn run_index_status_command(args: &[String]) -> ExitCode {
         if !last_indexed.is_empty() {
             println!("Last indexed:  {last_indexed}");
         }
+        println!();
+        println!("Browse:        {browse_url}");
+        println!("Inbox:         {inbox_count} pending");
     }
 
     ExitCode::SUCCESS
