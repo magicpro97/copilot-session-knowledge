@@ -1701,6 +1701,18 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_sync_failures_failed_at ON sync_failures(failed_at)",
             ],
         ),
+        (
+            32,
+            "knowledge_relations_supersedes",
+            [
+                # Add session_id to knowledge_relations for SUPERSEDES tracking.
+                # Existing table uses source_id/target_id INTEGER; we add session_id
+                # and an index for fast superseded-entry filtering in briefing.
+                "ALTER TABLE knowledge_relations ADD COLUMN session_id TEXT DEFAULT ''",
+                "CREATE INDEX IF NOT EXISTS idx_kr_relation_type ON knowledge_relations(relation_type)",
+                "CREATE INDEX IF NOT EXISTS idx_kr_target_supersedes ON knowledge_relations(target_id, relation_type)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

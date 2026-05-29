@@ -27,6 +27,11 @@ Usage:
     python learn.py --relate "addPatient Lambda" "writes_to" "dataTable"
 
     python learn.py --from-file notes.md          # Bulk import from markdown
+    python learn.py --from-checkpoint path/to/checkpoint.md   # Batch ingest by ## heading
+    python learn.py --from-checkpoint path/to/file.md --dry-run  # Preview without inserting
+    python learn.py --from-pr 576                 # Batch ingest from PR body
+    python learn.py --from-pr https://github.com/org/repo/pull/576  # PR URL also works
+    python learn.py --from-file notes.md --as-category discovery   # Insert whole file as one entry
     python learn.py --flush-inbox                 # Replay entries queued while DB was locked
     python learn.py --list                        # List recent entries
     python learn.py --stats                       # Show knowledge stats
@@ -1688,6 +1693,277 @@ def import_from_file(filepath: str) -> int:
     return imported
 
 
+# ── Batch ingest helpers (issue #576) ─────────────────────────────────────────
+
+_HEADING_CATEGORY_MAP: dict[str, str] = {
+    "decision": "decision",
+    "decisions": "decision",
+    "pattern": "pattern",
+    "patterns": "pattern",
+    "mistake": "mistake",
+    "mistakes": "mistake",
+    "error": "mistake",
+    "errors": "mistake",
+    "technical details": "discovery",
+    "technical detail": "discovery",
+    "next steps": "discovery",
+    "next step": "discovery",
+    "feature": "feature",
+    "features": "feature",
+    "discovery": "discovery",
+    "discoveries": "discovery",
+    "tool": "tool",
+    "tools": "tool",
+    "refactor": "refactor",
+}
+
+
+def _heading_to_category(heading: str) -> str:
+    """Map a markdown heading to a knowledge category; fallback to 'discovery'."""
+    return _HEADING_CATEGORY_MAP.get(heading.strip().lower(), "discovery")
+
+
+def _heading_slug(heading: str) -> str:
+    """Convert a heading to a URL-safe lowercase slug."""
+    return re.sub(r"[^a-z0-9]+", "-", heading.strip().lower()).strip("-")
+
+
+def _batch_stable_id(source_key: str, heading: str) -> str:
+    """Derive a 12-char hex stable_id: sha256(source_key:heading_slug)[:12]."""
+    slug = _heading_slug(heading)
+    payload = f"{source_key}:{slug}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _parse_markdown_sections(text: str) -> list[dict]:
+    """Split text by ## headings into sections with heading, content, and category.
+
+    Only returns sections whose content is non-empty after stripping.
+    """
+    sections: list[dict] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if current_heading is not None:
+                body = "\n".join(current_lines).strip()
+                if body:
+                    sections.append(
+                        {
+                            "heading": current_heading,
+                            "content": body,
+                            "category": _heading_to_category(current_heading),
+                        }
+                    )
+            current_heading = line[3:].strip()
+            current_lines = []
+        elif current_heading is not None:
+            current_lines.append(line)
+
+    if current_heading is not None:
+        body = "\n".join(current_lines).strip()
+        if body:
+            sections.append(
+                {
+                    "heading": current_heading,
+                    "content": body,
+                    "category": _heading_to_category(current_heading),
+                }
+            )
+
+    return sections
+
+
+def _stable_id_exists(stable_id: str) -> bool:
+    """Return True if a knowledge entry with this stable_id exists in the DB."""
+    if not DB_PATH.exists():
+        return False
+    try:
+        db = get_db()
+        ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        if "stable_id" not in ke_columns:
+            db.close()
+            return False
+        row = db.execute("SELECT id FROM knowledge_entries WHERE stable_id = ?", (stable_id,)).fetchone()
+        db.close()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _set_entry_stable_id(entry_id: int, stable_id: str) -> None:
+    """Overwrite the stable_id for a knowledge entry after insertion (best-effort)."""
+    try:
+        db = get_db()
+        db.execute("UPDATE knowledge_entries SET stable_id = ? WHERE id = ?", (stable_id, entry_id))
+        db.commit()
+        db.close()
+    except Exception:
+        pass
+
+
+def batch_ingest_sections(
+    sections: list[dict],
+    source_key: str,
+    *,
+    dry_run: bool = False,
+    session_id: str | None = None,
+    tags: str = "",
+) -> dict:
+    """Insert parsed sections as knowledge entries with stable_id idempotency.
+
+    Args:
+        sections: List of {heading, content, category} from _parse_markdown_sections().
+        source_key: Prefix for stable_id derivation (e.g. filepath or 'pr-123').
+        dry_run: If True, print a preview table and return without inserting.
+        session_id: Optional session ID for entries (defaults to 'batch-ingest').
+        tags: Optional comma-separated tags to attach to all entries.
+
+    Returns dict with keys: inserted, skipped, total, dry_run, rows.
+    """
+    total = len(sections)
+    rows = []
+    for sec in sections:
+        sid = _batch_stable_id(source_key, sec["heading"])
+        word_count = len(sec["content"].split())
+        rows.append(
+            {
+                "stable_id": sid,
+                "heading": sec["heading"],
+                "category": sec["category"],
+                "content": sec["content"],
+                "word_count": word_count,
+            }
+        )
+
+    if dry_run:
+        print(f"\nDry run — {total} section(s) from '{source_key}'")
+        print(f"  {'stable_id':>12}  {'heading':<32}  {'category':<12}  words")
+        print("  " + "-" * 68)
+        for r in rows:
+            print(f"  {r['stable_id']:>12}  {r['heading'][:32]:<32}  {r['category']:<12}  {r['word_count']}")
+        print()
+        return {"inserted": 0, "skipped": 0, "total": total, "dry_run": True, "rows": rows}
+
+    inserted = 0
+    skipped = 0
+    for r in rows:
+        if _stable_id_exists(r["stable_id"]):
+            print(f"  — skipping '{r['heading']}' (stable_id {r['stable_id']} already exists)")
+            skipped += 1
+            continue
+
+        entry_id = with_retry(
+            add_entry,
+            r["category"],
+            r["heading"],
+            r["content"],
+            tags=tags,
+            session_id=session_id or "batch-ingest",
+            skip_gate=True,
+        )
+        if entry_id >= 0:
+            _set_entry_stable_id(entry_id, r["stable_id"])
+            inserted += 1
+        else:
+            print(f"  ⚠ Skipped '{r['heading']}' (rejected by injection scan or other guard)")
+            skipped += 1
+
+    return {"inserted": inserted, "skipped": skipped, "total": total, "dry_run": False, "rows": rows}
+
+
+def batch_ingest_from_checkpoint(filepath: str, *, dry_run: bool = False, tags: str = "") -> int:
+    """Ingest a checkpoint/markdown file as multiple knowledge entries by heading.
+
+    Returns number of entries inserted (0 if nothing to import or all already ingested).
+    """
+    path = Path(filepath)
+    if not path.exists():
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        sys.exit(1)
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    sections = _parse_markdown_sections(text)
+
+    if not sections:
+        print(f"  No ## headings with content found in {filepath}", file=sys.stderr)
+        return 0
+
+    source_key = str(path.resolve())
+    result = batch_ingest_sections(sections, source_key, dry_run=dry_run, tags=tags)
+
+    if not dry_run:
+        print(f"  Checkpoint ingest: {result['inserted']} inserted, {result['skipped']} skipped from {filepath}")
+
+    return result["inserted"]
+
+
+def batch_ingest_from_pr(pr_ref: str, *, dry_run: bool = False, tags: str = "") -> int:
+    """Ingest knowledge entries from a GitHub PR body.
+
+    pr_ref: PR number (int or string) or PR URL containing /pull/<number>.
+    Returns number of entries inserted.
+    """
+    pr_num_str = str(pr_ref)
+    url_match = re.search(r"/pull/(\d+)", pr_num_str)
+    if url_match:
+        pr_num_str = url_match.group(1)
+
+    try:
+        pr_num_int = int(pr_num_str)
+    except (ValueError, TypeError):
+        print(f"Error: Invalid PR number or URL: {pr_ref!r}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", str(pr_num_int), "--json", "body,title,number,headRefName"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        print(
+            "Error: 'gh' CLI not found. Install the GitHub CLI (https://cli.github.com/) and authenticate.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("Error: gh CLI timed out after 30 seconds.", file=sys.stderr)
+        sys.exit(1)
+
+    if proc.returncode != 0:
+        print(f"Error: gh pr view failed: {proc.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        pr_data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"Error: Failed to parse gh output: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    body = pr_data.get("body") or ""
+    title = pr_data.get("title") or f"PR #{pr_num_int}"
+
+    if not body.strip():
+        print(f"  PR #{pr_num_int} '{title}' has no body content.", file=sys.stderr)
+        return 0
+
+    sections = _parse_markdown_sections(body)
+    if not sections:
+        sections = [{"heading": title, "content": body.strip(), "category": "discovery"}]
+
+    source_key = f"pr-{pr_num_int}"
+    ingest_tags = f"pr,pr-{pr_num_int}" + (f",{tags}" if tags else "")
+    result = batch_ingest_sections(sections, source_key, dry_run=dry_run, tags=ingest_tags)
+
+    if not dry_run:
+        print(f"  PR #{pr_num_int} ingest: {result['inserted']} inserted, {result['skipped']} skipped")
+
+    return result["inserted"]
+
+
 def list_recent(limit: int = 10):
     """List recently added/updated knowledge entries (excludes soft-deleted)."""
     db = get_db()
@@ -1855,6 +2131,44 @@ def soft_delete_entry(entry_id: int) -> bool:
     return True
 
 
+def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str | None = None) -> None:
+    """Insert a SUPERSEDES relation from source_id to target_id in knowledge_relations.
+
+    Validates that target_id exists. Idempotent via INSERT OR IGNORE.
+    source_id is the new (superseding) entry; target_id is the old (superseded) entry.
+    """
+    db = get_db()
+    try:
+        target_row = db.execute(
+            "SELECT id, title FROM knowledge_entries WHERE id = ?",
+            (target_id,),
+        ).fetchone()
+        if not target_row:
+            print(
+                f"Error: --supersedes target ID {target_id} not found in knowledge_entries",
+                file=sys.stderr,
+            )
+            db.close()
+            sys.exit(1)
+
+        now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        sid = session_id or ""
+        db.execute(
+            """
+            INSERT OR IGNORE INTO knowledge_relations
+                (source_id, target_id, relation_type, confidence, created_at, session_id)
+            VALUES (?, ?, 'SUPERSEDES', 1.0, ?, ?)
+            """,
+            (source_id, target_id, now, sid),
+        )
+        db.commit()
+        print(f"  ↩ Supersedes #{target_id}: {target_row['title'][:60]}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠ Could not record SUPERSEDES relation: {exc}", file=sys.stderr)
+    finally:
+        db.close()
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1904,9 +2218,86 @@ def main():
             sys.exit(1)
         return
 
+    if "--from-checkpoint" in args:
+        idx = args.index("--from-checkpoint")
+        if idx + 1 >= len(args) or args[idx + 1].startswith("--"):
+            print("Error: --from-checkpoint requires a filepath", file=sys.stderr)
+            sys.exit(1)
+        _cp_file = args[idx + 1]
+        _cp_dry = "--dry-run" in args
+        _cp_tags = ""
+        if "--tags" in args:
+            _ti = args.index("--tags")
+            _cp_tags = args[_ti + 1] if _ti + 1 < len(args) else ""
+        batch_ingest_from_checkpoint(_cp_file, dry_run=_cp_dry, tags=_cp_tags)
+        return
+
+    if "--from-pr" in args:
+        idx = args.index("--from-pr")
+        if idx + 1 >= len(args) or args[idx + 1].startswith("--"):
+            print("Error: --from-pr requires a PR number or URL", file=sys.stderr)
+            sys.exit(1)
+        _pr_ref = args[idx + 1]
+        _pr_dry = "--dry-run" in args
+        _pr_tags = ""
+        if "--tags" in args:
+            _ti = args.index("--tags")
+            _pr_tags = args[_ti + 1] if _ti + 1 < len(args) else ""
+        batch_ingest_from_pr(_pr_ref, dry_run=_pr_dry, tags=_pr_tags)
+        return
+
     if "--from-file" in args:
         idx = args.index("--from-file")
         if idx + 1 < len(args):
+            _ff_path = args[idx + 1]
+            # --as-category: single-entry mode — ingest whole file as one entry
+            if "--as-category" in args:
+                _ac_idx = args.index("--as-category")
+                _as_cat = args[_ac_idx + 1] if _ac_idx + 1 < len(args) else ""
+                if not _as_cat or _as_cat.startswith("--"):
+                    print("Error: --as-category requires a category value", file=sys.stderr)
+                    sys.exit(1)
+                _valid_cats = ("mistake", "pattern", "decision", "tool", "feature", "refactor", "discovery")
+                if _as_cat not in _valid_cats:
+                    print(f"Error: --as-category must be one of: {', '.join(_valid_cats)}", file=sys.stderr)
+                    sys.exit(1)
+                _fpath = Path(_ff_path)
+                if not _fpath.exists():
+                    print(f"Error: File not found: {_ff_path}", file=sys.stderr)
+                    sys.exit(1)
+                _file_body = _fpath.read_text(encoding="utf-8", errors="replace")
+                _file_title = _fpath.stem
+                _source_key = str(_fpath.resolve())
+                _batch_sid = _batch_stable_id(_source_key, _file_title)
+                _dry = "--dry-run" in args
+                if _dry:
+                    _wc = len(_file_body.split())
+                    print(f"\nDry run — single entry from '{_ff_path}'")
+                    print(f"  stable_id: {_batch_sid}")
+                    print(f"  title:     {_file_title}")
+                    print(f"  category:  {_as_cat}")
+                    print(f"  words:     {_wc}")
+                    return
+                if _stable_id_exists(_batch_sid):
+                    print(f"  — skipping '{_file_title}' (already ingested, stable_id={_batch_sid})")
+                    return
+                _ff_tags = ""
+                if "--tags" in args:
+                    _ti = args.index("--tags")
+                    _ff_tags = args[_ti + 1] if _ti + 1 < len(args) else ""
+                _eid = with_retry(
+                    add_entry,
+                    _as_cat,
+                    _file_title,
+                    _file_body[:10000],
+                    tags=_ff_tags,
+                    session_id="batch-ingest",
+                    skip_gate=True,
+                )
+                if _eid >= 0:
+                    _set_entry_stable_id(_eid, _batch_sid)
+                    print(f"  Inserted entry #{_eid} [{_as_cat}] from {_ff_path}")
+                return
             imported = import_from_file(args[idx + 1])
             # -1 means "headers parsed but no body content" — valid but empty; exit 0.
             if imported == -1:
@@ -2124,6 +2515,19 @@ def main():
         idx = args.index("--caveats")
         caveats = args[idx + 1] if idx + 1 < len(args) else ""
 
+    supersedes_id = None
+    if "--supersedes" in args:
+        idx = args.index("--supersedes")
+        raw_sup = args[idx + 1] if idx + 1 < len(args) else ""
+        if not raw_sup or raw_sup.startswith("--"):
+            print("Error: --supersedes requires a knowledge entry ID", file=sys.stderr)
+            sys.exit(1)
+        try:
+            supersedes_id = int(raw_sup)
+        except ValueError:
+            print(f"Error: --supersedes value must be an integer ID (got {raw_sup!r})", file=sys.stderr)
+            sys.exit(1)
+
     # Collect all --fact and --file values (repeatable flags)
     for i, a in enumerate(args):
         if a == "--fact" and i + 1 < len(args):
@@ -2170,6 +2574,7 @@ def main():
             "--agent-id",
             "--certainty",
             "--caveats",
+            "--supersedes",
             "--cerebrum-output",
             "--cerebrum-sections",
         ):
@@ -2216,6 +2621,27 @@ def main():
             print("  Gate passed (agent responsibility — record honestly)")
         else:
             print(f"Recording {category}...")
+
+    # Strict taxonomy check: validate provided wing/room against registered taxonomy
+    if "--strict-taxonomy" in args and (wing or room):
+        _taxonomy_script = Path(__file__).with_name("taxonomy.py")
+        if _taxonomy_script.is_file():
+            import subprocess as _sp
+
+            _tx_result = _sp.run(
+                [sys.executable, str(_taxonomy_script), "validate"],
+                capture_output=True,
+                text=True,
+            )
+            if _tx_result.returncode != 0:
+                print(f"Taxonomy validation failed: {_tx_result.stderr.strip()}", file=sys.stderr)
+                print(
+                    "Use `python taxonomy.py add <wing> <room>` to register, or omit --strict-taxonomy.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            print("Warning: taxonomy.py not found; --strict-taxonomy skipped.", file=sys.stderr)
 
     entry_kwargs = {
         "category": category,
@@ -2303,6 +2729,9 @@ def main():
                 "confidence": confidence,
             },
         )
+
+    if supersedes_id is not None and entry_id >= 0:
+        _insert_supersedes_relation(entry_id, supersedes_id, session_id)
 
     if json_mode:
         # Machine-readable output: emit structured JSON with write result
