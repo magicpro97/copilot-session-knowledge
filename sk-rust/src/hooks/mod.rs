@@ -9,6 +9,7 @@
 ///   - sync markers written for postToolUse / sessionEnd
 pub mod audit;
 pub mod marker_auth;
+pub mod retry_listener;
 pub mod rules;
 pub mod runner;
 pub mod session_state;
