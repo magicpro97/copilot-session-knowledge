@@ -4541,11 +4541,11 @@ try:
         _rb25.BRIEFING_SCRIPT = _dummy_briefing25f
 
         _result25f = _rule25f.evaluate("sessionStart", {})
-        _msg25f = _result25f.get("message", "") if isinstance(_result25f, dict) else ""
+        _msg25f = (_result25f.get("additionalContext") or _result25f.get("message", "")) if isinstance(_result25f, dict) else ""
 
         test(
             "25f: AutoBriefingRule returns info() dict",
-            isinstance(_result25f, dict) and "message" in _result25f,
+            isinstance(_result25f, dict) and ("message" in _result25f or "additionalContext" in _result25f),
             f"got: {_result25f!r}",
         )
         test(
@@ -5589,7 +5589,7 @@ try:
         finally:
             _rb27g.subprocess.run = _orig_sp_run27g
 
-    _msg27g = _result27g.get("message", "") if isinstance(_result27g, dict) else ""
+    _msg27g = (_result27g.get("additionalContext") or _result27g.get("message", "")) if isinstance(_result27g, dict) else ""
     test(
         "27g: AutoBriefingRule timeout preserves partial skill-index output",
         "\U0001f4e6 Skills" in _msg27g,
