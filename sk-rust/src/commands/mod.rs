@@ -5,6 +5,7 @@ pub mod fallback;
 pub mod hooks;
 pub mod index_native;
 pub mod learn;
+pub mod mcp;
 pub mod project;
 pub mod query;
 pub mod retry;

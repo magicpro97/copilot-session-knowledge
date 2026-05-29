@@ -148,6 +148,9 @@ _DIRECT: dict[str, CommandMeta] = {
     "statusline": CommandMeta(
         "statusline.py", "Alias: session token usage footer", ("session", "cost"), aliases=("status",)
     ),
+    "mcp": CommandMeta(
+        None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")
+    ),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -476,6 +479,34 @@ def _run_skill(extra_args: list[str]) -> int:
 def _run_spec_phase(phase: str, extra_args: list[str]) -> int:
     """Dispatch ``sk plan`` / ``sk tasks`` through specify.py."""
     return _run("specify.py", [phase] + extra_args)
+
+
+def _run_native_binary(cmd: str, extra_args: list[str]) -> int:
+    """Exec a native-binary-only command via the sk Rust binary.
+
+    Used when CommandMeta.script is None (e.g. 'sk mcp').
+    Resolves the sk binary from PATH or the same directory as this script.
+    """
+    import shutil
+
+    sk_bin = shutil.which("sk")
+    if sk_bin is None:
+        # Try the same directory as this script (common in development setups)
+        script_dir = Path(__file__).resolve().parent
+        candidate = script_dir / "target" / "release" / "sk"
+        if candidate.exists():
+            sk_bin = str(candidate)
+
+    if sk_bin is None:
+        print(
+            f"sk: '{cmd}' requires the native sk binary. Install with: sk install",
+            file=sys.stderr,
+        )
+        return 2
+
+    result = subprocess.run([sk_bin, cmd] + extra_args)
+    return result.returncode
+
 
 
 def _run_events(extra_args: list[str]) -> int:
@@ -810,7 +841,11 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "init":
         return _run("setup-project.py", ["--init-mode"] + rest)
     if cmd in _DIRECT:
-        return _run(str(_DIRECT[cmd]), rest, cmd=cmd)
+        meta = _DIRECT[cmd]
+        if meta.script is None:
+            # Native-binary-only command: exec the sk binary directly.
+            return _run_native_binary(cmd, rest)
+        return _run(str(meta), rest, cmd=cmd)
 
     # Grouped namespace?
     if cmd in _GROUPS:

@@ -1,0 +1,31 @@
+{
+  "_comment": "Claude Desktop / MCP client configuration sample for sk mcp server.",
+  "_docs": "https://modelcontextprotocol.io/docs/concepts/servers",
+  "mcpServers": {
+    "sk": {
+      "command": "sk",
+      "args": ["mcp"],
+      "env": {}
+    }
+  },
+  "_tools": [
+    {"name": "sk_learn",            "description": "Store a new learning entry", "readonly_blocked": true},
+    {"name": "sk_query",            "description": "Query knowledge base with hybrid retrieval"},
+    {"name": "sk_briefing",         "description": "Get a briefing from past sessions"},
+    {"name": "sk_index_status",     "description": "Get index status and health metrics"},
+    {"name": "sk_index_health",     "description": "Run knowledge health check"},
+    {"name": "sk_audit_log",        "description": "Read audit log events (read-only)"},
+    {"name": "sk_taxonomy_list",    "description": "List knowledge taxonomy categories and tags"},
+    {"name": "sk_relate_supersedes","description": "Query supersedes relations between entries"}
+  ],
+  "_security": {
+    "SK_MCP_READONLY": "Set to '1' to block sk_learn writes",
+    "SK_MCP_TOOLS": "Comma-separated allowlist, e.g. 'sk_query,sk_briefing,sk_index_status'"
+  },
+  "_protocol": {
+    "version": "2024-11-05",
+    "transport": "stdio",
+    "framing": "LSP Content-Length: N\\r\\n\\r\\n",
+    "methods": ["initialize", "initialized", "tools/list", "tools/call", "ping"]
+  }
+}
