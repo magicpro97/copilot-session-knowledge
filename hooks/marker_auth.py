@@ -182,7 +182,7 @@ def is_lock_hooks_recovery(command):
     python_bin, script, flag = tokens
     if python_bin not in _ALLOWED_PYTHON_BINS:
         return False
-    if flag != "--lock-hooks":
+    if flag not in ("--lock-hooks", "--repair-hooks"):
         return False
     if script in _ALLOWED_SCRIPT_LITERALS:
         return True
