@@ -45,6 +45,7 @@ hooks/
 | `syntax-gate` | preToolUse | Blocks `edit`/`create` payloads that introduce Python syntax errors — applies the proposed change in memory and runs `py_compile`; fail-open on non-`.py` paths and missing files. Catches errors before they land on disk. |
 | `read-before-edit` | preToolUse + postToolUse | Tracks viewed files (postToolUse on `view`), warns on `edit`/`create` of files not yet read in session (fail-open). |
 | `read-tracker` | preToolUse | Warns on repeated `view` reads of the same file in a session, using shared per-session state populated by `token-tracker`; configurable ignores via `READ_TRACKER_IGNORE_SUFFIXES`; never blocks. |
+| `loop-detector` | preToolUse | Detects consecutive identical tool calls using SHA-256 signatures of sorted `{tool, args}` (metadata keys stripped). Soft warning at 3 repeats (`LOOP_SOFT_THRESHOLD`), hard deny at 5 (`LOOP_HARD_THRESHOLD`). Thread-safe state, fail-open on errors. |
 | `block-edit-dist` | preToolUse | Blocks `edit`/`create` targeting `browse-ui/dist/`. These are build artifacts — run `cd browse-ui && pnpm build` instead. |
 | `pnpm-lockfile-guard` | preToolUse | Blocks staging `browse-ui/package.json` changes without a matching `pnpm-lock.yaml` update. Prevents lockfile drift. |
 | `block-unsafe-html` | preToolUse | Blocks `dangerouslySetInnerHTML` usage in `.ts`/`.tsx` files without `DOMPurify.sanitize()` or the `<Highlight>` component. |
