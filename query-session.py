@@ -1139,6 +1139,39 @@ def show_detail(entry_id: int):
         print(code_snippet)
         print(f"{'-' * 60}")
 
+    # Show SUPERSEDES relations for this entry
+    try:
+        supersedes_rows = db.execute(
+            """
+            SELECT ke.id, ke.title, ke.category
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON kr.target_id = ke.id
+            WHERE kr.source_id = ? AND kr.relation_type = 'SUPERSEDES'
+            ORDER BY ke.id
+            """,
+            (entry_id,),
+        ).fetchall()
+        superseded_by_rows = db.execute(
+            """
+            SELECT ke.id, ke.title, ke.category
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON kr.source_id = ke.id
+            WHERE kr.target_id = ? AND kr.relation_type = 'SUPERSEDES'
+            ORDER BY ke.id
+            """,
+            (entry_id,),
+        ).fetchall()
+        if supersedes_rows:
+            print(f"\n{BOLD}Supersedes:{RESET}")
+            for r in supersedes_rows:
+                print(f"  #{r['id']} [{r['category']}] {r['title']}")
+        if superseded_by_rows:
+            print(f"\n{BOLD}Superseded by:{RESET}")
+            for r in superseded_by_rows:
+                print(f"  #{r['id']} [{r['category']}] {r['title']}")
+    except sqlite3.OperationalError:
+        pass  # fail-open: older DB without knowledge_relations or relation_type column
+
     db.close()
     return {"opened_entry_id": int(entry_id), "hit_count": 1, "selected_entry_ids": [int(entry_id)]}
 

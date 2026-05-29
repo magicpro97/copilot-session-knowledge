@@ -1581,6 +1581,21 @@ def _get_briefing_half_life(db: sqlite3.Connection) -> float:
     return 30.0
 
 
+def _get_superseded_ids(db: sqlite3.Connection) -> set:
+    """Return the set of knowledge_entries.id values that have been superseded.
+
+    An entry is superseded when it appears as the *target* of a SUPERSEDES relation.
+    Fail-open: returns empty set if the table or column is absent.
+    """
+    try:
+        rows = db.execute(
+            "SELECT target_id FROM knowledge_relations WHERE relation_type = 'SUPERSEDES' AND target_id IS NOT NULL"
+        ).fetchall()
+        return {int(r[0]) for r in rows}
+    except Exception:
+        return set()
+
+
 def _recency_composite_score(entry: dict, half_life_days: float) -> float:
     """Composite ranking score = priority_base + intensity * recency_decay.
 
@@ -2259,12 +2274,15 @@ def generate_briefing(
     mode: str = "auto",
     infer_auto_mode: bool = True,
     with_meta: bool = False,
+    include_superseded: bool = False,
 ):
     """Generate a structured briefing from the knowledge base."""
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
     active_mode, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
     half_life = _get_briefing_half_life(db)
+
+    superseded_ids: set = set() if include_superseded else _get_superseded_ids(db)
 
     briefing_data = {}
     global_seen_titles = set()  # Cross-category dedup
@@ -2305,6 +2323,8 @@ def generate_briefing(
                 )
             elif _STATUS_NOTE_RE.search(e.get("title", "")):
                 pass  # suppress Wave-style status/progress notes universally
+            elif e.get("id") and int(e["id"]) in superseded_ids:
+                pass  # suppress entries that have been superseded by a newer entry
             else:
                 safe_entries.append(e)
         briefing_data[cat] = safe_entries
@@ -3856,6 +3876,7 @@ def main():
             mode=mode,
             infer_auto_mode=infer_auto_mode,
             with_meta=True,
+            include_superseded="--include-superseded" in args,
         )
 
     if budget > 0 and len(output) > budget:
@@ -3889,6 +3910,7 @@ def main():
                     mode=mode,
                     infer_auto_mode=infer_auto_mode,
                     with_meta=True,
+                    include_superseded="--include-superseded" in args,
                 )
             if len(output) <= budget:
                 break
