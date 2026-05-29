@@ -116,16 +116,18 @@ SEP = f"{DIM}│{RST}"
 
 # ASCII fallbacks for terminals that cannot render Unicode
 try:
-    "│⟳📊🪝".encode(sys.stdout.encoding or "utf-8")
+    "│⟳📊🪝🔧".encode(sys.stdout.encoding or "utf-8")
 except (UnicodeEncodeError, LookupError):
     SEP = f"{DIM}|{RST}"
     _SYNC_ICON = "~"
     _CHART_ICON = "#"
     _HOOK_ICON = "h"
+    _TOOL_ICON = "T"
 else:
     _SYNC_ICON = "⟳"
     _CHART_ICON = "📊"
     _HOOK_ICON = "🪝"
+    _TOOL_ICON = "🔧"
 
 
 def _no_color() -> bool:
@@ -419,7 +421,7 @@ def _render_statusline(payload: dict) -> str:
                 tc_color = _ansi(Y)
             else:
                 tc_color = _ansi(G)
-            seg_tools = f" {SEP} {tc_color}{tc_error}/{tc_total}{_ansi(RST)}{_ansi(DIM)}err{_ansi(RST)}"
+            seg_tools = f" {SEP} {_TOOL_ICON}{tc_color}{tc_error}/{tc_total}{_ansi(RST)}"
 
         if hk_count > 0:
             hk_error = ss.get("hooks_error", 0)
