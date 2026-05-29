@@ -397,7 +397,8 @@ def _render_statusline(payload: dict) -> str:
     seg_tools = ""
     seg_hooks = ""
     try:
-        sid = _get_session_id()
+        # Prefer session_id from payload (statusline subprocess doesn't inherit env vars).
+        sid = payload.get("session_id") or payload.get("sessionId") or _get_session_id()
         safe_sid = _sanitize_sid(sid)
         wf_path = MARKERS_DIR / f"workflow-state-{safe_sid}.json"
         if wf_path.is_file():
