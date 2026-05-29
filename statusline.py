@@ -388,8 +388,23 @@ def _render_statusline(payload: dict) -> str:
             bar = _fmt_bar(pct_used, width=5)
             seg_quota = f" {SEP} {bar} {_ansi(DIM)}{remaining}/{entitlement}{_ansi(RST)}"
 
+    # ── Workflow phase (advisory) ────────────────────────────────────────────
+    seg_phase = ""
+    try:
+        sid = _get_session_id()
+        safe_sid = _sanitize_sid(sid)
+        wf_path = MARKERS_DIR / f"workflow-state-{safe_sid}.json"
+        if wf_path.is_file():
+            wf = json.loads(wf_path.read_text(encoding="utf-8"))
+            phase = wf.get("phase", "")
+            _icons = {"idle": "💤", "clarify": "❓", "plan": "📋", "execute": "⚡", "verify": "✅", "close": "🏁"}
+            if phase in _icons:
+                seg_phase = f" {SEP} {_icons[phase]}{_ansi(DIM)}{phase}{_ansi(RST)}"
+    except Exception:
+        pass
+
     parts = [seg_model, seg_tokens, seg_ctx, seg_cost, seg_pru]
-    return f" {SEP} ".join(parts) + seg_quota
+    return f" {SEP} ".join(parts) + seg_phase + seg_quota
 
 
 # ---------------------------------------------------------------------------
