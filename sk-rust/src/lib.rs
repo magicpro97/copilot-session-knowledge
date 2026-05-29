@@ -1,6 +1,10 @@
 //! Library surface for `sk` — currently only exposes browse modules for
 //! integration testing and future crate-level reuse.
 
+// Shared retry library: policy, classification, delay, and decision.
+// Zero new dependencies -- uses only `regex` (already a dep) and a stdlib PRNG.
+pub mod retry;
+
 // `browse::algo` (pure algorithms) is always compiled in; feature-gated
 // submodules inside `browse/mod.rs` guard the server-specific code.
 pub mod browse;

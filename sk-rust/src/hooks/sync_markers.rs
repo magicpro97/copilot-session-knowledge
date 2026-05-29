@@ -2,16 +2,31 @@
 ///
 /// Writes atomic JSON marker files so that watch-sessions / sync-daemon can
 /// react to tool-use events without polling:
-///   - `postToolUse` → `~/.copilot/markers/sync-nudge.json`
-///   - `sessionEnd`  → `~/.copilot/markers/sync-flush.json`
+///   - `postToolUse` -> `~/.copilot/markers/sync-nudge.json`
+///   - `sessionEnd`  -> `~/.copilot/markers/sync-flush.json`
 ///
 /// All writes are best-effort: failure is silently ignored.
 use crate::config::resolve_home_dir;
+use crate::retry::{next_delay, RetryPolicy};
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::Value;
+
+/// Retry policy for the atomic rename in [`try_record_sync_signal`].
+///
+/// Flat 30 ms delay for all 3 attempts -- matches the original fixed sleep.
+/// `multiplier=1.0` and `jitter=(1.0,1.0)` produce exactly `base` every time.
+const RENAME_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    base: Duration::from_millis(30),
+    cap: Duration::from_millis(90),
+    multiplier: 1.0,
+    jitter: (1.0, 1.0), // no jitter -- deterministic
+    max_attempts: 3,
+    budget: None,
+};
 
 fn markers_dir() -> PathBuf {
     resolve_home_dir()
@@ -64,14 +79,14 @@ fn try_record_sync_signal(event: &str, data: &Value) -> std::io::Result<()> {
     let tmp = target.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string(&payload).unwrap_or_default())?;
     let mut last_err = None;
-    for attempt in 0..3u8 {
+    for attempt in 0..3u32 {
         match fs::rename(&tmp, &target) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 last_err = Some(e);
                 if attempt < 2 {
                     // Brief back-off before retry (Windows sharing violations are transient).
-                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    std::thread::sleep(next_delay(&RENAME_RETRY_POLICY, attempt, None));
                 }
             }
         }

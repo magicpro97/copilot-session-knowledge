@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 use tracing::{debug, error, info, warn};
 
 use super::{chunk_text, BrokerConfig, BrokerError, CancellationToken};
+use crate::retry::{decide, RetryDecision, RetryPolicy};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,22 @@ const DEFAULT_TG_BASE: &str = "https://api.telegram.org/bot";
 const SEARCH_LIMIT: usize = 5;
 const RECENT_LIMIT: usize = 10;
 const MAX_BACKOFF_SECS: u64 = 60;
+
+/// Retry policy for the `getUpdates` long-poll loop.
+///
+/// Matches the original bit-shift formula:
+///   `(1u64 << consecutive_errors.min(63)).min(MAX_BACKOFF_SECS)` in seconds,
+/// using `base=1s, multiplier=2.0, cap=60s, no-jitter`.
+/// With `attempt = consecutive_errors` (pre-incremented, 1-indexed):
+///   attempt=1 -> 2s, attempt=2 -> 4s, ..., attempt=6+ -> 60s.
+const POLL_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    base: Duration::from_secs(1),
+    cap: Duration::from_secs(MAX_BACKOFF_SECS),
+    multiplier: 2.0,
+    jitter: (1.0, 1.0), // no jitter -- deterministic, matches original formula
+    max_attempts: u32::MAX,
+    budget: None, // broker runs indefinitely until cancelled
+};
 
 const HELP_TEXT: &str = "\
 *Hindsight Browse — available commands*
@@ -441,6 +458,8 @@ impl super::Broker for TelegramBroker {
 
         let mut offset: i64 = 0;
         let mut consecutive_errors: u32 = 0;
+        // Tracks when an error streak began; used to compute elapsed for budget checks.
+        let mut error_streak_start: Option<Instant> = None;
 
         loop {
             // Check for cancellation before polling.
@@ -460,6 +479,7 @@ impl super::Broker for TelegramBroker {
             match poll_result {
                 Ok(updates) => {
                     consecutive_errors = 0;
+                    error_streak_start = None;
                     for update in &updates {
                         offset = offset.max(update.update_id + 1);
 
@@ -475,18 +495,39 @@ impl super::Broker for TelegramBroker {
                     return Ok(());
                 }
                 Err(e) => {
+                    // Pre-increment to match original 1-indexed formula:
+                    // attempt=1 -> 1*2^1=2s, attempt=2 -> 4s, ..., attempt=6+ -> 60s.
                     consecutive_errors += 1;
-                    let wait_secs = (1u64 << consecutive_errors.min(63)).min(MAX_BACKOFF_SECS);
-                    warn!(
-                        error = %e,
-                        consecutive_errors,
-                        wait_secs,
-                        "getUpdates error; retrying with backoff"
-                    );
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => {}
-                        _ = token.cancelled() => {
-                            info!("Telegram broker shutting down (cancellation during backoff)");
+                    let streak_start =
+                        *error_streak_start.get_or_insert_with(Instant::now);
+                    let elapsed = streak_start.elapsed();
+                    let err_str = e.to_string();
+
+                    match decide(&POLL_RETRY_POLICY, consecutive_errors, elapsed, &err_str, None)
+                    {
+                        RetryDecision::Retry(wait, _kind) => {
+                            let wait_secs = wait.as_secs();
+                            warn!(
+                                error = %e,
+                                consecutive_errors,
+                                wait_secs,
+                                "getUpdates error; retrying with backoff"
+                            );
+                            tokio::select! {
+                                _ = tokio::time::sleep(wait) => {}
+                                _ = token.cancelled() => {
+                                    info!("Telegram broker shutting down (cancellation during backoff)");
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        RetryDecision::Stop(reason) => {
+                            // Only reached for auth/quota errors (max_attempts=u32::MAX, budget=None).
+                            warn!(
+                                error = %e,
+                                ?reason,
+                                "getUpdates: stopping retry loop (non-retryable error)"
+                            );
                             return Ok(());
                         }
                     }

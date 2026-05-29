@@ -13,9 +13,10 @@
 //!
 //! Available only when the `native-embed` Cargo feature is enabled.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::embeddings::config::{get_api_key, ProviderConfig};
+use crate::retry::{decide, RetryDecision, RetryPolicy, StopReason};
 
 // ── Error types ──────────────────────────────────────────────────────────
 
@@ -94,6 +95,16 @@ pub fn call_embedding_api_with_client(
 
     let mut last_err = String::new();
 
+    let policy = RetryPolicy {
+        base: Duration::from_secs(2),
+        cap: Duration::from_secs(30),
+        multiplier: 2.0,
+        jitter: (0.5, 1.0),
+        max_attempts: max_retries,
+        budget: None,
+    };
+    let started = Instant::now();
+
     for attempt in 0..max_retries {
         let mut body = serde_json::json!({
             "input": texts,
@@ -115,12 +126,23 @@ pub fn call_embedding_api_with_client(
             Err(e) => {
                 let msg = e.to_string();
                 last_err = format!("Network error: {msg}");
-                let wait = ((1u64 << attempt) + 1).min(30);
-                eprintln!(
-                    "    🌐 {last_err} — retry {}/{max_retries} in {wait}s",
-                    attempt + 1
-                );
-                std::thread::sleep(Duration::from_secs(wait));
+                match decide(&policy, attempt, started.elapsed(), &last_err, None) {
+                    RetryDecision::Retry(wait, _kind) => {
+                        eprintln!(
+                            "    🌐 {last_err} — retry {}/{max_retries} in {}s",
+                            attempt + 1,
+                            wait.as_secs()
+                        );
+                        std::thread::sleep(wait);
+                    }
+                    RetryDecision::Stop(StopReason::AuthFailure) => {
+                        return Err(EmbedApiError::Auth(last_err));
+                    }
+                    RetryDecision::Stop(StopReason::QuotaExhausted) => {
+                        return Err(EmbedApiError::RateLimit(last_err));
+                    }
+                    RetryDecision::Stop(_) => break,
+                }
             }
 
             Ok(resp) => {
@@ -172,25 +194,29 @@ pub fn call_embedding_api_with_client(
                         "🔍 Model not found (404): Check model name in config. {}",
                         &body_txt[..body_txt.len().min(100)]
                     )));
-                } else if status == 429 {
-                    let wait = ((1u64 << attempt) + 1).min(30);
-                    last_err = "Rate limited (429)".to_string();
-                    eprintln!(
-                        "    ⏳ {last_err} — retry {}/{max_retries} in {wait}s",
-                        attempt + 1
-                    );
-                    std::thread::sleep(Duration::from_secs(wait));
                 } else {
                     let code = status.as_u16();
                     let body_txt = resp.text().unwrap_or_default();
                     last_err =
                         format!("API error {code}: {}", &body_txt[..body_txt.len().min(200)]);
-                    let wait = ((1u64 << attempt) + 1).min(30);
-                    eprintln!(
-                        "    ❌ {last_err} — retry {}/{max_retries} in {wait}s",
-                        attempt + 1
-                    );
-                    std::thread::sleep(Duration::from_secs(wait));
+                    match decide(&policy, attempt, started.elapsed(), &last_err, None) {
+                        RetryDecision::Retry(wait, _kind) => {
+                            eprintln!(
+                                "    {} {last_err} — retry {}/{max_retries} in {}s",
+                                if code == 429 { "⏳" } else { "❌" },
+                                attempt + 1,
+                                wait.as_secs()
+                            );
+                            std::thread::sleep(wait);
+                        }
+                        RetryDecision::Stop(StopReason::AuthFailure) => {
+                            return Err(EmbedApiError::Auth(last_err));
+                        }
+                        RetryDecision::Stop(StopReason::QuotaExhausted) => {
+                            return Err(EmbedApiError::RateLimit(last_err));
+                        }
+                        RetryDecision::Stop(_) => break,
+                    }
                 }
             }
         }
