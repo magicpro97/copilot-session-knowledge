@@ -3,8 +3,8 @@ use std::process::{Command, ExitCode};
 use crate::commands::fallback::run_fallback;
 use crate::db::connection::KnowledgeDb;
 use crate::db::fts::{
-    sanitize_fts_query, search_by_wing_room, search_fts_filtered, search_recent_by_category,
-    search_top_by_category, KnowledgeEntry,
+    hybrid_search_ke, sanitize_fts_query, search_by_wing_room, search_fts_filtered,
+    search_recent_by_category, search_top_by_category, KnowledgeEntry, RankMode,
 };
 use crate::hooks::audit::audit_log;
 
@@ -80,6 +80,7 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
     let limit = params.limit;
     let wing = params.wing.as_deref();
     let room = params.room.as_deref();
+    let rank_mode = params.rank_mode;
 
     // Determine search query
     let query = if is_auto || params.query.is_empty() {
@@ -112,8 +113,16 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
 
     let categories = ["mistake", "pattern", "decision", "tool"];
     for cat in categories {
-        let entries =
-            if fts_query == "\"\"" || (wing.is_none() && room.is_none() && fts_query.is_empty()) {
+        let entries: Vec<KnowledgeEntry> =
+            if rank_mode != RankMode::Fts && fts_query != "\"\"" && !fts_query.is_empty() {
+                // §611: hybrid path — filter scored entries to this category
+                hybrid_search_ke(&db.conn, &query, Some(cat), limit)
+                    .into_iter()
+                    .map(|se| se.entry)
+                    .collect()
+            } else if fts_query == "\"\""
+                || (wing.is_none() && room.is_none() && fts_query.is_empty())
+            {
                 // No FTS query — use direct wing/room filter
                 search_by_wing_room(&db.conn, wing, room, cat, limit)
             } else {
@@ -211,6 +220,7 @@ struct CompactParams {
     wing: Option<String>,
     room: Option<String>,
     limit: usize,
+    rank_mode: RankMode,
 }
 
 fn parse_compact_args(args: &[String]) -> CompactParams {
@@ -219,6 +229,7 @@ fn parse_compact_args(args: &[String]) -> CompactParams {
     let mut room = None;
     let mut limit = 3usize;
     let mut skip_next = false;
+    let mut rank_mode = RankMode::Hybrid;
 
     for (i, arg) in args.iter().enumerate() {
         if skip_next {
@@ -241,6 +252,12 @@ fn parse_compact_args(args: &[String]) -> CompactParams {
                 }
                 skip_next = true;
             }
+            "--rank" => {
+                if let Some(v) = args.get(i + 1) {
+                    rank_mode = RankMode::from_str(v);
+                }
+                skip_next = true;
+            }
             s if !s.starts_with('-') && query.is_empty() => {
                 query = s.to_string();
             }
@@ -253,6 +270,7 @@ fn parse_compact_args(args: &[String]) -> CompactParams {
         wing,
         room,
         limit,
+        rank_mode,
     }
 }
 
