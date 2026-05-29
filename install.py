@@ -11,6 +11,7 @@ Usage:
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
+    python install.py --deploy-statusline    # Inject statusLine config into ~/.copilot/settings.json
     python install.py --install-git-hooks    # Install pre-commit/pre-push into current repo's .git/hooks/
     python install.py --lock-hooks           # Lock hooks with OS immutable flags (tamper protection)
     python install.py --unlock-hooks         # Unlock hooks for updates
@@ -2163,6 +2164,59 @@ def inject_global():
     print(f"  {INFO} Injected pointer block — full policy lives in session-knowledge.instructions.md")
 
 
+def inject_statusline_config():
+    """Auto-inject statusLine config into ~/.copilot/settings.json.
+
+    Builds a platform-specific command string and merges the statusLine
+    block into settings.json.  Skips injection when the key already exists.
+    """
+    settings_path = COPILOT_DIR / "settings.json"
+    print("\nStatusLine Config Injection")
+    print(f"  Target: {_tilde(settings_path)}")
+
+    # --- build platform-specific command ---
+    statusline_script = TOOLS_DIR / "statusline.py"
+    if not statusline_script.is_file():
+        print(f"  {FAIL} statusline.py not found at {_tilde(statusline_script)}")
+        return
+
+    if os.name == "nt":
+        # Windows: use 'python' prefix + absolute path with forward slashes
+        abs_path = str(statusline_script).replace("\\", "/")
+        command = f"python {abs_path}"
+    else:
+        # macOS / Linux: use 'python3' + tilde-based path
+        command = "python3 ~/.copilot/tools/statusline.py"
+
+    statusline_block = {
+        "type": "command",
+        "command": command,
+        "padding": 1,
+    }
+
+    # --- read existing settings or start fresh ---
+    settings: dict = {}
+    if settings_path.is_file():
+        try:
+            raw = settings_path.read_text(encoding="utf-8")
+            settings = json.loads(raw)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"  {WARN} Could not parse {_tilde(settings_path)}: {exc}")
+            print(f"  {INFO} Skipping statusLine injection to avoid data loss")
+            return
+
+    # --- skip if already configured ---
+    if "statusLine" in settings:
+        print(f"  {INFO} statusLine already configured — skipping")
+        return
+
+    # --- merge and write ---
+    settings["statusLine"] = statusline_block
+    COPILOT_DIR.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(settings_path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+    print(f"  {OK} Injected statusLine config (command: {command})")
+
+
 # ===================================================================
 # 3. Self-Test
 # ===================================================================
@@ -3170,6 +3224,10 @@ def main():
 
     if "--inject-global" in args:
         inject_global()
+        return
+
+    if "--deploy-statusline" in args:
+        inject_statusline_config()
         return
 
     if "--test" in args:
