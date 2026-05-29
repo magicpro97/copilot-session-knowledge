@@ -498,13 +498,17 @@ impl super::Broker for TelegramBroker {
                     // Pre-increment to match original 1-indexed formula:
                     // attempt=1 -> 1*2^1=2s, attempt=2 -> 4s, ..., attempt=6+ -> 60s.
                     consecutive_errors += 1;
-                    let streak_start =
-                        *error_streak_start.get_or_insert_with(Instant::now);
+                    let streak_start = *error_streak_start.get_or_insert_with(Instant::now);
                     let elapsed = streak_start.elapsed();
                     let err_str = e.to_string();
 
-                    match decide(&POLL_RETRY_POLICY, consecutive_errors, elapsed, &err_str, None)
-                    {
+                    match decide(
+                        &POLL_RETRY_POLICY,
+                        consecutive_errors,
+                        elapsed,
+                        &err_str,
+                        None,
+                    ) {
                         RetryDecision::Retry(wait, _kind) => {
                             let wait_secs = wait.as_secs();
                             warn!(
