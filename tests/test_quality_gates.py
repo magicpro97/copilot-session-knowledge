@@ -1409,6 +1409,7 @@ _ALLOWED_HOOK_EVENTS = {
     "agentStop",
     "subagentStop",
     "errorOccurred",
+    "userPromptSubmitted",
 }
 _ALLOWED_HOOK_ENTRY_KEYS = {"type", "bash", "powershell", "cwd", "env", "timeoutSec", "comment"}
 

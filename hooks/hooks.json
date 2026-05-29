@@ -57,6 +57,15 @@
         "timeoutSec": 5
       }
     ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run userPromptSubmitted; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" userPromptSubmitted; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run userPromptSubmitted } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" userPromptSubmitted }",
+        "comment": "[GLOBAL] Unified hook runner — prompt audit logging (prefers native sk)",
+        "timeoutSec": 10
+      }
+    ],
     "errorOccurred": [
       {
         "type": "command",
