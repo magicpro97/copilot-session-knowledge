@@ -13,6 +13,11 @@ mod config;
 #[allow(dead_code)]
 mod db;
 
+// Required by db::fts hybrid TF-IDF retrieval (§611) when compiled via lib.rs.
+#[cfg(feature = "browse-server")]
+#[allow(dead_code)]
+mod embeddings;
+
 // Expose only the always-compiled `extract_schema` helper from the `index`
 // tree so that `db::writer_broker` can bootstrap fresh-DB schema in lib
 // builds (issue #572 CI fix). The bin target still pulls in the full
