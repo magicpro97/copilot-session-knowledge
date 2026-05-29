@@ -214,6 +214,21 @@ def info(message):
     return {"message": message}
 
 
+def context(message):
+    """Return structured context for LLM injection via additionalContext."""
+    return {"additionalContext": message, "message": message}
+
+
+def session_summary(text):
+    """Return a sessionSummary result for sessionEnd hooks."""
+    return {"sessionSummary": text, "message": text}
+
+
+def modified_prompt(prompt):
+    """Return a modifiedPrompt result to override the user prompt."""
+    return {"modifiedPrompt": prompt, "message": prompt}
+
+
 # ── Shared per-session state helpers (used by token_tracker and read_tracker) ──
 
 import inspect

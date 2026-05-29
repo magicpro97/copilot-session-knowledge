@@ -223,7 +223,11 @@ def main():
         else:
             # postToolUse/sessionStart/sessionEnd/agentStop/subagentStop/errorOccurred: informational
             msg = result.get("message", "")
-            if msg:
+            structured_keys = {"additionalContext", "sessionSummary", "modifiedPrompt"}
+            if any(k in result for k in structured_keys):
+                # Output JSON for Copilot CLI SDK context injection
+                print(json.dumps({k: result[k] for k in structured_keys if k in result}))
+            elif msg:
                 print(msg)
             _audit_log(event, tool_name, rule.name, "info", msg[:100] if msg else "")
 
