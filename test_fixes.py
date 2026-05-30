@@ -9778,10 +9778,10 @@ print("\n🔍 I722: sk knowledge bulk-tag command")
 
 try:
     import importlib.util as _ilu722
-    import sqlite3 as _sq722
     import io as _io722
-    import sys as _sys722
     import os as _os722
+    import sqlite3 as _sq722
+    import sys as _sys722
 
     _kh722_spec = _ilu722.spec_from_file_location("kh722", REPO / "knowledge-health.py")
     _kh722 = _ilu722.module_from_spec(_kh722_spec)  # type: ignore[arg-type]
