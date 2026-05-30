@@ -148,9 +148,7 @@ _DIRECT: dict[str, CommandMeta] = {
     "statusline": CommandMeta(
         "statusline.py", "Alias: session token usage footer", ("session", "cost"), aliases=("status",)
     ),
-    "mcp": CommandMeta(
-        None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")
-    ),
+    "mcp": CommandMeta(None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -506,7 +504,6 @@ def _run_native_binary(cmd: str, extra_args: list[str]) -> int:
 
     result = subprocess.run([sk_bin, cmd] + extra_args)
     return result.returncode
-
 
 
 def _run_events(extra_args: list[str]) -> int:
