@@ -6,13 +6,20 @@ Exposes read-only MCP tools:
 - briefing(task, mode?, limit?, agent_tag?, msg_tag?)
 - query_session(query, semantic?, limit?, agent_tag?, msg_tag?)
 - query_memory(query?, category?, agent_tag?, msg_tag?, limit?, token?)  # issue #404
+
+Write tools (issue #717):
+- learn(category, title, description, tags?)
+- status()
+- session_list(limit?)
 """
 
 import importlib.util
 import io
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -38,6 +45,7 @@ JSONRPC_INVALID_PARAMS = -32602
 JSONRPC_INTERNAL_ERROR = -32603
 
 VALID_BRIEFING_MODES = {"auto", "implement", "debug", "review", "plan", "test"}
+VALID_LEARN_CATEGORIES = {"mistake", "pattern", "decision", "tool", "feature", "refactor", "discovery"}
 
 # Auth error code for query_memory token failures (issue #404, fails closed)
 _MCP_AUTH_ERROR = -32600  # reuse INVALID_REQUEST for auth failures
@@ -173,14 +181,66 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "learn",
+        "description": "Write a knowledge entry (mistake, pattern, feature, discovery, etc.) to the local knowledge base. Issue #717.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": sorted(VALID_LEARN_CATEGORIES),
+                    "description": "Knowledge category.",
+                },
+                "title": {"type": "string", "description": "Short title for the knowledge entry."},
+                "description": {"type": "string", "description": "Content / body of the knowledge entry."},
+                "tags": {
+                    "type": "string",
+                    "description": "Comma-separated tags (optional).",
+                },
+            },
+            "required": ["category", "title", "description"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "status",
+        "description": "Return a JSON health snapshot: session count, entry count, watcher status. Issue #717.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "session_list",
+        "description": "Return the most recent sessions from the local knowledge base. Issue #717.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Maximum sessions to return (default 20).",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
-def _require_string(arguments: dict[str, Any], key: str) -> str:
+def _require_string(arguments: dict[str, Any], key: str, max_length: int | None = None) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
         raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"'{key}' must be a non-empty string")
-    return value.strip()
+    stripped = value.strip()
+    if max_length is not None:
+        stripped = stripped[:max_length]
+    return stripped
 
 
 def _optional_string(arguments: dict[str, Any], key: str, max_length: int = 200) -> str:
@@ -408,6 +468,192 @@ def _run_query_memory(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# learn — write a knowledge entry via learn.py subprocess (issue #717)
+# ---------------------------------------------------------------------------
+
+
+def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Write a knowledge entry by calling learn.py as a subprocess."""
+    _check_auth(arguments)
+
+    category = _require_string(arguments, "category")
+    if category not in VALID_LEARN_CATEGORIES:
+        raise JsonRpcError(
+            JSONRPC_INVALID_PARAMS,
+            f"'category' must be one of: {', '.join(sorted(VALID_LEARN_CATEGORIES))}",
+        )
+    title = _require_string(arguments, "title", max_length=500)
+    description = _require_string(arguments, "description", max_length=10_000)
+    tags = _optional_string(arguments, "tags", max_length=500)
+
+    learn_py = TOOLS_DIR / "learn.py"
+    if not learn_py.exists():
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, "learn.py not found")
+
+    flag = f"--{category}"
+    cmd = [sys.executable, str(learn_py), flag, title, description, "--json"]
+    if tags:
+        cmd += ["--tags", tags]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, "learn.py timed out") from exc
+    except Exception as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"learn.py subprocess error: {exc}") from exc
+
+    if result.returncode != 0:
+        msg = result.stderr.strip() or result.stdout.strip() or "learn.py failed"
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, msg)
+
+    entry_id = None
+    try:
+        parsed = json.loads(result.stdout.strip())
+        raw_id = parsed.get("id")
+        if isinstance(raw_id, int) and raw_id > 0:
+            entry_id = raw_id
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    status = "ok"
+    if entry_id is None:
+        # Fallback: scan for "Added new <category> #N" pattern in combined output
+        m = re.search(r"Added new \w+ #(\d+)", result.stdout + result.stderr)
+        if m:
+            entry_id = int(m.group(1))
+
+    body = {"status": status, "message": "Entry recorded", "id": entry_id}
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+        "structuredContent": body,
+    }
+
+
+# ---------------------------------------------------------------------------
+# status — return DB health snapshot (issue #717)
+# ---------------------------------------------------------------------------
+
+
+def _is_watcher_pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+
+def _run_status(_arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON health snapshot: session_count, entry_count, watcher."""
+    session_count = 0
+    entry_count = 0
+    watcher = "stopped"
+
+    # Check watcher via lock file
+    lock_file = _DB_PATH.parent / ".watcher.lock"
+    if lock_file.exists():
+        try:
+            pid = int(lock_file.read_text(encoding="utf-8").strip())
+            if _is_watcher_pid_running(pid):
+                watcher = "running"
+        except Exception:
+            pass
+
+    if not _DB_PATH.exists():
+        body = {
+            "session_count": 0,
+            "entry_count": 0,
+            "watcher": watcher,
+            "db_path": str(_DB_PATH),
+        }
+        return {
+            "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+            "structuredContent": body,
+        }
+
+    try:
+        db_uri = _DB_PATH.as_uri() + "?mode=ro"
+        db = sqlite3.connect(db_uri, uri=True)
+        try:
+            try:
+                row = db.execute("SELECT COUNT(*) FROM sessions").fetchone()
+                session_count = row[0] if row else 0
+            except sqlite3.OperationalError:
+                session_count = 0
+            try:
+                row = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
+                entry_count = row[0] if row else 0
+            except sqlite3.OperationalError:
+                entry_count = 0
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    body = {
+        "session_count": session_count,
+        "entry_count": entry_count,
+        "watcher": watcher,
+        "db_path": str(_DB_PATH),
+    }
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+        "structuredContent": body,
+    }
+
+
+# ---------------------------------------------------------------------------
+# session_list — return last N sessions (issue #717)
+# ---------------------------------------------------------------------------
+
+
+def _run_session_list(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return the most recent sessions from the local DB."""
+    limit = _optional_int(arguments, "limit", default=20, minimum=1, maximum=100)
+
+    if not _DB_PATH.exists():
+        body: dict[str, Any] = {"sessions": [], "count": 0}
+        return {
+            "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+            "structuredContent": body,
+        }
+
+    try:
+        db_uri = _DB_PATH.as_uri() + "?mode=ro"
+        db = sqlite3.connect(db_uri, uri=True)
+        db.row_factory = sqlite3.Row
+        try:
+            rows = db.execute(
+                "SELECT id, summary, source, indexed_at FROM sessions ORDER BY indexed_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Query error: {exc}") from exc
+        finally:
+            db.close()
+    except JsonRpcError:
+        raise
+    except Exception as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB error: {exc}") from exc
+
+    sessions = [
+        {
+            "id": dict(r).get("id"),
+            "summary": dict(r).get("summary", ""),
+            "source": dict(r).get("source", ""),
+            "indexed_at": dict(r).get("indexed_at"),
+        }
+        for r in rows
+    ]
+    body = {"sessions": sessions, "count": len(sessions)}
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+        "structuredContent": body,
+    }
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -423,6 +669,12 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_query_session(arguments)
     if name == "query_memory":
         return _run_query_memory(arguments)
+    if name == "learn":
+        return _run_learn(arguments)
+    if name == "status":
+        return _run_status(arguments)
+    if name == "session_list":
+        return _run_session_list(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

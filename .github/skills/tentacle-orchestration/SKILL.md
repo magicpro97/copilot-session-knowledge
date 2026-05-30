@@ -1,131 +1,28 @@
 ---
 name: tentacle-orchestration
-description: Break complex tasks into scoped parallel work units for multi-agent execution. Always use task-step-generator first as a reviewed planning scaffold, then adapt the reviewed steps into tentacles. Use when a task spans multiple modules or layers, needs agent delegation, or the user says "orchestrate", "multi-agent", "parallel agents", "tentacle", or "swarm". Each implementation/fix tentacle runs strict-tdd-workflow internally. Features Opus Leader Council for quality-first multi-platform work.
+description: Break complex tasks into scoped parallel work units for multi-agent execution. Always use task-step-generator first as a reviewed planning scaffold, then adapt the reviewed steps into tentacles. Use when a task spans multiple modules or layers, needs agent delegation, or the user says "orchestrate", "multi-agent", "parallel agents", "tentacle", or "swarm". Each implementation/fix tentacle runs strict-tdd-workflow internally.
 ---
 
-# Tentacle Orchestration — copilot-session-knowledge
+# Tentacle Orchestration
 
 Break a complex task into scoped work units ("tentacles"), enrich each with context, then dispatch agents in parallel. Results persist in files so nothing is lost between agent boundaries.
 
-Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pattern. Customized for **copilot-session-knowledge**: a multi-platform hybrid of Python stdlib tools, Next.js/React browse-ui, and a Rust binary — where **quality outweighs speed**.
+Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pattern.
 
 > **Relationship with strict-tdd-workflow**: Tentacle is the **orchestrator** (splits work), strict-tdd is the **executor** (runs inside each implementation/fix tentacle). For single-module tasks, skip tentacle and use strict-tdd directly.
 >
 > **Relationship with task-step-generator**: `task-step-generator` is the **planning scaffold**. Run it before creating tentacles, then review and edit the generated steps. Do not copy generated steps blindly.
 
----
-
-## ⚡ Opus Leader Council (Project-Specific Pattern)
-
-This project uses **Opus-class Leader agents** instead of flat swarming. Each leader owns a domain and cannot be bypassed. Leaders discuss before acting and escalate to peers when stuck.
-
-### Leader Roster
-
-| Leader | Model | Domain | Scope |
-|--------|-------|--------|-------|
-| **dev-leader** | `claude-opus-4.7` | Python tools, hooks, Rust binary | `*.py`, `hooks/**/*`, `crates/**/*` |
-| **test-leader** | `claude-opus-4.7` | All test surfaces (Python + TypeScript + Rust) | `test_*.py`, `run_all_tests.py`, `browse-ui/src/**/*.test.*`, `browse-ui/e2e/**/*` |
-| **qa-leader** | `claude-opus-4.7` | Verification gates, cross-surface sync, security | All changed surfaces |
-| **browse-leader** | `claude-opus-4.7` | Next.js/React browse-ui frontend | `browse-ui/src/**/*`, `browse-ui/e2e/**/*` |
-| **research-leader** | `claude-opus-4.7` | Any question with confidence < 1.0 | Read-only, all surfaces |
-
-### Leader Dispatch Pattern
-
-```bash
-# Each leader gets its own tentacle with --model claude-opus-4.7
-sk tentacle create dev-<feature> --scope "*.py hooks/**/*" --desc "Python implementation" --briefing
-sk tentacle create test-<feature> --scope "test_*.py run_all_tests.py" --desc "Test coverage" --briefing
-sk tentacle create qa-<feature> --scope "." --desc "Verification + cross-surface sync" --briefing
-
-# Dispatch leaders in parallel — all use opus
-sk tentacle swarm dev-<feature> --agent-type general-purpose --model claude-opus-4.7 --briefing
-sk tentacle swarm test-leader --agent-type general-purpose --model claude-opus-4.7 --briefing
-sk tentacle swarm qa-leader --agent-type verification-gate --model claude-opus-4.7 --briefing
-```
-
-### Leader Peer-Discussion Protocol
-
-When a leader is stuck or has confidence < 1.0, it does NOT stop — it requests peer input:
-
-1. **dev-leader stuck on architecture** → write question to `handoff.md` with `STATUS: PEER_DISCUSS`, dispatch `research-leader` tentacle with the question
-2. **test-leader unsure of coverage strategy** → write question, dispatch `dev-leader` review, loop until both agree
-3. **qa-leader finds gate failure** → write failure report, dispatch `dev-leader` fix tentacle, loop back through qa-leader
-
-```bash
-# Peer discussion: dev-leader writes question, research-leader answers
-sk tentacle handoff dev-<feature> "Architecture question: [question]" --status AMBIGUOUS
-sk tentacle create research-<question> --scope "." --desc "Research: [question]" --briefing
-sk tentacle swarm research-<question> --agent-type research-planner --model claude-opus-4.7 --briefing
-# After research-leader answers → continue dev-leader
-sk tentacle resume dev-<feature>
-```
-
----
-
-## ♾️ Infinite Confidence Loop Protocol
-
-**This project never marks BLOCKED when confidence < 1.0.** Instead, it loops until certainty.
-
-### The Loop
-
-```
-CONFIDENCE CHECK
-      │
-      ▼
-  ≥ 1.0? ──YES──► Proceed to execution
-      │
-      NO
-      │
-      ▼
-  Split ambiguity into atomic questions
-      │
-      ▼
-  Dispatch research-leader tentacle(s) on claude-opus-4.7
-      │
-      ▼
-  Research completes, evidence recorded
-      │
-      ▼
-  Re-evaluate confidence ───────────────► back to top
-      │
-  (loop forever until ≥ 1.0 or user explicitly overrides)
-```
-
-### Implementation
-
-```bash
-# Step 1: Spawn research tentacle for each ambiguous question
-sk tentacle create research-q1 --scope "." --desc "Research: <question 1>" --briefing
-sk tentacle swarm research-q1 --agent-type research-planner --model claude-opus-4.7 --briefing
-
-# Step 2: After research, record evidence and re-evaluate
-sk tentacle goal gate pass research-q1 --reason "Evidence: <summary>"
-
-# Step 3: Only proceed when ALL research gates pass
-sk tentacle goal criteria check
-# If not met: loop back to Step 1 with remaining questions
-# If met: proceed to Plan phase
-```
-
-**Override rule**: Only the human operator can exit the loop early. Record the override with rationale:
-```bash
-sk tentacle goal gate pass override --reason "Human override: <rationale>"
-```
-
----
-
 ## Planning Discipline
 
 Use this sequence before creating any tentacle:
 
-1. Generate a step file with `task-step-generator` (`.github/steps/<task-slug>.md`).
+1. Generate a step file with `task-step-generator` (`.github/steps/<task-slug>.md` when the project uses `.github/`, otherwise `STEPS.md` or the path requested by the user).
 2. Review the generated step file with `references/decomposition-review.md`.
 3. Record what was accepted, edited, and rejected before dispatching agents.
 4. Convert only the reviewed steps into non-overlapping tentacles and atomic todos.
 
 Why: decomposition and checklists reduce avoidable cognitive load, but generated plans can anchor on the first plausible split. Treat the step file as a draft planning artifact, not as authority.
-
----
 
 ## Decision Confidence Gate
 
@@ -137,15 +34,18 @@ or validation agents first.
 Required behavior when confidence `< 1.0`:
 
 1. Stop implementation/deletion/merge decisions for the uncertain scope.
-2. Split the ambiguity into atomic questions: task type, scope boundaries, dependencies, acceptance evidence, and affected systems.
-3. Dispatch research/validation tentacles on **`claude-opus-4.7`** (opus-class mandatory, no exceptions).
-4. Record the evidence and rejected alternatives in the tentacle `handoff.md`.
-5. Continue only after the synthesized decision reaches confidence `1.0`, or after an explicit user override is recorded with its rationale.
-6. **Never mark BLOCKED** — instead create a `research-<topic>` tentacle, loop, and resume when certain.
+2. Split the ambiguity into atomic questions: task type, scope boundaries, dependencies,
+   acceptance evidence, and affected systems.
+3. Dispatch research/validation tentacles or sub-agents on the strongest available model
+   (`claude-opus-4.7` when available; otherwise the newest opus-class model).
+4. Record the evidence and rejected alternatives in the tentacle `handoff.md` or the
+   conductor `research_gate` artifact.
+5. Continue only after the synthesized decision reaches confidence `1.0`, or after an
+   explicit user override is recorded with its rationale.
 
-Why this gate exists: low-confidence orchestration creates the worst kind of parallelism — many agents confidently doing the wrong work. Research-first decomposition is cheaper than unwinding a bad swarm.
-
----
+Why this gate exists: low-confidence orchestration creates the worst kind of parallelism —
+many agents confidently doing the wrong work. Research-first decomposition is cheaper than
+unwinding a bad swarm.
 
 ## When to use
 
@@ -156,22 +56,44 @@ Why this gate exists: low-confidence orchestration creates the worst kind of par
 | 3+ files, multiple modules | **Tentacle required** — decompose into scoped units |
 | Multi-phase with agent delegation | **Tentacle required** — each delegated agent gets a tentacle |
 | Bug investigation, multiple hypotheses | Tentacle recommended — one tentacle per hypothesis |
-| Cross-surface (Python + browse-ui + Rust) | **Opus Leader Council required** — one leader per surface |
-| Confidence < 1.0 at any point | **Research tentacle required** — loop until certain |
 
 **Not a good fit:** strictly sequential single-file tasks, limited token budget, trivial edits.
-
----
 
 ## Sub-agent Guardrails
 
 These guardrails apply to dispatched sub-agents. The **commit restriction is enforced at the
-git level** when hooks are installed.
+git level** when hooks are installed; all other items are conventions reinforced by prompt
+context.
+
+**Why git hooks, not preToolUse alone:** When the orchestrator dispatches a sub-agent via the
+`task()` tool, the platform does not guarantee that `preToolUse` hooks from the parent
+`hooks.json` propagate into the sub-agent's context window. Git hooks (`pre-commit`,
+`pre-push`) are filesystem-level and fire for any git process regardless of which agent spawned
+it — they are the reliable enforcement surface.
 
 **How enforcement works:**
 1. `tentacle.py create` generates a UUID `tentacle_id` stored in the tentacle's `meta.json`.
-2. `hooks/pre-commit` and `hooks/pre-push` call `hooks/check_subagent_marker.py`, which blocks git operations while the marker is fresh.
-3. `sk tentacle complete <name>` removes the matching marker entry.
+   If the requested name directory already exists, `create` auto-resolves the collision by
+   creating `<name>-<uuid[:8]>` — the slug is printed and must be used for all subsequent
+   commands. `tentacle.py swarm` reads `tentacle_id` from `meta.json` and writes an HMAC-signed
+   marker file at `~/.copilot/markers/dispatched-subagent-active` containing `active_tentacles`
+   entries of the form `{"name": ..., "ts": ..., "git_root": ..., "tentacle_id": ...}`.
+   **Primary deduplication key: `tentacle_id`** (when present) — two instances with the same
+   logical name in the same repo each get a separate entry. Fallback for legacy entries without
+   `tentacle_id`: `(name, git_root)`.
+2. `hooks/pre-commit` and `hooks/pre-push` call `hooks/check_subagent_marker.py`, which blocks
+   the git operation when the marker is present, auth-valid, within its 4-hour TTL, **and the
+   entry's `git_root` matches the repo running the git command**. A marker from a different repo
+   does not block commits there — this prevents cross-repo false positives when tentacles are
+   active in other repos concurrently. Entries without `git_root` (old format) conservatively
+   block all repos.
+   > **Upgrade migration:** Cross-repo isolation is not retroactive. In-flight old-format marker
+   > entries (no `git_root`) continue to block all repos until completed, cleared, or expired (4h
+   > TTL). To get isolation immediately: `sk tentacle complete <name>` then re-dispatch.
+3. `hooks/rules/subagent_guard.py` provides a secondary `preToolUse` intercept for the
+   orchestrator session (defense-in-depth only — not the primary path).
+4. `sk tentacle complete <name>` reads `tentacle_id` from `meta.json` and removes only the
+   matching marker entry; the marker is deleted when `active_tentacles` becomes empty.
 
 **Install the git hooks** (once per repository):
 
@@ -180,39 +102,52 @@ sk install --install-git-hooks
 # fallback: python3 ~/.copilot/tools/install.py --install-git-hooks
 ```
 
+**Enforcement scope and known limitations:**
+
+- **Local-only.** Cloud-delegated or remote agent runs are not covered.
+- **`preToolUse` non-inheritance.** The `preToolUse` guard in the main session is
+  defense-in-depth — it does not replace git hooks. Whether `preToolUse` propagates into
+  `task()`-spawned subagents is undefined by the platform.
+- **Same-repo multi-session supported (phase 5) — with working-tree caveat.** `tentacle_id`
+  isolation at the marker/runtime layer means two instances with the same logical name in the
+  same repo each hold a separate entry and `complete` only clears the matching one. However,
+  the working tree and git index are shared — concurrent tentacles with overlapping file scopes
+  will produce conflicts. Keep scopes non-overlapping.
+- **Collision-resolved slug names:** When `create` auto-resolves a directory collision, the
+  printed `<name>-<uuid[:8]>` slug must be used for all subsequent commands.
+- **After tool updates,** `auto-update-tools.py` does NOT auto-reinstall git hooks. Re-run
+  `install.py --install-git-hooks` in each protected repo after relevant updates.
+
 | Convention | What to do |
 |------------|-----------|
-| **Commit restriction** | Do not run `git commit` or `git push`. Both are blocked at the filesystem level while `dispatched-subagent-active` marker is fresh. |
-| **Stay in scope** | Do not edit files outside your tentacle's declared `scope`. |
-| **Escalate, don't expand** | If scope is insufficient, write the gap to `handoff.md` and stop. |
-| **No over-implementation** | Implement only what your todos specify. |
-| **Handoff before stopping** | Always write a structured handoff: `sk tentacle handoff <name> "<summary>" --status DONE --changed-file <path> --learn` |
-| **No platform `create` for reports** | Use `tentacle.py handoff` to persist output to `handoff.md`. |
-
----
+| **Commit restriction** | Do not run `git commit` or `git push`. When git hooks are installed, both are blocked at the filesystem level while the `dispatched-subagent-active` marker is fresh. Even without hooks, committing from a subagent mid-run risks corrupting the orchestrator's merge flow. |
+| **Stay in scope** | Do not edit files outside your tentacle's declared `scope`. If you discover that more files are needed, escalate — do not expand unilaterally. |
+| **Escalate, don't expand** | If your scope is insufficient to complete the task, write the gap to `handoff.md` (e.g. "blocked: need changes in `src/db/` which is outside my scope") and stop. The orchestrator decides whether to create a new tentacle or adjust scope. |
+| **No over-implementation** | Implement only what your todos specify. Do not add features, refactors, or improvements that are not in your todo list — even if they seem obvious. |
+| **Handoff before stopping** | Always write a structured handoff before marking your work done — even if the session ends early. Use `tentacle.py handoff <name> "<prose summary>" --status <STATUS> --changed-file <path> --learn`. Required fields: a prose summary and `--status` (one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, `REGRESSED`). Add one `--changed-file` per modified file; omit it when no files changed (common for `BLOCKED`, `TOO_BIG`, or `AMBIGUOUS`). Old form `handoff <name> "<message>" --learn` still works when no structured status is needed. The orchestrator reads `STATUS:` and `Changed:` receipts to decide next steps and triage. |
+| **No platform `create` for reports** | Do **not** use the runtime platform's `create` file-creation tool to save research output, investigation findings, or final reports. The `create` tool is a platform capability that is **not available in all agent runtimes** (cloud agents, Copilot cloud runs, background tasks). Use `tentacle.py handoff` to persist agent output to `handoff.md` — this is always available when `tentacle.py` is on disk. If even `tentacle.py` is unavailable, print the report to chat so the orchestrator can capture it. Orchestrators must not assume sub-agents can create arbitrary files. |
 
 ## Anti-patterns
 
-- ❌ SQL/markdown todos only for multi-agent work → agents lose scope isolation
-- ❌ Launching sub-agents without `swarm` prompt → no scope, constraints, or key files
-- ❌ Skipping `--briefing` → past mistakes not injected into CONTEXT.md
+- ❌ SQL/markdown todos only for multi-agent work → agents lose scope isolation and CONTEXT.md
+- ❌ Launching sub-agents without `swarm` prompt → agent gets no scope, constraints, or key files
+- ❌ Skipping `--briefing` on create → past mistakes not injected into CONTEXT.md
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
-- ❌ Creating tentacles from intuition without a generated-and-reviewed step file
-- ❌ Copying `task-step-generator` output blindly without checking dependencies
-- ❌ Skipping the runtime bundle on multi-agent work → no `recall-pack.json`
-- ❌ Sub-agent commits or pushes → blocked by git hooks when installed
-- ❌ Sub-agent edits files outside declared scope → silent conflicts
-- ❌ Treating confidence `< 1.0` as acceptable → use opus research loop, never skip
-- ❌ **Marking BLOCKED when stuck** → loop via peer leader discussion instead
-- ❌ **Using haiku/sonnet for leader agents** → all leaders must use `claude-opus-4.7`
-- ❌ **Skipping test-leader** → every feature/fix needs test coverage verified by test-leader
-- ❌ **qa-leader bypassed on cross-surface changes** → Python + browse-ui + Rust changes always need qa-leader
-- ❌ Accepting sub-agent claims of "tests pass" without running commands → unverified claims are not evidence
-- ❌ Closing a tentacle `DONE` with no verification evidence → treated as `AMBIGUOUS`
-- ❌ Sub-agent uses the platform `create` file-creation tool for research output → use `tentacle.py handoff`
-
----
+- ❌ Creating tentacles directly from intuition without a generated-and-reviewed step file
+- ❌ Copying `task-step-generator` output blindly without checking dependencies, ownership, work-in-progress limits, evidence, and agent fit
+- ❌ Skipping the runtime bundle on multi-agent work → agents lose file-backed context and `recall-pack.json`
+- ❌ Using `--briefing --output json --no-bundle` → briefing cannot be represented without the bundle
+- ❌ Sub-agent commits or pushes → blocked by git hooks when installed (and risky regardless: corrupts orchestrator's merge/verify flow)
+- ❌ Sub-agent edits files outside declared scope → silent conflicts with other parallel agents
+- ❌ Sub-agent silently expands scope instead of escalating → orchestrator loses visibility
+- ❌ Treating confidence `< 1.0` as acceptable → split ambiguity and run opus-class research
+  before implementation, deletion, merge, or routing decisions
+- ❌ Skipping `install.py --install-git-hooks` → git-level commit/push guard is inactive; enforcement falls back to preToolUse only (not guaranteed in subagent contexts)
+- ❌ Accepting sub-agent claims of "tests pass" / "lint clean" / "CI green" without running the commands → unverified claims are not evidence; always run the gates yourself and record output
+- ❌ Closing a tentacle `DONE` with no verification evidence → treated as `AMBIGUOUS`; requires triage before proceeding
+- ❌ Closing an issue without per-criterion evidence → acceptance criteria are unproven until commands run and output is recorded
+- ❌ Sub-agent uses the platform `create` file-creation tool to save research or investigation output → use `tentacle.py handoff` instead. The `create` tool is a runtime-platform capability and is **not guaranteed in all agent contexts** (cloud agents, Copilot cloud runs, background tasks). `tentacle.py handoff` writes to `handoff.md` in the tentacle directory and is always available as long as `tentacle.py` is on disk. If `tentacle.py` is also unavailable, fall back to printing the report to chat. Orchestrators should not assume sub-agents can create arbitrary files.
 
 ## Core concept
 
@@ -236,44 +171,33 @@ A **tentacle** is a scoped work unit stored as files:
 The octopus metaphor: one orchestrator (you), multiple tentacles (agents), each handling a distinct code region.
 
 <example>
-**Task:** Add token cost display to browse-ui (multi-surface: Python API + React component + Vitest tests)
+**Task:** Add dark mode support to a Next.js app
 
-**Confidence check:** Python API shape? → confidence 0.8 → spawn research-leader tentacle first
+**Decomposition:**
+- `theme-tokens` tentacle — scope: `src/styles/tokens.css`, `tailwind.config.ts` — create CSS variables for dark/light palettes
+- `component-update` tentacle — scope: `src/components/**/*` — apply `dark:` Tailwind classes to all components
+- `test-suite` tentacle — scope: `tests/**/*` — write Playwright visual regression tests for dark mode
 
-**After research (confidence 1.0):**
-
-**Opus Leader decomposition:**
-- `dev-leader-cost-api` — scope: `browse/routes/*.py`, `browse/api/*.py` — add /api/session/cost endpoint
-- `browse-leader-cost-ui` — scope: `browse-ui/src/components/**/*` — React cost display component
-- `test-leader-cost` — scope: `test_*.py`, `browse-ui/src/**/*.test.*` — Python unit tests + Vitest tests
-- `qa-leader-cost` — scope: `.` — verify cross-surface sync, run all gates
-
-**Dispatch order:** dev-leader + browse-leader in parallel → test-leader → qa-leader → commit
-
-Each leader uses `--model claude-opus-4.7`.
+Each tentacle is independent, non-overlapping, and completable in isolation. The orchestrator merges results after all three pass verification gates.
 </example>
-
----
 
 ## Internal workflow
 
 The workflow has 5 phases: **Clarify → Plan → Execute → Verify → Close**.
 
-Clarification is the most important phase. A bug found in spec costs 1x to fix. Found in code: 10x. Found in production: 100x. Never skip this phase.
+Clarification is the most important phase. A bug found in spec costs 1x to fix. Found in code: 10x. Found in production: 100x. Never skip this phase — time invested here prevents entire categories of downstream waste.
 
 ### Phase 0: Clarify Spec (Steps 0.0–0.5)
 
 This phase takes a raw specification and makes it implementation-ready through iterative Q&A. No planning or coding happens until the spec is CLEAN.
 
-- **Step 0.0** (optional): Co-author the spec when user has no written spec
+- **Step 0.0** (optional): Co-author the spec when user has no written spec — structured context gathering + iterative drafting
 - **Steps 0.1–0.4**: Analyze spec against 8 quality dimensions, generate Spec Health Report, iterative refinement until CLEAN
 - **Step 0.5**: Reader Testing — verify a fresh agent (no context) can correctly understand the spec
 
 For the full process, see `references/spec-clarification.md`.
 
-**Gate**: Never proceed to Phase 1 until the spec is CLEAN and reader-tested.
-
-**Multi-platform note**: For cross-surface tasks, clarification must identify which surfaces are affected (Python / browse-ui / Rust) so the leader mapping is correct before any planning.
+**Gate**: Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework. Never proceed to Phase 1 until the spec is CLEAN and reader-tested.
 
 ### Phase 1: Plan
 
@@ -284,103 +208,103 @@ Use the CLEAN spec and its Impact Analysis / Risk Assessment to inform decomposi
 Use `task-step-generator` before creating tentacles:
 
 ```text
-Generate a step file for this task. Include CLARIFY, RED evidence/test strategy, BUILD, TEST, REVIEW, LOOP-EVAL, and COMMIT/CLOSE.
+Generate a step file for this task. Include CLARIFY, RED evidence/test strategy for implementation or fixes, BUILD, TEST, REVIEW, LOOP-EVAL when iteration is likely, and COMMIT/CLOSE.
 ```
+
+The output may say the task is too large for a single step file. That is acceptable: use the step file as a top-level scaffold, then split reviewed steps into tentacles.
 
 #### Plan B: Review and edit the generated steps
 
-Apply `references/decomposition-review.md`. Verify:
+Apply `references/decomposition-review.md`. At minimum, verify:
+
 - acceptance signal is observable,
 - RED evidence/test strategy exists before implementation,
 - dependencies are ordered before parallel work,
 - steps are small enough to review in one context,
-- each step maps to the correct **Opus Leader** agent type.
+- only independent work is parallelized,
+- each evidence-producing step names logs/screenshots/hashes or equivalent artifacts,
+- each step maps to the correct agent type/model available in the project.
 
-#### Plan C: Confidence check before decomposition
+Do not proceed until the reviewed plan clearly states accepted, edited, and rejected steps.
 
-```bash
-# For each ambiguous point in the step file:
-sk tentacle create research-<topic> --scope "." --desc "Research: <topic>" --briefing
-sk tentacle swarm research-<topic> --agent-type research-planner --model claude-opus-4.7 --briefing
-# Wait for handoff, evaluate evidence, repeat until confidence = 1.0
-sk tentacle goal gate pass research-<topic> --reason "Evidence: <summary>"
-```
+#### Plan C: Decompose the reviewed task into modules
 
-#### Plan D: Map steps to Opus Leaders
+Read the task description and identify independent code regions. Each region becomes one tentacle.
 
-For each tentacle, assign an appropriate leader model:
+Each code tentacle must declare:
 
-| Tentacle type | agent_type | Model | Scope pattern |
-|--------------|-----------|-------|--------------|
-| Python dev (tools/hooks) | general-purpose | `claude-opus-4.7` | `*.py`, `hooks/**/*` |
-| Python dev (browse backend) | python-browse-backend | `claude-opus-4.7` | `browse/**/*.py` |
-| browse-ui frontend | browse-ui-host-state | `claude-opus-4.7` | `browse-ui/src/**/*` |
-| Browse-ui tests (Vitest/Playwright) | general-purpose | `claude-opus-4.7` | `browse-ui/src/**/*.test.*`, `browse-ui/e2e/**/*` |
-| Python tests | general-purpose | `claude-opus-4.7` | `test_*.py`, `run_all_tests.py` |
-| Security/auth review | browser-security-reviewer | `claude-opus-4.7` | `browse/**/*`, `browse-ui/src/**/*` |
-| Research / architecture decisions | research-planner | `claude-opus-4.7` | Read-only, all |
-| Cross-surface verification | verification-gate | `claude-opus-4.7` | All changed surfaces |
-| Whole-app impact audit | whole-app-impact-auditor | `claude-opus-4.7` | All |
-| Docs / skills / hooks | general-purpose | `claude-opus-4.7` | `docs/**/*`, `.github/**/*` |
+- source step file and accepted/edited/rejected step numbers,
+- decision confidence (`1.0` required; otherwise create a research/validation tentacle first),
+- dependency order,
+- test/evidence owner,
+- implementation owner,
+- acceptance signal,
+- verification/evidence paths.
 
-#### Plan E: Create tentacles
+#### Plan D: Create tentacles
 
 ```bash
-sk tentacle create <name> \
+sk tentacle create <module-name> \
   --scope "<file-patterns>" \
-  --profile "<agent-profile-id>" \
+  --profile "<profile-id>" \
   --desc "<short description>" \
   --briefing
+# fallback: python3 ~/.copilot/tools/tentacle.py create <module-name> ...
 ```
 
-Available profiles (from `.github/agents/`):
-- `browse-ui-host-state` — browse-ui host/provider work
-- `python-browse-backend` — Python backend routes
-- `browser-security-reviewer` — security review
-- `research-planner` — research and architecture
-- `verification-gate` — gate verification
-- `whole-app-impact-auditor` — cross-surface impact
+The `--profile` flag loads a specialist `.agent.md` contract (role, domain,
+quality gates, escalation rules, and evidence requirements) into CONTEXT.md and
+meta.json. The `--briefing` flag injects past mistakes and patterns from
+session-knowledge into CONTEXT.md — use both when a suitable profile exists.
 
-#### Plan F: Add todos
+#### Plan E: Add todos
 
 ```bash
 sk tentacle todo <name> add "<specific, atomic task>"
+# fallback: python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
 ```
 
-#### Plan G: Enrich CONTEXT.md
+Each todo should be one deliverable — testable, reviewable, and completable in isolation.
 
-Add to each tentacle's CONTEXT.md:
-- **Step-plan review**: accepted/edited/rejected steps, confidence evidence
-- **Multi-platform context**: which surfaces are touched and why
-- **Key files**: full paths to reference files
-- **Constraints**: project rules (stdlib-only Python, parameterized SQL, no pickle, etc.)
-- **Verification requirement**: what commands prove this tentacle DONE
+#### Plan F: Enrich CONTEXT.md
 
----
+Read reference files with `view`, then edit CONTEXT.md to add:
+- **Step-plan review**: source step file, accepted/edited/rejected steps, dependency order, and evidence contract
+- **What exists**: describe the current code in the scope area
+- **Key files**: full paths to reference files the agent needs
+- **Constraints**: rules specific to this code region
+
+This is the most important step. Agent quality is directly proportional to CONTEXT.md quality.
 
 ### Phase 2: Execute (Steps 5–6)
 
-#### Step 5: Dispatch Opus Leaders (swarm)
+#### Step 5: Dispatch agents (swarm)
 
 ```bash
-# Always use claude-opus-4.7 for all leaders
-sk tentacle swarm <name> --agent-type <type> --model claude-opus-4.7 --briefing
+sk tentacle swarm <name> --agent-type <type> --model <model> --briefing
 sk tentacle swarm <name> --output parallel --briefing
-
-# Example: multi-surface feature
-# Wave 1 (parallel): dev + browse
-sk tentacle swarm dev-<feature> --agent-type general-purpose --model claude-opus-4.7 --briefing &
-sk tentacle swarm browse-<feature> --agent-type browse-ui-host-state --model claude-opus-4.7 --briefing &
-wait
-
-# Wave 2 (after Wave 1): tests
-sk tentacle swarm test-<feature> --agent-type general-purpose --model claude-opus-4.7 --briefing
-
-# Wave 3 (after Wave 2): QA gate
-sk tentacle swarm qa-<feature> --agent-type verification-gate --model claude-opus-4.7 --briefing
+sk tentacle dispatch <name> --agent-type <type> --model <model> --briefing
+# fallback: python3 ~/.copilot/tools/tentacle.py swarm/dispatch <name> ...
 ```
 
-Every implementation tentacle must execute strict-TDD internally: define failing evidence first, make the smallest change, prove criterion turns green.
+`swarm` and `dispatch` materialize a runtime bundle by default. If the tentacle
+was created with `--profile`, dispatch also injects a compact Specialist Profile
+section before the task list so the worker sees the expert role, gates, escalation
+rules, and evidence requirements. The dispatch prompt stays token-lean and points
+agents at `.octogent/tentacles/<name>/bundle/manifest.json` first.
+The bundle carries the full `CONTEXT.md`, todos, latest checkpoint, instruction snippets,
+skills catalogue, and `recall-pack.json`.
+
+`--briefing` fetches live past knowledge from session-knowledge at dispatch time. With the
+default bundle, briefing is stored in `briefing.md` and machine-readable recall is stored in
+`recall-pack.json` by trying `briefing.py --task <id> --json` first and falling back to
+`briefing.py "<query>" --pack --limit 3`. Use `--no-bundle` only for tiny/manual prompts; if
+you combine `--output json --briefing`, keep the default bundle enabled so JSON output can
+surface `bundle_path`.
+
+Use the output as the prompt for `task()`. Launch independent tentacles in parallel.
+
+Every implementation or bug-fix tentacle must execute the strict-TDD loop internally: define or reproduce the failing evidence first, make the smallest change, then prove the same criterion turns green. Research-only, documentation-only, and review-only tentacles still need explicit evidence gates, but they do not fabricate code tests just to satisfy the pattern.
 
 #### Step 6: Monitor progress
 
@@ -389,104 +313,101 @@ sk tentacle status
 sk tentacle show <name>
 ```
 
-If a leader reports `AMBIGUOUS` or `PEER_DISCUSS`, dispatch a research or peer tentacle immediately — do not wait:
-
-```bash
-# Leader is stuck: dispatch research immediately
-sk tentacle create research-<blocker> --scope "." --desc "Research: <blocker>" --briefing
-sk tentacle swarm research-<blocker> --agent-type research-planner --model claude-opus-4.7 --briefing
-# After research resolves: resume the stuck leader
-sk tentacle resume <stuck-tentacle>
-```
-
----
-
 ### Phase 3: Verify (Steps 7–12)
 
-Every step catches a different class of agent error.
+Every step here catches a different class of agent error. For detailed gate descriptions (build, lint, test, review, docs, QA audit), see `references/verification-gates.md`.
 
-| Gate | What it catches | Command | Skip when |
-|------|----------------|---------|-----------|
-| **Python build** | Syntax, import failures | `python3 -c "import ast; ast.parse(open('file.py').read())"` | Never |
-| **Python lint** | Ruff violations | `ruff check *.py hooks/**/*.py` | Never |
-| **Python tests** | Logic bugs, regressions | `python3 test_security.py && python3 test_fixes.py` | Never |
-| **browse-ui typecheck** | TypeScript errors | `cd browse-ui && pnpm typecheck` | Never (if browse-ui touched) |
-| **browse-ui lint** | ESLint violations | `cd browse-ui && pnpm lint` | Never (if browse-ui touched) |
-| **browse-ui format** | Prettier violations | `cd browse-ui && pnpm format:check` | Never (if browse-ui touched) |
-| **browse-ui test** | Vitest failures | `cd browse-ui && pnpm test` | Never (if browse-ui touched) |
-| **browse-ui build** | Next.js build | `cd browse-ui && pnpm build` | Never (if browse-ui touched) |
-| **Rust** | Compile + clippy | `cargo fmt --check && cargo clippy -- -D warnings && cargo test` | If Rust untouched |
-| **Review** | Security, design flaws | `code-reviewer` agent | Never |
-| **Docs sync** | Stale docs | Check `docs/` matches changed behavior | Internal refactors only |
-| **QA audit** | Hallucinated tests, blind spots | `qa-leader` tentacle | Low-risk only |
+Summary:
 
-**Verification surface matrix** (from `copilot-instructions.md`):
+| Gate | What it catches | Skip when |
+|------|----------------|-----------|
+| **Build** | Syntax errors, type mismatches, import failures | Never skip |
+| **Lint** | Style violations, unused imports, formatting | Never skip |
+| **Test** | Logic bugs, regressions, broken contracts | Never skip |
+| **Review** | Security issues, design flaws, scope creep | Never skip |
+| **Docs** | Stale README, outdated JSDoc, missing CHANGELOG | Internal refactors only |
+| **QA audit** | Hallucinated tests, spec mismatches, blind spots | Low-risk changes only |
 
-| Surface | Required evidence |
-|---------|-------------------|
-| Python | `python3 test_security.py && python3 test_fixes.py` |
-| Hooks/docs/skills | `python3 tests/test_quality_gates.py` |
-| browse-ui | `pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build` |
-| Rust | `cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test` |
-| remote-terminal | `npm test && npm run lint && npm run lint:clean` |
+The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct.
 
-**Evidence requirement:** Run commands yourself. Record output. "Tests pass" is not evidence — the command output is.
-
----
+**Evidence requirement:** Each gate must produce concrete, recorded output before being marked as passed. Do not rely on agent claims that "lint is clean" or "tests pass" — run the commands yourself and attach or reference the output. A gate is only passed when you hold the proof, not when the sub-agent says it is. See Rule 9 (Claims Require Evidence) in `docs/AGENT-RULES.md`.
 
 ### Phase 3.5: Goal Evaluation Loop
 
-After all verification gates pass, evaluate whether the overarching goal is met. This is the **loop-until-verified** phase.
+After all verification gates pass, evaluate whether the overarching goal is met before proceeding to commit and close. This is the **loop-until-verified** phase — the orchestrator decides whether to iterate or close.
+
+**Step: Record goal-eval evidence**
 
 ```bash
-# Run success-criteria check and persist result
+# Run the goal's success-criteria check and persist the result
 sk tentacle verify <name> "<success-criteria-command>" --label "goal-eval"
-sk tentacle goal criteria check
-sk tentacle goal eval --decision continue|complete
+# fallback: python3 ~/.copilot/tools/tentacle.py verify <name> ...
 ```
+
+**Decision logic:**
 
 | Result | Action |
 |--------|--------|
-| Goal met — all success criteria satisfied | Proceed to Phase 4 |
-| Goal partially met — gaps identified | Return to Phase 1, create new leader tentacles for gaps |
-| Goal blocked by external dependency | Surface to user. **Do not exit loop without user decision.** |
+| Goal met — all success criteria satisfied | Proceed to Phase 4 (Commit + Close) |
+| Goal partially met — remaining gaps identified | Return to Phase 1 (Plan), create new tentacles for gaps |
+| Goal blocked — external dependency or scope issue | Write gap to handoff, surface to user, decide whether to continue |
 
-**Loop rules:**
-1. Success criteria defined in Phase 1, not invented during evaluation.
-2. The orchestrator owns the loop — sub-agents report via handoff and stop.
-3. Create **new tentacles** for remaining gaps; do not re-open completed tentacles.
-4. Record evidence for every evaluation using `tentacle.py verify`.
-5. Do not infer goal status from handoff prose — run the command.
+**Rules:**
+1. Success criteria must be defined **before** dispatching tentacles (in Phase 1), not invented during evaluation.
+2. Evaluation is the **orchestrator's responsibility** — sub-agents do not loop. They report via handoff and stop.
+3. When looping, create **new tentacles** for remaining gaps; do not re-open completed tentacles.
+4. Record evidence for every evaluation using `tentacle.py verify` so the decision is auditable. Closing without recorded evidence is an anti-pattern — it removes the audit trail.
+5. Do not infer goal status from handoff prose alone. Run the success-criteria command and record its output.
 
----
+**Example loop iteration:**
+
+```
+Goal: "All 137 tests pass and benchmark score ≥ 90"
+
+Wave 1 results: 130/137 tests pass, score = 85
+→ Eval: NOT MET. Gaps: 7 failing tests, score delta = 5 pts
+→ Create tentacle "fix-failing-tests" (scope: tests/), tentacle "benchmark-perf" (scope: embed.py)
+→ Dispatch Wave 2
+
+Wave 2 results: 137/137 pass, score = 92
+→ Eval: MET. Proceed to Phase 4.
+```
 
 ### Phase 4: Commit + Close (Steps 13–17)
 
-#### Step 13: Commit (orchestrator only)
+#### Step 13: Commit after each completed phase (orchestrator only)
+
+Commit working code after completing each major phase — not just at the end.
+If a later phase fails or the session crashes, earlier work is preserved and rollback is possible.
 
 ```bash
-git add -A && git commit -m "feat(<scope>): <description>
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+git add -A && git commit -m "feat(<scope>): <phase description>"
 ```
 
-Commit cadence:
-- After Phase 1 foundation tentacles + build passes → commit
-- After each parallel batch + build passes → commit
-- After Phase 3 verification → commit
-- Final integration → commit
+**Commit cadence:**
+- After Phase 1 shared/foundation tentacles complete + build passes → commit
+- After each Phase 2 parallel batch completes + build passes → commit
+- After Phase 3 verification passes → commit
+- Final integration wiring → commit
+
+**Commit restriction:** Sub-agents must not run `git commit` or `git push`. When git hooks
+are installed (`install.py --install-git-hooks`), both operations are blocked at the git level
+while the `dispatched-subagent-active` marker is fresh. Even without hooks, this is a hard
+convention: the orchestrator commits after merging and verifying all tentacle results.
+This enforcement is **local-only** — cloud-delegated or remote agent runs are not covered.
 
 #### Step 14: Runtime verification
 
-```bash
-# Python browse backend
-python3 browse.py --dev &
-curl -s http://localhost:8765/healthz | jq .
+Build passing ≠ app works. After all tentacles are merged, run the app:
 
-# browse-ui
-cd browse-ui && pnpm dev &
-# Check browser: http://localhost:3000
+```bash
+# Desktop: ./gradlew :composeApp:jvmRun
+# Mobile: deploy to emulator/simulator
+# Web: npm run dev / python manage.py runserver
 ```
+
+DI frameworks (Koin, Dagger, Spring) crash at runtime if bindings are missing — the compiler
+won't catch this. A 30-second launch test catches what build+test cannot.
 
 #### Step 15: Complete and learn
 
@@ -494,14 +415,17 @@ cd browse-ui && pnpm dev &
 sk tentacle complete <name>
 ```
 
-Always call `complete` before `delete`. `complete` auto-extracts learnings into long-term knowledge.
+Only call `complete` after all verification gates pass. This marks all todos done and auto-extracts learnings from handoff.md into long-term knowledge.
 
-#### Step 16: Resume an interrupted tentacle
+#### Step 16: Resume a tentacle (when picking up interrupted work)
 
 ```bash
 sk tentacle resume <name>             # Refresh briefing, mark active
-sk tentacle resume <name> --no-briefing  # Skip if briefing is fresh
+sk tentacle resume <name> --no-briefing  # Skip briefing injection
+# fallback: python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
 ```
+
+`resume` refreshes the live briefing in CONTEXT.md and marks the tentacle active again. Use it when returning to a tentacle after an interruption or session boundary. Pass `--no-briefing` only when the briefing is already fresh and re-fetching would be wasteful.
 
 #### Step 17: Cleanup
 
@@ -509,125 +433,39 @@ sk tentacle resume <name> --no-briefing  # Skip if briefing is fresh
 sk tentacle delete <name>
 ```
 
----
-
-## Verification summary
-
-Full gate table (mirrors Phase 3 gates):
-
-| Gate | Command | Surface |
-|------|---------|---------|
-| Python security | `python3 test_security.py` | Python |
-| Python fixes | `python3 test_fixes.py` | Python |
-| Python all | `python3 run_all_tests.py` | Python |
-| Quality gates | `python3 tests/test_quality_gates.py` | Hooks/docs/skills |
-| TS typecheck | `cd browse-ui && pnpm typecheck` | browse-ui |
-| TS lint | `cd browse-ui && pnpm lint` | browse-ui |
-| TS format | `cd browse-ui && pnpm format:check` | browse-ui |
-| Vitest | `cd browse-ui && pnpm test` | browse-ui |
-| Next.js build | `cd browse-ui && pnpm build` | browse-ui |
-| Rust | `cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test` | Rust |
-| Code review | `code-reviewer` agent | Any |
-
----
-
 ## CLI reference
 
+See `references/cli-reference.md` for the full command reference, CONTEXT.md template, and agent selection guidance.
+
+Quick reference:
+
 ```bash
-# Planning
-sk tentacle create <name> --scope "<paths>" --desc "<desc>" --briefing [--profile <agent-id>]
-sk tentacle todo <name> add "<task>"
-
-# Dispatch (always use --model claude-opus-4.7 for leaders)
-sk tentacle swarm <name> --agent-type <type> --model claude-opus-4.7 --briefing
-sk tentacle swarm <name> --output parallel --briefing
-sk tentacle dispatch <name> --agent-type <type> --model claude-opus-4.7 --briefing
-
-# Monitoring
-sk tentacle status
-sk tentacle show <name>
-
-# Handoff
+tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
+tentacle.py todo <name> add "<task>"
+tentacle.py swarm <name> --agent-type <type> --model <model> --briefing    # bundle-first default
+tentacle.py swarm <name> --output parallel --briefing                      # one worker per todo
+sk tentacle swarm <name> --output json --briefing                          # JSON + bundle_path
+sk tentacle dispatch <name> --agent-type <type> --briefing                 # single-agent dispatch
+sk tentacle swarm <name> --no-bundle                                       # rare opt-out for tiny prompts
 sk tentacle handoff <name> "<summary>" --status DONE --changed-file <path> --learn
-sk tentacle handoff <name> "<question>" --status AMBIGUOUS   # request peer input
-
-# Goal loop
-sk tentacle goal init --title "<goal>"
-sk tentacle goal link <name>
-sk tentacle goal criteria check
-sk tentacle goal eval --decision continue|complete
-sk tentacle goal gate pass <id> --reason "<evidence>"
-sk tentacle verify <name> "<command>" --label "goal-eval"
-sk tentacle goal verify-loop [--escalate]
-sk tentacle goal resume
-
-# Close
-sk tentacle resume <name>
+sk tentacle goal init --title "<goal title>" [--desc "<goal description>"]
+sk tentacle goal link <name>                                               # stamp goal metadata into meta.json
+sk tentacle goal eval --decision continue|pause|complete|abandon           # record orchestrator decision
+sk tentacle goal status [--format text|json]
+sk tentacle resume <name>                  # resume interrupted tentacle (refreshes briefing)
+sk tentacle resume <name> --no-briefing    # resume without re-fetching briefing
+sk tentacle status
 sk tentacle complete <name>
 sk tentacle delete <name>
-sk tentacle marker-cleanup [--apply]
-
 # fallback: python3 ~/.copilot/tools/tentacle.py <cmd> <args>
 ```
 
----
-
 ## Tips
 
-1. **Opus for all leaders** — never dispatch a leader with haiku or sonnet; quality-over-speed means `claude-opus-4.7` for every leader tentacle
-2. **Loop, never block** — when confidence < 1.0, create a research-leader tentacle; never write BLOCKED to a handoff without first trying the loop
-3. **Peer leaders as peers** — if dev-leader is stuck on a test strategy, handoff to test-leader for input; leaders collaborate, not silo
-4. **Invest in CONTEXT.md** — 2-3 minutes writing good context saves 10 minutes of agent confusion
-5. **Keep todos atomic** — each item = one testable deliverable
-6. **No scope overlap** — overlapping scopes cause agents to overwrite each other
-7. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
-8. **Commit after each phase** — uncommitted code is lost if the session crashes
-9. **Run the app** — build+test ≠ works. Launch browse-ui + Python backend to verify E2E behavior
-10. **Multi-surface = multi-wave** — dev + browse-leader in parallel, then test-leader, then qa-leader; never send qa-leader before tests pass
-11. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`; enforced by git hooks when installed
-
----
-
-## ⛔ Workflow Integration
-
-This project's verification workflow (from `copilot-instructions.md` and `AGENTS.md`) maps to tentacle phases as follows:
-
-| Outer Workflow Phase | Tentacle Phase |
-|---------------------|---------------|
-| **Preflight**: `sk briefing --auto --compact` | Phase 0: Clarify Spec |
-| **Edit**: minimal footprint, no SQL interpolation | Phase 2: Execute |
-| **Verification by surface**: run all gates | Phase 3: Verify |
-| **Closeout**: `sk learn`, `task_complete` | Phase 4: Close |
-
-**Key rule**: The tentacle's internal lifecycle (Clarify→Plan→Execute→Verify→Close) is NOT the entire workflow. The outer workflow gates (briefing, verification, learn) must run AROUND the tentacle lifecycle.
-
-```
-sk briefing --auto --compact          ← BEFORE first tentacle
-  │
-  ▼
-Tentacle Lifecycle (Clarify→Plan→Execute→Verify→Close)
-  │
-  ▼
-python3 test_security.py              ← AFTER all tentacles complete (Python surface)
-python3 test_fixes.py
-  │
-  ▼
-sk learn --pattern/--mistake          ← BEFORE task_complete
-  │
-  ▼
-task_complete / git commit
-```
-
----
-
-## Reference docs
-
-- `~/.copilot/tools/skills/tentacle-orchestration/references/` — canonical reference docs
-  - `cli-reference.md` — full command reference and CONTEXT.md template
-  - `decomposition-review.md` — step file review checklist
-  - `verification-gates.md` — gate descriptions
-  - `spec-clarification.md` — Phase 0 full process
-- `docs/AGENT-RULES.md` — all 11 agent rules including confidence gate and tentacle obligations
-- `docs/ARCHITECTURE.md` — Python/Rust boundary, script inventory
-- `docs/HOOKS.md` — hook enforcement table
-- `.github/agents/*.agent.md` — available specialist agent profiles
+1. **Invest in CONTEXT.md** — 2-3 minutes writing good context saves 10 minutes of agent confusion
+2. **Keep todos atomic** — each item = one testable deliverable
+3. **No scope overlap** — overlapping scopes cause agents to overwrite each other
+4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
+5. **Commit after each phase** — uncommitted code is lost if the session crashes or compacts
+6. **Run the app** — build+test ≠ works. Launch the app to verify DI resolution and runtime behavior
+7. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`. When git hooks are installed (`sk install --install-git-hooks`), both are blocked at the filesystem level for the repo where the tentacle was dispatched, while the `dispatched-subagent-active` marker is fresh. Commits in other repos are not affected. Even without hooks, a sub-agent commit mid-run corrupts the orchestrator's merge flow. Enforcement is local-only; cloud-delegated runs are not covered.
