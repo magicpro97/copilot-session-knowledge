@@ -4517,6 +4517,32 @@ except Exception as _e686_stats:
     test("I686-3: check_complexity --stats output", False, str(_e686_stats))
 
 # ---------------------------------------------------------------------------
+# I689: pre-commit complexity advisory — fail-open, advisory output
+print("\n🔍 pre-commit complexity advisory (I689)")
+
+try:
+    # Load pre-commit as source directly (hyphen in filename requires manual load)
+    import importlib.util as _ilu, types as _types
+    _pc_src = (REPO / "hooks" / "pre-commit").read_text()
+    _pc_mod = _types.ModuleType("pre_commit_mod")
+    _pc_mod.__file__ = str(REPO / "hooks" / "pre-commit")
+    exec(compile(_pc_src, str(REPO / "hooks" / "pre-commit"), "exec"), _pc_mod.__dict__)
+
+    _cc_fn = getattr(_pc_mod, "check_complexity", None)
+    test("I689-1: check_complexity function exists in pre-commit hook", _cc_fn is not None)
+
+    if _cc_fn is not None:
+        # test_precommit_complexity_exits_zero — no staged files → always 0
+        _rc = _cc_fn([])
+        test("I689-2: test_precommit_complexity_exits_zero — empty staged list returns 0", _rc == 0, f"rc={_rc}")
+
+        # test_precommit_complexity_prints_advisory — pass a real py file, still exits 0
+        _rc2 = _cc_fn(["sk.py"])
+        test("I689-3: test_precommit_complexity_prints_advisory — staged sk.py exits 0 (fail-open)", _rc2 == 0, f"rc={_rc2}")
+except Exception as _e689:
+    test("I689: pre-commit complexity advisory", False, str(_e689))
+
+# ---------------------------------------------------------------------------
 
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
