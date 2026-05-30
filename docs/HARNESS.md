@@ -2,6 +2,8 @@
 
 > Dispatch middleware for `sk` — pre/post hooks controlled by `SK_HARNESS=1`.
 > Source: `harness/dispatch.py`, `harness/meta.py`, `harness/__init__.py`
+>
+> **Philosophy & motivation:** See [HARNESS-PHILOSOPHY.md](./HARNESS-PHILOSOPHY.md) for why harness engineering matters, when to use it, and its limitations.
 
 ---
 
