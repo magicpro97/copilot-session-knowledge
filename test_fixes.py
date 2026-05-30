@@ -9773,17 +9773,7 @@ try:
 except Exception as _e724_16:
     test("I724-16: sk session stats routing", False, str(_e724_16))
 
-# ---------------------------------------------------------------------------
-if FAIL == 0:
-    print("🎉 All tests passed!")
-else:
-    print(f"⚠️  {FAIL} test(s) need attention")
-    for _fn in FAIL_NAMES:
-        print(f"    ❌ {_fn}")
-sys.exit(0 if FAIL == 0 else 1)
-
 # === I722: Knowledge Bulk-Tag ===
-# ---------------------------------------------------------------------------
 print("\n🔍 I722: sk knowledge bulk-tag command")
 
 try:
@@ -10073,3 +10063,10 @@ try:
 
 except Exception as _e722:
     test("I722: bulk-tag test setup", False, str(_e722))
+
+# ---------------------------------------------------------------------------
+if FAIL == 0:
+    print("🎉 All tests passed!")
+else:
+    print(f"⚠️  {FAIL} test(s) need attention")
+sys.exit(0 if FAIL == 0 else 1)
