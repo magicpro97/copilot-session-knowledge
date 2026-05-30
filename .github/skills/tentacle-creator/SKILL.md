@@ -166,7 +166,7 @@ Any output (diff lines or FAIL messages) means the section is missing — add it
 
 ```bash
 if ! grep -qF '.octogent/' .gitignore 2>/dev/null; then
-    echo -e "\n# Tentacle orchestration (local work contexts)\n.octogent/" >> .gitignore
+    printf '\n# Tentacle orchestration (local work contexts)\n.octogent/\n' >> .gitignore
 fi
 ```
 
@@ -185,7 +185,7 @@ Install: git clone https://github.com/magicpro97/copilot-session-knowledge.git ~
 
 ### Step 7: Report
 
-Present a summary: project profile, files created, agent mappings detected, verification commands, and example usage commands.
+Present a summary: project profile, files created, agent mappings detected, verification commands, and example usage commands. Also include a **Harness bootstrap** note: if `harness.yaml` does not exist in the project root, instruct the user to run `sk harness init` before their first tentacle dispatch.
 
 <example>
 **Project:** Next.js + TypeScript monorepo with yarn workspaces
@@ -218,18 +218,17 @@ Present a summary: project profile, files created, agent mappings detected, veri
 
 **Quality over speed.** When this skill generates a `tentacle-orchestration` skill for a project:
 
-1. **Always include `sk harness check` in Phase 3 verification** — add a Harness gate row to the generated skill's Phase 3 table so agents never skip harness gates.
+1. **Ensure `sk harness check` stays in Phase 3 verification** — the canonical `tentacle-orchestration` reference already includes a Harness gate row; when generating a customized skill, preserve that row so agents never skip harness gates.
 2. **Bootstrap harness for the project** — if `harness.yaml` does not yet exist, Step 7 (Report) must instruct the user to run `sk harness init` before their first tentacle dispatch.
 3. **Wire harness into the generated CONTEXT.md template** — include a `sk harness check [--json]` step in the agent's verify phase.
 
 ```bash
-# Check harness health before tentacle dispatch
+# Bootstrap harness if harness.yaml is missing, then verify:
+sk harness init --yes   # skip if harness.yaml already exists
 sk harness check --json
-# If harness.yaml missing, initialize first:
-sk harness init --yes
 ```
 
-> **Quality gate:** A generated skill that omits the harness gate row from Phase 3 is incomplete. Verify with:
+> **Quality gate:** A generated skill that drops the harness Phase 3 row is incomplete. Verify with:
 > ```bash
-> grep -q 'harness' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: harness gate missing"
+> grep -q '| \*\*Harness\*\*\|Harness.*sk harness check' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: harness gate row missing from Phase 3"
 > ```
