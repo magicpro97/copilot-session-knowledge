@@ -5179,9 +5179,267 @@ except Exception as _e694:
     test("I694: doctor global health surface", False, str(_e694))
 
 # ---------------------------------------------------------------------------
+# I695: _should_use_writer_broker() auto-enable detection
+# ---------------------------------------------------------------------------
+print("\n🔌 I695: _should_use_writer_broker() auto-enable detection")
 
+try:
+    import importlib.util as _ilu695
+    import time as _time695
 
-if FAIL == 0:
+    _spec695 = _ilu695.spec_from_file_location("learn_i695", REPO / "learn.py")
+    _learn695 = _ilu695.module_from_spec(_spec695)  # type: ignore[arg-type]
+    _spec695.loader.exec_module(_learn695)  # type: ignore[union-attr]
+
+    _fn695 = _learn695._should_use_writer_broker
+    _marker_ttl695 = _learn695._MARKER_ENTRY_TTL
+
+    # --- I695-1: auto-enable returns True when marker exists with fresh entry ---
+    with tempfile.TemporaryDirectory(prefix="i695-test-") as _td695:
+        _marker_dir695 = Path(_td695) / ".copilot" / "markers"
+        _marker_dir695.mkdir(parents=True)
+        _marker_file695 = _marker_dir695 / "dispatched-subagent-active"
+        _fresh_ts695 = _time695.time() - 60  # 1 minute ago — within 4h TTL
+        _marker_file695.write_text(
+            json.dumps({
+                "name": "dispatched-subagent-active",
+                "ts": str(int(_fresh_ts695)),
+                "active_tentacles": [
+                    {"name": "i695-test", "ts": _fresh_ts695, "git_root": "/repo"},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        _orig_path695 = _learn695._DISPATCHED_MARKER_PATH
+        _learn695._DISPATCHED_MARKER_PATH = _marker_file695
+        _orig_env695 = os.environ.pop("SK_WRITER_BROKER", None)
+        try:
+            _result695_1 = _fn695()
+        finally:
+            _learn695._DISPATCHED_MARKER_PATH = _orig_path695
+            if _orig_env695 is not None:
+                os.environ["SK_WRITER_BROKER"] = _orig_env695
+        test("I695-1: auto-enable True with fresh marker entry", _result695_1, f"got={_result695_1}")
+
+    # --- I695-2: auto-enable returns False when marker entry is expired (>4h) ---
+    with tempfile.TemporaryDirectory(prefix="i695-test-") as _td695b:
+        _marker_dir695b = Path(_td695b) / ".copilot" / "markers"
+        _marker_dir695b.mkdir(parents=True)
+        _marker_file695b = _marker_dir695b / "dispatched-subagent-active"
+        _old_ts695 = _time695.time() - (_marker_ttl695 + 3600)  # 5h ago — expired
+        _marker_file695b.write_text(
+            json.dumps({
+                "name": "dispatched-subagent-active",
+                "ts": str(int(_old_ts695)),
+                "active_tentacles": [
+                    {"name": "i695-stale", "ts": _old_ts695, "git_root": "/repo"},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        _orig_path695b = _learn695._DISPATCHED_MARKER_PATH
+        _learn695._DISPATCHED_MARKER_PATH = _marker_file695b
+        _orig_env695b = os.environ.pop("SK_WRITER_BROKER", None)
+        try:
+            _result695_2 = _fn695()
+        finally:
+            _learn695._DISPATCHED_MARKER_PATH = _orig_path695b
+            if _orig_env695b is not None:
+                os.environ["SK_WRITER_BROKER"] = _orig_env695b
+        test("I695-2: auto-enable False with expired marker entry", not _result695_2, f"got={_result695_2}")
+
+    # --- I695-3: auto-enable returns False when SK_WRITER_BROKER=0 explicitly set ---
+    _orig_env695c = os.environ.get("SK_WRITER_BROKER")
+    os.environ["SK_WRITER_BROKER"] = "0"
+    try:
+        _result695_3 = _fn695()
+    finally:
+        if _orig_env695c is None:
+            del os.environ["SK_WRITER_BROKER"]
+        else:
+            os.environ["SK_WRITER_BROKER"] = _orig_env695c
+    test("I695-3: auto-enable False when SK_WRITER_BROKER=0", not _result695_3, f"got={_result695_3}")
+
+    # --- I695-4: auto-enable returns False when marker file is missing ---
+    with tempfile.TemporaryDirectory(prefix="i695-test-") as _td695d:
+        _missing695 = Path(_td695d) / "nonexistent-marker"
+        _orig_path695d = _learn695._DISPATCHED_MARKER_PATH
+        _learn695._DISPATCHED_MARKER_PATH = _missing695
+        _orig_env695d = os.environ.pop("SK_WRITER_BROKER", None)
+        try:
+            _result695_4 = _fn695()
+        finally:
+            _learn695._DISPATCHED_MARKER_PATH = _orig_path695d
+            if _orig_env695d is not None:
+                os.environ["SK_WRITER_BROKER"] = _orig_env695d
+        test("I695-4: auto-enable False when marker file missing", not _result695_4, f"got={_result695_4}")
+
+    # --- I695-5: auto-enable returns False when marker file is malformed JSON (fail-open) ---
+    with tempfile.TemporaryDirectory(prefix="i695-test-") as _td695e:
+        _marker_dir695e = Path(_td695e) / ".copilot" / "markers"
+        _marker_dir695e.mkdir(parents=True)
+        _marker_file695e = _marker_dir695e / "dispatched-subagent-active"
+        _marker_file695e.write_text("{ this is not valid json !!!", encoding="utf-8")
+        _orig_path695e = _learn695._DISPATCHED_MARKER_PATH
+        _learn695._DISPATCHED_MARKER_PATH = _marker_file695e
+        _orig_env695e = os.environ.pop("SK_WRITER_BROKER", None)
+        try:
+            _result695_5 = _fn695()
+        finally:
+            _learn695._DISPATCHED_MARKER_PATH = _orig_path695e
+            if _orig_env695e is not None:
+                os.environ["SK_WRITER_BROKER"] = _orig_env695e
+        test("I695-5: auto-enable False on malformed JSON (fail-open)", not _result695_5, f"got={_result695_5}")
+
+except Exception as _e695:
+    test("I695: _should_use_writer_broker setup", False, str(_e695))
+
+# ---------------------------------------------------------------------------
+# I697: --refresh-cost backfills NULL cost columns in sessions table
+# ---------------------------------------------------------------------------
+print("\n💰 I697: --refresh-cost backfills NULL cost columns")
+
+import importlib.util as _ilu697
+import io as _io697
+import json as _json697
+
+try:
+    _spec697 = _ilu697.spec_from_file_location("build_session_index", REPO / "build-session-index.py")
+    _bsi697 = _ilu697.module_from_spec(_spec697)
+    _spec697.loader.exec_module(_bsi697)
+
+    # Helper: create a minimal in-memory sessions table
+    def _make_cost_db(sessions: list[dict]) -> sqlite3.Connection:
+        """Create an in-memory DB with the sessions table populated from *sessions*."""
+        db = sqlite3.connect(":memory:")
+        db.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT,
+                cost_usd_est REAL,
+                total_input_tokens INTEGER,
+                total_output_tokens INTEGER
+            )
+        """)
+        for s in sessions:
+            db.execute(
+                "INSERT INTO sessions (id, path, cost_usd_est, total_input_tokens, total_output_tokens) VALUES (?,?,?,?,?)",
+                (s["id"], s.get("path"), s.get("cost_usd_est"), s.get("total_input_tokens"), s.get("total_output_tokens")),
+            )
+        db.commit()
+        return db
+
+    # --- I697-1: sessions with NULL cost_usd_est are updated ---
+    with tempfile.TemporaryDirectory(prefix="i697-test-") as _i697_tmp:
+        _sess_dir = Path(_i697_tmp) / "sess1"
+        _sess_dir.mkdir()
+        # Write a minimal events.jsonl with a session.shutdown event
+        _events = {
+            "type": "session.shutdown",
+            "data": {
+                "modelMetrics": {
+                    "claude-3-5-sonnet-20241022": {
+                        "usage": {"inputTokens": 1000, "outputTokens": 200, "cacheReadTokens": 0}
+                    }
+                }
+            },
+        }
+        (_sess_dir / "events.jsonl").write_text(_json697.dumps(_events) + "\n")
+
+        _db697_1 = _make_cost_db([{"id": "s1", "path": str(_sess_dir), "cost_usd_est": None}])
+        _bsi697._refresh_cost(_db697_1, limit=None)
+        _row697_1 = _db697_1.execute("SELECT cost_usd_est, total_input_tokens, total_output_tokens FROM sessions WHERE id='s1'").fetchone()
+        test(
+            "I697-1: sessions with NULL cost_usd_est are updated after --refresh-cost",
+            _row697_1 is not None and _row697_1[0] is not None and _row697_1[0] > 0,
+            f"row={_row697_1}",
+        )
+
+    # --- I697-2: sessions with existing cost_usd_est are NOT overwritten ---
+    with tempfile.TemporaryDirectory(prefix="i697-test-") as _i697_tmp2:
+        _sess_dir2 = Path(_i697_tmp2) / "sess2"
+        _sess_dir2.mkdir()
+        _events2 = {
+            "type": "session.shutdown",
+            "data": {
+                "modelMetrics": {
+                    "claude-3-5-sonnet-20241022": {
+                        "usage": {"inputTokens": 999, "outputTokens": 111, "cacheReadTokens": 0}
+                    }
+                }
+            },
+        }
+        (_sess_dir2 / "events.jsonl").write_text(_json697.dumps(_events2) + "\n")
+
+        _db697_2 = _make_cost_db([{"id": "s2", "path": str(_sess_dir2), "cost_usd_est": 0.042, "total_input_tokens": 500, "total_output_tokens": 50}])
+        _bsi697._refresh_cost(_db697_2, limit=None)
+        _row697_2 = _db697_2.execute("SELECT cost_usd_est, total_input_tokens FROM sessions WHERE id='s2'").fetchone()
+        test(
+            "I697-2: sessions with existing cost_usd_est are NOT overwritten",
+            _row697_2 is not None and abs(_row697_2[0] - 0.042) < 1e-9 and _row697_2[1] == 500,
+            f"row={_row697_2}",
+        )
+
+    # --- I697-3: --limit 2 stops after refreshing 2 sessions ---
+    with tempfile.TemporaryDirectory(prefix="i697-test-") as _i697_tmp3:
+        _sessions_697_3 = []
+        for _i3 in range(4):
+            _sd = Path(_i697_tmp3) / f"sess{_i3}"
+            _sd.mkdir()
+            _ev = {
+                "type": "session.shutdown",
+                "data": {
+                    "modelMetrics": {
+                        "claude-3-5-sonnet-20241022": {
+                            "usage": {"inputTokens": 100, "outputTokens": 10, "cacheReadTokens": 0}
+                        }
+                    }
+                },
+            }
+            (_sd / "events.jsonl").write_text(_json697.dumps(_ev) + "\n")
+            _sessions_697_3.append({"id": f"s3_{_i3}", "path": str(_sd), "cost_usd_est": None})
+
+        _db697_3 = _make_cost_db(_sessions_697_3)
+        _bsi697._refresh_cost(_db697_3, limit=2)
+        _nulls_left = _db697_3.execute("SELECT COUNT(*) FROM sessions WHERE cost_usd_est IS NULL").fetchone()[0]
+        _updated = _db697_3.execute("SELECT COUNT(*) FROM sessions WHERE cost_usd_est IS NOT NULL").fetchone()[0]
+        test(
+            "I697-3: --limit 2 stops after refreshing 2 sessions (2 updated, 2 still NULL)",
+            _updated == 2 and _nulls_left == 2,
+            f"updated={_updated} nulls_left={_nulls_left}",
+        )
+
+    # --- I697-4: sessions with no events.jsonl are counted as skipped ---
+    with tempfile.TemporaryDirectory(prefix="i697-test-") as _i697_tmp4:
+        _sess_dir4 = Path(_i697_tmp4) / "sess_noev"
+        _sess_dir4.mkdir()
+        # No events.jsonl written — dir exists but file absent
+
+        _db697_4 = _make_cost_db([{"id": "s4", "path": str(_sess_dir4), "cost_usd_est": None}])
+        _captured697 = _io697.StringIO()
+        _orig_stdout697 = sys.stdout
+        sys.stdout = _captured697
+        try:
+            _bsi697._refresh_cost(_db697_4, limit=None)
+        finally:
+            sys.stdout = _orig_stdout697
+        _out697_4 = _captured697.getvalue()
+        _row697_4 = _db697_4.execute("SELECT cost_usd_est FROM sessions WHERE id='s4'").fetchone()
+        test(
+            "I697-4a: sessions with no events.jsonl leave cost_usd_est NULL",
+            _row697_4 is not None and _row697_4[0] is None,
+            f"cost_usd_est={_row697_4[0] if _row697_4 else 'row missing'}",
+        )
+        test(
+            "I697-4b: skipped count appears in progress output",
+            "skipped" in _out697_4,
+            f"output={_out697_4!r}",
+        )
+
+except Exception as _e697:
+    test("I697: --refresh-cost backfills NULL cost columns", False, str(_e697))
+
+# ---------------------------------------------------------------------------
     print("🎉 All tests passed!")
 else:
     print(f"⚠️  {FAIL} test(s) need attention")

@@ -12,6 +12,8 @@ Usage:
     python build-session-index.py --no-embed         # Skip embedding generation
     python build-session-index.py --claude           # Index Claude Code sessions only
     python build-session-index.py --all              # Index both Copilot + Claude
+    python build-session-index.py --refresh-cost     # Backfill NULL cost columns
+    python build-session-index.py --refresh-cost --limit N  # Backfill at most N sessions
 """
 
 import hashlib
@@ -1436,12 +1438,69 @@ def _run_two_phase_copilot(db: sqlite3.Connection, incremental: bool) -> None:
         )
 
 
+def _parse_limit_arg() -> int | None:
+    """Parse --limit N from sys.argv; returns int or None."""
+    for i, arg in enumerate(sys.argv):
+        if arg == "--limit" and i + 1 < len(sys.argv):
+            try:
+                return int(sys.argv[i + 1])
+            except ValueError:
+                return None
+    return None
+
+
+def _refresh_cost(db: sqlite3.Connection, limit: int | None = None) -> None:
+    """Backfill cost_usd_est / token columns for sessions where they are NULL.
+
+    For each session with cost_usd_est IS NULL, reads events.jsonl via
+    _extract_session_cost() and updates the row.  Sessions without events.jsonl
+    are counted as skipped.  Stops after *limit* successful refreshes when given.
+    """
+    rows = db.execute("SELECT id, path FROM sessions WHERE cost_usd_est IS NULL").fetchall()
+    total = len(rows)
+    refreshed = 0
+    skipped = 0
+
+    for session_id, path in rows:
+        if limit is not None and refreshed >= limit:
+            break
+        if not path:
+            skipped += 1
+            continue
+        session_dir = Path(path)
+        cost_data = _extract_session_cost(session_dir)
+        if not cost_data:
+            skipped += 1
+            continue
+        db.execute(
+            """
+            UPDATE sessions SET
+                cost_usd_est = ?,
+                total_input_tokens = ?,
+                total_output_tokens = ?
+            WHERE id = ?
+            """,
+            (
+                cost_data["cost_usd_est"],
+                cost_data["total_input_tokens"],
+                cost_data["total_output_tokens"],
+                session_id,
+            ),
+        )
+        refreshed += 1
+
+    db.commit()
+    print(f"Refreshed cost for {refreshed}/{total} sessions ({skipped} skipped — no events.jsonl)")
+
+
 def main():
     incremental = "--incremental" in sys.argv
     stats_only = "--stats" in sys.argv
     with_embeddings = "--no-embed" not in sys.argv  # Auto-embed by default
     with_claude = "--claude" in sys.argv
     all_sources = "--all" in sys.argv
+    refresh_cost = "--refresh-cost" in sys.argv
+    limit = _parse_limit_arg()
 
     if not SESSION_STATE.exists():
         print(f"Error: Session state directory not found: {SESSION_STATE}")
@@ -1451,6 +1510,11 @@ def main():
 
     if stats_only:
         show_stats(db)
+        db.close()
+        return
+
+    if refresh_cost:
+        _refresh_cost(db, limit=limit)
         db.close()
         return
 

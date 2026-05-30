@@ -66,6 +66,55 @@ LEARN_INBOX = Path(os.environ.get("SK_LEARN_INBOX", str(SESSION_STATE / "learn-i
 DEFAULT_DB_BUSY_TIMEOUT_MS = 30_000
 DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS = 250
 
+_DISPATCHED_MARKER_PATH = Path.home() / ".copilot" / "markers" / "dispatched-subagent-active"
+_MARKER_ENTRY_TTL = 4 * 3600  # 4 hours
+
+
+def _should_use_writer_broker() -> bool:
+    """Return True when the writer-broker should be auto-enabled.
+
+    Auto-enables when:
+      - SK_WRITER_BROKER is not explicitly "0" (override-off takes priority)
+      - The dispatched-subagent-active marker exists
+      - The marker has at least one fresh active entry (within 4h TTL)
+
+    Explicit overrides:
+      SK_WRITER_BROKER=0  → always False (disabled)
+      SK_WRITER_BROKER=1  → always True (enabled, existing behaviour)
+
+    Fail-open: any read/parse error returns False so learn.py never crashes.
+    """
+    env_val = os.environ.get("SK_WRITER_BROKER", "")
+    if env_val == "0":
+        return False
+    if env_val in ("1", "true"):
+        return True
+    # Auto-detect via dispatched-subagent marker
+    try:
+        if not _DISPATCHED_MARKER_PATH.is_file():
+            return False
+        data = json.loads(_DISPATCHED_MARKER_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        raw_active = data.get("active_tentacles")
+        if not isinstance(raw_active, list) or not raw_active:
+            return False
+        now = time.time()
+        for entry in raw_active:
+            if isinstance(entry, dict):
+                ts = entry.get("ts")
+                try:
+                    if ts is not None and (now - float(ts)) < _MARKER_ENTRY_TTL:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            elif isinstance(entry, str):
+                # Old string-list format has no per-entry timestamp; treat as active
+                return True
+        return False
+    except Exception:
+        return False
+
 
 def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
     try:
