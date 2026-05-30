@@ -10076,17 +10076,7 @@ try:
 except Exception as _e722:
     test("I722: bulk-tag test setup", False, str(_e722))
 
-# ---------------------------------------------------------------------------
-if FAIL == 0:
-    print("🎉 All tests passed!")
-else:
-    print(f"⚠️  {FAIL} test(s) need attention")
-    for _fn in FAIL_NAMES:
-        print(f"    ❌ {_fn}")
-sys.exit(0 if FAIL == 0 else 1)
-
 # === I717: MCP Write Tools ===
-
 print("\n✍️  I717: MCP Write Tools")
 
 _mcp717_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
@@ -10472,3 +10462,10 @@ except Exception as _e718_br:
     test("I718-17: briefing.py badge source check", False, str(_e718_br))
 
 # ---------------------------------------------------------------------------
+if FAIL == 0:
+    print("🎉 All tests passed!")
+else:
+    print(f"⚠️  {FAIL} test(s) need attention")
+    for _fn in FAIL_NAMES:
+        print(f"    ❌ {_fn}")
+sys.exit(0 if FAIL == 0 else 1)
