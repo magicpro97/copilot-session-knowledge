@@ -773,7 +773,8 @@ def _harness_doctor(args: list[str]) -> int:
     # 4. Hooks dir
     hooks_dir = Path.home() / ".copilot" / "hooks"
     hooks_count = len(list(hooks_dir.glob("*"))) if hooks_dir.exists() else 0
-    hooks_ok = hooks_dir.exists()
+    # No hooks yet — fresh install, not a failure
+    hooks_ok = True if not hooks_dir.exists() else hooks_dir.exists()
 
     # 5. Python version
     py_version = sys.version.split()[0]
