@@ -47,6 +47,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py goal next-iter
     python3 ~/.copilot/tools/tentacle.py goal verify-loop [--id <id>] [--max-retries N] [--retry-delay SECONDS] [--timeout SECONDS] [--escalate]
     python3 ~/.copilot/tools/tentacle.py pr [--title <title>] [--base <branch>] [--commit-msg <msg>] [--issue <ref>] [--label <label>] [--reviewer <login>] [--repo <owner/repo>] [--dry-run]
+    python3 ~/.copilot/tools/tentacle.py cleanup [--dry-run] [--stale]
 
 Environment:
     TENTACLE_SESSION_DIR — Override session directory (default: auto-detect)
@@ -3366,6 +3367,136 @@ def cmd_marker_cleanup(args):
 
 
 # ---------------------------------------------------------------------------
+# SEAM: cleanup — sk tentacle cleanup --stale
+# ---------------------------------------------------------------------------
+
+_CLEANUP_OLD_DIR_DAYS = 7
+_CLEANUP_TERMINAL_STATUSES = frozenset({"DONE", "BLOCKED"})
+
+
+def _cleanup_stale(dry_run: bool = False, stale_only: bool = False, session_dir: str | None = None) -> None:
+    """Prune expired marker entries and (optionally) old completed tentacle dirs.
+
+    Marker cleanup: entries whose per-entry ``ts`` is older than 4 h (TTL) are
+    considered expired and are removed from the marker file.  If the active_tentacles
+    list becomes empty the marker file is deleted entirely.  Missing marker file
+    is silently skipped (fail-open).
+
+    Dir cleanup (skipped when ``stale_only=True``): scans all tentacle directories
+    under ``.octogent/tentacles/``.  A directory is eligible for removal when:
+      - ``meta.json`` exists and ``status`` is in {DONE, BLOCKED}
+      - ``updated_at`` is parseable AND older than 7 days
+
+    A directory is NEVER removed when ``meta.json`` is absent or unreadable (safe
+    default: no meta → identity unknown → leave it alone).
+
+    Prints a one-line summary for each category regardless of dry_run state.
+    """
+    import shutil
+
+    now = time.time()
+    ttl = _DISPATCHED_MARKER_TTL  # 4 * 3600
+
+    # ---- marker cleanup ----
+    marker_removed = 0
+    if _DISPATCHED_MARKER_PATH.is_file():
+        try:
+            with file_locked(_DISPATCHED_MARKER_PATH):
+                raw = _DISPATCHED_MARKER_PATH.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                raw_entries = list(data.get("active_tentacles", []))
+                # Normalise: entries may be plain strings (backward compat)
+                fresh: list[dict] = []
+                expired: list[dict] = []
+                for entry in raw_entries:
+                    if isinstance(entry, str):
+                        fresh.append({"name": entry})
+                        continue
+                    ts_val = entry.get("ts")
+                    try:
+                        age = now - float(ts_val) if ts_val is not None else 0.0
+                    except (TypeError, ValueError):
+                        age = 0.0
+                    if age > ttl:
+                        expired.append(entry)
+                    else:
+                        fresh.append(entry)
+                marker_removed = len(expired)
+                if not dry_run and expired:
+                    if fresh:
+                        data["active_tentacles"] = fresh
+                        _DISPATCHED_MARKER_PATH.write_text(
+                            json.dumps(data, indent=2) + "\n", encoding="utf-8"
+                        )
+                    else:
+                        _DISPATCHED_MARKER_PATH.unlink(missing_ok=True)
+        except (OSError, json.JSONDecodeError, ValueError):
+            # Fail-open: corrupted or unreadable marker — leave it alone
+            marker_removed = 0
+
+    if dry_run:
+        print(f"Stale markers: would remove {marker_removed} expired entries (dry-run)")
+    else:
+        print(f"Stale markers: removed {marker_removed} expired entries")
+
+    if stale_only:
+        return
+
+    # ---- tentacle dir cleanup ----
+    tentacles_root = get_tentacles_dir(session_dir)
+    cutoff = now - _CLEANUP_OLD_DIR_DAYS * 86400
+    dirs_removed = 0
+
+    if tentacles_root.exists():
+        for d in sorted(tentacles_root.iterdir()):
+            if not d.is_dir():
+                continue
+            meta_path = d / "meta.json"
+            if not meta_path.exists():
+                # No meta.json → never remove (identity unknown)
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            status = meta.get("status", "")
+            if status not in _CLEANUP_TERMINAL_STATUSES:
+                continue
+            updated_raw = meta.get("updated_at")
+            if not updated_raw:
+                continue
+            try:
+                # Parse ISO 8601 timestamp produced by datetime.now(timezone.utc).isoformat()
+                updated_ts = datetime.fromisoformat(str(updated_raw)).timestamp()
+            except (ValueError, TypeError):
+                continue
+            if updated_ts > cutoff:
+                # Recent enough — keep
+                continue
+            if dry_run:
+                print(f"  would remove: {d.name}/ (status={status}, updated={updated_raw})")
+            else:
+                try:
+                    shutil.rmtree(d)
+                    dirs_removed += 1
+                except OSError:
+                    pass
+
+    if dry_run:
+        print(f"Old tentacles: would remove completed dirs >7d old (dry-run — see above)")
+    else:
+        print(f"Old tentacles: removed {dirs_removed} completed dirs (>7d old)")
+
+
+def cmd_cleanup(args) -> None:
+    """Dispatch for ``sk tentacle cleanup``."""
+    dry_run: bool = getattr(args, "dry_run", False)
+    stale_only: bool = getattr(args, "stale", False)
+    session_dir: str | None = getattr(args, "session_dir", None)
+    _cleanup_stale(dry_run=dry_run, stale_only=stale_only, session_dir=session_dir)
+
+
+# ---------------------------------------------------------------------------
 # SEAM: pr-automation — sk tentacle pr
 # ---------------------------------------------------------------------------
 # Implemented in _tentacle_pr.py and re-exported above for compatibility.
@@ -3921,6 +4052,23 @@ def main():
             "marker entries.  Stable CLI boundary for native Rust hook runner.  "
             "Always fail-open; incompatible with --apply."
         ),
+    )
+
+    # cleanup subcommand
+    p_cleanup = sub.add_parser(
+        "cleanup",
+        help="Prune expired marker entries and old completed tentacle dirs",
+    )
+    p_cleanup.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Print what would be removed without deleting anything",
+    )
+    p_cleanup.add_argument(
+        "--stale",
+        action="store_true",
+        help="Only clean expired marker entries; skip tentacle dir removal",
     )
 
     # audit
@@ -4503,6 +4651,8 @@ def main():
         cmd_review_loop(args)
     elif args.command == "marker-cleanup":
         cmd_marker_cleanup(args)
+    elif args.command == "cleanup":
+        cmd_cleanup(args)
     elif args.command == "audit":
         cmd_audit(args)
     elif args.command == "pr":

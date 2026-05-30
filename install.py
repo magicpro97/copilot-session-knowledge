@@ -2604,17 +2604,67 @@ def _doctor_hooks_count() -> dict:
         return {"count": 0, "hooks_json_exists": True, "error": str(exc)[:200]}
 
 
-def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
+def _doctor_fix_watcher() -> tuple[bool, str]:
+    """Attempt to start the session watcher as a detached background process.
+
+    Returns (success, reason).  Fails open: never raises.
+    """
+    watch_script = _SCRIPT_DIR / "watch-sessions.py"
+    if not watch_script.is_file():
+        return False, f"watch-sessions.py not found at {watch_script}"
+    try:
+        subprocess.Popen(
+            [sys.executable, str(watch_script)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:200]
+
+
+def _doctor_fix_hooks() -> tuple[bool, str]:
+    """Attempt to deploy hooks by calling deploy_hooks().
+
+    Returns (success, reason).  Fails open: never raises.
+    """
+    try:
+        deploy_hooks()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:200]
+
+
+def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool = False) -> int:
     """Verify install health; optionally limit output to manifest drift only.
 
     When as_json=True, prints a JSON dict with an issues[] array and returns
     non-zero when issues are present.
+    When auto_fix=True, attempts to automatically remediate detected issues.
     """
     issues = 0
     issues_list: list[dict] = []
+    fix_failures = 0
 
     def _add_issue(code: str, message: str, severity: str = "error") -> None:
         issues_list.append({"code": code, "message": message, "severity": severity})
+
+    def _attempt_fix(description: str, fix_fn: "callable") -> None:
+        nonlocal fix_failures
+        if as_json:
+            return
+        print(f"  → FIXING: {description}...")
+        try:
+            ok, reason = fix_fn()
+        except Exception as exc:
+            ok, reason = False, str(exc)[:200]
+        if ok:
+            print("  → OK")
+        else:
+            print(f"  → FAILED: {reason}")
+            fix_failures += 1
 
     if not manifest_only:
         if not as_json:
@@ -2656,6 +2706,8 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
             _add_issue("watcher-not-running", "Session watcher is not running", "warning")
             if not as_json:
                 print(f"  {WARN} Watcher: not running")
+            if auto_fix:
+                _attempt_fix("start session watcher", _doctor_fix_watcher)
 
         # DB size
         db_info = _doctor_db_size()
@@ -2709,11 +2761,15 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
             if hooks_info["count"] == 0:
                 issues += 1
                 _add_issue("no-hooks-installed", "hooks.json exists but contains no hook entries", "warning")
+                if auto_fix:
+                    _attempt_fix("deploy hooks", _doctor_fix_hooks)
         elif not hooks_info["hooks_json_exists"]:
             issues += 1
             _add_issue("hooks-json-missing", "hooks.json not found — run: python install.py --deploy-hooks", "error")
             if not as_json:
                 print(f"  {FAIL} Hooks: hooks.json missing — run: python install.py --deploy-hooks")
+            if auto_fix:
+                _attempt_fix("deploy hooks", _doctor_fix_hooks)
 
         if not as_json:
             print()
@@ -2728,7 +2784,7 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
         if as_json:
             print(json.dumps({
                 "issues": issues_list,
-                "issue_count": issues + 1,
+                "issue_count": len(issues_list),
                 "watcher": _doctor_watcher_status() if manifest_only else {},
                 "db": _doctor_db_size() if manifest_only else {},
                 "index_health": _doctor_index_health() if manifest_only else {},
@@ -2745,7 +2801,7 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
         if as_json:
             print(json.dumps({
                 "issues": issues_list,
-                "issue_count": issues + 1,
+                "issue_count": len(issues_list),
                 "watcher": _doctor_watcher_status() if manifest_only else {},
                 "db": _doctor_db_size() if manifest_only else {},
                 "index_health": _doctor_index_health() if manifest_only else {},
@@ -2764,7 +2820,7 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
         if as_json:
             print(json.dumps({
                 "issues": issues_list,
-                "issue_count": issues,
+                "issue_count": len(issues_list),
                 "watcher": _doctor_watcher_status(),
                 "db": _doctor_db_size(),
                 "index_health": _doctor_index_health(),
@@ -2801,14 +2857,14 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
     if as_json:
         print(json.dumps({
             "issues": issues_list,
-            "issue_count": issues,
+            "issue_count": len(issues_list),
             "watcher": _doctor_watcher_status(),
             "db": _doctor_db_size(),
             "index_health": _doctor_index_health(),
             "sync": _doctor_sync_status(),
             "hooks": _doctor_hooks_count(),
         }, indent=2))
-    return issues
+    return issues + fix_failures
 
 
 def _launcher_diagnostics() -> int:
@@ -3444,7 +3500,8 @@ def main():
     if "--doctor" in args or "--windows" in args:
         manifest_only = "--manifest" in args
         as_json = "--json" in args
-        rc = doctor(manifest_only=manifest_only, as_json=as_json)
+        auto_fix = "--fix" in args
+        rc = doctor(manifest_only=manifest_only, as_json=as_json, auto_fix=auto_fix)
         if as_json:
             return 1 if rc else 0
         return rc

@@ -5440,6 +5440,330 @@ except Exception as _e697:
     test("I697: --refresh-cost backfills NULL cost columns", False, str(_e697))
 
 # ---------------------------------------------------------------------------
+# I699: sk doctor --fix auto-remediation
+# ---------------------------------------------------------------------------
+print("\n🩺 I699: sk doctor --fix auto-remediation")
+
+try:
+    import io as _io699
+    import types as _types699
+    import unittest.mock as _mock699
+
+    _inst699_src = (REPO / "install.py").read_text()
+    _inst699 = _types699.ModuleType("install_mod_699")
+    _inst699.__file__ = str(REPO / "install.py")
+    exec(compile(_inst699_src, str(REPO / "install.py"), "exec"), _inst699.__dict__)
+
+    # --- I699-1: fix attempted when watcher not running (mock Popen) ---
+    _popen_calls699 = []
+
+    class _FakePopen699:
+        def __init__(self, *args, **kwargs):
+            _popen_calls699.append((args, kwargs))
+
+    def _watcher_not_running699() -> dict:
+        return {"running": False, "pid": None}
+
+    def _db_size_ok699() -> dict:
+        return {"size_mb": 1.0, "db_path": "/fake/knowledge.db", "exists": True}
+
+    def _index_health_ok699() -> dict:
+        return {"score": 80, "total": 100, "available": True, "error": ""}
+
+    def _sync_ok699() -> dict:
+        return {"configured": False, "gateway_available": False, "available": True, "error": ""}
+
+    def _hooks_ok699() -> dict:
+        return {"count": 3, "hooks_json_exists": True, "error": ""}
+
+    # Monkey-patch surface functions
+    _inst699._doctor_watcher_status = _watcher_not_running699
+    _inst699._doctor_db_size = _db_size_ok699
+    _inst699._doctor_index_health = _index_health_ok699
+    _inst699._doctor_sync_status = _sync_ok699
+    _inst699._doctor_hooks_count = _hooks_ok699
+    # Redirect manifest path to nonexistent so manifest section is skipped cleanly
+    _orig_mpath699 = _inst699._managed_manifest_path
+    _inst699._managed_manifest_path = lambda: _inst699.Path("/nonexistent/manifest.json")
+
+    _captured699_1 = _io699.StringIO()
+    _orig_stdout699 = sys.stdout
+    sys.stdout = _captured699_1
+    try:
+        with _mock699.patch.object(_inst699.subprocess, "Popen", _FakePopen699):
+            _rc699_1 = _inst699.doctor(auto_fix=True)
+    finally:
+        sys.stdout = _orig_stdout699
+        _inst699._managed_manifest_path = _orig_mpath699
+
+    _out699_1 = _captured699_1.getvalue()
+    test(
+        "I699-1: fix attempted when watcher not running (Popen called)",
+        len(_popen_calls699) >= 1,
+        f"popen_calls={len(_popen_calls699)} output={_out699_1!r}",
+    )
+    test(
+        "I699-1b: FIXING message printed when watcher not running",
+        "FIXING" in _out699_1 and "watcher" in _out699_1.lower(),
+        f"output={_out699_1!r}",
+    )
+
+    # --- I699-2: fix skipped when all surfaces healthy ---
+    _fix_watcher_calls699 = []
+
+    def _watcher_running699() -> dict:
+        return {"running": True, "pid": 42}
+
+    def _spy_fix_watcher699() -> "tuple[bool, str]":
+        _fix_watcher_calls699.append(1)
+        return True, ""
+
+    _inst699._doctor_watcher_status = _watcher_running699
+    _inst699._doctor_hooks_count = _hooks_ok699
+    _inst699._doctor_fix_watcher = _spy_fix_watcher699
+    _orig_mpath699b = _inst699._managed_manifest_path
+    _inst699._managed_manifest_path = lambda: _inst699.Path("/nonexistent/manifest.json")
+
+    _captured699_2 = _io699.StringIO()
+    sys.stdout = _captured699_2
+    try:
+        _rc699_2 = _inst699.doctor(auto_fix=True)
+    finally:
+        sys.stdout = _orig_stdout699
+        _inst699._managed_manifest_path = _orig_mpath699b
+
+    _out699_2 = _captured699_2.getvalue()
+    test(
+        "I699-2: fix skipped when all surfaces healthy (fix_watcher not called)",
+        len(_fix_watcher_calls699) == 0,
+        f"fix_watcher_calls={len(_fix_watcher_calls699)} output={_out699_2!r}",
+    )
+    test(
+        "I699-2b: no FIXING message when all healthy",
+        "FIXING" not in _out699_2,
+        f"output={_out699_2!r}",
+    )
+
+    # --- I699-3: fix failure tracked, exit code non-zero ---
+    _inst699._doctor_watcher_status = _watcher_not_running699
+
+    def _bad_fix_watch699() -> "tuple[bool, str]":
+        return False, "permission denied"
+
+    _orig_fix_fn699 = _inst699._doctor_fix_watcher
+    _inst699._doctor_fix_watcher = _bad_fix_watch699
+    _orig_mpath699c = _inst699._managed_manifest_path
+    _inst699._managed_manifest_path = lambda: _inst699.Path("/nonexistent/manifest.json")
+
+    _captured699_3 = _io699.StringIO()
+    sys.stdout = _captured699_3
+    try:
+        _rc699_3 = _inst699.doctor(auto_fix=True)
+    finally:
+        sys.stdout = _orig_stdout699
+        _inst699._managed_manifest_path = _orig_mpath699c
+        _inst699._doctor_fix_watcher = _orig_fix_fn699
+
+    _out699_3 = _captured699_3.getvalue()
+    test(
+        "I699-3: fix failure reported in output",
+        "FAILED" in _out699_3 and "permission denied" in _out699_3,
+        f"output={_out699_3!r}",
+    )
+    test(
+        "I699-3b: exit code non-zero when fix fails",
+        _rc699_3 > 0,
+        f"rc={_rc699_3}",
+    )
+
+except Exception as _e699:
+    test("I699: sk doctor --fix auto-remediation", False, str(_e699))
+
+# ---------------------------------------------------------------------------
+# I700: sk tentacle cleanup --stale
+# ---------------------------------------------------------------------------
+print("\n🧹 I700: sk tentacle cleanup --stale")
+
+try:
+    import importlib.util as _ilu700
+    import time as _time700
+
+    _spec700 = _ilu700.spec_from_file_location("tentacle_i700", REPO / "tentacle.py")
+    _tent700 = _ilu700.module_from_spec(_spec700)  # type: ignore[arg-type]
+    _spec700.loader.exec_module(_tent700)  # type: ignore[union-attr]
+
+    _cleanup_fn700 = _tent700._cleanup_stale
+    _MARKER_TTL700 = _tent700._DISPATCHED_MARKER_TTL  # 4 * 3600
+
+    # --- I700-1: expired marker entry removed, fresh entry kept ---
+    with tempfile.TemporaryDirectory(prefix="i700-test-") as _td700_1:
+        _marker_dir700 = Path(_td700_1) / ".copilot" / "markers"
+        _marker_dir700.mkdir(parents=True)
+        _marker_file700 = _marker_dir700 / "dispatched-subagent-active"
+        _now700 = _time700.time()
+        _fresh_ts700 = _now700 - 60              # 1 minute old — within TTL
+        _expired_ts700 = _now700 - (_MARKER_TTL700 + 3600)  # 5 h old — expired
+        _marker_file700.write_text(
+            json.dumps({
+                "name": "dispatched-subagent-active",
+                "ts": str(int(_now700)),
+                "active_tentacles": [
+                    {"name": "fresh-tent", "ts": _fresh_ts700, "git_root": "/repo"},
+                    {"name": "expired-tent", "ts": _expired_ts700, "git_root": "/repo"},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        _orig_marker700 = _tent700._DISPATCHED_MARKER_PATH
+        _tent700._DISPATCHED_MARKER_PATH = _marker_file700
+        try:
+            _cleanup_fn700(dry_run=False, stale_only=True)
+        finally:
+            _tent700._DISPATCHED_MARKER_PATH = _orig_marker700
+        _remaining700 = json.loads(_marker_file700.read_text(encoding="utf-8"))
+        _names700 = [e["name"] for e in _remaining700.get("active_tentacles", [])]
+        test(
+            "I700-1: expired marker entry removed, fresh entry kept",
+            "fresh-tent" in _names700 and "expired-tent" not in _names700,
+            f"names={_names700}",
+        )
+
+    # --- I700-2: --dry-run prints changes but doesn't delete ---
+    with tempfile.TemporaryDirectory(prefix="i700-test-") as _td700_2:
+        _marker_dir700b = Path(_td700_2) / ".copilot" / "markers"
+        _marker_dir700b.mkdir(parents=True)
+        _marker_file700b = _marker_dir700b / "dispatched-subagent-active"
+        _now700b = _time700.time()
+        _expired_ts700b = _now700b - (_MARKER_TTL700 + 3600)
+        _orig_content700b = json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_now700b)),
+            "active_tentacles": [
+                {"name": "stale-tent", "ts": _expired_ts700b, "git_root": "/repo"},
+            ],
+        })
+        _marker_file700b.write_text(_orig_content700b, encoding="utf-8")
+        _orig_marker700b = _tent700._DISPATCHED_MARKER_PATH
+        _tent700._DISPATCHED_MARKER_PATH = _marker_file700b
+        _cap700b = __import__("io").StringIO()
+        _orig_stdout700b = sys.stdout
+        sys.stdout = _cap700b
+        try:
+            _cleanup_fn700(dry_run=True, stale_only=True)
+        finally:
+            sys.stdout = _orig_stdout700b
+            _tent700._DISPATCHED_MARKER_PATH = _orig_marker700b
+        _out700b = _cap700b.getvalue()
+        _content_after700b = _marker_file700b.read_text(encoding="utf-8")
+        test(
+            "I700-2a: --dry-run output mentions would remove",
+            "would remove" in _out700b or "dry-run" in _out700b,
+            f"output={_out700b!r}",
+        )
+        test(
+            "I700-2b: --dry-run leaves marker file unchanged",
+            _content_after700b == _orig_content700b,
+            f"content changed: before={len(_orig_content700b)} after={len(_content_after700b)}",
+        )
+
+    # --- I700-3: old DONE tentacle dir removed (>7d), recent one kept ---
+    with tempfile.TemporaryDirectory(prefix="i700-test-") as _td700_3:
+        _tentacles_dir700c = Path(_td700_3) / "tentacles"
+        _tentacles_dir700c.mkdir(parents=True)
+
+        # Old DONE tentacle: updated_at 8 days ago → should be removed
+        _old_dir700 = _tentacles_dir700c / "old-done-tent"
+        _old_dir700.mkdir()
+        import datetime as _dt700
+        _old_ts700 = _dt700.datetime.fromtimestamp(_time700.time() - 8 * 86400, tz=_dt700.timezone.utc).isoformat()
+        (_old_dir700 / "meta.json").write_text(
+            json.dumps({"status": "DONE", "updated_at": _old_ts700}), encoding="utf-8"
+        )
+
+        # Recent DONE tentacle: updated_at 1 day ago → should be kept
+        _new_dir700 = _tentacles_dir700c / "recent-done-tent"
+        _new_dir700.mkdir()
+        _new_ts700 = _dt700.datetime.fromtimestamp(_time700.time() - 1 * 86400, tz=_dt700.timezone.utc).isoformat()
+        (_new_dir700 / "meta.json").write_text(
+            json.dumps({"status": "DONE", "updated_at": _new_ts700}), encoding="utf-8"
+        )
+
+        # Active tentacle: should never be removed
+        _active_dir700 = _tentacles_dir700c / "active-tent"
+        _active_dir700.mkdir()
+        _active_ts700 = _dt700.datetime.fromtimestamp(_time700.time() - 10 * 86400, tz=_dt700.timezone.utc).isoformat()
+        (_active_dir700 / "meta.json").write_text(
+            json.dumps({"status": "active", "updated_at": _active_ts700}), encoding="utf-8"
+        )
+
+        import os as _os700
+        _orig_env700c = _os700.environ.get("TENTACLE_SESSION_DIR")
+        _os700.environ["TENTACLE_SESSION_DIR"] = str(_tentacles_dir700c)
+        _orig_marker700c = _tent700._DISPATCHED_MARKER_PATH
+        _tent700._DISPATCHED_MARKER_PATH = Path(_td700_3) / "nonexistent-marker"
+        try:
+            _cleanup_fn700(dry_run=False, stale_only=False)
+        finally:
+            if _orig_env700c is None:
+                _os700.environ.pop("TENTACLE_SESSION_DIR", None)
+            else:
+                _os700.environ["TENTACLE_SESSION_DIR"] = _orig_env700c
+            _tent700._DISPATCHED_MARKER_PATH = _orig_marker700c
+
+        test(
+            "I700-3a: old DONE dir (>7d) removed",
+            not _old_dir700.exists(),
+            f"old_dir exists={_old_dir700.exists()}",
+        )
+        test(
+            "I700-3b: recent DONE dir (<7d) kept",
+            _new_dir700.exists(),
+            f"recent_dir exists={_new_dir700.exists()}",
+        )
+        test(
+            "I700-3c: active dir kept (non-terminal status)",
+            _active_dir700.exists(),
+            f"active_dir exists={_active_dir700.exists()}",
+        )
+
+    # --- I700-4: --stale flag skips dir cleanup ---
+    with tempfile.TemporaryDirectory(prefix="i700-test-") as _td700_4:
+        _tentacles_dir700d = Path(_td700_4) / "tentacles"
+        _tentacles_dir700d.mkdir(parents=True)
+
+        # Old DONE tentacle: would be removed without --stale
+        _old_dir700d = _tentacles_dir700d / "old-done-tent-stale"
+        _old_dir700d.mkdir()
+        import datetime as _dt700d
+        _old_ts700d = _dt700d.datetime.fromtimestamp(_time700.time() - 8 * 86400, tz=_dt700d.timezone.utc).isoformat()
+        (_old_dir700d / "meta.json").write_text(
+            json.dumps({"status": "DONE", "updated_at": _old_ts700d}), encoding="utf-8"
+        )
+
+        import os as _os700d
+        _orig_env700d = _os700d.environ.get("TENTACLE_SESSION_DIR")
+        _os700d.environ["TENTACLE_SESSION_DIR"] = str(_tentacles_dir700d)
+        _orig_marker700d = _tent700._DISPATCHED_MARKER_PATH
+        _tent700._DISPATCHED_MARKER_PATH = Path(_td700_4) / "nonexistent-marker"
+        try:
+            _cleanup_fn700(dry_run=False, stale_only=True)
+        finally:
+            if _orig_env700d is None:
+                _os700d.environ.pop("TENTACLE_SESSION_DIR", None)
+            else:
+                _os700d.environ["TENTACLE_SESSION_DIR"] = _orig_env700d
+            _tent700._DISPATCHED_MARKER_PATH = _orig_marker700d
+
+        test(
+            "I700-4: --stale skips dir cleanup (old DONE dir kept)",
+            _old_dir700d.exists(),
+            f"old_dir exists={_old_dir700d.exists()}",
+        )
+
+except Exception as _e700:
+    test("I700: sk tentacle cleanup --stale", False, str(_e700))
+
+# ---------------------------------------------------------------------------
     print("🎉 All tests passed!")
 else:
     print(f"⚠️  {FAIL} test(s) need attention")
