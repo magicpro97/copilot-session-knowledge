@@ -8898,12 +8898,6 @@ try:
 except Exception as _e718_br:
     test("I718-17: briefing.py badge source check", False, str(_e718_br))
 
-# ---------------------------------------------------------------------------
-    print("🎉 All tests passed!")
-else:
-    print(f"⚠️  {FAIL} test(s) need attention")
-sys.exit(0 if FAIL == 0 else 1)
-
 # === I724: Session Digest+Stats ===
 print("\n🔍 I724: Session Digest+Stats")
 
