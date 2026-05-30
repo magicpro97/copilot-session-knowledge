@@ -283,13 +283,49 @@ def thresholds() -> dict:
     }
 
 
+def file_to_dict(file: FileMetric) -> dict:
+    """Serialize a FileMetric to the public JSON schema for --json output."""
+    return {
+        "file": file.path,
+        "file_lines": file.lines,
+        "file_severity": file.severity,
+        "functions": [
+            {
+                "name": fn.name,
+                "line": fn.line,
+                "complexity": fn.complexity,
+                "fn_lines": fn.lines,
+                "severity": fn.severity,
+            }
+            for fn in file.functions
+        ],
+    }
+
+
 def report_dict(files: list[FileMetric], errors: list[str]) -> dict:
+    """Legacy full-detail dict used by --json-full (kept for backward compat)."""
     return {
         "summary": summarize(files),
         "thresholds": thresholds(),
         "files": [asdict(file) for file in files],
         "errors": errors,
     }
+
+
+def stats_dict(files: list[FileMetric]) -> dict:
+    """Return severity counts across all functions and files."""
+    all_severities = [fn.severity for f in files for fn in f.functions] + [f.severity for f in files]
+    return {
+        "ok": sum(1 for s in all_severities if s == "ok"),
+        "warning": sum(1 for s in all_severities if s == "warning"),
+        "high": sum(1 for s in all_severities if s == "high"),
+    }
+
+
+def has_high(files: list[FileMetric]) -> bool:
+    return any(file.severity == "high" for file in files) or any(
+        fn.severity == "high" for file in files for fn in file.functions
+    )
 
 
 def print_text_report(files: list[FileMetric], errors: list[str]) -> None:
@@ -309,7 +345,7 @@ def print_text_report(files: list[FileMetric], errors: list[str]) -> None:
         for fn in file.functions:
             if fn.severity == "ok":
                 continue
-            print(f"  {fn.severity}: {fn.name} line={fn.line} complexity={fn.complexity} lines={fn.lines}")
+            print(f"  [{fn.severity}] {fn.name} complexity={fn.complexity} fn_lines={fn.lines}")
 
     if errors:
         print("\nErrors:", file=sys.stderr)
@@ -324,7 +360,11 @@ def print_text_report(files: list[FileMetric], errors: list[str]) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Report Python complexity metrics.")
     parser.add_argument("paths", nargs="*", help="Python files or directories to inspect")
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--text", action="store_true", help="Text output (default)")
+    mode.add_argument("--json", action="store_true", help="Emit JSON array of file analysis dicts")
+    mode.add_argument("--stats", action="store_true", help="Emit summary severity counts as JSON")
+    mode.add_argument("--json-full", action="store_true", dest="json_full", help="Emit full JSON report dict")
     args = parser.parse_args(argv)
 
     targets, target_errors = resolve_targets(args.paths)
@@ -332,11 +372,23 @@ def main(argv=None) -> int:
     errors = [*target_errors, *report_errors]
 
     if args.json:
+        if errors:
+            for error in errors:
+                print(f"error: {error}", file=sys.stderr)
+        print(json.dumps([file_to_dict(f) for f in files], indent=2, sort_keys=True))
+    elif args.stats:
+        if errors:
+            for error in errors:
+                print(f"error: {error}", file=sys.stderr)
+        print(json.dumps(stats_dict(files), indent=2, sort_keys=True))
+    elif args.json_full:
         print(json.dumps(report_dict(files, errors), indent=2, sort_keys=True))
     else:
         print_text_report(files, errors)
 
-    return 1 if errors else 0
+    if errors:
+        return 1
+    return 1 if has_high(files) else 0
 
 
 if __name__ == "__main__":

@@ -60,6 +60,10 @@ jobs:
           *.py
           browse/ hooks/ scripts/
 
+      - name: Complexity advisory (non-blocking)
+        run: python3 scripts/check_complexity.py --stats
+        continue-on-error: true
+
       - name: Complexity gate — scoped test files (WBS-096 blocking)
         run: >
           ruff check --select C90,PLR0911,PLR0912,PLR0913,PLR0915

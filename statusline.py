@@ -27,7 +27,8 @@ Token cost được ước tính từ per-model rates (không chính xác 100% v
 cache_write_tokens trong stdin JSON). Dấu * biểu thị estimated value.
 
 Quota được lấy từ API nội bộ gh api /copilot_internal/user với TTL cache
-60 giây. Cần gh CLI đã authenticate.
+300 giây. Cần gh CLI đã authenticate. Trong subprocess mode (Copilot CLI
+footer), quota chỉ đọc từ cache (cache_only=True) — không gọi gh api.
 """
 
 # Windows UTF-8 guard (mandatory for all scripts in this repo)
@@ -54,7 +55,7 @@ AI_CREDIT_USD = 0.01  # 1 AI Credit = $0.01 USD (from June 2026)
 PREMIUM_REQUEST_USD = 0.04  # $0.04 per overage premium request (current billing)
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 QUOTA_CACHE_FILE = MARKERS_DIR / "quota-cache.json"
-QUOTA_CACHE_TTL = 60  # seconds between quota API refreshes
+QUOTA_CACHE_TTL = 300  # seconds between quota API refreshes
 
 # Per-model rates in USD per 1M tokens (effective with AI Credit billing June 2026).
 # Source: github/docs:data/tables/copilot/models-and-pricing.yml (SHA 00152a3d)
@@ -250,10 +251,15 @@ def _estimate_cost_usd(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_quota(force: bool = False) -> dict | None:
+def _fetch_quota(force: bool = False, cache_only: bool = False) -> dict | None:
     """
     Return quota snapshot from ~/.copilot/markers/quota-cache.json.
-    Refreshes from `gh api /copilot_internal/user` when stale.
+    Refreshes from `gh api /copilot_internal/user` when stale (unless cache_only=True).
+
+    cache_only=True: read from cache only — never call gh api. Returns None if
+    cache is missing or stale. Safe to use in subprocess contexts where gh may
+    not be on PATH (e.g., Copilot CLI statusLine footer subprocess).
+
     Returns None silently on any error (fail-open).
     """
     try:
@@ -262,6 +268,9 @@ def _fetch_quota(force: bool = False) -> dict | None:
             cached = json.loads(QUOTA_CACHE_FILE.read_text(encoding="utf-8"))
             if time.time() - cached.get("_ts", 0) < QUOTA_CACHE_TTL:
                 return cached
+        # In cache_only mode, never call gh api — return None if cache is absent/stale
+        if cache_only:
+            return None
         # Refresh from API
         result = subprocess.run(
             [
@@ -382,7 +391,7 @@ def _render_statusline(payload: dict) -> str:
 
     # ── Quota bar (cached, non-blocking) ─────────────────────────────────────
     seg_quota = ""
-    quota_data = _fetch_quota()
+    quota_data = _fetch_quota(cache_only=True)
     pi = _get_premium_snapshot(quota_data)
     if pi:
         remaining = pi.get("remaining", 0)

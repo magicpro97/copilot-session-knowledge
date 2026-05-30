@@ -373,7 +373,7 @@ def _run(script: str, extra_args: list[str], cmd: str = "") -> int:
     if os.environ.get("SK_HARNESS") == "1":
         from harness.dispatch import run_with_hooks  # noqa: PLC0415
 
-        return run_with_hooks(cmd, script, extra_args, str(tools_dir))
+        return run_with_hooks(cmd, script, extra_args, str(tools_dir), _project_env_for_script(script))
     proc_cmd = [sys.executable, str(script_path)] + extra_args
     result = subprocess.run(proc_cmd, env=_project_env_for_script(script))
     return result.returncode
@@ -582,7 +582,7 @@ def _harness_show(args: list[str]) -> int:
         tags = list(meta.tags)
         if tag_filter and tag_filter not in tags:
             continue
-        entries.append({"cmd": cmd, "script": str(meta), "description": str(meta.description), "tags": tags})
+        entries.append({"cmd": cmd, "script": meta.script or "", "description": str(meta.description), "tags": tags})
 
     for key, info in manifest_cmds.items():
         if " " in key:  # group sub entries like "index build"
@@ -647,10 +647,69 @@ def _harness_check(args: list[str]) -> int:
     return 1
 
 
+def _doctor_check_manifest(tools_dir: Path) -> dict:
+    """Check harness-manifest.json: parseable and has >= 40 entries."""
+    manifest_path = tools_dir / "harness-manifest.json"
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        entries = len(data.get("commands", {}))
+        return {"path": str(manifest_path), "ok": entries >= 40, "entries": entries}
+    except Exception:  # noqa: BLE001
+        return {"path": str(manifest_path), "ok": False, "entries": 0}
+
+
+def _doctor_check_telemetry() -> dict:
+    """Check harness telemetry file size and rotation status."""
+    tel_path = Path.home() / ".copilot" / "markers" / "harness-telemetry.jsonl"
+    try:
+        exists = tel_path.exists()
+        size_kb, rotation_needed = 0.0, False
+        if exists:
+            size_bytes = tel_path.stat().st_size
+            size_kb = round(size_bytes / 1024, 1)
+            rotation_needed = size_bytes > 1_048_576
+        return {"path": str(tel_path), "exists": exists, "size_kb": size_kb, "rotation_needed": rotation_needed}
+    except Exception:  # noqa: BLE001
+        return {"path": str(tel_path), "exists": False, "size_kb": 0.0, "rotation_needed": False}
+
+
+def _doctor_check_hooks_executable(hooks_dir: Path) -> dict:
+    """Check which hook files are missing the executable bit."""
+    try:
+        if not hooks_dir.exists():
+            return {"checked": 0, "non_executable": []}
+        files = list(hooks_dir.glob("*"))
+        non_exec = [str(f) for f in files if f.is_file() and not os.access(str(f), os.X_OK)]
+        return {"checked": len(files), "non_executable": non_exec}
+    except Exception:  # noqa: BLE001
+        return {"checked": 0, "non_executable": []}
+
+
+def _doctor_check_db_schema_version(db_path: Path) -> dict:
+    """Query schema_version table for the latest migration version."""
+    import sqlite3  # noqa: PLC0415
+
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=2)
+        row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+        conn.close()
+        return {"version": row[0], "ok": True} if row else {"version": None, "ok": False}
+    except Exception:  # noqa: BLE001
+        return {"version": None, "ok": False}
+
+
+def _doctor_check_native_commands() -> dict:
+    """Count CommandMeta entries where script is None (native-binary commands)."""
+    names = [cmd for cmd, meta in _DIRECT.items() if meta.script is None]
+    return {"count": len(names), "names": names}
+
+
 def _harness_doctor(args: list[str]) -> int:
     """In-process handler for 'sk harness doctor [--json]'.
 
-    Runs 5 checks: scripts, DB, project root, hooks dir, Python version.
+    Runs 12 checks: scripts, DB, project root, hooks dir, Python version,
+    manifest, harness_enabled, telemetry, hooks_executable, db_schema_version,
+    native_commands.
     """
     import sqlite3  # noqa: PLC0415
 
@@ -660,13 +719,15 @@ def _harness_doctor(args: list[str]) -> int:
     # 1. Scripts check (reuse _harness_check logic without printing)
     missing_scripts: list[dict] = []
     for cmd, meta in _DIRECT.items():
+        if meta.script is None:
+            continue  # native-binary-only command; no Python script to check
         if not (tools_dir / str(meta)).exists():
             missing_scripts.append({"cmd": f"sk {cmd}", "script": str(meta)})
     for group, subs in _GROUPS.items():
         for sub, script in subs.items():
             if not (tools_dir / script).exists():
                 missing_scripts.append({"cmd": f"sk {group} {sub}", "script": script})
-    total_scripts = len(_DIRECT) + sum(len(v) for v in _GROUPS.values())
+    total_scripts = len([m for m in _DIRECT.values() if m.script is not None]) + sum(len(v) for v in _GROUPS.values())
     scripts_ok = len(missing_scripts) == 0
 
     # 2. DB check
@@ -696,8 +757,28 @@ def _harness_doctor(args: list[str]) -> int:
     py_parts = [int(x) for x in py_version.split(".")[:2]]
     py_ok = py_parts >= [3, 10]
 
-    all_ok = scripts_ok and db_ok and root_ok and hooks_ok and py_ok
-    passed = sum([scripts_ok, db_ok, root_ok, hooks_ok, py_ok])
+    # 6. Manifest
+    manifest_result = _doctor_check_manifest(tools_dir)
+    manifest_ok = manifest_result["ok"]
+
+    # 7. Harness enabled
+    harness_enabled_result = {"enabled": os.environ.get("SK_HARNESS") == "1", "env_var": "SK_HARNESS"}
+
+    # 8. Telemetry
+    telemetry_result = _doctor_check_telemetry()
+
+    # 9. Hooks executable
+    hooks_exec_result = _doctor_check_hooks_executable(hooks_dir)
+
+    # 10. DB schema version
+    schema_result = _doctor_check_db_schema_version(db_path)
+    schema_ok = schema_result["ok"]
+
+    # 11. Native commands
+    native_result = _doctor_check_native_commands()
+
+    all_ok = scripts_ok and db_ok and root_ok and hooks_ok and py_ok and manifest_ok and schema_ok
+    passed = sum([scripts_ok, db_ok, root_ok, hooks_ok, py_ok, manifest_ok, schema_ok])
 
     if as_json:
         print(
@@ -708,6 +789,12 @@ def _harness_doctor(args: list[str]) -> int:
                     "project_root": {"path": str(tools_dir), "ok": root_ok},
                     "hooks": {"path": str(hooks_dir), "ok": hooks_ok, "count": hooks_count},
                     "python_version": py_version,
+                    "manifest": manifest_result,
+                    "harness_enabled": harness_enabled_result,
+                    "telemetry": telemetry_result,
+                    "hooks_executable": hooks_exec_result,
+                    "db_schema_version": schema_result,
+                    "native_commands": native_result,
                     "all_ok": all_ok,
                 },
                 ensure_ascii=False,
@@ -720,15 +807,31 @@ def _harness_doctor(args: list[str]) -> int:
         if scripts_ok
         else f"{len(missing_scripts)} MISSING"
     )
-    print(f"[doctor] Scripts:      {script_label}")
+    print(f"[doctor] Scripts:        {script_label}")
     db_label = f"{db_path} OK ({db_size_mb} MB)" if db_ok else f"{db_path} NOT ACCESSIBLE"
-    print(f"[doctor] DB:           {db_label}")
-    print(f"[doctor] Project root: {tools_dir}")
+    print(f"[doctor] DB:             {db_label}")
+    print(f"[doctor] Project root:   {tools_dir}")
     hooks_label = f"installed ({hooks_count} files in {hooks_dir})" if hooks_ok else f"missing ({hooks_dir})"
-    print(f"[doctor] Hooks:        {hooks_label}")
+    print(f"[doctor] Hooks:          {hooks_label}")
     py_label = f"{py_version} >= 3.10 OK" if py_ok else f"{py_version} < 3.10 FAIL"
-    print(f"[doctor] Python:       {py_label}")
-    print(f"[doctor] {'All 5 checks passed' if all_ok else f'{passed}/5 checks passed'}")
+    print(f"[doctor] Python:         {py_label}")
+    manifest_label = (
+        f"{manifest_result['entries']} entries OK" if manifest_ok else f"FAIL (entries={manifest_result['entries']})"
+    )
+    print(f"[doctor] Manifest:       {manifest_label}")
+    harness_label = "enabled (SK_HARNESS=1)" if harness_enabled_result["enabled"] else "disabled (SK_HARNESS != 1)"
+    print(f"[doctor] Harness:        {harness_label}")
+    tel_label = f"exists ({telemetry_result['size_kb']} KB)" if telemetry_result["exists"] else "not found (OK)"
+    if telemetry_result.get("rotation_needed"):
+        tel_label += " ROTATION NEEDED"
+    print(f"[doctor] Telemetry:      {tel_label}")
+    exec_label = f"{hooks_exec_result['checked']} checked, {len(hooks_exec_result['non_executable'])} non-exec"
+    print(f"[doctor] Hooks exec:     {exec_label}")
+    schema_label = f"version {schema_result['version']} OK" if schema_ok else "FAIL (no schema_version)"
+    print(f"[doctor] Schema version: {schema_label}")
+    native_label = f"{native_result['count']} native commands ({', '.join(native_result['names'])})"
+    print(f"[doctor] Native cmds:    {native_label}")
+    print(f"[doctor] {'All 12 checks passed' if all_ok else f'{passed}/7 critical checks passed'}")
     return 0 if all_ok else 1
 
 

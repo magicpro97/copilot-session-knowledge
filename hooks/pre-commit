@@ -210,7 +210,7 @@ def check_complexity(staged: list[str]) -> int:
         with tempfile.TemporaryDirectory(prefix="pre-commit-complexity-") as temp_dir:
             report_paths, path_map = write_staged_python_snapshot(staged_py, Path(temp_dir))
             result = run(
-                [sys.executable, str(COMPLEXITY_CHECKER), "--json", *report_paths],
+                [sys.executable, str(COMPLEXITY_CHECKER), "--json-full", *report_paths],
                 capture_output=True,
                 timeout=60,
             )

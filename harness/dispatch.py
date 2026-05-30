@@ -85,13 +85,24 @@ _PRE_HOOKS.append(_timing_start)
 _POST_HOOKS.append(_timing_end)
 
 
-def run_with_hooks(cmd: str, script: str, args: list[str], tools_dir: str) -> int:
-    """Run script through pre/post hook pipeline. Returns exit code."""
+def run_with_hooks(
+    cmd: str,
+    script: str,
+    args: list[str],
+    tools_dir: str,
+    env: dict | None = None,
+) -> int:
+    """Run script through pre/post hook pipeline. Returns exit code.
+
+    *env* allows callers (e.g. sk._run) to inject a project-specific
+    environment (SK_PROJECT_ROOT, SK_DB_PATH).  When omitted the current
+    process environment is used, preserving backward compatibility.
+    """
     ctx = DispatchContext(
         cmd=cmd,
         script=script,
         extra_args=list(args),
-        env=dict(os.environ),
+        env=env if env is not None else dict(os.environ),
         start_ms=time.time() * 1000,
     )
 
