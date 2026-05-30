@@ -2481,6 +2481,13 @@ def main():
         if "--limit" in args:
             idx = args.index("--limit")
             limit = int(args[idx + 1]) if idx + 1 < len(args) else 50
+        if not DB_PATH.exists():
+            if "--json" in args:
+                print(json.dumps({"days_threshold": days, "count": 0, "entries": []}, indent=2))
+            else:
+                print(f"📅 Stale entries (not updated in >{days} days): 0")
+                print("  ✅ No knowledge database found (fresh install).")
+            return
         try:
             db = get_db()
             rows = db.execute(

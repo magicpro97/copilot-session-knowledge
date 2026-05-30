@@ -55,6 +55,7 @@ def _run_utf8_text(*args, **kwargs):
 
 PASS = 0
 FAIL = 0
+FAIL_NAMES: list[str] = []
 REPO = Path(__file__).parent
 
 
@@ -66,6 +67,7 @@ def test(name: str, condition: bool, detail: str = ""):
             print(f"  ✅ {name}")
     else:
         FAIL += 1
+        FAIL_NAMES.append(name + (f" — {detail}" if detail else ""))
         print(f"  ❌ {name}" + (f" — {detail}" if detail else ""))
 
 
@@ -9375,8 +9377,11 @@ try:
 except Exception as _e718_br:
     test("I718-17: briefing.py badge source check", False, str(_e718_br))
 
-    # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+if FAIL == 0:
     print("🎉 All tests passed!")
 else:
     print(f"⚠️  {FAIL} test(s) need attention")
+    for _fn in FAIL_NAMES:
+        print(f"    ❌ {_fn}")
 sys.exit(0 if FAIL == 0 else 1)
