@@ -10207,11 +10207,11 @@ except Exception as _e717_14:
 
 # I717-15..22: Integration tests via MCP subprocess
 try:
-    import sqlite3 as _sq717
-    import tempfile as _tmp717
-    import subprocess as _sp717
     import json as _json717
     import pathlib as _pl717
+    import sqlite3 as _sq717
+    import subprocess as _sp717
+    import tempfile as _tmp717
 
     with _tmp717.TemporaryDirectory(prefix="mcp717-test-") as _tmp717_dir:
         _home717 = _pl717.Path(_tmp717_dir)
