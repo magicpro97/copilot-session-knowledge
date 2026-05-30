@@ -517,6 +517,88 @@ def _print_status_table(force_quota: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mode 3: Cost trend chart (sk status --trend)
+# ---------------------------------------------------------------------------
+
+
+def _print_cost_trend() -> None:
+    """Print a 7-day ASCII bar chart of daily session cost estimates.
+
+    Queries sessions.cost_usd_est grouped by date(indexed_at) for the last 7
+    days.  Requires build-session-index.py to have run with migration v33+.
+    """
+    db_path = Path(os.environ.get("SK_DB_PATH", str(Path.home() / ".copilot" / "session-state" / "knowledge.db")))
+    if not db_path.exists():
+        print(f"\n  {_ansi(Y)}No cost data — run: sk index build{_ansi(RST)}")
+        return
+
+    try:
+        import sqlite3 as _sqlite3
+        db = _sqlite3.connect(str(db_path))
+        # Check column exists (migration v33)
+        cols = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
+        if "cost_usd_est" not in cols:
+            print(f"\n  {_ansi(Y)}No cost data — run: sk index build{_ansi(RST)}")
+            db.close()
+            return
+
+        rows = db.execute(
+            """
+            SELECT date(indexed_at) AS day, SUM(cost_usd_est) AS daily_cost
+            FROM sessions
+            WHERE indexed_at >= datetime('now', '-7 days')
+              AND cost_usd_est IS NOT NULL
+            GROUP BY day
+            ORDER BY day
+            """,
+        ).fetchall()
+        db.close()
+    except Exception:
+        print(f"\n  {_ansi(Y)}No cost data — run: sk index build{_ansi(RST)}")
+        return
+
+    if not rows:
+        print(f"\n  {_ansi(Y)}No cost data — run: sk index build{_ansi(RST)}")
+        return
+
+    max_cost = max(r[1] or 0.0 for r in rows)
+    bar_width = 7
+    weekly_total = sum(r[1] or 0.0 for r in rows)
+    avg_per_day = weekly_total / 7  # average over a full week, not just days with data
+
+    _day_abbr = {
+        "0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
+        "4": "Thu", "5": "Fri", "6": "Sat",
+    }
+
+    print(f"\n{_ansi(BOLD)}{_CHART_ICON} Cost Trend — last 7 days{_ansi(RST)}")
+    for day_str, daily_cost in rows:
+        cost = daily_cost or 0.0
+        # Compute abbreviated weekday name from ISO date string
+        try:
+            import datetime as _dt
+            d = _dt.date.fromisoformat(day_str)
+            label = _day_abbr.get(str(d.weekday() + 1 if d.weekday() < 6 else 0), day_str[-5:])
+            # weekday(): Mon=0 … Sun=6 → Sun=0, Mon=1…Sat=6
+            _wd_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+            label = _wd_map.get(d.weekday(), day_str[-5:])
+        except Exception:
+            label = day_str[-5:]  # fallback to MM-DD
+
+        filled = max(0, min(bar_width, round(cost / max_cost * bar_width))) if max_cost > 0 else 0
+        empty = bar_width - filled
+        bar = f"{_ansi(C)}{'█' * filled}{_ansi(DIM)}{'░' * empty}{_ansi(RST)}"
+        cost_str = _fmt_cost(cost)
+        print(f"  {label} {bar} {_ansi(Y)}{cost_str}{_ansi(RST)}")
+
+    print()
+    print(f"  {_ansi(BOLD)}Total:{_ansi(RST)} {_ansi(Y)}{_fmt_cost(weekly_total)}/week{_ansi(RST)}"
+          f"   {_ansi(BOLD)}Avg:{_ansi(RST)} {_ansi(Y)}{_fmt_cost(avg_per_day)}/day{_ansi(RST)}")
+    print(f"  {_ansi(DIM)}Cost = token counts × model rates. Run sk index build to refresh.{_ansi(RST)}")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -524,10 +606,14 @@ def _print_status_table(force_quota: bool = False) -> None:
 def main() -> None:
     args = sys.argv[1:]
     force_quota = "--quota" in args or "--refresh" in args
+    show_trend = "--trend" in args
 
     # Mode 2: status table when invoked from terminal (no piped stdin)
     if sys.stdin.isatty():
-        _print_status_table(force_quota=force_quota)
+        if show_trend:
+            _print_cost_trend()
+        else:
+            _print_status_table(force_quota=force_quota)
         return
 
     # Mode 1: statusline — read JSON from stdin (Copilot CLI pipes this)

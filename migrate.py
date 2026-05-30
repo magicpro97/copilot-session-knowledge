@@ -1713,6 +1713,19 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_kr_target_supersedes ON knowledge_relations(target_id, relation_type)",
             ],
         ),
+        # v33: issue #692 — Per-session cost estimates + weekly trend chart.
+        # cost_usd_est: estimated USD cost from token counts × per-model rates.
+        # total_input_tokens / total_output_tokens: aggregated across all models
+        # in the session.shutdown event from events.jsonl (Copilot sessions only).
+        (
+            33,
+            "session_cost_columns",
+            [
+                "ALTER TABLE sessions ADD COLUMN cost_usd_est REAL",
+                "ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER",
+                "ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

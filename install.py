@@ -2467,6 +2467,7 @@ def _show_usage_hints():
     print(f"    python {inst} --lock-hooks             # Lock hooks (tamper protection)")
     print(f"    python {inst} --unlock-hooks           # Unlock hooks for updates")
     print(f"    python {inst} --doctor --manifest      # Check manifest drift")
+    print(f"    python {inst} --doctor --json          # Doctor output as JSON (non-zero exit on issues)")
     print(f"    python {inst} --test                  # Run self-test")
     print(f"    python {inst} --uninstall             # Remove tools")
     if os.name == "nt":
@@ -2487,52 +2488,326 @@ def _show_usage_hints():
     )
 
 
-def doctor(*, manifest_only: bool = False) -> int:
-    """Verify install health; optionally limit output to manifest drift only."""
+def _doctor_watcher_status() -> dict:
+    """Return watcher health as a structured dict.
+
+    Keys: running (bool), pid (int|None).
+    """
+    running = _watcher_running()
+    pid: "int | None" = None
+    if running and LOCK_FILE.is_file():
+        try:
+            raw = LOCK_FILE.read_text(encoding="utf-8").strip()
+            data = json.loads(raw)
+            if isinstance(data, int):
+                pid = data
+            elif isinstance(data, dict):
+                pid = data.get("pid")
+        except Exception:
+            pass
+    return {"running": running, "pid": pid}
+
+
+def _doctor_db_size() -> dict:
+    """Return DB size in MB as a structured dict.
+
+    Keys: size_mb (float), db_path (str), exists (bool).
+    """
+    exists = DB_PATH.is_file()
+    size_mb = 0.0
+    if exists:
+        try:
+            size_mb = round(DB_PATH.stat().st_size / (1024 * 1024), 1)
+        except OSError:
+            pass
+    return {"size_mb": size_mb, "db_path": str(DB_PATH), "exists": exists}
+
+
+def _doctor_index_health() -> dict:
+    """Return index health score by calling knowledge-health.py --json.
+
+    Keys: score (float|None), total (int), available (bool), error (str).
+    Fails open: if the script is missing or crashes, available=False.
+    """
+    health_script = _SCRIPT_DIR / "knowledge-health.py"
+    if not health_script.is_file():
+        return {"score": None, "total": 0, "available": False, "error": "knowledge-health.py not found"}
+    try:
+        result = subprocess.run(
+            [sys.executable, str(health_script), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {"score": None, "total": 0, "available": False, "error": result.stderr.strip()[:200]}
+        data = json.loads(result.stdout)
+        return {
+            "score": data.get("score"),
+            "total": data.get("total", 0),
+            "available": True,
+            "error": "",
+        }
+    except Exception as exc:
+        return {"score": None, "total": 0, "available": False, "error": str(exc)[:200]}
+
+
+def _doctor_sync_status() -> dict:
+    """Return sync status by calling sync-status.py --json.
+
+    Keys: configured (bool), gateway_available (bool), available (bool), error (str).
+    Fails open: if the script is missing or crashes, available=False.
+    """
+    sync_script = _SCRIPT_DIR / "sync-status.py"
+    if not sync_script.is_file():
+        return {"configured": False, "gateway_available": False, "available": False, "error": "sync-status.py not found"}
+    try:
+        result = subprocess.run(
+            [sys.executable, str(sync_script), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {"configured": False, "gateway_available": False, "available": False, "error": result.stderr.strip()[:200]}
+        data = json.loads(result.stdout)
+        gateway_health = data.get("gateway_health", {})
+        return {
+            "configured": bool(data.get("configured", False)),
+            "gateway_available": bool(gateway_health.get("available", False)),
+            "available": True,
+            "error": "",
+        }
+    except Exception as exc:
+        return {"configured": False, "gateway_available": False, "available": False, "error": str(exc)[:200]}
+
+
+def _doctor_hooks_count() -> dict:
+    """Return count of installed hook entries from ~/.copilot/hooks/hooks.json.
+
+    Keys: count (int), hooks_json_exists (bool), error (str).
+    """
+    hooks_json = COPILOT_DIR / "hooks" / "hooks.json"
+    if not hooks_json.is_file():
+        return {"count": 0, "hooks_json_exists": False, "error": "hooks.json not found"}
+    try:
+        data = json.loads(hooks_json.read_text(encoding="utf-8"))
+        hooks = data.get("hooks", {})
+        if isinstance(hooks, dict):
+            count = sum(len(v) if isinstance(v, list) else 1 for v in hooks.values())
+        elif isinstance(hooks, list):
+            count = len(hooks)
+        else:
+            count = 0
+        return {"count": count, "hooks_json_exists": True, "error": ""}
+    except Exception as exc:
+        return {"count": 0, "hooks_json_exists": True, "error": str(exc)[:200]}
+
+
+def doctor(*, manifest_only: bool = False, as_json: bool = False) -> int:
+    """Verify install health; optionally limit output to manifest drift only.
+
+    When as_json=True, prints a JSON dict with an issues[] array and returns
+    non-zero when issues are present.
+    """
     issues = 0
+    issues_list: list[dict] = []
+
+    def _add_issue(code: str, message: str, severity: str = "error") -> None:
+        issues_list.append({"code": code, "message": message, "severity": severity})
+
     if not manifest_only:
-        print("\nInstall Doctor")
-        print("=" * 50)
-        if show_status():
-            print(f"  {OK} Core install looks present")
+        if not as_json:
+            print("\nInstall Doctor")
+            print("=" * 50)
+        if as_json:
+            import io as _io_doctor
+            _dev_null = _io_doctor.StringIO()
+            _orig_stdout = sys.stdout
+            sys.stdout = _dev_null
+            try:
+                _core_ok = show_status()
+                _launcher_issues = _launcher_diagnostics()
+            finally:
+                sys.stdout = _orig_stdout
+        else:
+            _core_ok = show_status()
+            _launcher_issues = _launcher_diagnostics()
+        if _core_ok:
+            if not as_json:
+                print(f"  {OK} Core install looks present")
         else:
             issues += 1
-        issues += _launcher_diagnostics()
-        print()
+            _add_issue("core-install-missing", "Core install not detected")
+        issues += _launcher_issues
+
+        # --- Global Health Surface ---
+        if not as_json:
+            print("\nGlobal Health:")
+
+        # Watcher status
+        watcher = _doctor_watcher_status()
+        if watcher["running"]:
+            if not as_json:
+                pid_info = f" (pid {watcher['pid']})" if watcher["pid"] else ""
+                print(f"  {OK} Watcher: running{pid_info}")
+        else:
+            issues += 1
+            _add_issue("watcher-not-running", "Session watcher is not running", "warning")
+            if not as_json:
+                print(f"  {WARN} Watcher: not running")
+
+        # DB size
+        db_info = _doctor_db_size()
+        if db_info["exists"]:
+            if not as_json:
+                print(f"  {OK} DB size: {db_info['size_mb']} MB")
+        else:
+            issues += 1
+            _add_issue("db-not-found", "Knowledge DB not found", "warning")
+            if not as_json:
+                print(f"  {WARN} DB: not found at {_tilde(DB_PATH)}")
+
+        # Index health score
+        health_info = _doctor_index_health()
+        if health_info["available"]:
+            score = health_info["score"]
+            total = health_info["total"]
+            if not as_json:
+                print(f"  {OK} Index health: {score}/100 ({total} entries)")
+            if score is not None and score < 50:
+                issues += 1
+                _add_issue("index-health-low", f"Index health score {score}/100 is below 50", "warning")
+        else:
+            if not as_json:
+                print(f"  {INFO} Index health: unavailable ({health_info['error']})")
+
+        # Sync status
+        sync_info = _doctor_sync_status()
+        if sync_info["available"]:
+            if sync_info["configured"]:
+                if sync_info["gateway_available"]:
+                    if not as_json:
+                        print(f"  {OK} Sync: configured, gateway reachable")
+                else:
+                    issues += 1
+                    _add_issue("sync-gateway-unreachable", "Sync is configured but gateway is unreachable", "warning")
+                    if not as_json:
+                        print(f"  {WARN} Sync: configured but gateway unreachable")
+            else:
+                if not as_json:
+                    print(f"  {INFO} Sync: not configured (local-only)")
+        else:
+            if not as_json:
+                print(f"  {INFO} Sync status: unavailable ({sync_info['error']})")
+
+        # Hooks installed count
+        hooks_info = _doctor_hooks_count()
+        if hooks_info["hooks_json_exists"] and not hooks_info["error"]:
+            if not as_json:
+                print(f"  {OK} Hooks installed: {hooks_info['count']} hook entries")
+            if hooks_info["count"] == 0:
+                issues += 1
+                _add_issue("no-hooks-installed", "hooks.json exists but contains no hook entries", "warning")
+        elif not hooks_info["hooks_json_exists"]:
+            issues += 1
+            _add_issue("hooks-json-missing", "hooks.json not found — run: python install.py --deploy-hooks", "error")
+            if not as_json:
+                print(f"  {FAIL} Hooks: hooks.json missing — run: python install.py --deploy-hooks")
+
+        if not as_json:
+            print()
 
     manifest_path = _managed_manifest_path()
-    print("Manifest Drift:")
+    if not as_json:
+        print("Manifest Drift:")
     if not manifest_path.exists():
-        print(f"  {WARN} No manifest found at {_tilde(manifest_path)}")
+        if not as_json:
+            print(f"  {WARN} No manifest found at {_tilde(manifest_path)}")
+        _add_issue("manifest-missing", f"No manifest found at {_tilde(manifest_path)}", "warning")
+        if as_json:
+            print(json.dumps({
+                "issues": issues_list,
+                "issue_count": issues + 1,
+                "watcher": _doctor_watcher_status() if manifest_only else {},
+                "db": _doctor_db_size() if manifest_only else {},
+                "index_health": _doctor_index_health() if manifest_only else {},
+                "sync": _doctor_sync_status() if manifest_only else {},
+                "hooks": _doctor_hooks_count() if manifest_only else {},
+            }, indent=2))
         return issues + 1
 
     manifest = _load_managed_manifest()
     if manifest is None:
-        print(f"  {FAIL} Manifest is unreadable: {_tilde(manifest_path)}")
+        if not as_json:
+            print(f"  {FAIL} Manifest is unreadable: {_tilde(manifest_path)}")
+        _add_issue("manifest-unreadable", f"Manifest is unreadable at {_tilde(manifest_path)}", "error")
+        if as_json:
+            print(json.dumps({
+                "issues": issues_list,
+                "issue_count": issues + 1,
+                "watcher": _doctor_watcher_status() if manifest_only else {},
+                "db": _doctor_db_size() if manifest_only else {},
+                "index_health": _doctor_index_health() if manifest_only else {},
+                "sync": _doctor_sync_status() if manifest_only else {},
+                "hooks": _doctor_hooks_count() if manifest_only else {},
+            }, indent=2))
         return issues + 1
 
     missing, modified, unsafe, tracked = _manifest_drift_report()
-    print(f"  {OK} Manifest present: {_tilde(manifest_path)}")
-    print(f"  {OK} Tracked files: {tracked}")
+    if not as_json:
+        print(f"  {OK} Manifest present: {_tilde(manifest_path)}")
+        print(f"  {OK} Tracked files: {tracked}")
     if not missing and not modified and not unsafe:
-        print(f"  {OK} No drift detected")
+        if not as_json:
+            print(f"  {OK} No drift detected")
+        if as_json:
+            print(json.dumps({
+                "issues": issues_list,
+                "issue_count": issues,
+                "watcher": _doctor_watcher_status(),
+                "db": _doctor_db_size(),
+                "index_health": _doctor_index_health(),
+                "sync": _doctor_sync_status(),
+                "hooks": _doctor_hooks_count(),
+            }, indent=2))
         return issues
 
     if missing:
         issues += len(missing)
-        print(f"  {WARN} Missing files ({len(missing)}):")
         for key in missing:
-            print(f"    - {key}")
+            _add_issue("manifest-missing-file", f"Missing file: {key}", "warning")
+        if not as_json:
+            print(f"  {WARN} Missing files ({len(missing)}):")
+            for key in missing:
+                print(f"    - {key}")
     if modified:
         issues += len(modified)
-        print(f"  {WARN} Modified files ({len(modified)}):")
         for key in modified:
-            print(f"    - {key}")
+            _add_issue("manifest-modified-file", f"Modified file: {key}", "warning")
+        if not as_json:
+            print(f"  {WARN} Modified files ({len(modified)}):")
+            for key in modified:
+                print(f"    - {key}")
     if unsafe:
         issues += len(unsafe)
-        print(f"  {FAIL} Unsafe manifest entries ({len(unsafe)}):")
         for key in unsafe:
-            print(f"    - {key}")
+            _add_issue("manifest-unsafe-entry", f"Unsafe manifest entry: {key}", "error")
+        if not as_json:
+            print(f"  {FAIL} Unsafe manifest entries ({len(unsafe)}):")
+            for key in unsafe:
+                print(f"    - {key}")
+
+    if as_json:
+        print(json.dumps({
+            "issues": issues_list,
+            "issue_count": issues,
+            "watcher": _doctor_watcher_status(),
+            "db": _doctor_db_size(),
+            "index_health": _doctor_index_health(),
+            "sync": _doctor_sync_status(),
+            "hooks": _doctor_hooks_count(),
+        }, indent=2))
     return issues
 
 
@@ -3168,7 +3443,11 @@ def main():
 
     if "--doctor" in args or "--windows" in args:
         manifest_only = "--manifest" in args
-        return doctor(manifest_only=manifest_only)
+        as_json = "--json" in args
+        rc = doctor(manifest_only=manifest_only, as_json=as_json)
+        if as_json:
+            return 1 if rc else 0
+        return rc
 
     if "--uninstall" in args:
         return uninstall(non_interactive=non_interactive)

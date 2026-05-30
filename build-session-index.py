@@ -1119,7 +1119,130 @@ def index_session(db: sqlite3.Connection, session_dir: Path, incremental: bool) 
         },
     )
 
+    # Persist cost/token data from events.jsonl session.shutdown event
+    try:
+        cost_data = _extract_session_cost(session_dir)
+        if cost_data:
+            db.execute(
+                """
+                UPDATE sessions SET
+                    cost_usd_est = ?,
+                    total_input_tokens = ?,
+                    total_output_tokens = ?
+                WHERE id = ?
+                """,
+                (
+                    cost_data["cost_usd_est"],
+                    cost_data["total_input_tokens"],
+                    cost_data["total_output_tokens"],
+                    session_id,
+                ),
+            )
+    except Exception:
+        pass  # fail-open: cost columns may not exist on unrun migration
+
     return stats
+
+
+def _extract_session_cost(session_dir: Path) -> dict | None:
+    """Extract cost estimate from events.jsonl session.shutdown event.
+
+    Reads modelMetrics from the last session.shutdown event and computes
+    cost_usd_est by summing per-model costs using the same rate table as
+    statusline.py.  Returns None when no shutdown event is found.
+    """
+    events_path = session_dir / "events.jsonl"
+    if not events_path.exists():
+        return None
+
+    shutdown_data = None
+    try:
+        with open(events_path, "rb") as fh:
+            for raw_line in fh:
+                if b"session.shutdown" not in raw_line:
+                    continue
+                try:
+                    ev = json.loads(raw_line.decode("utf-8", errors="replace"))
+                    if ev.get("type") == "session.shutdown":
+                        shutdown_data = ev.get("data") or {}
+                except (json.JSONDecodeError, Exception):
+                    continue
+    except OSError:
+        return None
+
+    if not shutdown_data:
+        return None
+
+    model_metrics = shutdown_data.get("modelMetrics") or {}
+    if not model_metrics:
+        return None
+
+    total_input = 0
+    total_output = 0
+    cost_usd_est = 0.0
+
+    for model_id, metrics in model_metrics.items():
+        usage = metrics.get("usage") or {}
+        input_t = int(usage.get("inputTokens", 0))
+        output_t = int(usage.get("outputTokens", 0))
+        cache_read_t = int(usage.get("cacheReadTokens", 0))
+        total_input += input_t
+        total_output += output_t
+        cost_usd_est += _cost_usd_for_model(model_id, input_t, cache_read_t, output_t)
+
+    return {
+        "cost_usd_est": round(cost_usd_est, 6),
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+    }
+
+
+# Per-model rates in USD per 1M tokens — mirrors statusline.py _MODEL_RATES.
+# Kept local to avoid cross-script imports (architecture convention).
+_SESSION_MODEL_RATES: dict[str, dict[str, float]] = {
+    "claude-sonnet-4.6":  {"input": 3.00, "cached_input": 0.30, "output": 15.00},
+    "claude-sonnet-4.5":  {"input": 3.00, "cached_input": 0.30, "output": 15.00},
+    "claude-sonnet-4":    {"input": 3.00, "cached_input": 0.30, "output": 15.00},
+    "claude-opus-4.7":    {"input": 5.00, "cached_input": 0.50, "output": 25.00},
+    "claude-opus-4.6":    {"input": 5.00, "cached_input": 0.50, "output": 25.00},
+    "claude-opus-4.5":    {"input": 5.00, "cached_input": 0.50, "output": 25.00},
+    "claude-haiku-4.5":   {"input": 1.00, "cached_input": 0.10, "output": 5.00},
+    "gpt-4.1":            {"input": 2.00, "cached_input": 0.50, "output": 8.00},
+    "gpt-4o":             {"input": 2.00, "cached_input": 0.50, "output": 8.00},
+    "gpt-5-mini":         {"input": 0.25, "cached_input": 0.025, "output": 2.00},
+    "gpt-5.2":            {"input": 1.75, "cached_input": 0.175, "output": 14.00},
+    "gpt-5.2-codex":      {"input": 1.75, "cached_input": 0.175, "output": 14.00},
+    "gpt-5.3-codex":      {"input": 1.75, "cached_input": 0.175, "output": 14.00},
+    "gpt-5.4":            {"input": 2.50, "cached_input": 0.25, "output": 15.00},
+    "gpt-5.4-mini":       {"input": 0.75, "cached_input": 0.075, "output": 4.50},
+    "gpt-5.4-nano":       {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+    "gpt-5.5":            {"input": 5.00, "cached_input": 0.50, "output": 30.00},
+    "gemini-2.5-pro":     {"input": 1.25, "cached_input": 0.125, "output": 10.00},
+    "gemini-3-flash":     {"input": 0.50, "cached_input": 0.05, "output": 3.00},
+    "gemini-3.1-pro":     {"input": 2.00, "cached_input": 0.20, "output": 12.00},
+    "gemini-3.5-flash":   {"input": 1.50, "cached_input": 0.15, "output": 9.00},
+    "raptor-mini":        {"input": 0.25, "cached_input": 0.025, "output": 2.00},
+}
+_TOKENS_PER_MILLION = 1_000_000
+_DEFAULT_RATE = _SESSION_MODEL_RATES["claude-sonnet-4.6"]
+
+
+def _cost_usd_for_model(model_id: str, total_input: int, cached_input: int, total_output: int) -> float:
+    """Estimate cost in USD for one model's token usage."""
+    mid = model_id.lower().strip()
+    rate = _SESSION_MODEL_RATES.get(mid)
+    if rate is None:
+        for key, r in _SESSION_MODEL_RATES.items():
+            if key in mid or mid in key:
+                rate = r
+                break
+        else:
+            rate = _DEFAULT_RATE
+    uncached = max(total_input - cached_input, 0)
+    input_usd = (uncached / _TOKENS_PER_MILLION) * rate["input"]
+    cached_usd = (cached_input / _TOKENS_PER_MILLION) * rate["cached_input"]
+    output_usd = (total_output / _TOKENS_PER_MILLION) * rate["output"]
+    return input_usd + cached_usd + output_usd
 
 
 def show_stats(db: sqlite3.Connection):

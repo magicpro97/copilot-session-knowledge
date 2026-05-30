@@ -3202,6 +3202,19 @@ def generate_wakeup() -> str:
     except Exception:
         pass
 
+    # Staleness banner: shown only when >= 40% of knowledge entries are stale (>90 days)
+    try:
+        stale_count = db.execute(
+            "SELECT COUNT(*) FROM knowledge_entries WHERE datetime(last_seen) < datetime('now', '-90 days')"
+        ).fetchone()[0]
+        total_count = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+        if total_count > 0 and stale_count / total_count >= 0.40:
+            lines.append(
+                f"⚠  {stale_count} stale entries (>90d) — run: sk knowledge evict --dry-run"
+            )
+    except Exception:
+        pass
+
     db.close()
     return "\n".join(lines)
 

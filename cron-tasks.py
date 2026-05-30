@@ -56,6 +56,10 @@ TEMPLATE_DEFINITIONS = {
         "description": "Weekly VACUUM of knowledge.db to reclaim freelist pages.",
         "default_schedule": {"kind": "weekly", "day": "sunday", "time": "04:30"},
     },
+    "freshness-check": {
+        "description": "Daily freshness report: runs knowledge-health.py --freshness --json and writes a JSON artifact.",
+        "default_schedule": {"kind": "daily", "time": "09:00"},
+    },
 }
 
 
@@ -593,6 +597,81 @@ def _build_vacuum_artifact(task: dict, now: datetime, result: dict) -> str:
     return "".join(lines)
 
 
+def _run_freshness_check(db_path: Path, days: int = 90, limit: int = 200) -> dict:
+    """Query knowledge DB for stale entries without spawning a subprocess."""
+    if not db_path.exists():
+        return {"status": "missing", "days_threshold": days, "count": 0, "entries": []}
+    try:
+        con = sqlite3.connect(str(db_path), timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute(
+                """
+                SELECT id, category, title, last_seen, confidence
+                FROM knowledge_entries
+                WHERE datetime(last_seen) < datetime('now', ? || ' days')
+                  AND (deleted_at IS NULL OR deleted_at = '')
+                ORDER BY last_seen ASC
+                LIMIT ?
+                """,
+                (f"-{days}", limit),
+            ).fetchall()
+            total_row = con.execute(
+                "SELECT COUNT(*) FROM knowledge_entries WHERE (deleted_at IS NULL OR deleted_at = '')"
+            ).fetchone()
+        finally:
+            con.close()
+        total = total_row[0] if total_row else 0
+        entries = []
+        for r in rows:
+            try:
+                from datetime import datetime as _dt
+
+                ls = r["last_seen"] or ""
+                age_days = int((time.time() - _dt.fromisoformat(ls.replace("Z", "+00:00")).timestamp()) / 86400) if ls else -1
+            except Exception:
+                age_days = -1
+            entries.append(
+                {
+                    "id": r["id"],
+                    "category": r["category"],
+                    "title": r["title"],
+                    "last_seen": r["last_seen"],
+                    "days_old": age_days,
+                    "confidence": r["confidence"],
+                }
+            )
+        return {"status": "ok", "days_threshold": days, "count": len(entries), "total": total, "entries": entries}
+    except sqlite3.OperationalError as exc:
+        return {"status": "error", "error": str(exc), "days_threshold": days, "count": 0, "entries": []}
+
+
+def _build_freshness_artifact(task: dict, now: datetime, result: dict) -> str:
+    lines = [
+        "# Knowledge Freshness Check\n\n",
+        f"Task ID: {task['id']}\n",
+        f"Task Name: {task['name']}\n",
+        f"Executed: {now.isoformat()}\n",
+        f"Status: {result.get('status', 'unknown')}\n",
+        f"Days threshold: {result.get('days_threshold', 90)}\n",
+        f"Stale entries: {result.get('count', 0)} / {result.get('total', '?')}\n",
+    ]
+    if result.get("status") == "missing":
+        lines.append("\nknowledge.db was not present; no freshness check performed.\n")
+    elif result.get("status") == "error":
+        lines.append(f"\nError: {result.get('error', 'unknown')}\n")
+    else:
+        total = result.get("total", 0)
+        stale = result.get("count", 0)
+        if total > 0:
+            pct = stale / total * 100
+            lines.append(f"Stale percentage: {pct:.1f}%\n")
+            if pct >= 40:
+                lines.append("\n⚠  Stale entries exceed 40% — consider running: sk knowledge evict --dry-run\n")
+    lines.append(f"\nExecution log: {LOG_PATH}\n")
+    return "".join(lines)
+
+
 def _write_artifact(task: dict, now: datetime, content: str) -> Path:
     _ensure_session_state()
     stamp = now.strftime("%Y%m%d-%H%M%S")
@@ -637,6 +716,27 @@ def _execute_task(task: dict, now: datetime) -> dict:
             "executed_at": now.isoformat(),
             "status": result["status"],
             "artifact_path": str(artifact_path),
+            "schedule": task["schedule"],
+            "result": result,
+        }
+    elif task["template"] == "freshness-check":
+        db_path = SESSION_STATE / "knowledge.db"
+        result = _run_freshness_check(db_path)
+        # Write JSON artifact: freshness-YYYYMMDD.json
+        _ensure_session_state()
+        date_stamp = now.strftime("%Y%m%d")
+        json_path = ARTIFACTS_DIR / f"freshness-{date_stamp}.json"
+        _atomic_write_text(json_path, json.dumps(result, indent=2, ensure_ascii=False))
+        # Also write a human-readable .md sidecar for the standard artifact log
+        artifact_content = _build_freshness_artifact(task, now, result)
+        artifact_path = _write_artifact(task, now, artifact_content)
+        return {
+            "task_id": task["id"],
+            "task_name": task["name"],
+            "template": task["template"],
+            "executed_at": now.isoformat(),
+            "status": result["status"],
+            "artifact_path": str(json_path),
             "schedule": task["schedule"],
             "result": result,
         }
