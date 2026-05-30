@@ -1127,7 +1127,7 @@ def detect_session_id() -> str:
         for d in SESSION_STATE.iterdir():
             if d.is_dir() and len(d.name) > 8 and "-" in d.name:
                 try:
-                    mtime = max(f.stat().st_mtime for f in d.rglob("*") if f.is_file())
+                    mtime = max((f.stat().st_mtime for f in d.rglob("*") if f.is_file()), default=0.0)
                     sessions.append((mtime, d.name))
                 except (ValueError, OSError) as e:
                     print(f"⚠ Error reading session dir: {e}", file=sys.stderr)

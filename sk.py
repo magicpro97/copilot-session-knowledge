@@ -754,15 +754,18 @@ def _harness_doctor(args: list[str]) -> int:
     db_path = Path.home() / ".copilot" / "session-state" / "knowledge.db"
     db_ok = False
     db_size_mb = 0.0
-    try:
-        conn = sqlite3.connect(str(db_path), timeout=2)
-        conn.execute("SELECT 1")
-        conn.close()
+    if not db_path.exists():
+        # No DB yet — fresh install, not a failure
         db_ok = True
-        if db_path.exists():
+    else:
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=2)
+            conn.execute("SELECT 1")
+            conn.close()
+            db_ok = True
             db_size_mb = round(db_path.stat().st_size / 1_048_576, 1)
-    except Exception:  # noqa: BLE001
-        pass
+        except Exception:  # noqa: BLE001
+            pass
 
     # 3. Project root
     root_ok = (tools_dir / "sk.py").exists()

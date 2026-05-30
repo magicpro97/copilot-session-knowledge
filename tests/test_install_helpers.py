@@ -1147,6 +1147,7 @@ _orig_sk_dir_doctor = _install.SK_LAUNCHER_DIR
 _orig_watcher_status_doctor = _install._doctor_watcher_status
 _orig_db_size_doctor = _install._doctor_db_size
 _orig_index_health_doctor = _install._doctor_index_health
+_orig_hooks_count_doctor = _install._doctor_hooks_count
 
 try:
     _doctor_home = SCRATCH / "doctor-home"
@@ -1172,6 +1173,7 @@ try:
     _install._doctor_watcher_status = lambda: {"running": True, "pid": 12345}
     _install._doctor_db_size = lambda: {"size_mb": 1.0, "db_path": str(_doctor_home), "exists": True}
     _install._doctor_index_health = lambda: {"score": 80, "total": 10, "available": True, "error": ""}
+    _install._doctor_hooks_count = lambda: {"count": 7, "hooks_json_exists": True, "error": ""}
 
     _doctor_buf = io.StringIO()
     with redirect_stdout(_doctor_buf):
@@ -1197,6 +1199,7 @@ finally:
     _install._doctor_watcher_status = _orig_watcher_status_doctor
     _install._doctor_db_size = _orig_db_size_doctor
     _install._doctor_index_health = _orig_index_health_doctor
+    _install._doctor_hooks_count = _orig_hooks_count_doctor
 
 
 # ── Hosted-shell launcher (browse --install-launcher / --uninstall-launcher) ──

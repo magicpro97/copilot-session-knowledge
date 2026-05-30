@@ -2798,11 +2798,11 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
                     {
                         "issues": issues_list,
                         "issue_count": len(issues_list),
-                        "watcher": _doctor_watcher_status() if manifest_only else {},
-                        "db": _doctor_db_size() if manifest_only else {},
-                        "index_health": _doctor_index_health() if manifest_only else {},
-                        "sync": _doctor_sync_status() if manifest_only else {},
-                        "hooks": _doctor_hooks_count() if manifest_only else {},
+                        "watcher": watcher if not manifest_only else _doctor_watcher_status(),
+                        "db": db_info if not manifest_only else _doctor_db_size(),
+                        "index_health": health_info if not manifest_only else _doctor_index_health(),
+                        "sync": sync_info if not manifest_only else _doctor_sync_status(),
+                        "hooks": hooks_info if not manifest_only else _doctor_hooks_count(),
                     },
                     indent=2,
                 )
@@ -2820,11 +2820,11 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
                     {
                         "issues": issues_list,
                         "issue_count": len(issues_list),
-                        "watcher": _doctor_watcher_status() if manifest_only else {},
-                        "db": _doctor_db_size() if manifest_only else {},
-                        "index_health": _doctor_index_health() if manifest_only else {},
-                        "sync": _doctor_sync_status() if manifest_only else {},
-                        "hooks": _doctor_hooks_count() if manifest_only else {},
+                        "watcher": watcher if not manifest_only else _doctor_watcher_status(),
+                        "db": db_info if not manifest_only else _doctor_db_size(),
+                        "index_health": health_info if not manifest_only else _doctor_index_health(),
+                        "sync": sync_info if not manifest_only else _doctor_sync_status(),
+                        "hooks": hooks_info if not manifest_only else _doctor_hooks_count(),
                     },
                     indent=2,
                 )

@@ -219,6 +219,11 @@ def test_schema_columns():
         return
 
     db = sqlite3.connect(str(_REAL_DB))
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "knowledge_entries" not in tables:
+        db.close()
+        print("  ⏭  Skipped: DB not yet initialized (no knowledge_entries table)")
+        return
     cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)")}
     db.close()
 
