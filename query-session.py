@@ -1030,6 +1030,10 @@ def cmd_digest(prefix: str, as_json: bool = False) -> int:
     """
     import json as _json_dig
 
+    if not DB_PATH.exists():
+        print(f"No session found matching '{prefix}'")
+        return 1
+
     db = get_db()
     row = db.execute("SELECT * FROM sessions WHERE id LIKE ?||'%'", (prefix,)).fetchone()
     if not row:
@@ -1168,6 +1172,13 @@ def cmd_stats(args: list) -> int:
     since_date = (_dt_stats.datetime.now(_dt_stats.timezone.utc) - _dt_stats.timedelta(days=since_days)).strftime(
         "%Y-%m-%d"
     )
+
+    if not DB_PATH.exists():
+        if as_json:
+            print("[]")
+        else:
+            print("No sessions found (knowledge database not yet initialized).")
+        return 0
 
     db = get_db()
     session_cols = {r[1] for r in db.execute("PRAGMA table_info(sessions)").fetchall()}
