@@ -10084,3 +10084,391 @@ else:
     for _fn in FAIL_NAMES:
         print(f"    ❌ {_fn}")
 sys.exit(0 if FAIL == 0 else 1)
+
+# === I717: MCP Write Tools ===
+
+print("\n✍️  I717: MCP Write Tools")
+
+_mcp717_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
+
+# I717-01: TOOLS list includes 'learn'
+try:
+    test("I717-01: TOOLS list contains learn tool",
+         '"name": "learn"' in _mcp717_src or "'name': 'learn'" in _mcp717_src,
+         "learn tool not found in TOOLS list")
+except Exception as _e717_01:
+    test("I717-01: learn in TOOLS", False, str(_e717_01))
+
+# I717-02: TOOLS list includes 'status'
+try:
+    test("I717-02: TOOLS list contains status tool",
+         '"name": "status"' in _mcp717_src or "'name': 'status'" in _mcp717_src,
+         "status tool not found in TOOLS list")
+except Exception as _e717_02:
+    test("I717-02: status in TOOLS", False, str(_e717_02))
+
+# I717-03: TOOLS list includes 'session_list'
+try:
+    test("I717-03: TOOLS list contains session_list tool",
+         '"name": "session_list"' in _mcp717_src or "'name': 'session_list'" in _mcp717_src,
+         "session_list tool not found in TOOLS list")
+except Exception as _e717_03:
+    test("I717-03: session_list in TOOLS", False, str(_e717_03))
+
+# I717-04: _run_learn function exists
+try:
+    test("I717-04: _run_learn function defined",
+         "def _run_learn(" in _mcp717_src,
+         "_run_learn not found")
+except Exception as _e717_04:
+    test("I717-04: _run_learn defined", False, str(_e717_04))
+
+# I717-05: _run_status function exists
+try:
+    test("I717-05: _run_status function defined",
+         "def _run_status(" in _mcp717_src,
+         "_run_status not found")
+except Exception as _e717_05:
+    test("I717-05: _run_status defined", False, str(_e717_05))
+
+# I717-06: _run_session_list function exists
+try:
+    test("I717-06: _run_session_list function defined",
+         "def _run_session_list(" in _mcp717_src,
+         "_run_session_list not found")
+except Exception as _e717_06:
+    test("I717-06: _run_session_list defined", False, str(_e717_06))
+
+# I717-07: dispatch learn, status, session_list in _handle_tools_call
+try:
+    _dispatch_body = _mcp717_src.split("def _handle_tools_call(")[1].split("def _read_exact(")[0]
+    test("I717-07a: dispatch learn in _handle_tools_call",
+         "_run_learn" in _dispatch_body,
+         "_run_learn not dispatched")
+    test("I717-07b: dispatch status in _handle_tools_call",
+         "_run_status" in _dispatch_body,
+         "_run_status not dispatched")
+    test("I717-07c: dispatch session_list in _handle_tools_call",
+         "_run_session_list" in _dispatch_body,
+         "_run_session_list not dispatched")
+except Exception as _e717_07:
+    test("I717-07: dispatch check", False, str(_e717_07))
+
+# I717-08: learn tool has category enum in schema
+try:
+    test("I717-08: learn schema has category enum",
+         "VALID_LEARN_CATEGORIES" in _mcp717_src or '"mistake"' in _mcp717_src,
+         "category enum missing from learn schema")
+except Exception as _e717_08:
+    test("I717-08: learn category enum", False, str(_e717_08))
+
+# I717-09: learn uses subprocess (not importlib) for calling learn.py
+try:
+    _learn_fn = _mcp717_src.split("def _run_learn(")[1].split("def _run_status(")[0]
+    test("I717-09: _run_learn uses subprocess.run",
+         "subprocess.run(" in _learn_fn,
+         "subprocess.run not used in _run_learn")
+except Exception as _e717_09:
+    test("I717-09: _run_learn subprocess", False, str(_e717_09))
+
+# I717-10: no SQL injection in session_list (uses ? placeholder)
+try:
+    _sl_fn = _mcp717_src.split("def _run_session_list(")[1].split("def _handle_tools_call(")[0]
+    test("I717-10: session_list uses ? placeholder",
+         "?" in _sl_fn and "f\"SELECT" not in _sl_fn and "f'SELECT" not in _sl_fn,
+         "session_list may use string-interpolated SQL")
+except Exception as _e717_10:
+    test("I717-10: session_list SQL safety", False, str(_e717_10))
+
+# I717-11: status returns watcher field
+try:
+    _status_fn = _mcp717_src.split("def _run_status(")[1].split("def _run_session_list(")[0]
+    test("I717-11: status returns watcher field",
+         '"watcher"' in _status_fn or "'watcher'" in _status_fn,
+         "watcher field missing from status output")
+except Exception as _e717_11:
+    test("I717-11: status watcher field", False, str(_e717_11))
+
+# I717-12: status returns db_path field
+try:
+    _status_fn12 = _mcp717_src.split("def _run_status(")[1].split("def _run_session_list(")[0]
+    test("I717-12: status returns db_path field",
+         '"db_path"' in _status_fn12 or "'db_path'" in _status_fn12,
+         "db_path missing from status output")
+except Exception as _e717_12:
+    test("I717-12: status db_path field", False, str(_e717_12))
+
+# I717-13: VALID_LEARN_CATEGORIES constant defined
+try:
+    test("I717-13: VALID_LEARN_CATEGORIES constant defined",
+         "VALID_LEARN_CATEGORIES" in _mcp717_src,
+         "VALID_LEARN_CATEGORIES not found")
+except Exception as _e717_13:
+    test("I717-13: VALID_LEARN_CATEGORIES", False, str(_e717_13))
+
+# I717-14: learn schema requires category, title, description
+try:
+    _learn_schema = _mcp717_src[_mcp717_src.find('"name": "learn"'):_mcp717_src.find('"name": "status"')]
+    test("I717-14: learn required fields include title and description",
+         '"category"' in _learn_schema and '"title"' in _learn_schema and '"description"' in _learn_schema,
+         "learn schema missing required fields")
+except Exception as _e717_14:
+    test("I717-14: learn required fields", False, str(_e717_14))
+
+# I717-15..22: Integration tests via MCP subprocess
+try:
+    import sqlite3 as _sq717
+    import tempfile as _tmp717
+    import subprocess as _sp717
+    import json as _json717
+    import pathlib as _pl717
+
+    with _tmp717.TemporaryDirectory(prefix="mcp717-test-") as _tmp717_dir:
+        _home717 = _pl717.Path(_tmp717_dir)
+        _state717 = _home717 / ".copilot" / "session-state"
+        _state717.mkdir(parents=True, exist_ok=True)
+        _db717 = _sq717.connect(_state717 / "knowledge.db")
+        _db717.executescript("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                source TEXT DEFAULT 'copilot',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT '',
+                agent_id TEXT DEFAULT ''
+            );
+            CREATE VIRTUAL TABLE knowledge_fts USING fts5(title, section_name, content, doc_type UNINDEXED, session_id UNINDEXED, document_id UNINDEXED);
+            CREATE VIRTUAL TABLE ke_fts USING fts5(title, content);
+            CREATE VIRTUAL TABLE sessions_fts USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, doc_type TEXT NOT NULL, title TEXT NOT NULL, file_path TEXT DEFAULT '', seq INTEGER DEFAULT 1, size_bytes INTEGER DEFAULT 0, source TEXT DEFAULT 'copilot');
+            CREATE TABLE sections (id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, section_name TEXT DEFAULT '', content TEXT DEFAULT '');
+        """)
+        _db717.execute("INSERT INTO sessions (id, path, summary, source, indexed_at) VALUES (?, ?, ?, ?, ?)",
+                       ("sess-i717-1", "/a/b", "Session I717 Alpha", "copilot", "2025-01-01T10:00:00"))
+        _db717.execute("INSERT INTO sessions (id, path, summary, source, indexed_at) VALUES (?, ?, ?, ?, ?)",
+                       ("sess-i717-2", "/c/d", "Session I717 Beta", "copilot", "2025-01-02T12:00:00"))
+        _db717.commit()
+        _db717.close()
+
+        _env717 = os.environ.copy()
+        _env717["HOME"] = str(_home717)
+        _env717["USERPROFILE"] = str(_home717)
+
+        def _mcp717_roundtrip(method, params):
+            proc = _sp717.Popen(
+                [sys.executable, str(REPO / "mcp-server.py")],
+                stdin=_sp717.PIPE, stdout=_sp717.PIPE, stderr=_sp717.PIPE,
+                env=_env717,
+            )
+            try:
+                # initialize
+                init_msg = _json717.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                           "params": {"protocolVersion": "2024-11-05", "capabilities": {}}}).encode()
+                proc.stdin.write(f"Content-Length: {len(init_msg)}\r\n\r\n".encode() + init_msg)
+                notif = _json717.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+                proc.stdin.write(f"Content-Length: {len(notif)}\r\n\r\n".encode() + notif)
+                # send actual request
+                req = _json717.dumps({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}).encode()
+                proc.stdin.write(f"Content-Length: {len(req)}\r\n\r\n".encode() + req)
+                # shutdown
+                shutdown_msg = _json717.dumps({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}).encode()
+                proc.stdin.write(f"Content-Length: {len(shutdown_msg)}\r\n\r\n".encode() + shutdown_msg)
+                proc.stdin.flush()
+                proc.stdin.close()
+                out = proc.stdout.read()
+                proc.wait(timeout=15)
+            finally:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            # Parse all JSON-RPC messages from output
+            responses = []
+            remaining = out
+            while remaining:
+                if b"Content-Length:" not in remaining:
+                    break
+                hdr_end = remaining.find(b"\r\n\r\n")
+                if hdr_end == -1:
+                    break
+                hdr = remaining[:hdr_end].decode("ascii", errors="replace")
+                cl = int([l.split(":")[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()][0])
+                body_start = hdr_end + 4
+                body = remaining[body_start:body_start + cl]
+                remaining = remaining[body_start + cl:]
+                try:
+                    responses.append(_json717.loads(body))
+                except Exception:
+                    pass
+            return [r for r in responses if r.get("id") == 2]
+
+        # I717-15: tools/list includes all 6 tools
+        try:
+            _r717_list = _mcp717_roundtrip("tools/list", {})
+            _names717 = [t.get("name") for t in (_r717_list[0].get("result", {}).get("tools", []) if _r717_list else [])]
+            test("I717-15: tools/list includes learn", "learn" in _names717, str(_names717))
+            test("I717-16: tools/list includes status", "status" in _names717, str(_names717))
+            test("I717-17: tools/list includes session_list", "session_list" in _names717, str(_names717))
+        except Exception as _e717_15:
+            test("I717-15: tools/list learn", False, str(_e717_15))
+            test("I717-16: tools/list status", False, str(_e717_15))
+            test("I717-17: tools/list session_list", False, str(_e717_15))
+
+        # I717-18: status tool returns JSON with expected fields
+        try:
+            _r717_status = _mcp717_roundtrip("tools/call", {"name": "status", "arguments": {}})
+            if _r717_status:
+                _body717_s = _json717.loads(_r717_status[0].get("result", {}).get("content", [{}])[0].get("text", "{}"))
+                test("I717-18a: status has session_count key", "session_count" in _body717_s, str(_body717_s))
+                test("I717-18b: status has entry_count key", "entry_count" in _body717_s, str(_body717_s))
+                test("I717-18c: status has watcher key", "watcher" in _body717_s, str(_body717_s))
+                test("I717-18d: status has db_path key", "db_path" in _body717_s, str(_body717_s))
+                test("I717-18e: status session_count is int", isinstance(_body717_s.get("session_count"), int), str(_body717_s))
+                test("I717-18f: status watcher is running or stopped",
+                     _body717_s.get("watcher") in ("running", "stopped"), str(_body717_s))
+            else:
+                for sfx in ["a", "b", "c", "d", "e", "f"]:
+                    test(f"I717-18{sfx}: status (no response)", False, "no MCP response")
+        except Exception as _e717_18:
+            for sfx in ["a", "b", "c", "d", "e", "f"]:
+                test(f"I717-18{sfx}: status tool", False, str(_e717_18))
+
+        # I717-19: session_list returns sessions array
+        try:
+            _r717_sl = _mcp717_roundtrip("tools/call", {"name": "session_list", "arguments": {"limit": 10}})
+            if _r717_sl:
+                _body717_sl = _json717.loads(_r717_sl[0].get("result", {}).get("content", [{}])[0].get("text", "{}"))
+                test("I717-19a: session_list has sessions key", "sessions" in _body717_sl, str(_body717_sl))
+                test("I717-19b: session_list has count key", "count" in _body717_sl, str(_body717_sl))
+                test("I717-19c: session_list count matches len",
+                     _body717_sl.get("count") == len(_body717_sl.get("sessions", [])), str(_body717_sl))
+                test("I717-19d: session_list returns 2 sessions",
+                     _body717_sl.get("count") == 2, f"count={_body717_sl.get('count')}")
+                _sess0 = _body717_sl.get("sessions", [{}])[0] if _body717_sl.get("sessions") else {}
+                test("I717-19e: session entry has id field", "id" in _sess0, str(_sess0))
+                test("I717-19f: session entry has summary field", "summary" in _sess0, str(_sess0))
+            else:
+                for sfx in ["a", "b", "c", "d", "e", "f"]:
+                    test(f"I717-19{sfx}: session_list (no response)", False, "no MCP response")
+        except Exception as _e717_19:
+            for sfx in ["a", "b", "c", "d", "e", "f"]:
+                test(f"I717-19{sfx}: session_list tool", False, str(_e717_19))
+
+        # I717-20: session_list default limit (no args)
+        try:
+            _r717_sl20 = _mcp717_roundtrip("tools/call", {"name": "session_list", "arguments": {}})
+            if _r717_sl20:
+                _body717_sl20 = _json717.loads(_r717_sl20[0].get("result", {}).get("content", [{}])[0].get("text", "{}"))
+                test("I717-20: session_list default limit works",
+                     "sessions" in _body717_sl20,
+                     str(_body717_sl20))
+            else:
+                test("I717-20: session_list default limit", False, "no response")
+        except Exception as _e717_20:
+            test("I717-20: session_list default limit", False, str(_e717_20))
+
+        # I717-21: learn tool records entry (subprocess roundtrip)
+        try:
+            _r717_learn = _mcp717_roundtrip(
+                "tools/call",
+                {"name": "learn", "arguments": {
+                    "category": "pattern",
+                    "title": "I717 MCP test pattern",
+                    "description": "Test pattern recorded via MCP learn tool",
+                    "tags": "mcp,i717",
+                }},
+            )
+            if _r717_learn:
+                _r717_lr = _r717_learn[0]
+                if "error" in _r717_lr:
+                    test("I717-21: learn tool records entry", False,
+                         _r717_lr["error"].get("message", str(_r717_lr["error"])))
+                else:
+                    _body717_l = _json717.loads(_r717_lr.get("result", {}).get("content", [{}])[0].get("text", "{}"))
+                    test("I717-21a: learn returns status ok", _body717_l.get("status") == "ok", str(_body717_l))
+                    test("I717-21b: learn returns message field", "message" in _body717_l, str(_body717_l))
+                    test("I717-21c: learn returns id field", "id" in _body717_l, str(_body717_l))
+            else:
+                for sfx in ["a", "b", "c"]:
+                    test(f"I717-21{sfx}: learn (no response)", False, "no MCP response")
+        except Exception as _e717_21:
+            for sfx in ["a", "b", "c"]:
+                test(f"I717-21{sfx}: learn tool", False, str(_e717_21))
+
+        # I717-22: learn rejects invalid category
+        try:
+            _r717_inv = _mcp717_roundtrip(
+                "tools/call",
+                {"name": "learn", "arguments": {
+                    "category": "invalid_cat",
+                    "title": "Test",
+                    "description": "Should fail",
+                }},
+            )
+            if _r717_inv:
+                _r717_iv = _r717_inv[0]
+                test("I717-22: learn rejects invalid category",
+                     "error" in _r717_iv or _r717_iv.get("result", {}).get("isError"),
+                     str(_r717_inv))
+            else:
+                test("I717-22: learn invalid category", False, "no response")
+        except Exception as _e717_22:
+            test("I717-22: learn invalid category", False, str(_e717_22))
+
+except Exception as _e717_outer:
+    for _sfx in ["15", "16", "17", "18a", "18b", "18c", "18d", "18e", "18f",
+                 "19a", "19b", "19c", "19d", "19e", "19f", "20", "21a", "21b", "21c", "22"]:
+        test(f"I717-{_sfx}: MCP write tools (setup error)", False, str(_e717_outer))
+
+# I718-17: briefing.py 📌 badge source check
+try:
+    _br_src718 = (REPO / "briefing.py").read_text(encoding="utf-8")
+    test("I718-17a: briefing.py has pinned_badge for P0", "pinned_badge" in _br_src718 or "📌" in _br_src718,
+         "pinned_badge or 📌 not found in briefing.py")
+    test("I718-17b: briefing.py checks priority P0 for badge", "P0" in _br_src718 and ("pinned_badge" in _br_src718 or "📌" in _br_src718),
+         "P0 badge logic not found in briefing.py")
+except Exception as _e718_br:
+    test("I718-17: briefing.py badge source check", False, str(_e718_br))
+
+# ---------------------------------------------------------------------------
