@@ -291,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"✓ harness.yaml created at {harness_yaml_path}")
     print("✓ .harness/ directory initialized")
     if ".github/workflows/harness-ci.yml" in created:
-        print(f"✓ .github/workflows/harness-ci.yml created")
+        print("✓ .github/workflows/harness-ci.yml created")
     print()
     print("Next steps:")
     print("  export SK_HARNESS=1         # Enable dispatch middleware")
