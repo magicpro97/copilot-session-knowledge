@@ -25,6 +25,10 @@ Usage:
     python knowledge-health.py --dedup --threshold 0.8  # Custom similarity threshold
     python knowledge-health.py --dedup --category mistake  # Restrict to one category
     python knowledge-health.py --dedup --json  # JSON output of duplicate pairs
+    python knowledge-health.py --diff                     # Knowledge snapshot diff (last 7 days)
+    python knowledge-health.py --diff --since 2024-01-01  # Diff since a specific date
+    python knowledge-health.py --diff --days 30           # Diff over the last 30 days
+    python knowledge-health.py --diff --json              # JSON output of diff stats
 """
 
 import json
@@ -1737,6 +1741,177 @@ def format_dedup_report(result: dict, dry_run: bool = True) -> str:
     return "\n".join(lines)
 
 
+def compute_diff_stats(since: str | None = None, days: int = 7) -> dict:
+    """Compute a knowledge snapshot diff over a time window.
+
+    Args:
+        since: ISO date string ``YYYY-MM-DD`` for the cutoff start.  When
+               provided, *days* is ignored.
+        days:  Number of days back from now to use as the cutoff (default 7).
+
+    Returns a dict with keys:
+        cutoff, days, new_count, resolved_count, bumped_recurrence_count,
+        category_delta (dict category→count of new entries),
+        top_new_tags (list of {tag, count} sorted by count desc),
+        new_entries (list of {id, category, title, first_seen}),
+        resolved_entries (list of {id, category, title, last_seen}),
+        bumped_entries (list of {id, category, title, recurrence_after_briefing}).
+    """
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+    if since:
+        cutoff = since
+    else:
+        cutoff = time.strftime("%Y-%m-%dT00:00:00", time.gmtime(time.time() - days * 86400))
+
+    # New entries created on/after cutoff
+    new_rows = db.execute(
+        f"""
+        SELECT id, category, title, first_seen, tags
+        FROM knowledge_entries
+        WHERE first_seen >= ? {_nd}
+        ORDER BY first_seen DESC
+        """,
+        (cutoff,),
+    ).fetchall()
+
+    # Resolved entries updated on/after cutoff (use last_seen as update proxy)
+    resolved_rows: list = []
+    if "is_resolved" in _ke_cols:
+        resolved_rows = db.execute(
+            f"""
+            SELECT id, category, title, last_seen
+            FROM knowledge_entries
+            WHERE is_resolved = 1 AND last_seen >= ? {_nd}
+            ORDER BY last_seen DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+
+    # Bumped recurrence entries active in window
+    bumped_rows: list = []
+    if "recurrence_after_briefing" in _ke_cols:
+        bumped_rows = db.execute(
+            f"""
+            SELECT id, category, title, recurrence_after_briefing
+            FROM knowledge_entries
+            WHERE recurrence_after_briefing > 0 AND last_seen >= ? {_nd}
+            ORDER BY recurrence_after_briefing DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+
+    db.close()
+
+    # Category delta: count new entries per category
+    category_delta: dict[str, int] = {}
+    for r in new_rows:
+        cat = r["category"] or "uncategorized"
+        category_delta[cat] = category_delta.get(cat, 0) + 1
+
+    # Top new tags: parse comma-separated tags from new entries
+    tag_counts: dict[str, int] = {}
+    for r in new_rows:
+        for tag in (r["tags"] or "").split(","):
+            tag = tag.strip()
+            if tag:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    top_new_tags = sorted(
+        [{"tag": t, "count": c} for t, c in tag_counts.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:10]
+
+    return {
+        "cutoff": cutoff,
+        "days": days,
+        "new_count": len(new_rows),
+        "resolved_count": len(resolved_rows),
+        "bumped_recurrence_count": len(bumped_rows),
+        "category_delta": category_delta,
+        "top_new_tags": top_new_tags,
+        "new_entries": [
+            {"id": int(r["id"]), "category": r["category"] or "", "title": r["title"] or "", "first_seen": r["first_seen"] or ""}
+            for r in new_rows
+        ],
+        "resolved_entries": [
+            {"id": int(r["id"]), "category": r["category"] or "", "title": r["title"] or "", "last_seen": r["last_seen"] or ""}
+            for r in resolved_rows
+        ],
+        "bumped_entries": [
+            {"id": int(r["id"]), "category": r["category"] or "", "title": r["title"] or "", "recurrence_after_briefing": int(r["recurrence_after_briefing"] or 0)}
+            for r in bumped_rows
+        ],
+    }
+
+
+def format_diff_report(result: dict) -> str:
+    """Format a knowledge diff result as a human-readable table."""
+    cutoff = result.get("cutoff", "?")[:10]
+    new_count = result.get("new_count", 0)
+    resolved_count = result.get("resolved_count", 0)
+    bumped_count = result.get("bumped_recurrence_count", 0)
+    cat_delta = result.get("category_delta", {})
+    top_tags = result.get("top_new_tags", [])
+
+    lines = [
+        f"📊 Knowledge Diff  (since {cutoff})",
+        f"   +{new_count} new  |  -{resolved_count} resolved  |  ↑{bumped_count} bumped recurrence",
+    ]
+
+    if cat_delta:
+        lines.append("")
+        lines.append("  Category breakdown (new entries):")
+        for cat, cnt in sorted(cat_delta.items(), key=lambda x: -x[1]):
+            lines.append(f"    {cat:<14}  +{cnt}")
+
+    if top_tags:
+        tag_str = "  ".join(f"{t['tag']}({t['count']})" for t in top_tags[:8])
+        lines.append("")
+        lines.append(f"  Top new tags:  {tag_str}")
+
+    new_entries = result.get("new_entries", [])
+    if new_entries:
+        lines.append("")
+        lines.append(f"  New entries ({len(new_entries)}):")
+        for e in new_entries[:10]:
+            lines.append(
+                f"    #{e['id']:6d}  [{e['category']:12s}]  {e['title'][:55]:<55}  {(e['first_seen'] or '')[:10]}"
+            )
+        if len(new_entries) > 10:
+            lines.append(f"    … and {len(new_entries) - 10} more")
+
+    resolved_entries = result.get("resolved_entries", [])
+    if resolved_entries:
+        lines.append("")
+        lines.append(f"  Resolved entries ({len(resolved_entries)}):")
+        for e in resolved_entries[:10]:
+            lines.append(
+                f"    #{e['id']:6d}  [{e['category']:12s}]  {e['title'][:55]:<55}  {(e['last_seen'] or '')[:10]}"
+            )
+        if len(resolved_entries) > 10:
+            lines.append(f"    … and {len(resolved_entries) - 10} more")
+
+    bumped_entries = result.get("bumped_entries", [])
+    if bumped_entries:
+        lines.append("")
+        lines.append(f"  Bumped recurrence ({len(bumped_entries)}):")
+        for e in bumped_entries[:10]:
+            lines.append(
+                f"    #{e['id']:6d}  [{e['category']:12s}]  {e['title'][:55]:<55}  recurrence={e['recurrence_after_briefing']}"
+            )
+        if len(bumped_entries) > 10:
+            lines.append(f"    … and {len(bumped_entries) - 10} more")
+
+    if not new_entries and not resolved_entries and not bumped_entries:
+        lines.append("   ✅ No changes in this window.")
+
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1777,6 +1952,28 @@ def main():
                 print(f"\n  ✅ Marked {applied} entr(ies) as superseded.")
         except Exception as exc:
             print(f"⚠ dedup failed: {exc}", file=sys.stderr)
+        return
+
+    if "--diff" in args:
+        since = None
+        days = 7
+        if "--since" in args:
+            idx = args.index("--since")
+            since = args[idx + 1] if idx + 1 < len(args) else None
+        if "--days" in args:
+            idx = args.index("--days")
+            try:
+                days = int(args[idx + 1]) if idx + 1 < len(args) else 7
+            except (ValueError, IndexError):
+                days = 7
+        try:
+            result = compute_diff_stats(since=since, days=days)
+            if "--json" in args:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(format_diff_report(result))
+        except Exception as exc:
+            print(f"⚠ diff failed: {exc}", file=sys.stderr)
         return
 
     if "--recall" in args:

@@ -446,8 +446,20 @@ def _render_statusline(payload: dict) -> str:
     except Exception:
         pass
 
+    # ── Today stats (fail-open) ───────────────────────────────────────────────
+    seg_today = ""
+    try:
+        _today = _fetch_today_stats()
+        if _today:
+            seg_today = (
+                f" {SEP} {_ansi(C)}{_today['count']}s{_ansi(RST)}"
+                f"{_ansi(DIM)}·{_ansi(RST)}{_ansi(Y)}{_fmt_cost(_today['cost_usd'])}{_ansi(RST)}"
+            )
+    except Exception:
+        pass
+
     parts = [seg_model, seg_tokens, seg_ctx, seg_cost, seg_pru]
-    return f" {SEP} ".join(parts) + seg_tools + seg_hooks + seg_phase + seg_quota
+    return f" {SEP} ".join(parts) + seg_tools + seg_hooks + seg_phase + seg_quota + seg_today
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +489,13 @@ def _print_status_table(force_quota: bool = False) -> None:
 
     if files_read:
         print(f"  Files   : {len(files_read)} accessed this session")
+
+    # Today stats
+    today = _fetch_today_stats()
+    if today is not None:
+        s_label = "session" if today["count"] == 1 else "sessions"
+        cost_part = f" · {_ansi(Y)}{_fmt_cost(today['cost_usd'])}{_ansi(RST)} est."
+        print(f"  Today   : {_ansi(C)}{today['count']} {s_label}{_ansi(RST)}{cost_part}")
 
     # Quota info
     print()
@@ -519,6 +538,35 @@ def _print_status_table(force_quota: bool = False) -> None:
 # ---------------------------------------------------------------------------
 # Mode 3: Cost trend chart (sk status --trend)
 # ---------------------------------------------------------------------------
+
+
+def _fetch_today_stats() -> dict | None:
+    """Query today's session count and cost estimate from the sessions table.
+
+    Returns {"count": int, "cost_usd": float} or None if unavailable.
+    Fail-open: any error returns None.
+    """
+    db_path = Path(os.environ.get("SK_DB_PATH", str(Path.home() / ".copilot" / "session-state" / "knowledge.db")))
+    if not db_path.exists():
+        return None
+    try:
+        import sqlite3 as _sq
+        _db = _sq.connect(str(db_path))
+        cols = {row[1] for row in _db.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "indexed_at" not in cols:
+            _db.close()
+            return None
+        cost_col = "cost_usd_est" if "cost_usd_est" in cols else "NULL"
+        row = _db.execute(
+            f"SELECT COUNT(*), SUM({cost_col}) FROM sessions WHERE date(indexed_at)=date('now')"
+        ).fetchone()
+        _db.close()
+        if row is None:
+            return None
+        return {"count": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+    except Exception:
+        return None
+
 
 
 def _print_cost_trend() -> None:

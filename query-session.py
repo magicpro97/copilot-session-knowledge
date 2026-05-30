@@ -38,6 +38,9 @@ Usage:
     python query-session.py "search" --days 30                 # Only entries seen in last 30 days
     python query-session.py --why 42                           # Explain why entry #42 was scored
     python query-session.py --why 42 --json                    # --why output as JSON
+    python query-session.py --feedback 42 good                 # Mark entry #42 as good (+1)
+    python query-session.py --feedback 42 bad                  # Mark entry #42 as bad (-1)
+    python query-session.py --feedback 42 neutral              # Mark entry #42 as neutral (0)
 
 Doc types: checkpoint, research, artifact, plan, claude-session
 Knowledge categories: mistake, pattern, decision, tool
@@ -2611,6 +2614,52 @@ def _apply_budget(text: str, budget: int) -> str:
     return truncated + f"\n[BUDGET {budget} chars — showing highest-relevance entries only]\n"
 
 
+# ---------------------------------------------------------------------------
+# Feedback write API (issue #707)
+# ---------------------------------------------------------------------------
+
+_VERDICT_MAP = {"good": 1, "bad": -1, "neutral": 0}
+
+
+def write_feedback(entry_id: int, verdict_str: str, query: str = "") -> None:
+    """Insert a feedback row for a knowledge entry into search_feedback.
+
+    verdict_str: "good" (+1), "bad" (-1), or "neutral" (0).
+    query: optional query string that surfaced this entry (may be empty).
+    """
+    verdict = _VERDICT_MAP.get(verdict_str)
+    if verdict is None:
+        print(f"Error: verdict must be one of: good, bad, neutral (got {verdict_str!r})")
+        sys.exit(1)
+
+    db = get_db()
+    try:
+        # Ensure table exists (graceful on older DBs)
+        exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_feedback'"
+        ).fetchone()
+        if not exists:
+            print("Error: search_feedback table not found — run 'sk index migrate' to upgrade the DB")
+            sys.exit(1)
+
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        db.execute(
+            """
+            INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at)
+            VALUES (?, ?, 'knowledge', ?, ?)
+            """,
+            (query, str(entry_id), verdict, created_at),
+        )
+        db.commit()
+        label = {1: "good (+1)", -1: "bad (-1)", 0: "neutral (0)"}[verdict]
+        print(f"Feedback recorded: entry {entry_id} → {label}")
+    except sqlite3.OperationalError as exc:
+        print(f"Error writing feedback: {exc}")
+        sys.exit(1)
+    finally:
+        db.close()
+
+
 def main():
     args = sys.argv[1:]
 
@@ -2755,6 +2804,22 @@ def _run(args: list, compact: bool = False):
 
     if "--graph-stats" in args:
         show_graph_stats()
+        return
+
+    if "--feedback" in args:
+        idx = args.index("--feedback")
+        if idx + 2 < len(args):
+            try:
+                fb_entry_id = int(args[idx + 1])
+            except ValueError:
+                print("Error: --feedback requires a numeric entry ID")
+                return
+            fb_verdict = args[idx + 2]
+            # Optional query context: any non-flag trailing args
+            fb_query = " ".join(a for a in args if not a.startswith("--") and a not in (args[idx + 1], fb_verdict))
+            write_feedback(fb_entry_id, fb_verdict, query=fb_query)
+        else:
+            print("Error: --feedback requires <entry_id> <good|bad|neutral>")
         return
 
     # --- New first-class surfaces ---

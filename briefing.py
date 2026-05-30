@@ -26,6 +26,10 @@ Usage:
     python briefing.py "task" --available-tokens 40000     # Dynamic budget: 5% of context (≤2000 chars)
     python briefing.py "task" --since 2025-01-01           # Only entries seen on/after date
     python briefing.py "task" --days 30                    # Only entries seen in last 30 days
+    python briefing.py "task" --feedback "task desc" good  # Record good feedback for a query
+    python briefing.py "task" --feedback "task desc" bad   # Record bad feedback for a query
+    python briefing.py "task" --pinned                     # Also show top-3 P0 pinned entries
+    python briefing.py "task" --pinned 5                   # Also show top-5 P0 pinned entries
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -1105,6 +1109,59 @@ def _normalize_feedback_query(query: str) -> str:
     return normalized[:500]
 
 
+# ---------------------------------------------------------------------------
+# Feedback write API (issue #707) — query-level feedback for briefing
+# ---------------------------------------------------------------------------
+
+_BRIEFING_VERDICT_MAP = {"good": 1, "bad": -1}
+
+
+def write_feedback_query(query: str, verdict_str: str) -> None:
+    """Insert a query-level feedback row into search_feedback.
+
+    verdict_str: "good" (+1) or "bad" (-1).
+    result_id is left empty for query-level feedback; result_kind is 'briefing'.
+    """
+    verdict = _BRIEFING_VERDICT_MAP.get(verdict_str)
+    if verdict is None:
+        print(f"Error: verdict must be one of: good, bad (got {verdict_str!r})")
+        sys.exit(1)
+
+    db_path = DB_PATH
+    if not db_path.exists():
+        print(f"Error: Knowledge database not found at {db_path}")
+        sys.exit(1)
+
+    import sqlite3 as _sq
+    db = _sq.connect(str(db_path))
+    db.row_factory = _sq.Row
+    try:
+        exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_feedback'"
+        ).fetchone()
+        if not exists:
+            print("Error: search_feedback table not found — run 'sk index migrate' to upgrade the DB")
+            sys.exit(1)
+
+        normalized = _normalize_feedback_query(query)
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        db.execute(
+            """
+            INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at)
+            VALUES (?, '', 'briefing', ?, ?)
+            """,
+            (normalized, verdict, created_at),
+        )
+        db.commit()
+        label = {1: "good (+1)", -1: "bad (-1)"}[verdict]
+        print(f"Briefing feedback recorded: query={normalized!r} → {label}")
+    except _sq.OperationalError as exc:
+        print(f"Error writing feedback: {exc}")
+        sys.exit(1)
+    finally:
+        db.close()
+
+
 def _clarify_query_tokens(query: str) -> set[str]:
     """Tokenize a clarification query for approximate matching."""
     return {
@@ -1357,7 +1414,14 @@ def _apply_feedback_bias_to_knowledge(
     query: str,
     entries: list[dict],
 ) -> list[dict]:
-    """Feedback-aware reranking for knowledge entries."""
+    """Feedback-aware reranking for knowledge entries.
+
+    Applies two additive bias components:
+    1. Feedback bias: up to ±0.15 based on past good/bad votes for this entry+query pair.
+    2. Priority boost: +0.3 for P0 entries, +0.15 for P1 entries (issue #708).
+    These biases operate on the normalised [0,1] score surface so they nudge order
+    within a tier without overriding the primary composite-score ordering.
+    """
     if not entries:
         return entries
     entry_ids = sorted({str(e.get("id")) for e in entries if e.get("id") is not None})
@@ -1376,21 +1440,17 @@ def _apply_feedback_bias_to_knowledge(
             entry_ids,
         ).fetchall()
     except sqlite3.OperationalError:
-        return entries
+        rows = []
 
     normalized_query = _normalize_feedback_query(query)
-    if not normalized_query:
-        return entries
 
     verdicts_by_id: dict[str, list[int]] = {}
-    for r in rows:
-        if _normalize_feedback_query(r["query"] or "") != normalized_query:
-            continue
-        rid = str(r["result_id"] or "")
-        verdicts_by_id.setdefault(rid, []).append(int(r["verdict"]))
-
-    if not verdicts_by_id:
-        return entries
+    if normalized_query:
+        for r in rows:
+            if _normalize_feedback_query(r["query"] or "") != normalized_query:
+                continue
+            rid = str(r["result_id"] or "")
+            verdicts_by_id.setdefault(rid, []).append(int(r["verdict"]))
 
     base_scores = [float(e.get("_semantic_score", 0.0)) for e in entries]
     if len(base_scores) <= 1:
@@ -1404,6 +1464,9 @@ def _apply_feedback_bias_to_knowledge(
             span = max_score - min_score
             normalized_scores = [(score - min_score) / span for score in base_scores]
 
+    # Priority boost constants (issue #708)
+    _PRIORITY_BOOST = {"P0": 0.3, "P1": 0.15}
+
     def _bias_for(entry_id: str) -> float:
         votes = verdicts_by_id.get(entry_id, [])
         if not votes:
@@ -1414,11 +1477,15 @@ def _apply_feedback_bias_to_knowledge(
         feedback_sum = sum(non_neutral)
         return max(-0.15, min(0.15, feedback_sum * 0.05))
 
+    def _priority_boost_for(entry: dict) -> float:
+        return _PRIORITY_BOOST.get(entry.get("priority") or "P2", 0.0)
+
     ranked = []
     for idx, entry in enumerate(entries):
         base = normalized_scores[idx]
         bias = _bias_for(str(entry.get("id")))
-        ranked.append((base + bias, idx, entry))
+        pboost = _priority_boost_for(entry)
+        ranked.append((base + bias + pboost, idx, entry))
 
     ranked.sort(key=lambda x: (-x[0], x[1]))
     out = []
@@ -1530,6 +1597,33 @@ def _ke_has_priority(db: sqlite3.Connection) -> bool:
         return "priority" in cols
     except Exception:
         return False
+
+
+def _fetch_pinned_p0_entries(db: sqlite3.Connection, limit: int = 3) -> list[dict]:
+    """Return top-N P0 knowledge entries sorted by composite score (issue #708 --pinned).
+
+    These entries are always included in briefings when --pinned is active,
+    regardless of the query. Returns an empty list when the priority column
+    is absent (pre-v22 DB) or when no P0 entries exist.
+    """
+    if not _ke_has_priority(db):
+        return []
+    try:
+        rows = db.execute(
+            """
+            SELECT ke.id, ke.title, ke.content, ke.tags, ke.category,
+                   ke.confidence, COALESCE(ke.intensity, 0.5) AS intensity,
+                   ke.last_seen, COALESCE(ke.priority, 'P2') AS priority
+            FROM knowledge_entries ke
+            WHERE ke.priority = 'P0'
+            ORDER BY COALESCE(ke.intensity, 0.5) DESC, ke.confidence DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
 
 
 def _ke_has_is_resolved(db: sqlite3.Connection) -> bool:
@@ -2343,6 +2437,7 @@ def generate_briefing(
     include_superseded: bool = False,
     since_date: "str | None" = None,
     include_resolved: bool = False,
+    pinned_n: int = 0,
 ):
     """Generate a structured briefing from the knowledge base.
 
@@ -2350,6 +2445,9 @@ def generate_briefing(
     are excluded from briefings so resolved mistakes don't clutter context.
     Pass ``--include-resolved`` on the CLI or ``include_resolved=True`` to
     show resolved entries alongside open ones.
+
+    ``pinned_n``: when > 0, always prepend the top-N P0 priority entries to the
+    briefing output regardless of the query (issue #708 --pinned flag).
     """
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
@@ -2438,6 +2536,11 @@ def generate_briefing(
     constitution_entry = _load_constitution(_repo_root)
     clarify_entry = _load_matching_clarification(query, repo_root=_repo_root)
 
+    # Pinned P0 entries — always included when pinned_n > 0 (issue #708 --pinned)
+    pinned_entries: list[dict] = []
+    if pinned_n > 0:
+        pinned_entries = _fetch_pinned_p0_entries(db, limit=pinned_n)
+
     # Pack-only machine surface extras
     task_matches = []
     file_matches = []
@@ -2476,8 +2579,14 @@ def generate_briefing(
 
     # Check if we have anything
     total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work) + (1 if constitution_entry else 0)
+    pinned_block = ""
+    if pinned_entries:
+        pinned_lines = [f"## 📌 Pinned P0 Entries (always shown)"]
+        for pe in pinned_entries:
+            pinned_lines.append(f"- [{pe.get('id')}] **{pe.get('title','')}** ({pe.get('category','')})")
+        pinned_block = "\n".join(pinned_lines) + "\n\n"
     output = ""
-    if total_entries == 0:
+    if total_entries == 0 and not pinned_entries:
         if fmt == "json":
             output = json.dumps(
                 {
@@ -2605,6 +2714,10 @@ def generate_briefing(
                 output = output + "\n\n" + _skill_section
         except Exception:
             pass
+
+    # Prepend pinned P0 block when --pinned is active (non-JSON, non-pack only)
+    if pinned_block and fmt not in ("json", "pack"):
+        output = pinned_block + output
 
     if with_meta:
         return output, {
@@ -3858,6 +3971,17 @@ def main():
         print(output)
         return
 
+    # Handle --feedback <query> <good|bad> — query-level briefing feedback
+    if "--feedback" in args:
+        idx = args.index("--feedback")
+        if idx + 2 < len(args):
+            fb_query = args[idx + 1]
+            fb_verdict = args[idx + 2]
+            write_feedback_query(fb_query, fb_verdict)
+        else:
+            print("Error: --feedback requires <query> <good|bad>")
+        return
+
     # Handle --wing/--room search
     wing_filter = ""
     room_filter = ""
@@ -3930,6 +4054,18 @@ def main():
             pass
 
     subagent_mode = "--for-subagent" in args
+
+    # --pinned [N]: always include top-N P0 entries regardless of query (issue #708)
+    pinned_n = 0
+    if "--pinned" in args:
+        idx = args.index("--pinned")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            try:
+                pinned_n = int(args[idx + 1])
+            except ValueError:
+                pinned_n = 3  # default to 3 P0 pinned entries
+        else:
+            pinned_n = 3
 
     if auto_mode:
         query = auto_detect_context()
@@ -4009,6 +4145,7 @@ def main():
             include_superseded="--include-superseded" in args,
             since_date=since_date,
             include_resolved="--include-resolved" in args,
+            pinned_n=pinned_n,
         )
 
     if budget > 0 and len(output) > budget:
@@ -4045,6 +4182,7 @@ def main():
                     include_superseded="--include-superseded" in args,
                     since_date=since_date,
                     include_resolved="--include-resolved" in args,
+                    pinned_n=pinned_n,
                 )
             if len(output) <= budget:
                 break

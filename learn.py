@@ -1150,6 +1150,7 @@ def add_entry(
     facts: list = None,
     skip_gate: bool = False,
     skip_scan: bool = False,
+    skip_similar_check: bool = False,
     task_id: str = "",
     affected_files: list = None,
     source_file: str = "",
@@ -1227,6 +1228,30 @@ def add_entry(
             print(f"  ⚠ REJECTED — {status_note_reason}", file=sys.stderr)
             print("  Use --skip-gate to bypass if you intentionally want to record this.", file=sys.stderr)
             return -1
+
+    # Pre-insert similarity check: warn if a near-duplicate exists in same category
+    if not skip_similar_check:
+        _sim_sql = "SELECT title, content FROM knowledge_entries WHERE category = ?"
+        if has_deleted_at_column:
+            _sim_sql += " AND deleted_at IS NULL"
+        _sim_sql += " ORDER BY id DESC LIMIT 50"
+        _sim_rows = db.execute(_sim_sql, (category,)).fetchall()
+        _new_tokens = {t for t in re.findall(r"[a-z0-9]+", (title + " " + content).lower()) if t}
+        for _sim_row in _sim_rows:
+            _row_text = (_sim_row[0] or "") + " " + (_sim_row[1] or "")
+            _row_tokens = {t for t in re.findall(r"[a-z0-9]+", _row_text.lower()) if t}
+            if not _new_tokens or not _row_tokens:
+                continue
+            _sim_inter = len(_new_tokens & _row_tokens)
+            _sim_union = len(_new_tokens | _row_tokens)
+            _sim_score = _sim_inter / _sim_union if _sim_union > 0 else 0.0
+            if _sim_score >= 0.6:
+                print(
+                    f"  ⚠ Similar existing entry found (similarity {_sim_score:.2f}): {_sim_row[0]!r}",
+                    file=sys.stderr,
+                )
+                print("  Use --skip-similar-check to bypass.", file=sys.stderr)
+                break
 
     if not session_id:
         session_id = detect_session_id()
@@ -3219,6 +3244,7 @@ def main():
     # Quality gate for mistake/pattern/discovery
     skip_gate = "--skip-gate" in args
     skip_scan = "--skip-scan" in args
+    skip_similar_check = "--skip-similar-check" in args
     json_mode = "--json" in args
     update_cerebrum = "--update-cerebrum" in args
 
@@ -3288,6 +3314,7 @@ def main():
         "facts": facts,
         "skip_gate": skip_gate,
         "skip_scan": skip_scan,
+        "skip_similar_check": skip_similar_check,
         "task_id": task_id,
         "affected_files": affected_files,
         "source_file": source_file,

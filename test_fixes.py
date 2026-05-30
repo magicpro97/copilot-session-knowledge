@@ -6515,6 +6515,659 @@ except Exception as _e701_6:
     test("I701-6: knowledge-health recurrence_rate", False, str(_e701_6))
 
 # ---------------------------------------------------------------------------
+# I709: Pre-insert similarity warning + statusline today stats
+# ---------------------------------------------------------------------------
+print("\n🔍 I709: pre-insert similarity warning + statusline today stats")
+
+# I709-1: add_entry warns when a near-duplicate exists in same category
+try:
+    import importlib.util as _ilu709
+    import sqlite3 as _sq709
+    import tempfile as _tf709
+    import shutil as _sh709
+
+    _learn_spec709 = _ilu709.spec_from_file_location("learn_i709", REPO / "learn.py")
+    _learn709 = _ilu709.module_from_spec(_learn_spec709)  # type: ignore[arg-type]
+    _learn_spec709.loader.exec_module(_learn709)  # type: ignore[union-attr]
+
+    _td709 = Path(_tf709.mkdtemp(prefix="i709-"))
+    _db709_path = _td709 / "knowledge.db"
+    _db709 = _sq709.connect(str(_db709_path))
+    _db709.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT 'test',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.7,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+            last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            stable_id TEXT,
+            topic_key TEXT,
+            deleted_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_fts (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            content TEXT,
+            tags TEXT,
+            category TEXT,
+            wing TEXT,
+            room TEXT,
+            facts TEXT,
+            error_type TEXT,
+            root_cause TEXT
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+            entry_id INTEGER PRIMARY KEY,
+            embedding BLOB,
+            model TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name TEXT,
+            stable_id TEXT,
+            payload TEXT,
+            created_at TEXT
+        );
+        INSERT INTO knowledge_entries (session_id, category, title, content)
+            VALUES ('s1', 'mistake', 'ModuleNotFoundError fix Python',
+                    'Check import paths when fixing ModuleNotFoundError in Python projects');
+    """)
+    _db709.commit()
+    _db709.close()
+
+    _env709 = {**os.environ, "SK_DB_PATH": str(_db709_path)}
+    _res709 = _run_utf8_text(
+        [sys.executable, str(REPO / "learn.py"), "--mistake",
+         "ModuleNotFoundError fix Python projects",
+         "Check import paths when fixing ModuleNotFoundError Python",
+         "--skip-gate"],
+        capture_output=True, text=True, env=_env709,
+    )
+    test(
+        "I709-1a: add_entry warns when near-duplicate exists (similarity >= 0.6)",
+        "Similar existing entry" in _res709.stderr,
+        f"stderr={_res709.stderr[:300]!r}",
+    )
+    test(
+        "I709-1b: warning shows matched title",
+        "ModuleNotFoundError fix Python" in _res709.stderr,
+        f"stderr={_res709.stderr[:300]!r}",
+    )
+    _sh709.rmtree(_td709, ignore_errors=True)
+except Exception as _e709_1:
+    test("I709-1: pre-insert similarity warning", False, str(_e709_1))
+
+# I709-2: --skip-similar-check bypasses the similarity warning
+try:
+    import importlib.util as _ilu709b
+    import sqlite3 as _sq709b
+    import tempfile as _tf709b
+    import shutil as _sh709b
+
+    _td709b = Path(_tf709b.mkdtemp(prefix="i709b-"))
+    _db709b_path = _td709b / "knowledge.db"
+    _db709b = _sq709b.connect(str(_db709b_path))
+    _db709b.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT 'test',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.7,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+            last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            stable_id TEXT,
+            topic_key TEXT,
+            deleted_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_fts (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            content TEXT,
+            tags TEXT,
+            category TEXT,
+            wing TEXT,
+            room TEXT,
+            facts TEXT,
+            error_type TEXT,
+            root_cause TEXT
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+            entry_id INTEGER PRIMARY KEY,
+            embedding BLOB,
+            model TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name TEXT,
+            stable_id TEXT,
+            payload TEXT,
+            created_at TEXT
+        );
+        INSERT INTO knowledge_entries (session_id, category, title, content)
+            VALUES ('s1', 'mistake', 'ModuleNotFoundError fix Python',
+                    'Check import paths when fixing ModuleNotFoundError in Python projects');
+    """)
+    _db709b.commit()
+    _db709b.close()
+
+    _env709b = {**os.environ, "SK_DB_PATH": str(_db709b_path)}
+    _res709b = _run_utf8_text(
+        [sys.executable, str(REPO / "learn.py"), "--mistake",
+         "ModuleNotFoundError fix Python projects",
+         "Check import paths when fixing ModuleNotFoundError Python",
+         "--skip-gate", "--skip-similar-check"],
+        capture_output=True, text=True, env=_env709b,
+    )
+    test(
+        "I709-2: --skip-similar-check suppresses similarity warning",
+        "Similar existing entry" not in _res709b.stderr,
+        f"stderr={_res709b.stderr[:300]!r}",
+    )
+    _sh709b.rmtree(_td709b, ignore_errors=True)
+except Exception as _e709_2:
+    test("I709-2: --skip-similar-check bypasses warning", False, str(_e709_2))
+
+# I709-3: statusline _fetch_today_stats returns expected shape from sessions table
+try:
+    import importlib.util as _ilu709c
+    import sqlite3 as _sq709c
+    import tempfile as _tf709c
+    import shutil as _sh709c
+
+    _sl_spec709 = _ilu709c.spec_from_file_location("statusline_i709", REPO / "statusline.py")
+    _sl709 = _ilu709c.module_from_spec(_sl_spec709)  # type: ignore[arg-type]
+    _sl_spec709.loader.exec_module(_sl709)  # type: ignore[union-attr]
+
+    _td709c = Path(_tf709c.mkdtemp(prefix="i709c-"))
+    _db709c_path = _td709c / "knowledge.db"
+    _db709c = _sq709c.connect(str(_db709c_path))
+    _db709c.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            indexed_at TEXT,
+            cost_usd_est REAL
+        );
+        INSERT INTO sessions (id, indexed_at, cost_usd_est)
+            VALUES ('s1', datetime('now'), 0.25),
+                   ('s2', datetime('now'), 0.10),
+                   ('s3', datetime('now', '-2 days'), 0.50);
+    """)
+    _db709c.commit()
+    _db709c.close()
+
+    _orig_env_sk_db = os.environ.get("SK_DB_PATH")
+    os.environ["SK_DB_PATH"] = str(_db709c_path)
+    try:
+        _stats709 = _sl709._fetch_today_stats()
+    finally:
+        if _orig_env_sk_db is None:
+            os.environ.pop("SK_DB_PATH", None)
+        else:
+            os.environ["SK_DB_PATH"] = _orig_env_sk_db
+    _sh709c.rmtree(_td709c, ignore_errors=True)
+
+    test(
+        "I709-3a: _fetch_today_stats returns dict with count key",
+        _stats709 is not None and "count" in _stats709,
+        f"got={_stats709!r}",
+    )
+    test(
+        "I709-3b: _fetch_today_stats count matches today sessions only (2 of 3)",
+        _stats709 is not None and _stats709["count"] == 2,
+        f"count={_stats709['count'] if _stats709 else 'None'} (expected 2)",
+    )
+    test(
+        "I709-3c: _fetch_today_stats cost_usd sums today sessions only ($0.35)",
+        _stats709 is not None and abs(_stats709["cost_usd"] - 0.35) < 0.001,
+        f"cost_usd={_stats709['cost_usd'] if _stats709 else 'None'} (expected 0.35)",
+    )
+except Exception as _e709_3:
+    test("I709-3: _fetch_today_stats today stats query", False, str(_e709_3))
+
+# I709-4: _fetch_today_stats returns None when DB is missing
+try:
+    import importlib.util as _ilu709d
+
+    _sl_spec709d = _ilu709d.spec_from_file_location("statusline_i709d", REPO / "statusline.py")
+    _sl709d = _ilu709d.module_from_spec(_sl_spec709d)  # type: ignore[arg-type]
+    _sl_spec709d.loader.exec_module(_sl709d)  # type: ignore[union-attr]
+
+    _orig_env_sk_db_d = os.environ.get("SK_DB_PATH")
+    os.environ["SK_DB_PATH"] = "/nonexistent/path/that/does/not/exist/knowledge.db"
+    try:
+        _stats709d = _sl709d._fetch_today_stats()
+    finally:
+        if _orig_env_sk_db_d is None:
+            os.environ.pop("SK_DB_PATH", None)
+        else:
+            os.environ["SK_DB_PATH"] = _orig_env_sk_db_d
+
+    test(
+        "I709-4: _fetch_today_stats returns None when DB missing",
+        _stats709d is None,
+        f"got={_stats709d!r}",
+    )
+except Exception as _e709_4:
+    test("I709-4: _fetch_today_stats missing DB", False, str(_e709_4))
+
+# ---------------------------------------------------------------------------
+# I711: knowledge diff -- compute_diff_stats + format_diff_report
+# ---------------------------------------------------------------------------
+print("\n🔍 I711: Knowledge Diff Tests")
+
+try:
+    import importlib.util as _ilu711
+    import sqlite3 as _sq711
+    import tempfile as _tf711
+    import os as _os711
+    from pathlib import Path as _P711
+
+    _kh_spec711 = _ilu711.spec_from_file_location("khealth_i711b", REPO / "knowledge-health.py")
+    _kh711 = _ilu711.module_from_spec(_kh_spec711)  # type: ignore[arg-type]
+    _kh_spec711.loader.exec_module(_kh711)  # type: ignore[union-attr]
+
+    def _make_diff_db(tmp_dir: _P711) -> _P711:
+        db_path = tmp_dir / ".copilot" / "session-state" / "knowledge.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = _sq711.connect(str(db_path))
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT '',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER,
+                end_line INTEGER,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                is_resolved INTEGER DEFAULT 0,
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                deleted_at TEXT DEFAULT NULL
+            );
+        """)
+        db.execute("""
+            INSERT INTO knowledge_entries (category, title, content, tags, first_seen, last_seen, is_resolved, recurrence_after_briefing)
+            VALUES ('mistake', 'Old bug', 'content', 'python', '2020-01-01T00:00:00', '2020-01-01T00:00:00', 0, 0)
+        """)
+        db.execute("""
+            INSERT INTO knowledge_entries (category, title, content, tags, first_seen, last_seen, is_resolved, recurrence_after_briefing)
+            VALUES ('mistake', 'New mistake alpha', 'content', 'python,api', '2026-06-01T00:00:00', '2026-06-01T00:00:00', 0, 0)
+        """)
+        db.execute("""
+            INSERT INTO knowledge_entries (category, title, content, tags, first_seen, last_seen, is_resolved, recurrence_after_briefing)
+            VALUES ('pattern', 'New pattern beta', 'content', 'api', '2026-06-02T00:00:00', '2026-06-02T00:00:00', 0, 0)
+        """)
+        db.execute("""
+            INSERT INTO knowledge_entries (category, title, content, tags, first_seen, last_seen, is_resolved, recurrence_after_briefing)
+            VALUES ('mistake', 'Resolved mistake', 'content', 'ci', '2020-06-01T00:00:00', '2026-06-03T00:00:00', 1, 0)
+        """)
+        db.execute("""
+            INSERT INTO knowledge_entries (category, title, content, tags, first_seen, last_seen, is_resolved, recurrence_after_briefing)
+            VALUES ('mistake', 'Recurrent mistake', 'content', '', '2020-04-01T00:00:00', '2026-06-04T00:00:00', 0, 3)
+        """)
+        db.commit()
+        db.close()
+        return db_path
+
+    with _tf711.TemporaryDirectory(prefix="diff-test-") as _i711_tmp:
+        _i711_home = _P711(_i711_tmp)
+        _i711_db = _make_diff_db(_i711_home)
+
+        _orig_db_path711 = _kh711.DB_PATH
+        _kh711.DB_PATH = _i711_db
+
+        _r711 = _kh711.compute_diff_stats(since="2026-01-01", days=7)
+
+        # I711-1: result has all required keys
+        test("I711-1a: result has required keys",
+             all(k in _r711 for k in ["cutoff", "days", "new_count", "resolved_count",
+                                       "bumped_recurrence_count", "category_delta",
+                                       "top_new_tags", "new_entries", "resolved_entries",
+                                       "bumped_entries"]),
+             f"keys={list(_r711.keys())}")
+
+        # I711-2: new_count reflects entries with first_seen >= cutoff
+        test("I711-2: new_count=2 (entries after 2026-01-01)", _r711["new_count"] == 2,
+             f"new_count={_r711['new_count']}")
+
+        # I711-3: resolved_count reflects is_resolved=1 AND last_seen >= cutoff
+        test("I711-3: resolved_count=1", _r711["resolved_count"] == 1,
+             f"resolved_count={_r711['resolved_count']}")
+
+        # I711-4: bumped_recurrence_count reflects recurrence_after_briefing > 0 AND last_seen >= cutoff
+        test("I711-4: bumped_recurrence_count=1", _r711["bumped_recurrence_count"] == 1,
+             f"bumped_recurrence_count={_r711['bumped_recurrence_count']}")
+
+        # I711-5: category_delta contains breakdown of new entries
+        test("I711-5a: category_delta has mistake=1", _r711["category_delta"].get("mistake", 0) == 1,
+             f"category_delta={_r711['category_delta']}")
+        test("I711-5b: category_delta has pattern=1", _r711["category_delta"].get("pattern", 0) == 1,
+             f"category_delta={_r711['category_delta']}")
+
+        # I711-6: top_new_tags parsed from new entries
+        _r711_tag_names = [t["tag"] for t in _r711["top_new_tags"]]
+        test("I711-6a: top_new_tags contains 'api'", "api" in _r711_tag_names,
+             f"top_new_tags={_r711_tag_names}")
+        test("I711-6b: top_new_tags contains 'python'", "python" in _r711_tag_names,
+             f"top_new_tags={_r711_tag_names}")
+        test("I711-6c: top_new_tags each item has tag+count keys",
+             all("tag" in t and "count" in t for t in _r711["top_new_tags"]),
+             f"sample={_r711['top_new_tags'][:2]}")
+
+        # I711-7: new_entries list structure
+        test("I711-7a: new_entries is list", isinstance(_r711["new_entries"], list))
+        if _r711["new_entries"]:
+            _e0_711 = _r711["new_entries"][0]
+            test("I711-7b: new_entries item has id,category,title,first_seen",
+                 all(k in _e0_711 for k in ["id", "category", "title", "first_seen"]),
+                 f"keys={list(_e0_711.keys())}")
+
+        # I711-8: format_diff_report produces correct human-readable text
+        _report711 = _kh711.format_diff_report(_r711)
+        test("I711-8a: format_diff_report returns string", isinstance(_report711, str))
+        test("I711-8b: report contains +2 new indicator", "+2 new" in _report711,
+             f"excerpt={_report711[:200]!r}")
+        test("I711-8c: report contains -1 resolved indicator", "-1 resolved" in _report711,
+             f"excerpt={_report711[:200]!r}")
+        test("I711-8d: report contains Category breakdown section", "Category breakdown" in _report711,
+             f"excerpt={_report711[:300]!r}")
+        test("I711-8e: report contains Top new tags section", "Top new tags" in _report711,
+             f"excerpt={_report711[:400]!r}")
+
+        # I711-9: --json CLI mode emits valid JSON with all required keys
+        import subprocess as _sp711
+        _j711 = _sp711.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--diff", "--since", "2026-01-01", "--json"],
+            capture_output=True, text=True,
+            env={**_os711.environ, "SK_DB_PATH": str(_i711_db)},
+        )
+        test("I711-9a: --diff --json exits 0", _j711.returncode == 0,
+             f"stderr={_j711.stderr!r}")
+        try:
+            _j711_data = json.loads(_j711.stdout)
+            test("I711-9b: JSON has new_count", "new_count" in _j711_data,
+                 f"keys={list(_j711_data.keys())}")
+            test("I711-9c: JSON has category_delta", "category_delta" in _j711_data)
+            test("I711-9d: JSON top_new_tags is list", isinstance(_j711_data.get("top_new_tags"), list))
+        except Exception as _e711_j:
+            test("I711-9: JSON parse", False, str(_e711_j))
+
+        # I711-10: --days CLI flag works without error
+        _d711 = _sp711.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--diff", "--days", "365"],
+            capture_output=True, text=True,
+            env={**_os711.environ, "SK_DB_PATH": str(_i711_db)},
+        )
+        test("I711-10: --diff --days 365 exits 0", _d711.returncode == 0,
+             f"stderr={_d711.stderr!r}")
+
+        _kh711.DB_PATH = _orig_db_path711
+
+except Exception as _e711:
+    test("I711: knowledge diff", False, str(_e711))
+
+# ---------------------------------------------------------------------------
+# I707: Feedback write API + P0/P1 priority boost
+# ---------------------------------------------------------------------------
+print("\n🔍 I707: Feedback write API + priority boost")
+
+# I707-1: write_feedback inserts row into search_feedback
+try:
+    import importlib.util as _ilu707
+    import sqlite3 as _sq707
+    import tempfile as _tf707
+    _qs707_spec = _ilu707.spec_from_file_location("qs707", REPO / "query-session.py")
+    _qs707 = _ilu707.module_from_spec(_qs707_spec)  # type: ignore[arg-type]
+    _qs707_spec.loader.exec_module(_qs707)  # type: ignore[union-attr]
+    test("I707-1a: write_feedback function exists", hasattr(_qs707, "write_feedback"))
+    test("I707-1b: _VERDICT_MAP present", hasattr(_qs707, "_VERDICT_MAP"))
+    if hasattr(_qs707, "_VERDICT_MAP"):
+        vm = _qs707._VERDICT_MAP
+        test("I707-1c: good maps to +1", vm.get("good") == 1, f"got {vm.get('good')}")
+        test("I707-1d: bad maps to -1", vm.get("bad") == -1, f"got {vm.get('bad')}")
+        test("I707-1e: neutral maps to 0", vm.get("neutral") == 0, f"got {vm.get('neutral')}")
+except Exception as _e707_1:
+    test("I707-1: write_feedback function", False, str(_e707_1))
+
+# I707-2: write_feedback inserts row into DB correctly
+try:
+    import sqlite3 as _sq707b
+    import tempfile as _tf707b
+    with _tf707b.TemporaryDirectory(prefix="i707-wb-") as _d707b:
+        _db707b = _sq707b.connect(str(Path(_d707b) / "test.db"))
+        _db707b.execute("""
+            CREATE TABLE search_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT, result_id TEXT, result_kind TEXT,
+                verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+                comment TEXT, user_agent TEXT, created_at TEXT NOT NULL,
+                origin_replica_id TEXT DEFAULT 'local', stable_id TEXT
+            )
+        """)
+        _db707b.commit()
+
+        import importlib.util as _ilu707b
+        _qs707b_spec = _ilu707b.spec_from_file_location("qs707b", REPO / "query-session.py")
+        _qs707b = _ilu707b.module_from_spec(_qs707b_spec)  # type: ignore[arg-type]
+        _qs707b_spec.loader.exec_module(_qs707b)  # type: ignore[union-attr]
+        # Patch DB_PATH to use temp DB
+        import os as _os707b
+        _orig_db707b = _qs707b.DB_PATH
+        _qs707b.DB_PATH = Path(_d707b) / "test.db"
+
+        _qs707b.write_feedback(42, "good", query="auth fix")
+        _qs707b.write_feedback(7, "bad", query="auth fix")
+        _qs707b.write_feedback(99, "neutral", query="")
+
+        rows = _db707b.execute(
+            "SELECT result_id, verdict, result_kind, query FROM search_feedback ORDER BY id"
+        ).fetchall()
+        test("I707-2a: good row inserted (verdict=1)", rows[0][1] == 1, f"row={rows[0]}")
+        test("I707-2b: good row has result_kind='knowledge'", rows[0][2] == "knowledge")
+        test("I707-2c: query stored", rows[0][3] == "auth fix", f"query={rows[0][3]!r}")
+        test("I707-2d: bad row inserted (verdict=-1)", rows[1][1] == -1)
+        test("I707-2e: neutral row inserted (verdict=0)", rows[2][1] == 0)
+        test("I707-2f: neutral result_id stored as '99'", rows[2][0] == "99", f"result_id={rows[2][0]!r}")
+        _qs707b.DB_PATH = _orig_db707b
+        _db707b.close()
+except Exception as _e707_2:
+    test("I707-2: write_feedback DB insert", False, str(_e707_2))
+
+# I707-3: briefing.py write_feedback_query function exists
+try:
+    import importlib.util as _ilu707c
+    _br707_spec = _ilu707c.spec_from_file_location("br707", REPO / "briefing.py")
+    _br707 = _ilu707c.module_from_spec(_br707_spec)  # type: ignore[arg-type]
+    _br707_spec.loader.exec_module(_br707)  # type: ignore[union-attr]
+    test("I707-3a: write_feedback_query exists in briefing.py", hasattr(_br707, "write_feedback_query"))
+    test("I707-3b: _BRIEFING_VERDICT_MAP present", hasattr(_br707, "_BRIEFING_VERDICT_MAP"))
+    if hasattr(_br707, "_BRIEFING_VERDICT_MAP"):
+        bvm = _br707._BRIEFING_VERDICT_MAP
+        test("I707-3c: good maps to +1", bvm.get("good") == 1, f"got {bvm.get('good')}")
+        test("I707-3d: bad maps to -1", bvm.get("bad") == -1, f"got {bvm.get('bad')}")
+except Exception as _e707_3:
+    test("I707-3: briefing write_feedback_query", False, str(_e707_3))
+
+# I707-4: briefing.py write_feedback_query inserts row with result_kind='briefing'
+try:
+    import sqlite3 as _sq707d
+    import tempfile as _tf707d
+    with _tf707d.TemporaryDirectory(prefix="i707-br-") as _d707d:
+        _db707d = _sq707d.connect(str(Path(_d707d) / "test.db"))
+        _db707d.execute("""
+            CREATE TABLE search_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT, result_id TEXT, result_kind TEXT,
+                verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+                comment TEXT, user_agent TEXT, created_at TEXT NOT NULL,
+                origin_replica_id TEXT DEFAULT 'local', stable_id TEXT
+            )
+        """)
+        _db707d.commit()
+        _db707d.close()
+
+        import importlib.util as _ilu707d
+        _br707d_spec = _ilu707d.spec_from_file_location("br707d", REPO / "briefing.py")
+        _br707d = _ilu707d.module_from_spec(_br707d_spec)  # type: ignore[arg-type]
+        _br707d_spec.loader.exec_module(_br707d)  # type: ignore[union-attr]
+        _orig_db707d = _br707d.DB_PATH
+        _br707d.DB_PATH = Path(_d707d) / "test.db"
+
+        _br707d.write_feedback_query("implement auth", "good")
+        _br707d.write_feedback_query("debug flaky test", "bad")
+
+        _check707d = _sq707d.connect(str(Path(_d707d) / "test.db"))
+        rows = _check707d.execute(
+            "SELECT query, result_kind, verdict FROM search_feedback ORDER BY id"
+        ).fetchall()
+        _check707d.close()
+        test("I707-4a: briefing good feedback row inserted", rows[0][2] == 1, f"verdict={rows[0][2]}")
+        test("I707-4b: result_kind='briefing'", rows[0][1] == "briefing", f"kind={rows[0][1]!r}")
+        test("I707-4c: query normalised and stored", rows[0][0] == "implement auth", f"q={rows[0][0]!r}")
+        test("I707-4d: bad feedback verdict=-1", rows[1][2] == -1, f"verdict={rows[1][2]}")
+        _br707d.DB_PATH = _orig_db707d
+except Exception as _e707_4:
+    test("I707-4: briefing write_feedback_query DB insert", False, str(_e707_4))
+
+# I707-5: _apply_feedback_bias_to_knowledge has P0/P1 priority boost
+try:
+    import importlib.util as _ilu707e
+    _br707e_spec = _ilu707e.spec_from_file_location("br707e", REPO / "briefing.py")
+    _br707e = _ilu707e.module_from_spec(_br707e_spec)  # type: ignore[arg-type]
+    _br707e_spec.loader.exec_module(_br707e)  # type: ignore[union-attr]
+    import inspect as _insp707e
+    _src707e = _insp707e.getsource(_br707e._apply_feedback_bias_to_knowledge)
+    test("I707-5a: P0 boost 0.3 in feedback bias code", "0.3" in _src707e,
+         "Expected 0.3 P0 boost constant in _apply_feedback_bias_to_knowledge")
+    test("I707-5b: P1 boost 0.15 in feedback bias code", "0.15" in _src707e,
+         "Expected 0.15 P1 boost constant in _apply_feedback_bias_to_knowledge")
+    test("I707-5c: _PRIORITY_BOOST dict present", "_PRIORITY_BOOST" in _src707e,
+         "Expected _PRIORITY_BOOST dict in _apply_feedback_bias_to_knowledge")
+except Exception as _e707_5:
+    test("I707-5: priority boost constants", False, str(_e707_5))
+
+# I707-6: P0 entries rank above P2 in _apply_feedback_bias_to_knowledge
+try:
+    import importlib.util as _ilu707f
+    import sqlite3 as _sq707f
+    _br707f_spec = _ilu707f.spec_from_file_location("br707f", REPO / "briefing.py")
+    _br707f = _ilu707f.module_from_spec(_br707f_spec)  # type: ignore[arg-type]
+    _br707f_spec.loader.exec_module(_br707f)  # type: ignore[union-attr]
+
+    # Create mock entries with equal _semantic_score so priority boost alone determines rank
+    _entries707f = [
+        {"id": 1, "title": "P2 entry", "priority": "P2", "_semantic_score": 0.0},
+        {"id": 2, "title": "P0 entry", "priority": "P0", "_semantic_score": 0.0},
+        {"id": 3, "title": "P1 entry", "priority": "P1", "_semantic_score": 0.0},
+    ]
+    _db707f = _sq707f.connect(":memory:")
+    _db707f.row_factory = _sq707f.Row
+    # No search_feedback table — should fail-open and apply priority boost only
+    _reranked707f = _br707f._apply_feedback_bias_to_knowledge(_db707f, "test query", _entries707f)
+    _ids707f = [e["id"] for e in _reranked707f]
+    test("I707-6a: P0 entry ranked first after priority boost", _ids707f[0] == 2,
+         f"order={_ids707f}")
+    test("I707-6b: P1 entry ranked second after priority boost", _ids707f[1] == 3,
+         f"order={_ids707f}")
+    test("I707-6c: P2 entry ranked last after priority boost", _ids707f[2] == 1,
+         f"order={_ids707f}")
+    _db707f.close()
+except Exception as _e707_6:
+    test("I707-6: P0/P1 priority boost ranking", False, str(_e707_6))
+
+# I707-7: _fetch_pinned_p0_entries and generate_briefing accept pinned_n param
+try:
+    import importlib.util as _ilu707g
+    import inspect as _insp707g
+    _br707g_spec = _ilu707g.spec_from_file_location("br707g", REPO / "briefing.py")
+    _br707g = _ilu707g.module_from_spec(_br707g_spec)  # type: ignore[arg-type]
+    _br707g_spec.loader.exec_module(_br707g)  # type: ignore[union-attr]
+    test("I707-7a: _fetch_pinned_p0_entries function exists", hasattr(_br707g, "_fetch_pinned_p0_entries"))
+    _sig707g = _insp707g.signature(_br707g.generate_briefing)
+    test("I707-7b: generate_briefing accepts pinned_n param", "pinned_n" in _sig707g.parameters,
+         f"params={list(_sig707g.parameters.keys())}")
+except Exception as _e707_7:
+    test("I707-7: pinned_n support", False, str(_e707_7))
+
+# I707-8: _fetch_pinned_p0_entries returns only P0 entries
+try:
+    import importlib.util as _ilu707h
+    import sqlite3 as _sq707h
+    _br707h_spec = _ilu707h.spec_from_file_location("br707h", REPO / "briefing.py")
+    _br707h = _ilu707h.module_from_spec(_br707h_spec)  # type: ignore[arg-type]
+    _br707h_spec.loader.exec_module(_br707h)  # type: ignore[union-attr]
+
+    _db707h = _sq707h.connect(":memory:")
+    _db707h.row_factory = _sq707h.Row
+    _db707h.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.7,
+            intensity REAL DEFAULT 0.5,
+            priority TEXT DEFAULT 'P2',
+            last_seen TEXT DEFAULT '2024-01-01'
+        );
+    """)
+    _db707h.execute("INSERT INTO knowledge_entries (category, title, priority, intensity) VALUES ('mistake','P0 must-know','P0',0.9)")
+    _db707h.execute("INSERT INTO knowledge_entries (category, title, priority, intensity) VALUES ('pattern','P1 important','P1',0.8)")
+    _db707h.execute("INSERT INTO knowledge_entries (category, title, priority, intensity) VALUES ('decision','P2 normal','P2',0.7)")
+    _db707h.commit()
+
+    _pinned707h = _br707h._fetch_pinned_p0_entries(_db707h, limit=5)
+    _ptitles707h = [e.get("title") for e in _pinned707h]
+    test("I707-8a: only P0 entries returned by _fetch_pinned_p0_entries",
+         all(e.get("priority") == "P0" for e in _pinned707h), f"priorities={[e.get('priority') for e in _pinned707h]}")
+    test("I707-8b: P0 entry title present", "P0 must-know" in _ptitles707h, f"titles={_ptitles707h}")
+    test("I707-8c: P1/P2 entries excluded", len(_pinned707h) == 1, f"count={len(_pinned707h)}")
+    _db707h.close()
+except Exception as _e707_8:
+    test("I707-8: _fetch_pinned_p0_entries filter", False, str(_e707_8))
+
+# ---------------------------------------------------------------------------
     print("🎉 All tests passed!")
 else:
     print(f"⚠️  {FAIL} test(s) need attention")
