@@ -9773,6 +9773,309 @@ try:
 except Exception as _e724_16:
     test("I724-16: sk session stats routing", False, str(_e724_16))
 
+# === I722: Knowledge Bulk-Tag ===
+print("\n🔍 I722: sk knowledge bulk-tag command")
+
+try:
+    import importlib.util as _ilu722
+    import io as _io722
+    import os as _os722
+    import sqlite3 as _sq722
+    import sys as _sys722
+
+    _kh722_spec = _ilu722.spec_from_file_location("kh722", REPO / "knowledge-health.py")
+    _kh722 = _ilu722.module_from_spec(_kh722_spec)  # type: ignore[arg-type]
+    _kh722_spec.loader.exec_module(_kh722)  # type: ignore[union-attr]
+
+    test("I722-1: cmd_bulk_tag function exists", hasattr(_kh722, "cmd_bulk_tag") and callable(_kh722.cmd_bulk_tag))
+
+    # Build isolated test DB
+    _td722 = REPO / f".test_i722_{_os722.getpid()}.db"
+    _db722 = _sq722.connect(str(_td722))
+    _db722.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
+            content TEXT DEFAULT '',
+            category TEXT DEFAULT 'mistake',
+            confidence REAL DEFAULT 0.8,
+            tags TEXT DEFAULT '',
+            priority TEXT DEFAULT 'P2',
+            wing TEXT,
+            room TEXT,
+            deleted_at TEXT,
+            first_seen TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE entry_concept_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            tag TEXT NOT NULL,
+            source TEXT DEFAULT '',
+            tagged_at TEXT DEFAULT (datetime('now'))
+        );
+        INSERT INTO knowledge_entries (id, title, content, wing, room) VALUES
+            (1, 'Alpha python entry', 'some python content', 'engineering', 'backend'),
+            (2, 'Beta rust entry', 'some rust content', 'engineering', 'systems'),
+            (3, 'Gamma docs entry', 'documentation body', 'product', 'docs');
+        INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (1, 'python', 'manual');
+    """)
+    _db722.commit()
+    _db722.close()
+
+    _orig_db722 = _kh722.DB_PATH
+    _kh722.DB_PATH = _td722
+    _orig_stdout722 = _sys722.stdout
+    _orig_stderr722 = _sys722.stderr
+
+    # I722-2: error when no selector given
+    _stderr722 = _io722.StringIO()
+    _sys722.stderr = _stderr722
+    _raised722_nosel = False
+    try:
+        _kh722.cmd_bulk_tag(["--add-tag", "newtag"])
+    except SystemExit:
+        _raised722_nosel = True
+    except Exception:
+        _raised722_nosel = True
+    finally:
+        _sys722.stderr = _orig_stderr722
+    _err722_nosel = _stderr722.getvalue()
+    test(
+        "I722-2: error when no selector given",
+        _raised722_nosel or "selector" in _err722_nosel.lower() or "require" in _err722_nosel.lower(),
+        f"err={_err722_nosel!r}",
+    )
+
+    # I722-3: error when no mutation given
+    _stderr722b = _io722.StringIO()
+    _sys722.stderr = _stderr722b
+    _raised722_nomut = False
+    try:
+        _kh722.cmd_bulk_tag(["--wing", "engineering"])
+    except SystemExit:
+        _raised722_nomut = True
+    except Exception:
+        _raised722_nomut = True
+    finally:
+        _sys722.stderr = _orig_stderr722
+    _err722_nomut = _stderr722b.getvalue()
+    test(
+        "I722-3: error when no mutation given",
+        _raised722_nomut or "mutation" in _err722_nomut.lower() or "require" in _err722_nomut.lower(),
+        f"err={_err722_nomut!r}",
+    )
+
+    # I722-4: dry-run shows count, no changes applied
+    _buf722 = _io722.StringIO()
+    _sys722.stdout = _buf722
+    try:
+        _kh722.cmd_bulk_tag(["--wing", "engineering", "--add-tag", "bulk-tested"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _out722_dry = _buf722.getvalue()
+    test(
+        "I722-4a: dry-run prints count message",
+        "would be affected" in _out722_dry or "entr" in _out722_dry,
+        f"out={_out722_dry!r}",
+    )
+    test(
+        "I722-4b: dry-run prints dry-run notice",
+        "dry" in _out722_dry.lower() or "--apply" in _out722_dry,
+        f"out={_out722_dry!r}",
+    )
+    _db722v = _sq722.connect(str(_td722))
+    _dry_tags = _db722v.execute("SELECT tag FROM entry_concept_tags WHERE tag='bulk-tested'").fetchall()
+    _db722v.close()
+    test("I722-4c: dry-run makes no changes to DB", len(_dry_tags) == 0, f"found tags={_dry_tags}")
+
+    # I722-5: --apply actually updates entries (--set-wing)
+    _buf722b = _io722.StringIO()
+    _sys722.stdout = _buf722b
+    try:
+        _kh722.cmd_bulk_tag(["--wing", "engineering", "--set-room", "infra", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _out722_apply = _buf722b.getvalue()
+    _db722w = _sq722.connect(str(_td722))
+    _infra_rows = _db722w.execute("SELECT id FROM knowledge_entries WHERE room='infra'").fetchall()
+    _db722w.close()
+    test("I722-5a: --apply updates DB", len(_infra_rows) >= 2, f"rows={_infra_rows}")
+    test(
+        "I722-5b: --apply prints Applied message",
+        "Applied" in _out722_apply or "applied" in _out722_apply,
+        f"out={_out722_apply!r}",
+    )
+
+    # I722-6: --query filter selects matching entries only
+    _buf722c = _io722.StringIO()
+    _sys722.stdout = _buf722c
+    try:
+        _kh722.cmd_bulk_tag(["--query", "python", "--add-tag", "query-tested", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _db722q = _sq722.connect(str(_td722))
+    _qtag_rows = _db722q.execute("SELECT entry_id FROM entry_concept_tags WHERE tag='query-tested'").fetchall()
+    _db722q.close()
+    test("I722-6a: --query selects matching entries", len(_qtag_rows) >= 1, f"rows={_qtag_rows}")
+    test(
+        "I722-6b: --query does not tag non-matching entries",
+        all(r[0] == 1 for r in _qtag_rows),
+        f"unexpected entries tagged: {_qtag_rows}",
+    )
+
+    # I722-7: --add-tag inserts into entry_concept_tags
+    _buf722d = _io722.StringIO()
+    _sys722.stdout = _buf722d
+    try:
+        _kh722.cmd_bulk_tag(["--wing", "product", "--add-tag", "tagged-product", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _db722t = _sq722.connect(str(_td722))
+    _tag_rows = _db722t.execute(
+        "SELECT entry_id, tag, source FROM entry_concept_tags WHERE tag='tagged-product'"
+    ).fetchall()
+    _db722t.close()
+    test("I722-7a: --add-tag inserts into entry_concept_tags", len(_tag_rows) >= 1, f"rows={_tag_rows}")
+    test("I722-7b: --add-tag sets source='bulk-tag'", all(r[2] == "bulk-tag" for r in _tag_rows), f"rows={_tag_rows}")
+
+    # I722-8: --set-wing updates wing column
+    _buf722e = _io722.StringIO()
+    _sys722.stdout = _buf722e
+    try:
+        _kh722.cmd_bulk_tag(["--room", "docs", "--set-wing", "newwing", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _db722sw = _sq722.connect(str(_td722))
+    _wing_rows = _db722sw.execute("SELECT id, wing FROM knowledge_entries WHERE wing='newwing'").fetchall()
+    _db722sw.close()
+    test("I722-8: --set-wing updates wing column", len(_wing_rows) >= 1, f"rows={_wing_rows}")
+
+    # I722-9: --tag selector filters by existing tag
+    _buf722f = _io722.StringIO()
+    _sys722.stdout = _buf722f
+    try:
+        _kh722.cmd_bulk_tag(["--tag", "python", "--add-tag", "tag-filter-tested", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _db722tf = _sq722.connect(str(_td722))
+    _tf_rows = _db722tf.execute("SELECT entry_id FROM entry_concept_tags WHERE tag='tag-filter-tested'").fetchall()
+    _db722tf.close()
+    test("I722-9a: --tag selector matches entries with that tag", len(_tf_rows) == 1, f"rows={_tf_rows}")
+    test(
+        "I722-9b: --tag selector only affects entry with that tag",
+        _tf_rows[0][0] == 1 if _tf_rows else False,
+        f"rows={_tf_rows}",
+    )
+
+    # I722-10: --add-tag is idempotent (no duplicate tags)
+    _buf722g = _io722.StringIO()
+    _sys722.stdout = _buf722g
+    try:
+        _kh722.cmd_bulk_tag(["--tag", "python", "--add-tag", "tag-filter-tested", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _db722idem = _sq722.connect(str(_td722))
+    _idem_rows = _db722idem.execute(
+        "SELECT COUNT(*) FROM entry_concept_tags WHERE entry_id=1 AND tag='tag-filter-tested'"
+    ).fetchone()
+    _db722idem.close()
+    test("I722-10: --add-tag is idempotent (no duplicate tags)", _idem_rows[0] == 1, f"count={_idem_rows[0]}")
+
+    # I722-11: source checks
+    _kh_src722 = (REPO / "knowledge-health.py").read_text(encoding="utf-8")
+    _bt_body = _kh_src722.split("def cmd_bulk_tag")[1].split("\ndef ")[0] if "def cmd_bulk_tag" in _kh_src722 else ""
+    test(
+        "I722-11a: cmd_bulk_tag uses ? placeholders (no f-string SQL)",
+        'f"SELECT' not in _bt_body
+        and "f'SELECT" not in _bt_body
+        and 'f"UPDATE' not in _bt_body
+        and "f'UPDATE" not in _bt_body
+        and 'f"INSERT' not in _bt_body
+        and "f'INSERT" not in _bt_body,
+        "f-string SQL found in cmd_bulk_tag",
+    )
+    test(
+        "I722-11b: cmd_bulk_tag handles --query selector",
+        '"--query"' in _bt_body or "'--query'" in _bt_body,
+        "--query not handled in cmd_bulk_tag",
+    )
+    test(
+        "I722-11c: cmd_bulk_tag handles --add-tag mutation",
+        '"--add-tag"' in _bt_body or "'--add-tag'" in _bt_body,
+        "--add-tag not handled in cmd_bulk_tag",
+    )
+    test(
+        "I722-11d: cmd_bulk_tag handles --set-wing mutation",
+        '"--set-wing"' in _bt_body or "'--set-wing'" in _bt_body,
+        "--set-wing not handled in cmd_bulk_tag",
+    )
+    test(
+        "I722-11e: cmd_bulk_tag uses entry_concept_tags for --add-tag",
+        "entry_concept_tags" in _bt_body,
+        "entry_concept_tags not referenced in cmd_bulk_tag",
+    )
+
+    # I722-12: sk.py routing checks
+    _sk_src722 = (REPO / "sk.py").read_text(encoding="utf-8")
+    test(
+        "I722-12a: sk.py has 'bulk-tag' in knowledge group",
+        '"bulk-tag"' in _sk_src722 or "'bulk-tag'" in _sk_src722,
+        "bulk-tag route not found in sk.py",
+    )
+    test(
+        "I722-12b: sk.py dispatches bulk-tag subcommand",
+        "bulk-tag" in _sk_src722,
+        "bulk-tag dispatch not found in sk.py",
+    )
+
+    # I722-13: main() routes bulk-tag subcommand
+    _main_body = _kh_src722.split("def main")[1] if "def main" in _kh_src722 else ""
+    test(
+        "I722-13: main() handles bulk-tag subcommand",
+        '"bulk-tag"' in _main_body or "'bulk-tag'" in _main_body,
+        "bulk-tag routing not found in main()",
+    )
+
+    # I722-14: multiple mutations work together
+    _buf722h = _io722.StringIO()
+    _sys722.stdout = _buf722h
+    try:
+        _kh722.cmd_bulk_tag(["--wing", "engineering", "--set-wing", "eng2", "--add-tag", "multi-mutate", "--apply"])
+    except SystemExit:
+        pass
+    finally:
+        _sys722.stdout = _orig_stdout722
+    _db722mm = _sq722.connect(str(_td722))
+    _mm_wing = _db722mm.execute("SELECT COUNT(*) FROM knowledge_entries WHERE wing='eng2'").fetchone()
+    _mm_tag = _db722mm.execute("SELECT COUNT(*) FROM entry_concept_tags WHERE tag='multi-mutate'").fetchone()
+    _db722mm.close()
+    test("I722-14a: multiple mutations: set-wing applied", _mm_wing[0] >= 1, f"wing count={_mm_wing[0]}")
+    test("I722-14b: multiple mutations: add-tag applied", _mm_tag[0] >= 1, f"tag count={_mm_tag[0]}")
+
+    # cleanup
+    _kh722.DB_PATH = _orig_db722
+    try:
+        _td722.unlink()
+    except Exception:
+        pass
+
+except Exception as _e722:
+    test("I722: bulk-tag test setup", False, str(_e722))
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")

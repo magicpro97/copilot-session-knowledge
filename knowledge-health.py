@@ -2592,6 +2592,10 @@ def main():
             print(format_insights_report(insights))
         return
 
+    if args and args[0] == "bulk-tag":
+        cmd_bulk_tag(args[1:])
+        return
+
     if args and args[0] == "pin":
         if len(args) < 2:
             print("Usage: knowledge-health.py pin <id>", file=sys.stderr)
@@ -2699,6 +2703,149 @@ def cmd_pins() -> None:
             print(f"  {str(r['id']):<{col_id}}  {cat:<{col_cat}}  {date:<{col_date}}  {title}")
     except Exception as exc:
         print(f"⚠ pins failed: {exc}", file=sys.stderr)
+
+
+def cmd_bulk_tag(args: list) -> None:
+    """Bulk-tag knowledge entries by selector + mutation.
+
+    Selectors (at least one required):
+      --query TEXT    Substring match on title+content
+      --wing W        Filter by wing
+      --room R        Filter by room
+      --tag T         Filter by existing tag
+
+    Mutations (at least one required):
+      --add-tag TAG   Add tag to matched entries
+      --set-wing W    Set wing on matched entries
+      --set-room R    Set room on matched entries
+
+    Flags:
+      --apply         Commit changes (dry-run by default)
+    """
+    import datetime as _dt_bt
+
+    query_text = None
+    wing = None
+    room = None
+    tag = None
+    add_tag = None
+    set_wing = None
+    set_room = None
+    apply_flag = "--apply" in args
+
+    if "--query" in args:
+        idx = args.index("--query")
+        query_text = args[idx + 1] if idx + 1 < len(args) else None
+    if "--wing" in args:
+        idx = args.index("--wing")
+        wing = args[idx + 1] if idx + 1 < len(args) else None
+    if "--room" in args:
+        idx = args.index("--room")
+        room = args[idx + 1] if idx + 1 < len(args) else None
+    if "--tag" in args:
+        idx = args.index("--tag")
+        tag = args[idx + 1] if idx + 1 < len(args) else None
+    if "--add-tag" in args:
+        idx = args.index("--add-tag")
+        add_tag = args[idx + 1] if idx + 1 < len(args) else None
+    if "--set-wing" in args:
+        idx = args.index("--set-wing")
+        set_wing = args[idx + 1] if idx + 1 < len(args) else None
+    if "--set-room" in args:
+        idx = args.index("--set-room")
+        set_room = args[idx + 1] if idx + 1 < len(args) else None
+
+    has_selector = any(v is not None for v in [query_text, wing, room, tag])
+    has_mutation = any(v is not None for v in [add_tag, set_wing, set_room])
+
+    if not has_selector:
+        print(
+            "⚠ bulk-tag requires at least one selector (--query, --wing, --room, --tag).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not has_mutation:
+        print(
+            "⚠ bulk-tag requires at least one mutation (--add-tag, --set-wing, --set-room).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        db = get_db()
+        ke_cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        deleted_at_clause = "ke.deleted_at IS NULL" if "deleted_at" in ke_cols else ""
+
+        base = "SELECT DISTINCT ke.id FROM knowledge_entries ke"
+        where: list[str] = [deleted_at_clause] if deleted_at_clause else []
+        params: list = []
+
+        if tag:
+            base += " JOIN entry_concept_tags ect ON ke.id = ect.entry_id"
+            where.append("ect.tag = ?")
+            params.append(tag)
+        if wing:
+            where.append("ke.wing = ?")
+            params.append(wing)
+        if room:
+            where.append("ke.room = ?")
+            params.append(room)
+        if query_text:
+            where.append("(ke.title LIKE ? ESCAPE '\\' OR ke.content LIKE ? ESCAPE '\\')")
+            escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like_val = "%" + escaped + "%"
+            params.extend([like_val, like_val])
+
+        sel_query = base + (" WHERE " + " AND ".join(where) if where else "")
+        matched_ids = [r[0] for r in db.execute(sel_query, params).fetchall()]
+        count = len(matched_ids)
+
+        print(f"{count} entr(ies) would be affected.")
+        if not apply_flag:
+            print("(Dry-run — pass --apply to commit changes.)")
+            db.close()
+            return
+
+        if count == 0:
+            print("Nothing to update.")
+            db.close()
+            return
+
+        now_str = _dt_bt.datetime.utcnow().isoformat()
+        if set_wing is not None:
+            for eid in matched_ids:
+                db.execute(
+                    "UPDATE knowledge_entries SET wing=? WHERE id=?",
+                    (set_wing, eid),
+                )
+        if set_room is not None:
+            for eid in matched_ids:
+                db.execute(
+                    "UPDATE knowledge_entries SET room=? WHERE id=?",
+                    (set_room, eid),
+                )
+        if add_tag is not None:
+            for eid in matched_ids:
+                existing = db.execute(
+                    "SELECT 1 FROM entry_concept_tags WHERE entry_id=? AND tag=?",
+                    (eid, add_tag),
+                ).fetchone()
+                if not existing:
+                    db.execute(
+                        "INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at) VALUES (?,?,?,?)",
+                        (eid, add_tag, "bulk-tag", now_str),
+                    )
+
+        db.commit()
+        db.close()
+        print(f"✅ Applied to {count} entr(ies).")
+    except Exception as exc:
+        try:
+            db.close()
+        except Exception:
+            pass
+        print(f"⚠ bulk-tag failed: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
