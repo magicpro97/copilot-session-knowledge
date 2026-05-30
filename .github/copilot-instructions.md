@@ -206,6 +206,22 @@ On Windows (PowerShell), apply these rules to reduce token consumption:
 
 **Closeout:** attach command output (not just assertions) · `sk learn` before `task_complete` · subagents handoff with `--status DONE --changed-file <file> --learn`.
 
+## Harness Engineering
+
+The 🛡️ 7 harness principles from `AGENTS.md` apply at runtime. Executable commands:
+
+| Principle | When | Command |
+|-----------|------|---------|
+| No-Ship-Bugs | Before every commit | `python3 test_security.py && python3 test_fixes.py` |
+| Follow-Workflow | New project setup | `sk harness init` |
+| Quality-Over-Speed | After implementation | `sk harness check` |
+| Tentacle-Orchestration | ≥3 files changed | `sk tentacle create <name> --briefing` |
+| No-Abandon | confidence < 1.0 | `sk briefing "<topic>"` → research loop |
+| Rules-First | Before every task | `sk briefing --auto --compact` |
+| Knowledge-Recording | After bug fix/pattern | `sk learn --mistake "Title" "Details"` |
+
+Enable harness dispatch middleware: `SK_HARNESS=1 sk <command>`
+
 ## Testing
 
 ```bash

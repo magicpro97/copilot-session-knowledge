@@ -113,3 +113,23 @@ Handoff must include: test suite output (pass/fail counts), coverage gaps identi
 Primary: `test_*.py`, `run_all_tests.py`, `tests/**/*`, `browse-ui/src/**/*.test.*`, `browse-ui/e2e/**/*`
 
 Review scope (read-only audit): all files changed by dev-leader or browse-leader
+
+## Harness Integration
+
+Quality over speed — always run harness gates before marking work done:
+
+- **If `harness.yaml` exists**: run `sk harness check` before writing handoff; verify all success criteria are green
+- **For new project setup tasks**: include `sk harness init` as part of setup to define success criteria upfront
+- **For complex agent dispatch tasks**: enable telemetry with `SK_HARNESS=1 sk <command>`
+- **Never skip gates to save time**: a 36% performance gap separates harnessed from un-harnessed work (CORE benchmark, arXiv 2412.04524)
+
+```bash
+# Check harness (when harness.yaml present)
+sk harness check
+
+# Enable middleware for agent task
+SK_HARNESS=1 sk briefing "my task"
+
+# Set up harness on new project
+sk harness init --yes
+```
