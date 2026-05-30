@@ -1144,6 +1144,9 @@ _orig_current_path_doctor = _install._current_path_has_launcher_dir
 _orig_user_path_doctor = _install._read_windows_user_path
 _orig_which_doctor = _install._which_command
 _orig_sk_dir_doctor = _install.SK_LAUNCHER_DIR
+_orig_watcher_status_doctor = _install._doctor_watcher_status
+_orig_db_size_doctor = _install._doctor_db_size
+_orig_index_health_doctor = _install._doctor_index_health
 
 try:
     _doctor_home = SCRATCH / "doctor-home"
@@ -1165,6 +1168,10 @@ try:
     _install._which_command = lambda name: (
         r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe" if name == "python3" else None
     )
+    # Mock global health helpers so they return healthy values and don't add issues
+    _install._doctor_watcher_status = lambda: {"running": True, "pid": 12345}
+    _install._doctor_db_size = lambda: {"size_mb": 1.0, "db_path": str(_doctor_home), "exists": True}
+    _install._doctor_index_health = lambda: {"score": 80, "total": 10, "available": True, "error": ""}
 
     _doctor_buf = io.StringIO()
     with redirect_stdout(_doctor_buf):
@@ -1187,6 +1194,9 @@ finally:
     _install._read_windows_user_path = _orig_user_path_doctor
     _install._which_command = _orig_which_doctor
     _install.SK_LAUNCHER_DIR = _orig_sk_dir_doctor
+    _install._doctor_watcher_status = _orig_watcher_status_doctor
+    _install._doctor_db_size = _orig_db_size_doctor
+    _install._doctor_index_health = _orig_index_health_doctor
 
 
 # ── Hosted-shell launcher (browse --install-launcher / --uninstall-launcher) ──

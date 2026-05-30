@@ -1881,19 +1881,22 @@ def test_briefing_semantic_rewritten_query() -> None:
     print("\n🔄 18. #369 briefing.generate_briefing semantic rewritten_query")
 
     import inspect
+    import re
 
     src_gen = inspect.getsource(_br.generate_briefing)
     src_ctx = inspect.getsource(_br.generate_subagent_context)
 
-    # Both callers must pass rewritten_query (not the raw `query`) to search_semantic
+    # Both callers must pass rewritten_query (not the raw `query`) to search_semantic.
+    # Use a regex to allow the call to span a line break (ruff may reformat long calls).
+    _pattern = re.compile(r"search_semantic\(\s*db,\s*rewritten_query", re.DOTALL)
     test(
         "#369 generate_briefing passes rewritten_query to search_semantic",
-        "search_semantic(db, rewritten_query" in src_gen,
+        bool(_pattern.search(src_gen)),
         "raw query still passed to search_semantic in generate_briefing",
     )
     test(
         "#369 generate_subagent_context passes rewritten_query to search_semantic",
-        "search_semantic(db, rewritten_query" in src_ctx,
+        bool(_pattern.search(src_ctx)),
         "raw query still passed to search_semantic in generate_subagent_context",
     )
 

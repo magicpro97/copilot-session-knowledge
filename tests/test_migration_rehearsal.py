@@ -45,6 +45,21 @@ def _latest_version() -> int:
     return max(versions)
 
 
+def _last_table_creation_floor() -> int:
+    """Return the highest version v such that _tables_created_after(v) is non-empty.
+
+    When recent migrations don't add tables (e.g. only ALTER TABLE / index changes),
+    the naive ``_latest_version() - 2`` floor may not include any CREATE TABLE
+    statements.  This helper walks backwards until it finds the last migration that
+    creates a table and returns ``version - 1``, giving the test a floor that
+    guarantees future_tables is non-empty.
+    """
+    for version, _name, statements in reversed(_declared_migrations()):
+        if any(CREATE_TABLE_RE.search(s) for s in statements):
+            return version - 1
+    raise AssertionError("No CREATE TABLE found in any migration")
+
+
 def _tables_created_after(version: int) -> list[str]:
     tables = []
     for migration_version, _name, statements in _declared_migrations():
@@ -127,7 +142,7 @@ class MigrationRehearsalTests(unittest.TestCase):
         initial = _run_migrate(str(db_path))
         self.assertEqual(initial.returncode, 0, initial.stderr)
 
-        n_minus_two = _latest_version() - 2
+        n_minus_two = _last_table_creation_floor()
         future_tables = _tables_created_after(n_minus_two)
         self.assertGreater(len(future_tables), 0)
         with sqlite3.connect(db_path) as db:

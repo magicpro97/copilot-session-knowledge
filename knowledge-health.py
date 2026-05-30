@@ -2456,6 +2456,7 @@ def main():
                 sys.stdout.buffer.write(b"\n")
         return
 
+    if "--recall" in args:
         recall_stats = compute_recall_stats()
         if "--json" in args:
             print(json.dumps(recall_stats, indent=2, ensure_ascii=False))

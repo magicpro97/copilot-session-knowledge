@@ -705,6 +705,10 @@ def _doctor_check_db_schema_version(db_path: Path) -> dict:
     """Query schema_version table for the latest migration version."""
     import sqlite3  # noqa: PLC0415
 
+    if not db_path.exists():
+        # No DB yet — schema check is not applicable; report ok so all_ok
+        # isn't doubly penalised when the DB check already failed.
+        return {"version": None, "ok": True, "note": "no_db"}
     try:
         conn = sqlite3.connect(str(db_path), timeout=2)
         row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
