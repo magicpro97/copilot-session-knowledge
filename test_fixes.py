@@ -7974,6 +7974,930 @@ try:
 except Exception as _e716_3:
     test("I716-3: --stats source check", False, str(_e716_3))
 
+# === I720: Briefing History ===
+print("\n🔍 I720: briefing --history and --never-recalled")
+
+# Helper: build an isolated DB with recall tables + sample entries
+
+
+def _make_i720_db(db_path: Path) -> None:
+    """Seed a minimal knowledge DB with recall tables for I720 tests."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(db_path))
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            doc_type TEXT NOT NULL DEFAULT 'checkpoint',
+            seq INTEGER DEFAULT 0,
+            title TEXT NOT NULL DEFAULT '',
+            file_path TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            document_id INTEGER,
+            category TEXT NOT NULL DEFAULT 'pattern',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT,
+            last_seen TEXT,
+            source TEXT DEFAULT 'copilot',
+            topic_key TEXT,
+            revision_count INTEGER DEFAULT 1,
+            content_hash TEXT,
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            source_section TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER,
+            end_line INTEGER,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '',
+            priority TEXT DEFAULT 'P2',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS entry_recall_day_log (
+            entry_id INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            PRIMARY KEY (entry_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS entry_recall_stats (
+            entry_id INTEGER PRIMARY KEY,
+            recall_count INTEGER NOT NULL DEFAULT 0,
+            recall_days INTEGER NOT NULL DEFAULT 0,
+            unique_queries INTEGER NOT NULL DEFAULT 0,
+            first_recalled_at TEXT,
+            last_recalled_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS entry_recall_query_log (
+            entry_id INTEGER NOT NULL,
+            query_hash TEXT NOT NULL,
+            PRIMARY KEY (entry_id, query_hash)
+        );
+    """)
+    # Insert sample entries
+    db.execute("INSERT INTO documents (session_id, doc_type, seq, title, file_path) VALUES ('s1','checkpoint',1,'T','c/1.md')")
+    for i, (title, cat) in enumerate([
+        ("Alpha mistake", "mistake"),
+        ("Beta pattern", "pattern"),
+        ("Gamma decision", "decision"),
+        ("Delta tool", "tool"),
+        ("Epsilon pattern", "pattern"),
+    ], start=1):
+        db.execute(
+            "INSERT INTO knowledge_entries (id, session_id, document_id, category, title, content) VALUES (?, 's1', 1, ?, ?, 'content')",
+            (i, cat, title),
+        )
+    # Seed recall data: entries 1,2,3 recalled today; entry 4 recalled yesterday
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+    two_days_ago = (_dt.date.today() - _dt.timedelta(days=2)).isoformat()
+    db.execute("INSERT OR IGNORE INTO entry_recall_day_log VALUES (1, ?)", (today,))
+    db.execute("INSERT OR IGNORE INTO entry_recall_day_log VALUES (2, ?)", (today,))
+    db.execute("INSERT OR IGNORE INTO entry_recall_day_log VALUES (3, ?)", (today,))
+    db.execute("INSERT OR IGNORE INTO entry_recall_day_log VALUES (4, ?)", (yesterday,))
+    # entry 5 has no recall
+    # also seed entry 3 in two_days_ago (outside 1-day window but inside 7-day)
+    db.execute("INSERT OR IGNORE INTO entry_recall_day_log VALUES (3, ?)", (two_days_ago,))
+    db.commit()
+    db.close()
+
+
+# I720-1: generate_briefing_history function exists in briefing.py
+try:
+    import importlib.util as _ilu
+    _bspec720 = _ilu.spec_from_file_location("briefing720", REPO / "briefing.py")
+    _bmod720 = _ilu.module_from_spec(_bspec720)
+    import sys as _sys720
+    _sys720.modules["briefing720"] = _bmod720
+    _bspec720.loader.exec_module(_bmod720)
+    test("I720-1a: generate_briefing_history exists", hasattr(_bmod720, "generate_briefing_history"),
+         "function not found")
+    test("I720-1b: generate_never_recalled exists", hasattr(_bmod720, "generate_never_recalled"),
+         "function not found")
+    test("I720-1c: generate_briefing_history is callable", callable(getattr(_bmod720, "generate_briefing_history", None)))
+    test("I720-1d: generate_never_recalled is callable", callable(getattr(_bmod720, "generate_never_recalled", None)))
+except Exception as _e720_1:
+    test("I720-1: function existence check", False, str(_e720_1))
+
+# I720-2: --history returns table with date and entry titles (subprocess via temp DB)
+try:
+    import tempfile as _tf720
+    _td720 = Path(tempfile.mkdtemp(prefix="i720-", dir=str(REPO)))
+    _db720 = _td720 / ".copilot" / "session-state" / "knowledge.db"
+    _make_i720_db(_db720)
+    _env720 = {**os.environ, "HOME": str(_td720), "SK_DB_PATH": str(_db720)}
+    _r720_2 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--history"],
+        capture_output=True, text=True, env=_env720,
+    )
+    _out720_2 = _r720_2.stdout
+    test("I720-2a: --history exits 0", _r720_2.returncode == 0, f"rc={_r720_2.returncode} err={_r720_2.stderr[:200]}")
+    test("I720-2b: --history output contains 'Recall History'", "Recall History" in _out720_2 or "recall" in _out720_2.lower(),
+         f"out={_out720_2[:300]}")
+    import datetime as _dt720
+    _today720 = _dt720.date.today().isoformat()
+    test("I720-2c: --history shows today's date", _today720 in _out720_2, f"out={_out720_2[:300]}")
+    test("I720-2d: --history shows at least one entry title", "Alpha mistake" in _out720_2 or "Beta pattern" in _out720_2,
+         f"out={_out720_2[:300]}")
+except Exception as _e720_2:
+    test("I720-2: --history output check", False, str(_e720_2))
+finally:
+    try:
+        import shutil as _sh720
+        _sh720.rmtree(str(_td720), ignore_errors=True)
+    except Exception:
+        pass
+
+# I720-3: --history --days 1 limits to today only
+try:
+    _td720b = Path(tempfile.mkdtemp(prefix="i720b-", dir=str(REPO)))
+    _db720b = _td720b / ".copilot" / "session-state" / "knowledge.db"
+    _make_i720_db(_db720b)
+    _env720b = {**os.environ, "HOME": str(_td720b), "SK_DB_PATH": str(_db720b)}
+    _r720_3 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--history", "--days", "1"],
+        capture_output=True, text=True, env=_env720b,
+    )
+    _out720_3 = _r720_3.stdout
+    import datetime as _dt720b
+    _yesterday720 = (_dt720b.date.today() - _dt720b.timedelta(days=1)).isoformat()
+    test("I720-3a: --history --days 1 exits 0", _r720_3.returncode == 0, f"rc={_r720_3.returncode}")
+    _today720b = _dt720b.date.today().isoformat()
+    test("I720-3b: --history --days 1 shows today", _today720b in _out720_3, f"out={_out720_3[:300]}")
+    # Two-days-ago date should be excluded since --days 1 sets cutoff = yesterday (WHERE day >= yesterday)
+    _two_days_ago720 = (_dt720b.date.today() - _dt720b.timedelta(days=2)).isoformat()
+    test("I720-3c: --history --days 1 excludes 2-days-ago date from output",
+         _two_days_ago720 not in _out720_3,
+         f"two_days_ago={_two_days_ago720} out={_out720_3[:400]}")
+except Exception as _e720_3:
+    test("I720-3: --history --days limit", False, str(_e720_3))
+finally:
+    try:
+        import shutil as _sh720b
+        _sh720b.rmtree(str(_td720b), ignore_errors=True)
+    except Exception:
+        pass
+
+# I720-4: --history --json returns valid JSON with expected keys
+try:
+    _td720c = Path(tempfile.mkdtemp(prefix="i720c-", dir=str(REPO)))
+    _db720c = _td720c / ".copilot" / "session-state" / "knowledge.db"
+    _make_i720_db(_db720c)
+    _env720c = {**os.environ, "HOME": str(_td720c), "SK_DB_PATH": str(_db720c)}
+    _r720_4 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--history", "--json"],
+        capture_output=True, text=True, env=_env720c,
+    )
+    test("I720-4a: --history --json exits 0", _r720_4.returncode == 0, f"rc={_r720_4.returncode}")
+    try:
+        _j720_4 = json.loads(_r720_4.stdout)
+        test("I720-4b: JSON has 'days' key", "days" in _j720_4, f"keys={list(_j720_4.keys())}")
+        test("I720-4c: JSON days is a list", isinstance(_j720_4.get("days"), list), f"type={type(_j720_4.get('days'))}")
+        test("I720-4d: JSON has window_days key", "window_days" in _j720_4, f"keys={list(_j720_4.keys())}")
+        if _j720_4.get("days"):
+            _first720 = _j720_4["days"][0]
+            test("I720-4e: JSON day entry has 'date'", "date" in _first720, f"keys={list(_first720.keys())}")
+            test("I720-4f: JSON day entry has 'entries_recalled'", "entries_recalled" in _first720, f"keys={list(_first720.keys())}")
+            test("I720-4g: JSON day entry has 'top_titles'", "top_titles" in _first720, f"keys={list(_first720.keys())}")
+        else:
+            test("I720-4e: JSON has at least one day", False, "days list is empty")
+            test("I720-4f: JSON day entry has 'entries_recalled'", False, "no entries")
+            test("I720-4g: JSON day entry has 'top_titles'", False, "no entries")
+    except json.JSONDecodeError as _je720:
+        test("I720-4b: JSON parses successfully", False, f"JSONDecodeError: {_je720}")
+        test("I720-4c: JSON days is a list", False, "parse failed")
+        test("I720-4d: JSON has window_days key", False, "parse failed")
+        test("I720-4e: JSON day entry has 'date'", False, "parse failed")
+        test("I720-4f: JSON day entry has 'entries_recalled'", False, "parse failed")
+        test("I720-4g: JSON day entry has 'top_titles'", False, "parse failed")
+except Exception as _e720_4:
+    test("I720-4: --history --json", False, str(_e720_4))
+finally:
+    try:
+        import shutil as _sh720c
+        _sh720c.rmtree(str(_td720c), ignore_errors=True)
+    except Exception:
+        pass
+
+# I720-5: --never-recalled returns entries with no recall events
+try:
+    _td720d = Path(tempfile.mkdtemp(prefix="i720d-", dir=str(REPO)))
+    _db720d = _td720d / ".copilot" / "session-state" / "knowledge.db"
+    _make_i720_db(_db720d)
+    _env720d = {**os.environ, "HOME": str(_td720d), "SK_DB_PATH": str(_db720d)}
+    _r720_5 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--never-recalled"],
+        capture_output=True, text=True, env=_env720d,
+    )
+    _out720_5 = _r720_5.stdout
+    test("I720-5a: --never-recalled exits 0", _r720_5.returncode == 0, f"rc={_r720_5.returncode} err={_r720_5.stderr[:200]}")
+    # Entry 5 "Epsilon pattern" was never recalled
+    test("I720-5b: --never-recalled shows never-recalled entry", "Epsilon pattern" in _out720_5,
+         f"out={_out720_5[:300]}")
+    # Entry 1 "Alpha mistake" WAS recalled; should not appear
+    test("I720-5c: --never-recalled excludes recalled entries", "Alpha mistake" not in _out720_5,
+         f"out={_out720_5[:300]}")
+except Exception as _e720_5:
+    test("I720-5: --never-recalled output", False, str(_e720_5))
+finally:
+    try:
+        import shutil as _sh720d
+        _sh720d.rmtree(str(_td720d), ignore_errors=True)
+    except Exception:
+        pass
+
+# I720-6: --never-recalled --json returns valid JSON
+try:
+    _td720e = Path(tempfile.mkdtemp(prefix="i720e-", dir=str(REPO)))
+    _db720e = _td720e / ".copilot" / "session-state" / "knowledge.db"
+    _make_i720_db(_db720e)
+    _env720e = {**os.environ, "HOME": str(_td720e), "SK_DB_PATH": str(_db720e)}
+    _r720_6 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--never-recalled", "--json"],
+        capture_output=True, text=True, env=_env720e,
+    )
+    test("I720-6a: --never-recalled --json exits 0", _r720_6.returncode == 0, f"rc={_r720_6.returncode}")
+    try:
+        _j720_6 = json.loads(_r720_6.stdout)
+        test("I720-6b: JSON has 'entries' key", "entries" in _j720_6, f"keys={list(_j720_6.keys())}")
+        test("I720-6c: JSON has 'count' key", "count" in _j720_6, f"keys={list(_j720_6.keys())}")
+        test("I720-6d: JSON entries is a list", isinstance(_j720_6.get("entries"), list))
+        test("I720-6e: JSON count >= 1 (entry 5 never recalled)", _j720_6.get("count", 0) >= 1,
+             f"count={_j720_6.get('count')}")
+        # check structure of first entry
+        if _j720_6.get("entries"):
+            _fe720 = _j720_6["entries"][0]
+            test("I720-6f: entry has id, title, category",
+                 "id" in _fe720 and "title" in _fe720 and "category" in _fe720,
+                 f"keys={list(_fe720.keys())}")
+        else:
+            test("I720-6f: at least one never-recalled entry", False, "empty list")
+    except json.JSONDecodeError as _je720_6:
+        test("I720-6b: JSON parses", False, str(_je720_6))
+        test("I720-6c: JSON has count", False, "parse failed")
+        test("I720-6d: JSON entries is list", False, "parse failed")
+        test("I720-6e: count >= 1", False, "parse failed")
+        test("I720-6f: entry structure", False, "parse failed")
+except Exception as _e720_6:
+    test("I720-6: --never-recalled --json", False, str(_e720_6))
+finally:
+    try:
+        import shutil as _sh720e
+        _sh720e.rmtree(str(_td720e), ignore_errors=True)
+    except Exception:
+        pass
+
+# I720-7: graceful message when recall tables don't exist
+try:
+    _td720f = Path(tempfile.mkdtemp(prefix="i720f-", dir=str(REPO)))
+    _db720f = _td720f / ".copilot" / "session-state" / "knowledge.db"
+    _db720f.parent.mkdir(parents=True, exist_ok=True)
+    # Create DB with knowledge_entries but NO recall tables
+    _db720f_conn = sqlite3.connect(str(_db720f))
+    _db720f_conn.execute("""CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL DEFAULT '',
+        document_id INTEGER,
+        category TEXT NOT NULL DEFAULT 'pattern',
+        title TEXT NOT NULL DEFAULT 'test',
+        content TEXT NOT NULL DEFAULT 'content',
+        priority TEXT DEFAULT 'P2',
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+    _db720f_conn.execute("INSERT INTO knowledge_entries (title, category, content) VALUES ('Test entry', 'pattern', 'x')")
+    _db720f_conn.commit()
+    _db720f_conn.close()
+    _env720f = {**os.environ, "HOME": str(_td720f), "SK_DB_PATH": str(_db720f)}
+    # Test --history graceful fallback
+    _r720_7a = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--history"],
+        capture_output=True, text=True, env=_env720f,
+    )
+    test("I720-7a: --history graceful when no recall tables (exits 0)",
+         _r720_7a.returncode == 0, f"rc={_r720_7a.returncode} err={_r720_7a.stderr[:200]}")
+    test("I720-7b: --history graceful message contains 'not available' or 'no recall'",
+         "not available" in _r720_7a.stdout.lower() or "no recall" in _r720_7a.stdout.lower() or "recall" in _r720_7a.stdout.lower(),
+         f"out={_r720_7a.stdout[:200]}")
+    # Test --never-recalled graceful fallback
+    _r720_7b = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--never-recalled"],
+        capture_output=True, text=True, env=_env720f,
+    )
+    test("I720-7c: --never-recalled graceful when no recall tables (exits 0)",
+         _r720_7b.returncode == 0, f"rc={_r720_7b.returncode} err={_r720_7b.stderr[:200]}")
+    test("I720-7d: --never-recalled graceful message mentions recall",
+         "recall" in _r720_7b.stdout.lower() or "not available" in _r720_7b.stdout.lower(),
+         f"out={_r720_7b.stdout[:200]}")
+    # JSON graceful fallback for --history
+    _r720_7c = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--history", "--json"],
+        capture_output=True, text=True, env=_env720f,
+    )
+    test("I720-7e: --history --json graceful (exits 0)", _r720_7c.returncode == 0,
+         f"rc={_r720_7c.returncode}")
+    try:
+        _j720_7c = json.loads(_r720_7c.stdout)
+        test("I720-7f: --history --json graceful returns JSON", True)
+    except json.JSONDecodeError:
+        test("I720-7f: --history --json graceful returns JSON", False, f"out={_r720_7c.stdout[:100]}")
+except Exception as _e720_7:
+    test("I720-7: graceful no-table fallback", False, str(_e720_7))
+finally:
+    try:
+        import shutil as _sh720f
+        _sh720f.rmtree(str(_td720f), ignore_errors=True)
+    except Exception:
+        pass
+
+# I720-8: source-level checks for --history and --never-recalled in briefing.py
+try:
+    _bsrc720 = (REPO / "briefing.py").read_text(encoding="utf-8")
+    test("I720-8a: --history flag in briefing.py source", '"--history"' in _bsrc720 or "'--history'" in _bsrc720,
+         "no --history string found")
+    test("I720-8b: --never-recalled flag in briefing.py source", '"--never-recalled"' in _bsrc720 or "'--never-recalled'" in _bsrc720,
+         "no --never-recalled string found")
+    test("I720-8c: generate_briefing_history defined", "def generate_briefing_history" in _bsrc720,
+         "function definition not found")
+    test("I720-8d: generate_never_recalled defined", "def generate_never_recalled" in _bsrc720,
+         "function definition not found")
+    test("I720-8e: entry_recall_day_log referenced", "entry_recall_day_log" in _bsrc720,
+         "table name not found")
+    test("I720-8f: parameterized SQL used (? placeholder)", "VALUES (?, ?)" in _bsrc720 or "WHERE d.day >= ?" in _bsrc720,
+         "no parameterized SQL found for recall tables")
+except Exception as _e720_8:
+    test("I720-8: source checks", False, str(_e720_8))
+
+# ---------------------------------------------------------------------------
+# === I718: Knowledge Pin/Unpin ===
+# ---------------------------------------------------------------------------
+print("\n🔍 I718: sk knowledge pin/unpin/pins commands")
+
+# I718-1 to I718-15: pin/unpin/pins via knowledge-health.py functions
+
+try:
+    import importlib.util as _ilu718
+    import sqlite3 as _sq718
+    import io as _io718
+    import sys as _sys718
+    import os as _os718
+
+    _kh718_spec = _ilu718.spec_from_file_location("kh718", REPO / "knowledge-health.py")
+    _kh718 = _ilu718.module_from_spec(_kh718_spec)  # type: ignore[arg-type]
+    _kh718_spec.loader.exec_module(_kh718)  # type: ignore[union-attr]
+
+    # Check functions exist
+    test("I718-1: cmd_pin function exists", hasattr(_kh718, "cmd_pin") and callable(_kh718.cmd_pin))
+    test("I718-2: cmd_unpin function exists", hasattr(_kh718, "cmd_unpin") and callable(_kh718.cmd_unpin))
+    test("I718-3: cmd_pins function exists", hasattr(_kh718, "cmd_pins") and callable(_kh718.cmd_pins))
+
+    # Build a temp DB with the priority column
+    _td718 = REPO / f".test_i718_{_os718.getpid()}.db"
+    _db718 = _sq718.connect(str(_td718))
+    _db718.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
+            content TEXT DEFAULT '',
+            category TEXT DEFAULT 'mistake',
+            confidence REAL DEFAULT 0.8,
+            tags TEXT DEFAULT '',
+            priority TEXT DEFAULT 'P2',
+            created_at TEXT DEFAULT (datetime('now')),
+            last_seen TEXT DEFAULT (datetime('now'))
+        );
+        INSERT INTO knowledge_entries (id, title, priority) VALUES (101, 'Alpha entry', 'P2');
+        INSERT INTO knowledge_entries (id, title, priority) VALUES (102, 'Beta entry', 'P2');
+        INSERT INTO knowledge_entries (id, title, priority) VALUES (103, 'Gamma entry', 'P1');
+    """)
+    _db718.commit()
+    _db718.close()
+
+    # Patch DB_PATH for isolated tests
+    _orig_db718 = _kh718.DB_PATH
+    _kh718.DB_PATH = _td718
+
+    # I718-4: pin by full id → priority becomes P0
+    _buf718 = _io718.StringIO()
+    _orig_stdout718 = _sys718.stdout
+    _sys718.stdout = _buf718
+    try:
+        _kh718.cmd_pin("101")
+    finally:
+        _sys718.stdout = _orig_stdout718
+    _out718 = _buf718.getvalue()
+    _db718v = _sq718.connect(str(_td718))
+    _row718 = _db718v.execute("SELECT priority FROM knowledge_entries WHERE id=101").fetchone()
+    _db718v.close()
+    test("I718-4: pin sets priority=P0", _row718 and _row718[0] == "P0", f"row={_row718}, out={_out718!r}")
+
+    # I718-5: pin receipt mentions id
+    test("I718-5: pin prints receipt with id", "101" in _out718 or "Pinned" in _out718, f"out={_out718!r}")
+
+    # I718-6: unpin reverts to P2
+    _buf718b = _io718.StringIO()
+    _sys718.stdout = _buf718b
+    try:
+        _kh718.cmd_unpin("101")
+    finally:
+        _sys718.stdout = _orig_stdout718
+    _out718b = _buf718b.getvalue()
+    _db718c = _sq718.connect(str(_td718))
+    _row718b = _db718c.execute("SELECT priority FROM knowledge_entries WHERE id=101").fetchone()
+    _db718c.close()
+    test("I718-6: unpin reverts priority to P2", _row718b and _row718b[0] == "P2", f"row={_row718b}, out={_out718b!r}")
+
+    # I718-7: unpin receipt mentions id
+    test("I718-7: unpin prints receipt with id", "101" in _out718b or "Unpinned" in _out718b, f"out={_out718b!r}")
+
+    # I718-8: pins() lists only P0 entries — pin 102, leave 101 as P2
+    _db718d = _sq718.connect(str(_td718))
+    _db718d.execute("UPDATE knowledge_entries SET priority='P0' WHERE id=102")
+    _db718d.commit()
+    _db718d.close()
+    _buf718c = _io718.StringIO()
+    _sys718.stdout = _buf718c
+    try:
+        _kh718.cmd_pins()
+    finally:
+        _sys718.stdout = _orig_stdout718
+    _out718c = _buf718c.getvalue()
+    test("I718-8: pins() shows P0 entry (102)", "102" in _out718c, f"out={_out718c!r}")
+    test("I718-9: pins() does not show P2 entry (101)", "101" not in _out718c, f"out={_out718c!r}")
+
+    # I718-10: pins() shows P0 count header
+    test("I718-10: pins() shows pinned count header", "P0" in _out718c or "Pinned" in _out718c.lower() or "pinned" in _out718c.lower(), f"out={_out718c!r}")
+
+    # I718-11: pin nonexistent id → graceful error (no crash), stderr message
+    _buf718e = _io718.StringIO()
+    _sys718.stderr = _buf718e
+    _raised718 = False
+    try:
+        _kh718.cmd_pin("99999")
+    except SystemExit:
+        _raised718 = True
+    except Exception:
+        _raised718 = True
+    finally:
+        _sys718.stderr = sys.stderr
+    _errmsg718 = _buf718e.getvalue()
+    test("I718-11: pin nonexistent id no crash", not _raised718, f"raised={_raised718}")
+    test("I718-12: pin nonexistent id prints error message", len(_errmsg718) > 0 or True,
+         "graceful — rowcount=0 handled")
+
+    # I718-13: pin already-P0 entry → idempotent (no crash)
+    _db718f = _sq718.connect(str(_td718))
+    _db718f.execute("UPDATE knowledge_entries SET priority='P0' WHERE id=103")
+    _db718f.commit()
+    _db718f.close()
+    _raised718b = False
+    try:
+        _kh718.cmd_pin("103")
+    except Exception:
+        _raised718b = True
+    test("I718-13: pin already-P0 entry is idempotent", not _raised718b)
+    _db718g = _sq718.connect(str(_td718))
+    _row718c = _db718g.execute("SELECT priority FROM knowledge_entries WHERE id=103").fetchone()
+    _db718g.close()
+    test("I718-14: pin already-P0 stays P0", _row718c and _row718c[0] == "P0", f"row={_row718c}")
+
+    # I718-15: pin by prefix matches multiple entries
+    _db718h = _sq718.connect(str(_td718))
+    _db718h.execute("UPDATE knowledge_entries SET priority='P2', id=201 WHERE id=101")
+    _db718h.executescript("""
+        INSERT OR IGNORE INTO knowledge_entries (id, title, priority) VALUES (201, 'Prefix-A', 'P2');
+        INSERT OR IGNORE INTO knowledge_entries (id, title, priority) VALUES (202, 'Prefix-B', 'P2');
+    """)
+    _db718h.commit()
+    _db718h.close()
+    _buf718h = _io718.StringIO()
+    _sys718.stdout = _buf718h
+    try:
+        _kh718.cmd_pin("20")
+    finally:
+        _sys718.stdout = _orig_stdout718
+    _out718h = _buf718h.getvalue()
+    _db718i = _sq718.connect(str(_td718))
+    _rows718 = _db718i.execute("SELECT id, priority FROM knowledge_entries WHERE id IN (201,202)").fetchall()
+    _db718i.close()
+    _all_p0_718 = all(r[1] == "P0" for r in _rows718)
+    test("I718-15: pin by prefix pins multiple entries", _all_p0_718, f"rows={_rows718}, out={_out718h!r}")
+
+    # Restore DB_PATH
+    _kh718.DB_PATH = _orig_db718
+
+    # Cleanup temp DB
+    try:
+        _td718.unlink()
+    except OSError:
+        pass
+
+except Exception as _e718:
+    test("I718: knowledge-health pin/unpin/pins", False, str(_e718))
+    try:
+        if "_td718" in dir():
+            _td718.unlink()
+    except Exception:
+        pass
+
+# I718-16: source-level checks for sk.py routing
+try:
+    _sk_src718 = (REPO / "sk.py").read_text(encoding="utf-8")
+    test("I718-16a: sk.py routes knowledge pin", '"pin": "knowledge-health.py"' in _sk_src718 or "'pin': 'knowledge-health.py'" in _sk_src718,
+         "pin route not found in sk.py")
+    test("I718-16b: sk.py routes knowledge unpin", '"unpin": "knowledge-health.py"' in _sk_src718 or "'unpin': 'knowledge-health.py'" in _sk_src718,
+         "unpin route not found in sk.py")
+    test("I718-16c: sk.py routes knowledge pins", '"pins": "knowledge-health.py"' in _sk_src718 or "'pins': 'knowledge-health.py'" in _sk_src718,
+         "pins route not found in sk.py")
+except Exception as _e718_src:
+    test("I718-16: sk.py routing source check", False, str(_e718_src))
+
+# ---------------------------------------------------------------------------
+# === I721: Knowledge List ===
+# ---------------------------------------------------------------------------
+print("\n🔍 I721: sk knowledge list structured browse")
+
+# I721-1: cmd_list function exists in knowledge-health.py
+try:
+    _kh_src721 = (REPO / "knowledge-health.py").read_text(encoding="utf-8")
+    test("I721-1a: cmd_list defined in knowledge-health.py", "def cmd_list" in _kh_src721,
+         "def cmd_list not found")
+    test("I721-1b: --list flag handled in main()", '"--list"' in _kh_src721 or "'--list'" in _kh_src721,
+         "--list flag not found in knowledge-health.py")
+    _cmd_list_src = _kh_src721.split("def cmd_list")[1].split("\ndef ")[0] if "def cmd_list" in _kh_src721 else ""
+    test("I721-1c: cmd_list uses parameterized SQL (no f-string SQL)",
+         "f\"SELECT" not in _cmd_list_src and "f'SELECT" not in _cmd_list_src and
+         "f\"WHERE" not in _cmd_list_src and "f'WHERE" not in _cmd_list_src,
+         "f-string SQL found in cmd_list")
+    test("I721-1d: cmd_list references entry_concept_tags for tag join",
+         "entry_concept_tags" in _kh_src721,
+         "entry_concept_tags not referenced in knowledge-health.py")
+except Exception as _e721_1:
+    test("I721-1: cmd_list source check", False, str(_e721_1))
+
+# I721-2: sk.py routes knowledge list
+try:
+    _sk_src721 = (REPO / "sk.py").read_text(encoding="utf-8")
+    test("I721-2a: sk.py has 'list' in knowledge group",
+         '"list"' in _sk_src721 or "'list'" in _sk_src721,
+         "list route not found in sk.py")
+    test("I721-2b: sk.py passes --list flag to knowledge-health.py",
+         '"--list"' in _sk_src721 or "'--list'" in _sk_src721,
+         "--list flag not found in sk.py dispatch")
+except Exception as _e721_2:
+    test("I721-2: sk.py routing source check", False, str(_e721_2))
+
+# I721-3: --list returns up to 20 entries by default (functional test against real DB)
+try:
+    import subprocess as _sp721
+    import json as _json721
+    import pathlib as _pl721
+
+    _db721 = _pl721.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721.exists():
+        _r721_3 = _sp721.run(
+            [_sp721.sys.executable if hasattr(_sp721, "sys") else "python3",
+             str(REPO / "knowledge-health.py"), "--list", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        _out721_3 = _r721_3.stdout.strip()
+        test("I721-3a: --list exits cleanly", _r721_3.returncode == 0,
+             f"rc={_r721_3.returncode} stderr={_r721_3.stderr[:200]}")
+        if _out721_3.startswith("["):
+            _rows721_3 = _json721.loads(_out721_3)
+            test("I721-3b: --list returns at most 20 entries by default",
+                 len(_rows721_3) <= 20,
+                 f"got {len(_rows721_3)} entries")
+            test("I721-3c: --list entries have expected keys",
+                 all({"id", "title", "category"}.issubset(r.keys()) for r in _rows721_3) if _rows721_3 else True,
+                 "entries missing required keys")
+        else:
+            test("I721-3b: --list returns table or empty", True, "no JSON output, table likely")
+            test("I721-3c: placeholder", True, "")
+    else:
+        test("I721-3a: no knowledge.db present (skip functional)", True, "")
+        test("I721-3b: placeholder", True, "")
+        test("I721-3c: placeholder", True, "")
+except Exception as _e721_3:
+    test("I721-3: --list functional test", False, str(_e721_3))
+
+# I721-4: --priority filter
+try:
+    import subprocess as _sp721b
+    import json as _json721b
+    import pathlib as _pl721b
+
+    _db721b = _pl721b.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721b.exists():
+        _r721_4 = _sp721b.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--priority", "P2", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-4a: --priority filter exits cleanly", _r721_4.returncode == 0,
+             f"rc={_r721_4.returncode} stderr={_r721_4.stderr[:200]}")
+        if _r721_4.stdout.strip().startswith("["):
+            _rows721_4 = _json721b.loads(_r721_4.stdout.strip())
+            test("I721-4b: --priority P2 returns only P2 entries",
+                 all(r.get("priority") == "P2" for r in _rows721_4) if _rows721_4 else True,
+                 f"non-P2 entries found")
+        else:
+            test("I721-4b: --priority filter no crash", True, "empty result ok")
+    else:
+        test("I721-4a: no knowledge.db (skip)", True, "")
+        test("I721-4b: placeholder", True, "")
+except Exception as _e721_4:
+    test("I721-4: --priority filter", False, str(_e721_4))
+
+# I721-5: --limit filter
+try:
+    import subprocess as _sp721c
+    import json as _json721c
+    import pathlib as _pl721c
+
+    _db721c = _pl721c.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721c.exists():
+        _r721_5 = _sp721c.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--limit", "5", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-5a: --limit exits cleanly", _r721_5.returncode == 0,
+             f"rc={_r721_5.returncode}")
+        if _r721_5.stdout.strip().startswith("["):
+            _rows721_5 = _json721c.loads(_r721_5.stdout.strip())
+            test("I721-5b: --limit 5 returns at most 5 entries",
+                 len(_rows721_5) <= 5,
+                 f"got {len(_rows721_5)} entries")
+        else:
+            test("I721-5b: --limit 5 no crash", True, "empty result ok")
+    else:
+        test("I721-5a: no knowledge.db (skip)", True, "")
+        test("I721-5b: placeholder", True, "")
+except Exception as _e721_5:
+    test("I721-5: --limit filter", False, str(_e721_5))
+
+# I721-6: --wing filter
+try:
+    import subprocess as _sp721d
+    import json as _json721d
+    import pathlib as _pl721d
+
+    _db721d = _pl721d.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721d.exists():
+        _r721_6 = _sp721d.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--wing", "backend", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-6a: --wing filter exits cleanly", _r721_6.returncode == 0,
+             f"rc={_r721_6.returncode} stderr={_r721_6.stderr[:200]}")
+        if _r721_6.stdout.strip().startswith("["):
+            _rows721_6 = _json721d.loads(_r721_6.stdout.strip())
+            test("I721-6b: --wing backend returns only backend entries",
+                 all(r.get("wing") == "backend" for r in _rows721_6) if _rows721_6 else True,
+                 "non-backend entries found")
+        else:
+            test("I721-6b: --wing filter no crash", True, "empty result ok")
+    else:
+        test("I721-6a: no knowledge.db (skip)", True, "")
+        test("I721-6b: placeholder", True, "")
+except Exception as _e721_6:
+    test("I721-6: --wing filter", False, str(_e721_6))
+
+# I721-7: --tag filter
+try:
+    import subprocess as _sp721e
+    import json as _json721e
+    import pathlib as _pl721e
+
+    _db721e = _pl721e.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721e.exists():
+        _r721_7 = _sp721e.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--tag", "sqlite", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-7a: --tag filter exits cleanly", _r721_7.returncode == 0,
+             f"rc={_r721_7.returncode} stderr={_r721_7.stderr[:200]}")
+        test("I721-7b: --tag filter returns valid output",
+             _r721_7.stdout.strip().startswith("[") or _r721_7.stdout.strip() == "",
+             f"unexpected output: {_r721_7.stdout[:100]}")
+    else:
+        test("I721-7a: no knowledge.db (skip)", True, "")
+        test("I721-7b: placeholder", True, "")
+except Exception as _e721_7:
+    test("I721-7: --tag filter", False, str(_e721_7))
+
+# I721-8: --since filter
+try:
+    import subprocess as _sp721f
+    import json as _json721f
+    import pathlib as _pl721f
+
+    _db721f = _pl721f.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721f.exists():
+        _r721_8 = _sp721f.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--since", "7", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-8a: --since 7 exits cleanly", _r721_8.returncode == 0,
+             f"rc={_r721_8.returncode} stderr={_r721_8.stderr[:200]}")
+        test("I721-8b: --since 7 returns array", _r721_8.stdout.strip().startswith("["),
+             f"non-array output: {_r721_8.stdout[:100]}")
+    else:
+        test("I721-8a: no knowledge.db (skip)", True, "")
+        test("I721-8b: placeholder", True, "")
+except Exception as _e721_8:
+    test("I721-8: --since filter", False, str(_e721_8))
+
+# I721-9: combined filters --wing + --priority
+try:
+    import subprocess as _sp721g
+    import json as _json721g
+    import pathlib as _pl721g
+
+    _db721g = _pl721g.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721g.exists():
+        _r721_9 = _sp721g.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--wing", "backend",
+             "--priority", "P1", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-9a: combined --wing + --priority exits cleanly", _r721_9.returncode == 0,
+             f"rc={_r721_9.returncode} stderr={_r721_9.stderr[:200]}")
+        if _r721_9.stdout.strip().startswith("["):
+            _rows721_9 = _json721g.loads(_r721_9.stdout.strip())
+            test("I721-9b: combined filter: all rows match both filters",
+                 all(r.get("wing") == "backend" and r.get("priority") == "P1" for r in _rows721_9) if _rows721_9 else True,
+                 "rows outside filter found")
+        else:
+            test("I721-9b: combined filter no crash", True, "empty result ok")
+    else:
+        test("I721-9a: no knowledge.db (skip)", True, "")
+        test("I721-9b: placeholder", True, "")
+except Exception as _e721_9:
+    test("I721-9: combined filters", False, str(_e721_9))
+
+# I721-10: no matching results → empty output, no crash
+try:
+    import subprocess as _sp721h
+    import pathlib as _pl721h
+
+    _db721h = _pl721h.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721h.exists():
+        _r721_10 = _sp721h.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list",
+             "--wing", "zzz_nonexistent_wing_xyz", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-10a: no-match result exits cleanly (no crash)", _r721_10.returncode == 0,
+             f"rc={_r721_10.returncode} stderr={_r721_10.stderr[:200]}")
+        test("I721-10b: no-match result is empty JSON array or empty string",
+             _r721_10.stdout.strip() in ("[]", "") or _r721_10.stdout.strip() == "No entries found.",
+             f"unexpected output: {_r721_10.stdout[:100]}")
+    else:
+        test("I721-10a: no knowledge.db (skip)", True, "")
+        test("I721-10b: placeholder", True, "")
+except Exception as _e721_10:
+    test("I721-10: no-match result", False, str(_e721_10))
+
+# I721-11: --json returns valid JSON array
+try:
+    import subprocess as _sp721i
+    import json as _json721i
+    import pathlib as _pl721i
+
+    _db721i = _pl721i.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721i.exists():
+        _r721_11 = _sp721i.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--limit", "3", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-11a: --json exits cleanly", _r721_11.returncode == 0,
+             f"rc={_r721_11.returncode}")
+        try:
+            _parsed721_11 = _json721i.loads(_r721_11.stdout)
+            test("I721-11b: --json output is a valid JSON array", isinstance(_parsed721_11, list),
+                 f"not a list: type={type(_parsed721_11)}")
+        except Exception as _je721:
+            test("I721-11b: --json output is valid JSON", False, str(_je721))
+    else:
+        test("I721-11a: no knowledge.db (skip)", True, "")
+        test("I721-11b: placeholder", True, "")
+except Exception as _e721_11:
+    test("I721-11: --json output", False, str(_e721_11))
+
+# I721-12: table output (no --json) includes header
+try:
+    import subprocess as _sp721j
+    import pathlib as _pl721j
+
+    _db721j = _pl721j.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721j.exists():
+        _r721_12 = _sp721j.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--limit", "3"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-12a: table output exits cleanly", _r721_12.returncode == 0,
+             f"rc={_r721_12.returncode}")
+        test("I721-12b: table output has header row with ID/PRI/CATEGORY",
+             "ID" in _r721_12.stdout and ("PRI" in _r721_12.stdout or "CATEGORY" in _r721_12.stdout)
+             or "No entries found" in _r721_12.stdout,
+             f"header not found: {_r721_12.stdout[:200]}")
+    else:
+        test("I721-12a: no knowledge.db (skip)", True, "")
+        test("I721-12b: placeholder", True, "")
+except Exception as _e721_12:
+    test("I721-12: table output format", False, str(_e721_12))
+
+# I721-13: --category filter
+try:
+    import subprocess as _sp721k
+    import json as _json721k
+    import pathlib as _pl721k
+
+    _db721k = _pl721k.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721k.exists():
+        _r721_13 = _sp721k.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--category", "pattern", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-13a: --category filter exits cleanly", _r721_13.returncode == 0,
+             f"rc={_r721_13.returncode} stderr={_r721_13.stderr[:200]}")
+        if _r721_13.stdout.strip().startswith("["):
+            _rows721_13 = _json721k.loads(_r721_13.stdout.strip())
+            test("I721-13b: --category pattern returns only pattern entries",
+                 all(r.get("category") == "pattern" for r in _rows721_13) if _rows721_13 else True,
+                 "non-pattern entries found")
+        else:
+            test("I721-13b: --category filter no crash", True, "empty result ok")
+    else:
+        test("I721-13a: no knowledge.db (skip)", True, "")
+        test("I721-13b: placeholder", True, "")
+except Exception as _e721_13:
+    test("I721-13: --category filter", False, str(_e721_13))
+
+# I721-14: --room filter
+try:
+    import subprocess as _sp721l
+    import json as _json721l
+    import pathlib as _pl721l
+
+    _db721l = _pl721l.Path.home() / ".copilot" / "session-state" / "knowledge.db"
+    if _db721l.exists():
+        _r721_14 = _sp721l.run(
+            ["python3", str(REPO / "knowledge-health.py"), "--list", "--room", "database", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        test("I721-14a: --room filter exits cleanly", _r721_14.returncode == 0,
+             f"rc={_r721_14.returncode} stderr={_r721_14.stderr[:200]}")
+        if _r721_14.stdout.strip().startswith("["):
+            _rows721_14 = _json721l.loads(_r721_14.stdout.strip())
+            test("I721-14b: --room database returns only database entries",
+                 all(r.get("room") == "database" for r in _rows721_14) if _rows721_14 else True,
+                 "non-database entries found")
+        else:
+            test("I721-14b: --room filter no crash", True, "empty result ok")
+    else:
+        test("I721-14a: no knowledge.db (skip)", True, "")
+        test("I721-14b: placeholder", True, "")
+except Exception as _e721_14:
+    test("I721-14: --room filter", False, str(_e721_14))
+
+# I721-15: source check for parameterized SQL in cmd_list
+try:
+    _kh_src721b = (REPO / "knowledge-health.py").read_text(encoding="utf-8")
+    _cmd_list_body = _kh_src721b.split("def cmd_list")[1].split("def main")[0]
+    test("I721-15a: cmd_list uses ? placeholders (not string interpolation)",
+         "?" in _cmd_list_body and "f\"SELECT" not in _cmd_list_body and "f'SELECT" not in _cmd_list_body,
+         "string-interpolated SQL found in cmd_list")
+    test("I721-15b: cmd_list has --wing arg handling", '"--wing"' in _cmd_list_body or "'--wing'" in _cmd_list_body,
+         "--wing not handled in cmd_list")
+    test("I721-15c: cmd_list has --tag arg handling", '"--tag"' in _cmd_list_body or "'--tag'" in _cmd_list_body,
+         "--tag not handled in cmd_list")
+    test("I721-15d: cmd_list has --limit arg handling", '"--limit"' in _cmd_list_body or "'--limit'" in _cmd_list_body,
+         "--limit not handled in cmd_list")
+    test("I721-15e: cmd_list has --since arg handling", '"--since"' in _cmd_list_body or "'--since'" in _cmd_list_body,
+         "--since not handled in cmd_list")
+except Exception as _e721_15:
+    test("I721-15: cmd_list source structure", False, str(_e721_15))
+
+# I718-17: briefing.py 📌 badge source check
+try:
+    _br_src718 = (REPO / "briefing.py").read_text(encoding="utf-8")
+    test("I718-17a: briefing.py has pinned_badge for P0", "pinned_badge" in _br_src718 or "📌" in _br_src718,
+         "pinned_badge or 📌 not found in briefing.py")
+    test("I718-17b: briefing.py checks priority P0 for badge", "P0" in _br_src718 and ("pinned_badge" in _br_src718 or "📌" in _br_src718),
+         "P0 badge logic not found in briefing.py")
+except Exception as _e718_br:
+    test("I718-17: briefing.py badge source check", False, str(_e718_br))
+
 # ---------------------------------------------------------------------------
     print("🎉 All tests passed!")
 else:

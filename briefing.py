@@ -3200,10 +3200,11 @@ def _format_compact(
             title_prefix = title.rstrip(".… ").lower()
             recurrence = int(entry.get("recurrence_after_briefing") or 0)
             recurring_badge = f"[RECURRING×{recurrence}] " if recurrence > 0 else ""
+            pinned_badge = "📌 " if (entry.get("priority") or "") == "P0" else ""
             if first_line.lower().startswith(title_prefix[:60]):
-                rendered.append(f"- {recurring_badge}{title}")
+                rendered.append(f"- {pinned_badge}{recurring_badge}{title}")
             else:
-                rendered.append(f"- {recurring_badge}{title}: {first_line}")
+                rendered.append(f"- {pinned_badge}{recurring_badge}{title}: {first_line}")
         if not rendered:
             return
         lines.append(f"<{cat}s>")
@@ -3854,6 +3855,180 @@ BRIEFING_PRESETS: dict[str, list[str]] = {
 }
 
 
+def generate_briefing_history(days: int = 7, fmt: str = "text") -> str:
+    """Return a recall history report grouped by day (issue #720).
+
+    Shows: date | entries recalled that day | top-3 entry titles.
+    Uses entry_recall_day_log (one row per entry_id + calendar day) joined to
+    knowledge_entries for titles and categories.  Falls back gracefully when the
+    recall tables do not exist yet.
+    """
+    if not DB_PATH.exists():
+        msg = "No knowledge database found — recall history unavailable."
+        if fmt == "json":
+            return json.dumps({"error": msg, "days": []})
+        return msg
+
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+    except Exception as exc:
+        msg = f"Cannot open database: {exc}"
+        if fmt == "json":
+            return json.dumps({"error": msg, "days": []})
+        return msg
+
+    try:
+        # Check table exists
+        row = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='entry_recall_day_log'"
+        ).fetchone()
+        if row is None:
+            msg = "Recall history is not available yet — no recall events have been recorded."
+            if fmt == "json":
+                return json.dumps({"error": msg, "days": []})
+            return msg
+
+        cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime(
+            "%Y-%m-%d"
+        )
+
+        # Fetch all (day, entry_id, title, category) rows within the window
+        rows = db.execute(
+            """
+            SELECT d.day, ke.id AS entry_id, ke.title, ke.category
+            FROM entry_recall_day_log d
+            JOIN knowledge_entries ke ON d.entry_id = ke.id
+            WHERE d.day >= ?
+            ORDER BY d.day DESC, ke.title
+            """,
+            (cutoff,),
+        ).fetchall()
+
+        # Group by day
+        from collections import defaultdict
+        day_map: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            day_map[r["day"]].append({"entry_id": r["entry_id"], "title": r["title"], "category": r["category"]})
+
+        # Sort days descending
+        sorted_days = sorted(day_map.keys(), reverse=True)
+
+        if fmt == "json":
+            result = []
+            for day in sorted_days:
+                entries = day_map[day]
+                result.append({
+                    "date": day,
+                    "entries_recalled": len(entries),
+                    "top_titles": [e["title"] for e in entries[:3]],
+                    "entries": entries,
+                })
+            return json.dumps({"days": result, "window_days": days}, indent=2)
+
+        # Text / table output
+        if not sorted_days:
+            return f"No recall events in the last {days} day(s)."
+
+        lines = [f"## Recall History — last {days} day(s)\n"]
+        for day in sorted_days:
+            entries = day_map[day]
+            top3 = [e["title"] for e in entries[:3]]
+            lines.append(f"### {day}  ({len(entries)} entries recalled)")
+            for t in top3:
+                lines.append(f"  - {t}")
+            if len(entries) > 3:
+                lines.append(f"  … and {len(entries) - 3} more")
+            lines.append("")
+        return "\n".join(lines)
+
+    except Exception as exc:
+        msg = f"Error reading recall history: {exc}"
+        if fmt == "json":
+            return json.dumps({"error": msg, "days": []})
+        return msg
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def generate_never_recalled(fmt: str = "text") -> str:
+    """Return knowledge entries that have never been recalled (issue #720).
+
+    Uses a LEFT JOIN between knowledge_entries and entry_recall_day_log so that
+    entries with no recall events (NULL join side) are surfaced.  Falls back
+    gracefully when the recall tables do not exist yet.
+    """
+    if not DB_PATH.exists():
+        msg = "No knowledge database found."
+        if fmt == "json":
+            return json.dumps({"error": msg, "entries": []})
+        return msg
+
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+    except Exception as exc:
+        msg = f"Cannot open database: {exc}"
+        if fmt == "json":
+            return json.dumps({"error": msg, "entries": []})
+        return msg
+
+    try:
+        # Check table exists
+        row = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='entry_recall_day_log'"
+        ).fetchone()
+        if row is None:
+            msg = "Recall tracking is not available yet — no recall events have been recorded."
+            if fmt == "json":
+                return json.dumps({"error": msg, "entries": []})
+            return msg
+
+        rows = db.execute(
+            """
+            SELECT ke.id, ke.title, ke.category, ke.priority
+            FROM knowledge_entries ke
+            LEFT JOIN entry_recall_day_log r ON ke.id = r.entry_id
+            WHERE r.entry_id IS NULL
+            ORDER BY ke.created_at DESC
+            LIMIT 50
+            """,
+        ).fetchall()
+
+        if fmt == "json":
+            entries = [
+                {"id": r["id"], "title": r["title"], "category": r["category"], "priority": r["priority"]}
+                for r in rows
+            ]
+            return json.dumps({"entries": entries, "count": len(entries)}, indent=2)
+
+        if not rows:
+            return "All knowledge entries have been recalled at least once. 🎉"
+
+        lines = [f"## Never-Recalled Entries  ({len(rows)} total)\n"]
+        lines.append(f"{'ID':<6}  {'Category':<12}  Title")
+        lines.append("-" * 60)
+        for r in rows:
+            cat = (r["category"] or "")[:12]
+            title = (r["title"] or "")[:60]
+            lines.append(f"{r['id']:<6}  {cat:<12}  {title}")
+        return "\n".join(lines)
+
+    except Exception as exc:
+        msg = f"Error reading never-recalled entries: {exc}"
+        if fmt == "json":
+            return json.dumps({"error": msg, "entries": []})
+        return msg
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 def main():
     args = sys.argv[1:]
 
@@ -3908,6 +4083,25 @@ def main():
     # Handle --wakeup mode (ultra-compact, no query needed)
     if "--wakeup" in args:
         print(generate_wakeup())
+        return
+
+    # Handle --history [--days N] mode (issue #720)
+    if "--history" in args:
+        _hist_days = 7
+        if "--days" in args:
+            _hist_idx = args.index("--days")
+            try:
+                _hist_days = int(args[_hist_idx + 1]) if _hist_idx + 1 < len(args) and not args[_hist_idx + 1].startswith("--") else 7
+            except (ValueError, IndexError):
+                _hist_days = 7
+        _hist_fmt = "json" if "--json" in args else "text"
+        print(generate_briefing_history(days=_hist_days, fmt=_hist_fmt))
+        return
+
+    # Handle --never-recalled mode (issue #720)
+    if "--never-recalled" in args:
+        _nr_fmt = "json" if "--json" in args else "text"
+        print(generate_never_recalled(fmt=_nr_fmt))
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)

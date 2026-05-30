@@ -231,6 +231,10 @@ _GROUPS: dict[str, dict[str, str]] = {
         "health": "knowledge-health.py",
         "evict": "knowledge-health.py",
         "decay": "knowledge-health.py",
+        "list": "knowledge-health.py",
+        "pin": "knowledge-health.py",
+        "unpin": "knowledge-health.py",
+        "pins": "knowledge-health.py",
     },
 }
 
@@ -980,6 +984,10 @@ def main(argv: list[str] | None = None) -> int:
             return _run(_GROUPS[cmd][sub], ["--evict-candidates"] + sub_rest)
         if cmd == "knowledge" and sub == "decay":
             return _run(_GROUPS[cmd][sub], ["--decay-confidence"] + sub_rest)
+        if cmd == "knowledge" and sub == "list":
+            return _run(_GROUPS[cmd][sub], ["--list"] + sub_rest)
+        if cmd == "knowledge" and sub in ("pin", "unpin", "pins"):
+            return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
         return _run(_GROUPS[cmd][sub], sub_rest)
 
     # Unknown

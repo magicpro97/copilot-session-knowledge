@@ -2162,11 +2162,123 @@ def run_knowledge_archive(
     }
 
 
+def cmd_list(args: list) -> None:
+    """List knowledge entries with structured filters."""
+    wing = None
+    room = None
+    tag = None
+    priority = None
+    category = None
+    limit = 20
+    since_days = None
+    as_json = "--json" in args
+
+    if "--wing" in args:
+        idx = args.index("--wing")
+        wing = args[idx + 1] if idx + 1 < len(args) else None
+    if "--room" in args:
+        idx = args.index("--room")
+        room = args[idx + 1] if idx + 1 < len(args) else None
+    if "--tag" in args:
+        idx = args.index("--tag")
+        tag = args[idx + 1] if idx + 1 < len(args) else None
+    if "--priority" in args:
+        idx = args.index("--priority")
+        priority = args[idx + 1] if idx + 1 < len(args) else None
+    if "--category" in args:
+        idx = args.index("--category")
+        category = args[idx + 1] if idx + 1 < len(args) else None
+    if "--limit" in args:
+        idx = args.index("--limit")
+        try:
+            limit = int(args[idx + 1]) if idx + 1 < len(args) else 20
+        except (ValueError, IndexError):
+            limit = 20
+    if "--since" in args:
+        idx = args.index("--since")
+        try:
+            since_days = int(args[idx + 1]) if idx + 1 < len(args) else None
+        except (ValueError, IndexError):
+            since_days = None
+
+    db = get_db()
+    try:
+        base = (
+            "SELECT ke.id, ke.title, ke.category, ke.priority, ke.wing, ke.room, ke.first_seen"
+            " FROM knowledge_entries ke"
+        )
+        where: list[str] = ["ke.deleted_at IS NULL"]
+        params: list = []
+
+        if tag:
+            base += " JOIN entry_concept_tags ect ON ke.id = ect.entry_id"
+            where.append("ect.tag = ?")
+            params.append(tag)
+        if wing:
+            where.append("ke.wing = ?")
+            params.append(wing)
+        if room:
+            where.append("ke.room = ?")
+            params.append(room)
+        if priority:
+            where.append("ke.priority = ?")
+            params.append(priority)
+        if category:
+            where.append("ke.category = ?")
+            params.append(category)
+        if since_days is not None:
+            where.append("ke.first_seen >= datetime('now', ?)")
+            params.append(f"-{since_days} days")
+
+        query = base + " WHERE " + " AND ".join(where)
+        query += " ORDER BY ke.first_seen DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = db.execute(query, params)
+        rows = cursor.fetchall()
+    finally:
+        db.close()
+
+    if as_json:
+        result = [
+            {
+                "id": row[0],
+                "title": row[1],
+                "category": row[2],
+                "priority": row[3],
+                "wing": row[4],
+                "room": row[5],
+                "first_seen": row[6],
+            }
+            for row in rows
+        ]
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if not rows:
+        print("No entries found.")
+        return
+
+    print(f"{'ID':8}  {'PRI':5}  {'CATEGORY':12}  {'TITLE':60}  WING/ROOM")
+    print("-" * 100)
+    for row in rows:
+        id_short = str(row[0] or "")[:8]
+        pri = (row[3] or "")[:5]
+        cat = (row[2] or "")[:12]
+        title = (row[1] or "")[:60]
+        wr = f"{row[4] or ''}/{row[5] or ''}".strip("/")
+        print(f"{id_short:8}  {pri:5}  {cat:12}  {title:60}  {wr}")
+
+
 def main():
     args = sys.argv[1:]
 
     if "--help" in args or "-h" in args:
         print(__doc__)
+        return
+
+    if "--list" in args:
+        cmd_list(args)
         return
 
     if "--dedup" in args:
@@ -2432,6 +2544,24 @@ def main():
             print(format_insights_report(insights))
         return
 
+    if args and args[0] == "pin":
+        if len(args) < 2:
+            print("Usage: knowledge-health.py pin <id>", file=sys.stderr)
+            sys.exit(1)
+        cmd_pin(args[1])
+        return
+
+    if args and args[0] == "unpin":
+        if len(args) < 2:
+            print("Usage: knowledge-health.py unpin <id>", file=sys.stderr)
+            sys.exit(1)
+        cmd_unpin(args[1])
+        return
+
+    if args and args[0] == "pins":
+        cmd_pins()
+        return
+
     stale_days = 30
     if "--stale" in args:
         idx = args.index("--stale")
@@ -2455,6 +2585,72 @@ def main():
         print(json.dumps(health, indent=2, ensure_ascii=False))
     else:
         print(format_report(health))
+
+
+def cmd_pin(entry_id: str) -> None:
+    """Pin an entry by id prefix: set priority='P0'."""
+    try:
+        db = get_db()
+        cur = db.execute(
+            "UPDATE knowledge_entries SET priority='P0' WHERE id LIKE ?",
+            (entry_id + "%",),
+        )
+        db.commit()
+        count = cur.rowcount
+        db.close()
+        if count == 0:
+            print(f"⚠ No entry found matching id prefix '{entry_id}'.", file=sys.stderr)
+        else:
+            print(f"📌 Pinned {count} entr(ies) matching '{entry_id}' → priority=P0")
+    except Exception as exc:
+        print(f"⚠ pin failed: {exc}", file=sys.stderr)
+
+
+def cmd_unpin(entry_id: str) -> None:
+    """Unpin an entry by id prefix: set priority='P2'."""
+    try:
+        db = get_db()
+        cur = db.execute(
+            "UPDATE knowledge_entries SET priority='P2' WHERE id LIKE ?",
+            (entry_id + "%",),
+        )
+        db.commit()
+        count = cur.rowcount
+        db.close()
+        if count == 0:
+            print(f"⚠ No entry found matching id prefix '{entry_id}'.", file=sys.stderr)
+        else:
+            print(f"🔓 Unpinned {count} entr(ies) matching '{entry_id}' → priority=P2")
+    except Exception as exc:
+        print(f"⚠ unpin failed: {exc}", file=sys.stderr)
+
+
+def cmd_pins() -> None:
+    """List all P0 pinned knowledge entries."""
+    try:
+        db = get_db()
+        rows = db.execute(
+            "SELECT id, title, category, priority, created_at FROM knowledge_entries"
+            " WHERE priority='P0' ORDER BY created_at DESC"
+        ).fetchall()
+        db.close()
+        if not rows:
+            print("📌 No pinned (P0) entries.")
+            return
+        print(f"📌 Pinned entries (P0) — {len(rows)} total:\n")
+        col_id = max(len("ID"), max(len(str(r["id"])) for r in rows))
+        col_cat = max(len("category"), max(len(str(r["category"] or "")) for r in rows))
+        col_date = 10
+        header = f"  {'ID':<{col_id}}  {'category':<{col_cat}}  {'created':<{col_date}}  title"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for r in rows:
+            title = (r["title"] or "")[:60]
+            cat = (r["category"] or "")
+            date = (r["created_at"] or "")[:10]
+            print(f"  {str(r['id']):<{col_id}}  {cat:<{col_cat}}  {date:<{col_date}}  {title}")
+    except Exception as exc:
+        print(f"⚠ pins failed: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
