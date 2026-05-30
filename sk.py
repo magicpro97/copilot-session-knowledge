@@ -148,9 +148,7 @@ _DIRECT: dict[str, CommandMeta] = {
     "statusline": CommandMeta(
         "statusline.py", "Alias: session token usage footer", ("session", "cost"), aliases=("status",)
     ),
-    "mcp": CommandMeta(
-        None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")
-    ),
+    "mcp": CommandMeta(None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -508,7 +506,6 @@ def _run_native_binary(cmd: str, extra_args: list[str]) -> int:
     return result.returncode
 
 
-
 def _run_events(extra_args: list[str]) -> int:
     """Dispatch ``sk events ...`` to events.py.
 
@@ -623,6 +620,8 @@ def _harness_check(args: list[str]) -> int:
 
     missing = []
     for cmd, meta in _DIRECT.items():
+        if meta.script is None:
+            continue  # native-binary-only command; no Python script to check
         script = str(meta)
         if not (tools_dir / script).exists():
             missing.append({"cmd": f"sk {cmd}", "script": script})

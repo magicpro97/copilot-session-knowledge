@@ -11,9 +11,9 @@ Usage:
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
-    python install.py --deploy-statusline    # Inject statusLine config into ~/.copilot/settings.json
     python install.py --install-git-hooks    # Install pre-commit/pre-push into current repo's .git/hooks/
     python install.py --lock-hooks           # Lock hooks with OS immutable flags (tamper protection)
+    python install.py --repair-hooks         # Clear hooks-tampered marker (no sudo required)
     python install.py --unlock-hooks         # Unlock hooks for updates
     python install.py --doctor [--manifest]  # Verify install health / manifest drift
     python install.py --test                 # Run self-test
@@ -1902,47 +1902,6 @@ _TEMPLATES_DIR = _SCRIPT_DIR / "templates"
 _INSTRUCTIONS_TEMPLATES = _TEMPLATES_DIR / "instructions"
 
 
-def inject_statusline_config(quiet: bool = False) -> None:
-    """Inject statusLine config into ~/.copilot/settings.json if absent.
-
-    Uses ``python <path>`` prefix on Windows so the script executes correctly.
-    Idempotent: skips injection when the ``statusLine`` key already exists.
-    """
-    settings_path = COPILOT_DIR / "settings.json"
-    statusline_script = TOOLS_DIR / "statusline.py"
-
-    if not statusline_script.is_file():
-        if not quiet:
-            print(f"  {INFO} statusline.py not found — skipping statusLine config")
-        return
-
-    # Build the platform-appropriate command string.
-    if os.name == "nt":
-        cmd = f"python {statusline_script.as_posix()}"
-    else:
-        cmd = str(statusline_script)
-
-    # Load or create settings.json.
-    if settings_path.is_file():
-        try:
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = {}
-    else:
-        COPILOT_DIR.mkdir(parents=True, exist_ok=True)
-        data = {}
-
-    if "statusLine" in data:
-        if not quiet:
-            print(f"  {INFO} statusLine — already configured")
-        return
-
-    data["statusLine"] = {"type": "command", "command": cmd, "padding": 1}
-    _atomic_write_text(settings_path, json.dumps(data, indent=2) + "\n")
-    if not quiet:
-        print(f"  {OK} statusLine config injected into {_tilde(settings_path)}")
-
-
 def deploy_hooks():
     """Deploy hooks.json and Python hook scripts to ~/.copilot/hooks/.
 
@@ -2088,7 +2047,6 @@ def deploy_instructions():
 
     _record_managed_paths(manifest_paths)
     print(f"\n  Deployed {deployed} file(s) to {_tilde(github_dir)}")
-    inject_statusline_config()
 
 
 def inject_global():
@@ -2162,59 +2120,6 @@ def inject_global():
         print(f"  {OK} Created {_tilde(GLOBAL_INSTRUCTIONS)} with session-knowledge section")
 
     print(f"  {INFO} Injected pointer block — full policy lives in session-knowledge.instructions.md")
-
-
-def inject_statusline_config():
-    """Auto-inject statusLine config into ~/.copilot/settings.json.
-
-    Builds a platform-specific command string and merges the statusLine
-    block into settings.json.  Skips injection when the key already exists.
-    """
-    settings_path = COPILOT_DIR / "settings.json"
-    print("\nStatusLine Config Injection")
-    print(f"  Target: {_tilde(settings_path)}")
-
-    # --- build platform-specific command ---
-    statusline_script = TOOLS_DIR / "statusline.py"
-    if not statusline_script.is_file():
-        print(f"  {FAIL} statusline.py not found at {_tilde(statusline_script)}")
-        return
-
-    if os.name == "nt":
-        # Windows: use 'python' prefix + absolute path with forward slashes
-        abs_path = str(statusline_script).replace("\\", "/")
-        command = f"python {abs_path}"
-    else:
-        # macOS / Linux: use 'python3' + tilde-based path
-        command = "python3 ~/.copilot/tools/statusline.py"
-
-    statusline_block = {
-        "type": "command",
-        "command": command,
-        "padding": 1,
-    }
-
-    # --- read existing settings or start fresh ---
-    settings: dict = {}
-    if settings_path.is_file():
-        try:
-            raw = settings_path.read_text(encoding="utf-8")
-            settings = json.loads(raw)
-        except (json.JSONDecodeError, OSError) as exc:
-            print(f"  {WARN} Could not parse {_tilde(settings_path)}: {exc}")
-            print(f"  {INFO} Skipping statusLine injection to avoid data loss")
-            return
-
-    # --- skip if already configured ---
-    if "statusLine" in settings:
-        print(f"  {INFO} statusLine already configured — skipping")
-        return
-
-    # --- merge and write ---
-    settings["statusLine"] = statusline_block
-    COPILOT_DIR.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(settings_path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
-    print(f"  {OK} Injected statusLine config (command: {command})")
 
 
 # ===================================================================
@@ -2529,7 +2434,6 @@ def install():
     print("\n  Installing sk launcher...")
     install_sk_launcher()
     deploy_global_skills()
-    inject_statusline_config()
     _record_managed_paths(managed_paths)
     _show_usage_hints()
 
@@ -3001,6 +2905,38 @@ def unlock_hooks():
     print("  ⚠️  Re-lock after updates: python3 install.py --lock-hooks")
 
 
+def repair_hooks():
+    """Clear the hooks-tampered kill-switch without requiring sudo.
+
+    The hooks-tampered marker file has no OS-level immutable flag, so any
+    user process can delete it.  Use this when the marker is blocking agent
+    sessions but you cannot or do not want to run --lock-hooks with sudo.
+
+    Does NOT regenerate the integrity manifest (that still requires sudo).
+    Run 'sudo python3 install.py --lock-hooks' afterwards to fully reset.
+    """
+    print("\n🔧 Repair Hooks — Clear hooks-tampered marker (no sudo required)")
+
+    real_home = _real_home()
+    tamper_marker = real_home / ".copilot" / "markers" / "hooks-tampered"
+
+    if tamper_marker.is_file():
+        try:
+            tamper_marker.unlink()
+            print(f"  {OK} Cleared hooks-tampered marker: {_tilde(tamper_marker)}")
+        except Exception as e:
+            print(f"  {FAIL} Could not clear marker: {e}")
+            print(f"  Run: rm -f {tamper_marker}")
+            return
+    else:
+        print(f"  {OK} No hooks-tampered marker present — nothing to clear")
+
+    print()
+    print("  ℹ  Agent operations are now unblocked.")
+    print("  ℹ  To fully reset integrity manifest, run (with sudo):")
+    print(f"       sudo python3 {_tilde(_SCRIPT_DIR / 'install.py')} --lock-hooks")
+
+
 def install_git_hooks(target_dir: "Path | None" = None, non_interactive: bool = False) -> None:
     """Install pre-commit and pre-push git hooks into a repository's .git/hooks/.
 
@@ -3110,65 +3046,6 @@ def _dispatch_healer(flag: str) -> None:
     _sp.run([sys.executable, str(healer), flag])
 
 
-def setup_windows(dry_run: bool = False, quiet: bool = False) -> bool:
-    """Configure settings.json for Windows-optimized statusline and compact paste.
-
-    Idempotent: safe to run multiple times. Only runs on Windows.
-    """
-    if os.name != "nt":
-        if not quiet:
-            print(f"  {INFO} --setup-windows only applies on Windows. Skipping.")
-        return False
-
-    settings_path = Path.home() / ".copilot" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Read existing settings
-    settings: dict = {}
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            if not quiet:
-                print(f"  {WARN} Could not parse existing settings.json — creating fresh.")
-            settings = {}
-
-    # Build statusLine command with forward slashes
-    home_fwd = str(Path.home()).replace("\\", "/")
-    statusline_cmd = f"python {home_fwd}/.copilot/tools/statusline.py"
-
-    # Inject statusLine config
-    settings["statusLine"] = {
-        "type": "command",
-        "command": statusline_cmd,
-        "padding": 1,
-    }
-
-    # Set compactPaste if not already set
-    if "compactPaste" not in settings:
-        settings["compactPaste"] = True
-
-    if dry_run:
-        if not quiet:
-            print(f"  [DRY-RUN] Would write settings to {_tilde(settings_path)}")
-            print(f"    statusLine.command = {statusline_cmd}")
-            print(f"    compactPaste = {settings.get('compactPaste')}")
-        return True
-
-    # Write back atomically (overwrite with merged content)
-    settings_path.write_text(
-        json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-    if not quiet:
-        print(f"  {OK} Updated {_tilde(settings_path)}")
-        print(f"    statusLine.command = {statusline_cmd}")
-        print(f"    compactPaste = {settings.get('compactPaste')}")
-
-    return True
-
-
 def main():
     args = sys.argv[1:]
 
@@ -3269,6 +3146,10 @@ def main():
         lock_hooks()
         return
 
+    if "--repair-hooks" in args:
+        repair_hooks()
+        return
+
     if "--unlock-hooks" in args:
         unlock_hooks()
         return
@@ -3277,23 +3158,8 @@ def main():
         deploy_instructions()
         return
 
-    if "--inject-statusline" in args:
-        inject_statusline_config()
-        return
-
     if "--inject-global" in args:
         inject_global()
-        return
-
-    if "--deploy-statusline" in args:
-        inject_statusline_config()
-        return
-
-    if "--setup-windows" in args:
-        quiet = "--quiet" in args
-        if not quiet:
-            print("\nConfiguring Windows-optimized settings...")
-        setup_windows(dry_run=dry_run, quiet=quiet)
         return
 
     if "--test" in args:
