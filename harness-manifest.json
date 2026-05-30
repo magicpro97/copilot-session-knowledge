@@ -656,6 +656,57 @@
         "events"
       ],
       "group": "events"
+    },
+    "harness init": {
+      "script": "harness-init.py",
+      "description": "Scaffold universal project harness (harness.yaml + .harness/ + CI workflow)",
+      "tags": [
+        "harness",
+        "setup",
+        "init",
+        "scaffold"
+      ],
+      "group": "harness"
+    },
+    "harness show": {
+      "script": "sk.py",
+      "description": "List all registered commands with metadata",
+      "tags": [
+        "harness",
+        "show",
+        "list"
+      ],
+      "group": "harness"
+    },
+    "harness check": {
+      "script": "sk.py",
+      "description": "Verify all registered scripts exist on disk",
+      "tags": [
+        "harness",
+        "check",
+        "verify"
+      ],
+      "group": "harness"
+    },
+    "harness doctor": {
+      "script": "sk.py",
+      "description": "Comprehensive self-check (scripts, DB, hooks, Python)",
+      "tags": [
+        "harness",
+        "doctor",
+        "health"
+      ],
+      "group": "harness"
+    },
+    "harness config": {
+      "script": "sk.py",
+      "description": "Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING, SK_TOOLS_DIR)",
+      "tags": [
+        "harness",
+        "config",
+        "env"
+      ],
+      "group": "harness"
     }
   }
 }

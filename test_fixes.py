@@ -10544,6 +10544,126 @@ except Exception as _e718_br:
     test("I718-17: briefing.py badge source check", False, str(_e718_br))
 
 # ---------------------------------------------------------------------------
+# === I731: sk harness init ===
+# Tests for harness-init.py: project detection, harness.yaml generation, idempotency, skeleton-only
+try:
+    import importlib.util as _iutil731
+    import tempfile as _tmpmod731
+
+    _hi731_spec = _iutil731.spec_from_file_location("harness_init", REPO / "harness-init.py")
+    _hi731 = _iutil731.module_from_spec(_hi731_spec)
+    _hi731_spec.loader.exec_module(_hi731)
+
+    # I731-1: harness-init.py exists and imports cleanly
+    test("I731-1: harness-init.py importable", True, "imported OK")
+
+    # I731-2: project detection — python-uv
+    with _tmpmod731.TemporaryDirectory() as _d731a:
+        open(os.path.join(_d731a, "pyproject.toml"), "w").close()
+        _info731 = _hi731._detect_project(_d731a)
+        test("I731-2: detect python-uv from pyproject.toml", _info731["type"] == "python-uv", str(_info731))
+
+    # I731-3: project detection — unknown
+    with _tmpmod731.TemporaryDirectory() as _d731b:
+        _info731b = _hi731._detect_project(_d731b)
+        test("I731-3: detect unknown when no markers", _info731b["type"] == "unknown", str(_info731b))
+
+    # I731-4: project detection — node (package.json)
+    with _tmpmod731.TemporaryDirectory() as _d731c:
+        open(os.path.join(_d731c, "package.json"), "w").close()
+        _info731c = _hi731._detect_project(_d731c)
+        test("I731-4: detect node from package.json", _info731c["type"] == "node", str(_info731c))
+
+    # I731-5: project detection — rust (Cargo.toml)
+    with _tmpmod731.TemporaryDirectory() as _d731d:
+        open(os.path.join(_d731d, "Cargo.toml"), "w").close()
+        _info731d = _hi731._detect_project(_d731d)
+        test("I731-5: detect rust from Cargo.toml", _info731d["type"] == "rust", str(_info731d))
+
+    # I731-6: harness-init creates harness.yaml with correct type
+    with _tmpmod731.TemporaryDirectory() as _d731e:
+        open(os.path.join(_d731e, "pyproject.toml"), "w").close()
+        _rc731 = _hi731.main(["--target", _d731e, "--yes", "--no-ci"])
+        _hy731_path = os.path.join(_d731e, "harness.yaml")
+        _hy731_exists = os.path.exists(_hy731_path)
+        _hy731_content = open(_hy731_path).read() if _hy731_exists else ""
+        test("I731-6a: harness init exits 0", _rc731 == 0, f"rc={_rc731}")
+        test("I731-6b: harness.yaml created", _hy731_exists, "harness.yaml not found")
+        test("I731-6c: harness.yaml has python-uv type", "python-uv" in _hy731_content, _hy731_content[:200])
+        test("I731-6d: harness.yaml has pytest test_cmd", "pytest" in _hy731_content, _hy731_content[:200])
+
+    # I731-7: idempotency — second run without --force fails with rc=1
+    with _tmpmod731.TemporaryDirectory() as _d731f:
+        open(os.path.join(_d731f, "pyproject.toml"), "w").close()
+        _hi731.main(["--target", _d731f, "--yes", "--no-ci"])
+        _rc731_idem = _hi731.main(["--target", _d731f, "--yes", "--no-ci"])
+        test("I731-7: second init without --force returns 1", _rc731_idem == 1, f"rc={_rc731_idem}")
+
+    # I731-8: --force overwrites existing harness.yaml
+    with _tmpmod731.TemporaryDirectory() as _d731g:
+        open(os.path.join(_d731g, "pyproject.toml"), "w").close()
+        _hi731.main(["--target", _d731g, "--yes", "--no-ci"])
+        _rc731_force = _hi731.main(["--target", _d731g, "--yes", "--no-ci", "--force"])
+        test("I731-8: --force overwrite exits 0", _rc731_force == 0, f"rc={_rc731_force}")
+
+    # I731-9: --skeleton-only skips harness.yaml
+    with _tmpmod731.TemporaryDirectory() as _d731h:
+        _rc731_skel = _hi731.main(["--target", _d731h, "--skeleton-only", "--yes"])
+        _hy731h_missing = not os.path.exists(os.path.join(_d731h, "harness.yaml"))
+        _harness_dir_731 = os.path.isdir(os.path.join(_d731h, ".harness"))
+        test("I731-9a: skeleton-only exits 0", _rc731_skel == 0, f"rc={_rc731_skel}")
+        test("I731-9b: skeleton-only no harness.yaml", _hy731h_missing, "harness.yaml should not exist")
+        test("I731-9c: skeleton-only creates .harness/", _harness_dir_731, ".harness/ not created")
+
+    # I731-10: .harness/ subdirs exist
+    with _tmpmod731.TemporaryDirectory() as _d731i:
+        _hi731.main(["--target", _d731i, "--yes", "--no-ci"])
+        test("I731-10a: .harness/tasks/ exists", os.path.isdir(os.path.join(_d731i, ".harness", "tasks")), "missing")
+        test(
+            "I731-10b: .harness/reports/ exists", os.path.isdir(os.path.join(_d731i, ".harness", "reports")), "missing"
+        )
+
+    # I731-11: manifest has harness group
+    import json as _json731
+
+    _manifest731 = _json731.load(open(REPO / "harness-manifest.json"))
+    _harness_cmds731 = [k for k, v in _manifest731["commands"].items() if v.get("group") == "harness"]
+    test("I731-11a: manifest has harness group entries", len(_harness_cmds731) > 0, str(_harness_cmds731))
+    test("I731-11b: manifest has harness init entry", "harness init" in _manifest731["commands"], str(_harness_cmds731))
+
+    # I731-12: sk.py routes init to harness-init.py
+    _sk731_src = (REPO / "sk.py").read_text(encoding="utf-8")
+    test(
+        "I731-12: sk.py routes harness init",
+        "harness-init.py" in _sk731_src and "init" in _sk731_src,
+        "routing not found",
+    )
+
+except Exception as _e731:
+    for _sfx in [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6a",
+        "6b",
+        "6c",
+        "6d",
+        "7",
+        "8",
+        "9a",
+        "9b",
+        "9c",
+        "10a",
+        "10b",
+        "11a",
+        "11b",
+        "12",
+    ]:
+        test(f"I731-{_sfx}: harness init", False, str(_e731))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
