@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """sk harness init — Scaffold a universal project harness."""
+
 import argparse
 import json
 import os
@@ -88,20 +89,13 @@ def _detect_node_pm(target_dir: str) -> str:
 
 def _detect_project(target_dir: str) -> dict:
     markers = [
-        ("pyproject.toml", "python-uv",
-         "python3 -m pytest", "python3 -m ruff check ."),
-        ("requirements.txt", "python-pip",
-         "python3 -m pytest", "python3 -m ruff check . 2>/dev/null || true"),
-        ("setup.py", "python-pip",
-         "python3 -m pytest", "python3 -m ruff check . 2>/dev/null || true"),
-        ("Cargo.toml", "rust",
-         "cargo test", "cargo clippy -- -D warnings"),
-        ("go.mod", "go",
-         "go test ./...", "golangci-lint run 2>/dev/null || go vet ./..."),
-        ("pom.xml", "java-maven",
-         "mvn test -q", "mvn checkstyle:check -q 2>/dev/null || true"),
-        ("build.gradle", "java-gradle",
-         "./gradlew test -q", "./gradlew check -q 2>/dev/null || true"),
+        ("pyproject.toml", "python-uv", "python3 -m pytest", "python3 -m ruff check ."),
+        ("requirements.txt", "python-pip", "python3 -m pytest", "python3 -m ruff check . 2>/dev/null || true"),
+        ("setup.py", "python-pip", "python3 -m pytest", "python3 -m ruff check . 2>/dev/null || true"),
+        ("Cargo.toml", "rust", "cargo test", "cargo clippy -- -D warnings"),
+        ("go.mod", "go", "go test ./...", "golangci-lint run 2>/dev/null || go vet ./..."),
+        ("pom.xml", "java-maven", "mvn test -q", "mvn checkstyle:check -q 2>/dev/null || true"),
+        ("build.gradle", "java-gradle", "./gradlew test -q", "./gradlew check -q 2>/dev/null || true"),
     ]
 
     proj_type = "unknown"
@@ -129,8 +123,7 @@ def _detect_project(target_dir: str) -> dict:
         "has_github": os.path.isdir(os.path.join(target_dir, ".github")),
         "has_copilot": os.path.isdir(os.path.join(target_dir, ".copilot")),
         "has_claude": (
-            os.path.isdir(os.path.join(target_dir, ".claude"))
-            or os.path.exists(os.path.join(target_dir, "CLAUDE.md"))
+            os.path.isdir(os.path.join(target_dir, ".claude")) or os.path.exists(os.path.join(target_dir, "CLAUDE.md"))
         ),
     }
 

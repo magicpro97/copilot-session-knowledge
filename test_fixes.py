@@ -10619,10 +10619,13 @@ try:
     with _tmpmod731.TemporaryDirectory() as _d731i:
         _hi731.main(["--target", _d731i, "--yes", "--no-ci"])
         test("I731-10a: .harness/tasks/ exists", os.path.isdir(os.path.join(_d731i, ".harness", "tasks")), "missing")
-        test("I731-10b: .harness/reports/ exists", os.path.isdir(os.path.join(_d731i, ".harness", "reports")), "missing")
+        test(
+            "I731-10b: .harness/reports/ exists", os.path.isdir(os.path.join(_d731i, ".harness", "reports")), "missing"
+        )
 
     # I731-11: manifest has harness group
     import json as _json731
+
     _manifest731 = _json731.load(open(REPO / "harness-manifest.json"))
     _harness_cmds731 = [k for k, v in _manifest731["commands"].items() if v.get("group") == "harness"]
     test("I731-11a: manifest has harness group entries", len(_harness_cmds731) > 0, str(_harness_cmds731))
@@ -10630,10 +10633,34 @@ try:
 
     # I731-12: sk.py routes init to harness-init.py
     _sk731_src = (REPO / "sk.py").read_text(encoding="utf-8")
-    test("I731-12: sk.py routes harness init", "harness-init.py" in _sk731_src and "init" in _sk731_src, "routing not found")
+    test(
+        "I731-12: sk.py routes harness init",
+        "harness-init.py" in _sk731_src and "init" in _sk731_src,
+        "routing not found",
+    )
 
 except Exception as _e731:
-    for _sfx in ["1", "2", "3", "4", "5", "6a", "6b", "6c", "6d", "7", "8", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12"]:
+    for _sfx in [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6a",
+        "6b",
+        "6c",
+        "6d",
+        "7",
+        "8",
+        "9a",
+        "9b",
+        "9c",
+        "10a",
+        "10b",
+        "11a",
+        "11b",
+        "12",
+    ]:
         test(f"I731-{_sfx}: harness init", False, str(_e731))
 
 # ---------------------------------------------------------------------------
