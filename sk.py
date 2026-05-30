@@ -139,6 +139,7 @@ _DIRECT: dict[str, CommandMeta] = {
     "skill-patch": CommandMeta("skill-patch.py", "Patch and update installed skills", ("skills", "update")),
     "skill-curator": CommandMeta("skill-curator.py", "Curate and manage skill library", ("skills",)),
     "audit-hooks": CommandMeta("audit-hooks.py", "Audit hook installation and configuration", ("hooks", "audit")),
+    "audit-log": CommandMeta("audit-hooks.py", "Alias: audit-log → hook effectiveness audit (Issue #613)", ("hooks", "audit"), aliases=("audit-hooks",)),
     "audit-instructions": CommandMeta("audit-instructions.py", "Audit agent instruction files", ("docs", "audit")),
     "improvement-signals": CommandMeta(
         "improvement-signals.py", "Surface improvement signal patterns", ("session", "analytics")
@@ -224,6 +225,12 @@ _GROUPS: dict[str, dict[str, str]] = {
     },
     "retry": {
         "stats": "retry-stats.py",
+    },
+    "knowledge": {
+        "freshness": "knowledge-health.py",
+        "health": "knowledge-health.py",
+        "evict": "knowledge-health.py",
+        "decay": "knowledge-health.py",
     },
 }
 
@@ -967,6 +974,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if cmd == "context" and sub in ("upsert", "remove"):
             return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
+        if cmd == "knowledge" and sub == "freshness":
+            return _run(_GROUPS[cmd][sub], ["--freshness"] + sub_rest)
+        if cmd == "knowledge" and sub == "evict":
+            return _run(_GROUPS[cmd][sub], ["--evict-candidates"] + sub_rest)
+        if cmd == "knowledge" and sub == "decay":
+            return _run(_GROUPS[cmd][sub], ["--decay-confidence"] + sub_rest)
         return _run(_GROUPS[cmd][sub], sub_rest)
 
     # Unknown

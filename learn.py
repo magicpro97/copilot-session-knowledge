@@ -687,6 +687,11 @@ _INJECTION_PATTERNS = [
     (re.compile(r"(?i)\bACT\s+AS\b"), "role hijacking: 'act as'"),
     (re.compile(r"(?i)\bpretend\s+(you\s+are|to\s+be)\b"), "role hijacking: 'pretend to be'"),
     (re.compile(r"(?i)\b(curl|wget|nc|ncat)\s+.*\|\s*(ba)?sh\b"), "remote code execution pattern"),
+    # Issue #691: GitHub personal/oauth/user/server/refresh access tokens
+    (
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+        "credential leak: GitHub access token",
+    ),
     # WBS-019: JWT tokens (3-part base64url separated by dots, header starts with eyJ)
     (
         re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),

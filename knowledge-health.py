@@ -10,6 +10,9 @@ Usage:
     python knowledge-health.py --score        # Just the score (0-100)
     python knowledge-health.py --json         # JSON output
     python knowledge-health.py --stale 30     # Flag entries older than 30 days
+    python knowledge-health.py --freshness    # List specific stale entries (>90d default)
+    python knowledge-health.py --freshness --days 30 --limit 20  # Tune threshold and count
+    python knowledge-health.py --freshness --json  # JSON list of stale entries
     python knowledge-health.py --recall       # Recall telemetry dashboard
     python knowledge-health.py --recall --json  # Recall telemetry as JSON
     python knowledge-health.py --sync         # Sync runtime dashboard
@@ -1586,6 +1589,56 @@ def main():
             print(json.dumps(sync_stats, indent=2, ensure_ascii=False))
         else:
             print(format_sync_report(sync_stats))
+        return
+
+    if "--freshness" in args:
+        days = 90
+        limit = 50
+        if "--days" in args:
+            idx = args.index("--days")
+            days = int(args[idx + 1]) if idx + 1 < len(args) else 90
+        if "--limit" in args:
+            idx = args.index("--limit")
+            limit = int(args[idx + 1]) if idx + 1 < len(args) else 50
+        try:
+            db = get_db()
+            rows = db.execute(
+                """
+                SELECT id, category, title, last_seen, confidence
+                FROM knowledge_entries
+                WHERE datetime(last_seen) < datetime('now', ? || ' days')
+                  AND (deleted_at IS NULL OR deleted_at = '')
+                ORDER BY last_seen ASC
+                LIMIT ?
+                """,
+                (f"-{days}", limit),
+            ).fetchall()
+            now = time.time()
+            entries = []
+            for r in rows:
+                try:
+                    from datetime import timezone as _tz
+                    ls = r[3] or ""
+                    if ls:
+                        from datetime import datetime as _dt
+                        dt = _dt.fromisoformat(ls.replace("Z", "+00:00"))
+                        age_days = int((time.time() - dt.timestamp()) / 86400)
+                    else:
+                        age_days = -1
+                except Exception:
+                    age_days = -1
+                entries.append({"id": r[0], "category": r[1], "title": r[2], "last_seen": r[3], "days_old": age_days, "confidence": r[4]})
+            if "--json" in args:
+                print(json.dumps({"days_threshold": days, "count": len(entries), "entries": entries}, indent=2, ensure_ascii=False))
+            else:
+                print(f"📅 Stale entries (not updated in >{days} days): {len(entries)}")
+                for e in entries:
+                    last = (e["last_seen"] or "never")[:10]
+                    print(f"  #{e['id']:6d}  [{e['category']:12s}]  {e['title'][:55]:<55}  {last}  ({e['days_old']}d)")
+                if not entries:
+                    print(f"  ✅ No entries older than {days} days.")
+        except Exception as exc:
+            print(f"⚠ freshness check failed: {exc}", file=sys.stderr)
         return
 
     if "--decay-confidence" in args:

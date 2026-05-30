@@ -4543,6 +4543,66 @@ except Exception as _e689:
     test("I689: pre-commit complexity advisory", False, str(_e689))
 
 # ---------------------------------------------------------------------------
+# I691: GitHub PAT injection detection in learn.py
+print("\n🔒 GitHub token injection detection (I691)")
+
+try:
+    import importlib.util as _ilu691, types as _types691
+    _learn_src691 = (REPO / "learn.py").read_text()
+    _learn_mod691 = _types691.ModuleType("learn_mod_691")
+    _learn_mod691.__file__ = str(REPO / "learn.py")
+    exec(compile(_learn_src691, str(REPO / "learn.py"), "exec"), _learn_mod691.__dict__)
+
+    _scan691 = getattr(_learn_mod691, "scan_content_for_injection", None)
+    test("I691-1: scan_content_for_injection exists in learn.py", _scan691 is not None)
+
+    if _scan691 is not None:
+        _ghp = "ghp_ABcdefGHIjklmNOpqrsTUVwxy1234567890ab"
+        _findings = _scan691("test title", f"Use {_ghp} for auth")
+        test(
+            "I691-2: test_injection_github_token_blocked — ghp_ token rejected",
+            any("GitHub" in str(f) for f in _findings),
+            f"findings={_findings}",
+        )
+        _clean = _scan691("test title", "Use environment variables for auth")
+        test("I691-3: clean content not rejected", not _clean, f"findings={_clean}")
+except Exception as _e691:
+    test("I691: GitHub token injection detection", False, str(_e691))
+
+# ---------------------------------------------------------------------------
+# I690: sk audit-log alias and sk knowledge freshness
+print("\n🔍 audit-log alias + knowledge freshness (I690)")
+
+try:
+    _al_result = subprocess.run(
+        [sys.executable, str(REPO / "sk.py"), "audit-log", "--help"],
+        capture_output=True, text=True, cwd=str(REPO),
+    )
+    test(
+        "I690-1: test_audit_log_alias — sk audit-log --help exits 0",
+        _al_result.returncode == 0,
+        f"rc={_al_result.returncode} stderr={_al_result.stderr[:100]}",
+    )
+    _kf_result = subprocess.run(
+        [sys.executable, str(REPO / "sk.py"), "knowledge", "freshness", "--days", "365", "--json"],
+        capture_output=True, text=True, cwd=str(REPO),
+    )
+    test(
+        "I690-2: test_knowledge_freshness_output — sk knowledge freshness --json exits 0",
+        _kf_result.returncode == 0,
+        f"rc={_kf_result.returncode} stderr={_kf_result.stderr[:100]}",
+    )
+    if _kf_result.returncode == 0 and _kf_result.stdout.strip():
+        _kf_data = json.loads(_kf_result.stdout)
+        test(
+            "I690-3: knowledge freshness JSON has days_threshold + entries keys",
+            "days_threshold" in _kf_data and "entries" in _kf_data,
+            f"keys={list(_kf_data.keys())}",
+        )
+except Exception as _e690:
+    test("I690: audit-log alias + knowledge freshness", False, str(_e690))
+
+# ---------------------------------------------------------------------------
 
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
