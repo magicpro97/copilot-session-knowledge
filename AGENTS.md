@@ -80,7 +80,7 @@ For `browse-ui/` changes: `cd browse-ui && pnpm typecheck && pnpm lint && pnpm f
 
 | # | Principle | Rule | Command | <!-- AI: enforcement note --> |
 |---|-----------|------|---------|-------------------------------|
-| 1 | **No-Ship-Bugs** | CODE→COMPILE→TEST→VERIFY→COMMIT. Never commit without passing tests. | `python3 test_security.py && test_fixes.py` | <!-- AI: run test_security.py && test_fixes.py before any commit --> |
+| 1 | **No-Ship-Bugs** | CODE→COMPILE→TEST→VERIFY→COMMIT. Never commit without passing tests. | `python3 test_security.py && python3 test_fixes.py` | <!-- AI: run python3 test_security.py && python3 test_fixes.py before any commit --> |
 | 2 | **Follow-Workflow** | Clarify→Plan→Execute→Verify→Close. No skipping phases. | `sk harness init` (new) · `sk harness check` (verify) | <!-- AI: check WORKFLOW.md or use PLAN→BUILD→TEST→VERIFY→COMMIT if absent --> |
 | 3 | **Quality-Over-Speed** | Multi-platform = no shortcuts. Verify on all surfaces. | `SK_HARNESS=1 sk <cmd>` | <!-- AI: run all surface gates (Python + browse-ui + Rust) before closeout --> |
 | 4 | **Tentacle-Orchestration** | ≥3 files or ≥2 modules → tentacle required. | `sk tentacle create <name> --briefing` | <!-- AI: count changed files; if ≥3, create tentacle before editing --> |
