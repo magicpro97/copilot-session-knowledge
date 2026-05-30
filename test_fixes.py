@@ -9377,15 +9377,6 @@ try:
 except Exception as _e718_br:
     test("I718-17: briefing.py badge source check", False, str(_e718_br))
 
-# ---------------------------------------------------------------------------
-if FAIL == 0:
-    print("🎉 All tests passed!")
-else:
-    print(f"⚠️  {FAIL} test(s) need attention")
-    for _fn in FAIL_NAMES:
-        print(f"    ❌ {_fn}")
-sys.exit(0 if FAIL == 0 else 1)
-
 # === I724: Session Digest+Stats ===
 print("\n🔍 I724: Session Digest+Stats")
 
@@ -9466,8 +9457,8 @@ except Exception as _e724_6:
 
 # I724-7: digest valid prefix returns all 4 sections
 try:
-    import subprocess as _sp724b
     import pathlib as _pl724b
+    import subprocess as _sp724b
     _db724 = _pl724b.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724.exists():
         import sqlite3 as _sq724b
@@ -9503,8 +9494,10 @@ except Exception as _e724_7:
 
 # I724-8: digest --json is a valid dict with required keys
 try:
+    import json as _json724c
+    import pathlib as _pl724c
+    import sqlite3 as _sq724c
     import subprocess as _sp724c
-    import pathlib as _pl724c, json as _json724c, sqlite3 as _sq724c
     _db724c = _pl724c.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724c.exists():
         _c724c = _sq724c.connect(str(_db724c))
@@ -9542,7 +9535,8 @@ except Exception as _e724_8:
 
 # I724-9: stats --by day groups correctly
 try:
-    import subprocess as _sp724d, json as _json724d
+    import json as _json724d
+    import subprocess as _sp724d
     _r724_day = _sp724d.run(
         ["python3", str(REPO / "query-session.py"), "stats",
          "--by", "day", "--since", "365", "--json"],
@@ -9573,7 +9567,8 @@ except Exception as _e724_9:
 
 # I724-10: stats --by label groups by label dimension
 try:
-    import subprocess as _sp724e, json as _json724e
+    import json as _json724e
+    import subprocess as _sp724e
     _r724_lbl = _sp724e.run(
         ["python3", str(REPO / "query-session.py"), "stats",
          "--by", "label", "--since", "365", "--json"],
@@ -9591,7 +9586,8 @@ except Exception as _e724_10:
 
 # I724-11: stats --since 7 limits to 7-day window
 try:
-    import subprocess as _sp724f, json as _json724f
+    import json as _json724f
+    import subprocess as _sp724f
     _r724_7 = _sp724f.run(
         ["python3", str(REPO / "query-session.py"), "stats",
          "--by", "day", "--since", "7", "--json"],
@@ -9611,7 +9607,8 @@ except Exception as _e724_11:
 
 # I724-12: stats --by week groups by week
 try:
-    import subprocess as _sp724g, json as _json724g
+    import json as _json724g
+    import subprocess as _sp724g
     _r724_wk = _sp724g.run(
         ["python3", str(REPO / "query-session.py"), "stats",
          "--by", "week", "--since", "365", "--json"],
@@ -9675,7 +9672,8 @@ except Exception as _e724_15:
 
 # I724-16: sk session stats routing
 try:
-    import subprocess as _sp724k, json as _json724k
+    import json as _json724k
+    import subprocess as _sp724k
     _r724_skst = _sp724k.run(
         ["python3", str(REPO / "sk.py"), "session", "stats", "--by", "day", "--since", "7", "--json"],
         capture_output=True, text=True, timeout=15
@@ -9691,7 +9689,10 @@ except Exception as _e724_16:
     test("I724-16: sk session stats routing", False, str(_e724_16))
 
 # ---------------------------------------------------------------------------
+if FAIL == 0:
     print("🎉 All tests passed!")
 else:
     print(f"⚠️  {FAIL} test(s) need attention")
+    for _fn in FAIL_NAMES:
+        print(f"    ❌ {_fn}")
 sys.exit(0 if FAIL == 0 else 1)
