@@ -1022,6 +1022,227 @@ def list_session_labels() -> None:
     db.close()
 
 
+def cmd_digest(prefix: str, as_json: bool = False) -> int:
+    """Show a digest of a session matched by ID prefix.
+
+    Outputs four sections: header, knowledge added, files touched, checkpoints.
+    Returns 0 on success, 1 if no session matches.
+    """
+    import json as _json_dig
+
+    if not DB_PATH.exists():
+        print(f"No session found matching '{prefix}'")
+        return 1
+
+    db = get_db()
+    row = db.execute("SELECT * FROM sessions WHERE id LIKE ?||'%'", (prefix,)).fetchone()
+    if not row:
+        print(f"No session found matching '{prefix}'")
+        db.close()
+        return 1
+
+    session_id = row["id"]
+
+    # Detect optional columns added by later migrations.
+    session_cols = {r[1] for r in db.execute("PRAGMA table_info(sessions)").fetchall()}
+    label = row["label"] if "label" in session_cols else ""
+    cost = row["cost_usd_est"] if "cost_usd_est" in session_cols else None
+    created_at = (row["indexed_at"] or "")[:19]
+
+    # Knowledge entries
+    ke_rows = db.execute(
+        "SELECT title, category FROM knowledge_entries WHERE session_id = ? ORDER BY id",
+        (session_id,),
+    ).fetchall()
+
+    # Files touched (table may not exist yet)
+    sf_rows = []
+    try:
+        sf_rows = db.execute(
+            "SELECT file_path, tool_name FROM session_files WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        pass
+
+    # Checkpoints (table may not exist; fall back to documents)
+    cp_rows = []
+    try:
+        cp_rows = db.execute(
+            "SELECT checkpoint_number, title FROM checkpoints WHERE session_id = ? ORDER BY checkpoint_number",
+            (session_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        try:
+            cp_rows = db.execute(
+                "SELECT seq AS checkpoint_number, title FROM documents"
+                " WHERE session_id = ? AND doc_type = 'checkpoint' ORDER BY seq",
+                (session_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            pass
+
+    db.close()
+
+    if as_json:
+        result = {
+            "id": session_id,
+            "summary": (row["summary"] or "").strip(),
+            "label": label,
+            "created_at": created_at,
+            "cost_usd_est": cost,
+            "knowledge": [{"title": r["title"], "category": r["category"]} for r in ke_rows],
+            "files": [{"file_path": r["file_path"], "tool_name": r["tool_name"]} for r in sf_rows],
+            "checkpoints": [{"checkpoint_number": r["checkpoint_number"], "title": r["title"]} for r in cp_rows],
+        }
+        print(_json_dig.dumps(result, indent=2))
+        return 0
+
+    print(f"\n{BOLD}Session: {session_id}{RESET}")
+    print(f"Summary: {(row['summary'] or '').strip()[:200]}")
+    if label:
+        print(f"Label:   {label}")
+    print(f"Created: {created_at}")
+    if cost is not None:
+        print(f"Cost:    ${cost:.4f}")
+
+    print(f"\n{BOLD}Knowledge added ({len(ke_rows)}){RESET}")
+    if ke_rows:
+        for r in ke_rows:
+            print(f"  [{r['category']:12s}] {r['title']}")
+    else:
+        print("  (none)")
+
+    print(f"\n{BOLD}Files touched ({len(sf_rows)}){RESET}")
+    if sf_rows:
+        for r in sf_rows:
+            print(f"  {(r['tool_name'] or ''):10s} {r['file_path']}")
+    else:
+        print("  (none)")
+
+    print(f"\n{BOLD}Checkpoints ({len(cp_rows)}){RESET}")
+    if cp_rows:
+        for r in cp_rows:
+            print(f"  #{r['checkpoint_number']:02d} {r['title']}")
+    else:
+        print("  (none)")
+
+    return 0
+
+
+def cmd_stats(args: list) -> int:
+    """Show session stats grouped by a chosen dimension.
+
+    Args supported: --by label|branch|day|week  --since DAYS  --limit N  --json
+    Returns 0 always (empty result is not an error).
+    """
+    import datetime as _dt_stats
+    import json as _json_stats
+
+    by = "day"
+    since_days = 30
+    limit = 20
+    as_json = "--json" in args
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--by" and i + 1 < len(args):
+            by = args[i + 1]
+            i += 2
+        elif args[i] == "--since" and i + 1 < len(args):
+            try:
+                since_days = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        elif args[i] == "--limit" and i + 1 < len(args):
+            try:
+                limit = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        else:
+            i += 1
+
+    valid_by = ("label", "branch", "day", "week")
+    if by not in valid_by:
+        print(f"Error: --by must be one of {', '.join(valid_by)}", file=sys.stderr)
+        return 1
+
+    since_date = (_dt_stats.datetime.now(_dt_stats.timezone.utc) - _dt_stats.timedelta(days=since_days)).strftime(
+        "%Y-%m-%d"
+    )
+
+    if not DB_PATH.exists():
+        if as_json:
+            print("[]")
+        else:
+            print("No sessions found (knowledge database not yet initialized).")
+        return 0
+
+    db = get_db()
+    session_cols = {r[1] for r in db.execute("PRAGMA table_info(sessions)").fetchall()}
+    has_cost = "cost_usd_est" in session_cols
+    has_label = "label" in session_cols
+    has_branch = "branch" in session_cols
+
+    if by == "label":
+        dim_expr = "COALESCE(s.label, '')" if has_label else "''"
+    elif by == "branch":
+        dim_expr = "COALESCE(s.branch, '')" if has_branch else "''"
+    elif by == "week":
+        dim_expr = "strftime('%Y-W%W', s.indexed_at)"
+    else:  # day
+        dim_expr = "substr(s.indexed_at, 1, 10)"
+
+    cost_expr = "COALESCE(SUM(s.cost_usd_est), 0.0)" if has_cost else "0.0"
+
+    sql = (
+        "SELECT " + dim_expr + " AS dimension,"
+        " COUNT(DISTINCT s.id) AS sessions,"
+        " COUNT(ke.id) AS entries,"
+        " " + cost_expr + " AS total_cost,"
+        " MAX(s.indexed_at) AS last_active"
+        " FROM sessions s"
+        " LEFT JOIN knowledge_entries ke ON ke.session_id = s.id"
+        " WHERE s.indexed_at >= ?"
+        " GROUP BY " + dim_expr + " ORDER BY last_active DESC"
+        " LIMIT ?"
+    )
+
+    rows = db.execute(sql, (since_date, limit)).fetchall()
+    db.close()
+
+    if as_json:
+        result = [
+            {
+                "dimension": r["dimension"],
+                "sessions": r["sessions"],
+                "entries": r["entries"],
+                "total_cost": r["total_cost"],
+                "last_active": r["last_active"],
+            }
+            for r in rows
+        ]
+        print(_json_stats.dumps(result, indent=2))
+        return 0
+
+    if not rows:
+        print(f"No sessions found in the last {since_days} days.")
+        return 0
+
+    print(f"\n{BOLD}Session Stats — by {by} (last {since_days} days){RESET}\n")
+    print(f"{'Dimension':25s} {'Sessions':>8s} {'Entries':>8s} {'Cost':>9s}  Last Active")
+    print(f"{'-' * 25} {'-' * 8} {'-' * 8} {'-' * 9}  {'-' * 19}")
+    for r in rows:
+        dim = (r["dimension"] or "(none)")[:25]
+        cost_str = f"${r['total_cost']:.4f}" if r["total_cost"] else "$0.0000"
+        last = (r["last_active"] or "")[:19]
+        print(f"{dim:25s} {r['sessions']:>8d} {r['entries']:>8d} {cost_str:>9s}  {last}")
+    print(f"\n{DIM}Total: {len(rows)} row(s){RESET}")
+    return 0
+
+
 def show_recent(limit: int = 10):
     """Show recently indexed documents."""
     db = get_db()
@@ -2780,6 +3001,18 @@ def _run(args: list, compact: bool = False):
             set_session_label(prefix, " ".join(rest_label[1:]))
         else:
             get_session_label(prefix)
+        return
+
+    if args and args[0] == "digest":
+        rest_digest = [a for a in args[1:] if not a.startswith("--")]
+        if not rest_digest:
+            print("Usage: query-session.py digest <id-prefix> [--json]")
+            return
+        sys.exit(cmd_digest(rest_digest[0], as_json="--json" in args))
+        return
+
+    if args and args[0] == "stats":
+        sys.exit(cmd_stats(args[1:]))
         return
 
     if "--recent" in args:

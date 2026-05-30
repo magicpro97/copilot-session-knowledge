@@ -231,6 +231,12 @@ _GROUPS: dict[str, dict[str, str]] = {
     "retry": {
         "stats": "retry-stats.py",
     },
+    "session": {
+        "label": "query-session.py",
+        "labels": "query-session.py",
+        "digest": "query-session.py",
+        "stats": "query-session.py",
+    },
     "knowledge": {
         "freshness": "knowledge-health.py",
         "health": "knowledge-health.py",
@@ -990,6 +996,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         if cmd == "context" and sub in ("upsert", "remove"):
+            return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
+        if cmd == "session" and sub in ("label", "labels", "digest", "stats"):
             return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
         if cmd == "knowledge" and sub == "freshness":
             return _run(_GROUPS[cmd][sub], ["--freshness"] + sub_rest)
