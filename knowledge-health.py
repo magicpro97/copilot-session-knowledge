@@ -2773,8 +2773,11 @@ def cmd_bulk_tag(args: list) -> None:
 
     try:
         db = get_db()
+        ke_cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        deleted_at_clause = "ke.deleted_at IS NULL" if "deleted_at" in ke_cols else ""
+
         base = "SELECT DISTINCT ke.id FROM knowledge_entries ke"
-        where: list[str] = ["ke.deleted_at IS NULL"]
+        where: list[str] = [deleted_at_clause] if deleted_at_clause else []
         params: list = []
 
         if tag:
@@ -2788,11 +2791,12 @@ def cmd_bulk_tag(args: list) -> None:
             where.append("ke.room = ?")
             params.append(room)
         if query_text:
-            where.append("(ke.title LIKE ? OR ke.content LIKE ?)")
-            like_val = "%" + query_text + "%"
+            where.append("(ke.title LIKE ? ESCAPE '\\' OR ke.content LIKE ? ESCAPE '\\')")
+            escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like_val = "%" + escaped + "%"
             params.extend([like_val, like_val])
 
-        sel_query = base + " WHERE " + " AND ".join(where)
+        sel_query = base + (" WHERE " + " AND ".join(where) if where else "")
         matched_ids = [r[0] for r in db.execute(sel_query, params).fetchall()]
         count = len(matched_ids)
 
@@ -2836,6 +2840,10 @@ def cmd_bulk_tag(args: list) -> None:
         db.close()
         print(f"✅ Applied to {count} entr(ies).")
     except Exception as exc:
+        try:
+            db.close()
+        except Exception:
+            pass
         print(f"⚠ bulk-tag failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
