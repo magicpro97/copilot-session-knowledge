@@ -9383,6 +9383,7 @@ print("\n🔍 I724: Session Digest+Stats")
 # I724-1: cmd_digest and cmd_stats exist in query-session.py
 try:
     import importlib.util as _ilu724
+
     _spec724 = _ilu724.spec_from_file_location("qs724", REPO / "query-session.py")
     _qs724 = _ilu724.module_from_spec(_spec724)
     _spec724.loader.exec_module(_qs724)
@@ -9396,10 +9397,11 @@ try:
     _qs_src724 = (REPO / "query-session.py").read_text(encoding="utf-8")
     _digest_body = _qs_src724.split("def cmd_digest")[1].split("\ndef cmd_stats")[0]
     test("I724-2a: cmd_digest uses ? placeholder", "?" in _digest_body)
-    test("I724-2b: cmd_digest no f-string SQL",
-         "f\"SELECT" not in _digest_body and "f'SELECT" not in _digest_body)
-    test("I724-2c: cmd_digest handles missing session_files gracefully",
-         "OperationalError" in _digest_body or "try" in _digest_body)
+    test("I724-2b: cmd_digest no f-string SQL", 'f"SELECT' not in _digest_body and "f'SELECT" not in _digest_body)
+    test(
+        "I724-2c: cmd_digest handles missing session_files gracefully",
+        "OperationalError" in _digest_body or "try" in _digest_body,
+    )
 except Exception as _e724_2:
     test("I724-2: cmd_digest source checks", False, str(_e724_2))
 
@@ -9407,51 +9409,53 @@ except Exception as _e724_2:
 try:
     _stats_body = _qs_src724.split("def cmd_stats")[1].split("\ndef show_recent")[0]
     test("I724-3a: cmd_stats uses ? placeholder", "?" in _stats_body)
-    test("I724-3b: cmd_stats no f-string SQL with user input",
-         "f\"SELECT" not in _stats_body and "f'SELECT" not in _stats_body)
-    test("I724-3c: cmd_stats handles --by arg",
-         '"--by"' in _stats_body or "'--by'" in _stats_body)
-    test("I724-3d: cmd_stats handles --since arg",
-         '"--since"' in _stats_body or "'--since'" in _stats_body)
-    test("I724-3e: cmd_stats handles --limit arg",
-         '"--limit"' in _stats_body or "'--limit'" in _stats_body)
+    test(
+        "I724-3b: cmd_stats no f-string SQL with user input",
+        'f"SELECT' not in _stats_body and "f'SELECT" not in _stats_body,
+    )
+    test("I724-3c: cmd_stats handles --by arg", '"--by"' in _stats_body or "'--by'" in _stats_body)
+    test("I724-3d: cmd_stats handles --since arg", '"--since"' in _stats_body or "'--since'" in _stats_body)
+    test("I724-3e: cmd_stats handles --limit arg", '"--limit"' in _stats_body or "'--limit'" in _stats_body)
 except Exception as _e724_3:
     test("I724-3: cmd_stats source checks", False, str(_e724_3))
 
 # I724-4: dispatch in _run
 try:
     _run_body = _qs_src724.split("def _run(")[1].split("\ndef main(")[0]
-    test("I724-4a: _run dispatches digest subcommand",
-         '"digest"' in _run_body or "'digest'" in _run_body)
-    test("I724-4b: _run dispatches stats subcommand",
-         '"stats"' in _run_body or "'stats'" in _run_body)
+    test("I724-4a: _run dispatches digest subcommand", '"digest"' in _run_body or "'digest'" in _run_body)
+    test("I724-4b: _run dispatches stats subcommand", '"stats"' in _run_body or "'stats'" in _run_body)
 except Exception as _e724_4:
     test("I724-4: _run dispatch checks", False, str(_e724_4))
 
 # I724-5: sk.py session namespace
 try:
     _sk_src724 = (REPO / "sk.py").read_text(encoding="utf-8")
-    test("I724-5a: sk.py has session group",
-         '"session"' in _sk_src724 or "'session'" in _sk_src724)
+    test("I724-5a: sk.py has session group", '"session"' in _sk_src724 or "'session'" in _sk_src724)
     test("I724-5b: sk.py session has digest entry", '"digest"' in _sk_src724)
     test("I724-5c: sk.py session has stats entry", '"stats"' in _sk_src724)
-    test("I724-5d: sk.py session routing passes subcommand name",
-         "[sub] + sub_rest" in _sk_src724 or "sub] + sub_rest" in _sk_src724)
+    test(
+        "I724-5d: sk.py session routing passes subcommand name",
+        "[sub] + sub_rest" in _sk_src724 or "sub] + sub_rest" in _sk_src724,
+    )
 except Exception as _e724_5:
     test("I724-5: sk.py session namespace checks", False, str(_e724_5))
 
 # I724-6: digest no-match exits 1
 try:
     import subprocess as _sp724a
+
     _r724_nm = _sp724a.run(
         ["python3", str(REPO / "query-session.py"), "digest", "zzznotexist999abc"],
-        capture_output=True, text=True, timeout=15
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-6a: digest no-match exits with code 1", _r724_nm.returncode == 1,
-         f"rc={_r724_nm.returncode}")
-    test("I724-6b: digest no-match prints helpful message",
-         "No session found matching" in _r724_nm.stdout,
-         f"stdout={_r724_nm.stdout[:100]}")
+    test("I724-6a: digest no-match exits with code 1", _r724_nm.returncode == 1, f"rc={_r724_nm.returncode}")
+    test(
+        "I724-6b: digest no-match prints helpful message",
+        "No session found matching" in _r724_nm.stdout,
+        f"stdout={_r724_nm.stdout[:100]}",
+    )
 except Exception as _e724_6:
     test("I724-6: digest no-match behavior", False, str(_e724_6))
 
@@ -9459,30 +9463,47 @@ except Exception as _e724_6:
 try:
     import pathlib as _pl724b
     import subprocess as _sp724b
+
     _db724 = _pl724b.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724.exists():
         import sqlite3 as _sq724b
+
         _c724b = _sq724b.connect(str(_db724))
-        _sid724 = _c724b.execute(
-            "SELECT id FROM sessions ORDER BY indexed_at DESC LIMIT 1"
-        ).fetchone()
+        _sid724 = _c724b.execute("SELECT id FROM sessions ORDER BY indexed_at DESC LIMIT 1").fetchone()
         _c724b.close()
         if _sid724:
             _prefix724 = _sid724[0][:8]
             _r724_ok = _sp724b.run(
                 ["python3", str(REPO / "query-session.py"), "digest", _prefix724],
-                capture_output=True, text=True, timeout=15
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
-            test("I724-7a: digest valid prefix exits 0", _r724_ok.returncode == 0,
-                 f"rc={_r724_ok.returncode} stderr={_r724_ok.stderr[:200]}")
-            test("I724-7b: digest output has Session header",
-                 "Session:" in _r724_ok.stdout, f"stdout={_r724_ok.stdout[:200]}")
-            test("I724-7c: digest output has Knowledge section",
-                 "Knowledge added" in _r724_ok.stdout, f"stdout={_r724_ok.stdout[:200]}")
-            test("I724-7d: digest output has Files touched section",
-                 "Files touched" in _r724_ok.stdout, f"stdout={_r724_ok.stdout[:200]}")
-            test("I724-7e: digest output has Checkpoints section",
-                 "Checkpoints" in _r724_ok.stdout, f"stdout={_r724_ok.stdout[:200]}")
+            test(
+                "I724-7a: digest valid prefix exits 0",
+                _r724_ok.returncode == 0,
+                f"rc={_r724_ok.returncode} stderr={_r724_ok.stderr[:200]}",
+            )
+            test(
+                "I724-7b: digest output has Session header",
+                "Session:" in _r724_ok.stdout,
+                f"stdout={_r724_ok.stdout[:200]}",
+            )
+            test(
+                "I724-7c: digest output has Knowledge section",
+                "Knowledge added" in _r724_ok.stdout,
+                f"stdout={_r724_ok.stdout[:200]}",
+            )
+            test(
+                "I724-7d: digest output has Files touched section",
+                "Files touched" in _r724_ok.stdout,
+                f"stdout={_r724_ok.stdout[:200]}",
+            )
+            test(
+                "I724-7e: digest output has Checkpoints section",
+                "Checkpoints" in _r724_ok.stdout,
+                f"stdout={_r724_ok.stdout[:200]}",
+            )
         else:
             for _lbl724 in ("I724-7a", "I724-7b", "I724-7c", "I724-7d", "I724-7e"):
                 test(f"{_lbl724}: no sessions (skip)", True, "")
@@ -9498,21 +9519,21 @@ try:
     import pathlib as _pl724c
     import sqlite3 as _sq724c
     import subprocess as _sp724c
+
     _db724c = _pl724c.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724c.exists():
         _c724c = _sq724c.connect(str(_db724c))
-        _sid724c = _c724c.execute(
-            "SELECT id FROM sessions ORDER BY indexed_at DESC LIMIT 1"
-        ).fetchone()
+        _sid724c = _c724c.execute("SELECT id FROM sessions ORDER BY indexed_at DESC LIMIT 1").fetchone()
         _c724c.close()
         if _sid724c:
             _prefix724c = _sid724c[0][:8]
             _r724_json = _sp724c.run(
                 ["python3", str(REPO / "query-session.py"), "digest", _prefix724c, "--json"],
-                capture_output=True, text=True, timeout=15
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
-            test("I724-8a: digest --json exits 0", _r724_json.returncode == 0,
-                 f"rc={_r724_json.returncode}")
+            test("I724-8a: digest --json exits 0", _r724_json.returncode == 0, f"rc={_r724_json.returncode}")
             try:
                 _parsed724 = _json724c.loads(_r724_json.stdout)
                 test("I724-8b: digest --json is a dict", isinstance(_parsed724, dict))
@@ -9537,20 +9558,27 @@ except Exception as _e724_8:
 try:
     import json as _json724d
     import subprocess as _sp724d
+
     _r724_day = _sp724d.run(
-        ["python3", str(REPO / "query-session.py"), "stats",
-         "--by", "day", "--since", "365", "--json"],
-        capture_output=True, text=True, timeout=15
+        ["python3", str(REPO / "query-session.py"), "stats", "--by", "day", "--since", "365", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-9a: stats --by day exits 0", _r724_day.returncode == 0,
-         f"rc={_r724_day.returncode} stderr={_r724_day.stderr[:200]}")
+    test(
+        "I724-9a: stats --by day exits 0",
+        _r724_day.returncode == 0,
+        f"rc={_r724_day.returncode} stderr={_r724_day.stderr[:200]}",
+    )
     try:
         _rows724d = _json724d.loads(_r724_day.stdout)
         test("I724-9b: stats --by day returns list", isinstance(_rows724d, list))
         if _rows724d:
-            test("I724-9c: stats --by day dimension looks like a date",
-                 len(_rows724d[0].get("dimension", "")) >= 8 and "-" in _rows724d[0].get("dimension", "x"),
-                 f"dimension={_rows724d[0].get('dimension')}")
+            test(
+                "I724-9c: stats --by day dimension looks like a date",
+                len(_rows724d[0].get("dimension", "")) >= 8 and "-" in _rows724d[0].get("dimension", "x"),
+                f"dimension={_rows724d[0].get('dimension')}",
+            )
             test("I724-9d: stats row has sessions key", "sessions" in _rows724d[0])
             test("I724-9e: stats row has entries key", "entries" in _rows724d[0])
         else:
@@ -9569,13 +9597,18 @@ except Exception as _e724_9:
 try:
     import json as _json724e
     import subprocess as _sp724e
+
     _r724_lbl = _sp724e.run(
-        ["python3", str(REPO / "query-session.py"), "stats",
-         "--by", "label", "--since", "365", "--json"],
-        capture_output=True, text=True, timeout=15
+        ["python3", str(REPO / "query-session.py"), "stats", "--by", "label", "--since", "365", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-10a: stats --by label exits 0", _r724_lbl.returncode == 0,
-         f"rc={_r724_lbl.returncode} stderr={_r724_lbl.stderr[:200]}")
+    test(
+        "I724-10a: stats --by label exits 0",
+        _r724_lbl.returncode == 0,
+        f"rc={_r724_lbl.returncode} stderr={_r724_lbl.stderr[:200]}",
+    )
     try:
         _rows724e = _json724e.loads(_r724_lbl.stdout)
         test("I724-10b: stats --by label returns list", isinstance(_rows724e, list))
@@ -9588,18 +9621,21 @@ except Exception as _e724_10:
 try:
     import json as _json724f
     import subprocess as _sp724f
+
     _r724_7 = _sp724f.run(
-        ["python3", str(REPO / "query-session.py"), "stats",
-         "--by", "day", "--since", "7", "--json"],
-        capture_output=True, text=True, timeout=15
+        ["python3", str(REPO / "query-session.py"), "stats", "--by", "day", "--since", "7", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-11a: stats --since 7 exits 0", _r724_7.returncode == 0,
-         f"rc={_r724_7.returncode}")
+    test("I724-11a: stats --since 7 exits 0", _r724_7.returncode == 0, f"rc={_r724_7.returncode}")
     try:
         _rows724f = _json724f.loads(_r724_7.stdout)
-        test("I724-11b: stats --since 7 returns at most 7 day buckets",
-             isinstance(_rows724f, list) and len(_rows724f) <= 7,
-             f"got {len(_rows724f)} rows")
+        test(
+            "I724-11b: stats --since 7 returns at most 7 day buckets",
+            isinstance(_rows724f, list) and len(_rows724f) <= 7,
+            f"got {len(_rows724f)} rows",
+        )
     except Exception as _ep724f:
         test("I724-11b: stats --since 7 JSON parse", False, str(_ep724f))
 except Exception as _e724_11:
@@ -9609,20 +9645,24 @@ except Exception as _e724_11:
 try:
     import json as _json724g
     import subprocess as _sp724g
+
     _r724_wk = _sp724g.run(
-        ["python3", str(REPO / "query-session.py"), "stats",
-         "--by", "week", "--since", "365", "--json"],
-        capture_output=True, text=True, timeout=15
+        ["python3", str(REPO / "query-session.py"), "stats", "--by", "week", "--since", "365", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-12a: stats --by week exits 0", _r724_wk.returncode == 0,
-         f"rc={_r724_wk.returncode}")
+    test("I724-12a: stats --by week exits 0", _r724_wk.returncode == 0, f"rc={_r724_wk.returncode}")
     try:
         _rows724g = _json724g.loads(_r724_wk.stdout)
         test("I724-12b: stats --by week returns list", isinstance(_rows724g, list))
         if _rows724g:
             _dim724g = _rows724g[0].get("dimension", "")
-            test("I724-12c: week dimension looks like week string",
-                 "W" in _dim724g or "-" in _dim724g, f"dimension={_dim724g}")
+            test(
+                "I724-12c: week dimension looks like week string",
+                "W" in _dim724g or "-" in _dim724g,
+                f"dimension={_dim724g}",
+            )
         else:
             test("I724-12c: week empty result (skip)", True, "")
     except Exception as _ep724g:
@@ -9634,12 +9674,14 @@ except Exception as _e724_12:
 # I724-13: stats invalid --by exits non-zero
 try:
     import subprocess as _sp724h
+
     _r724_inv = _sp724h.run(
         ["python3", str(REPO / "query-session.py"), "stats", "--by", "invalidoption"],
-        capture_output=True, text=True, timeout=15
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-13a: stats invalid --by exits non-zero", _r724_inv.returncode != 0,
-         f"rc={_r724_inv.returncode}")
+    test("I724-13a: stats invalid --by exits non-zero", _r724_inv.returncode != 0, f"rc={_r724_inv.returncode}")
 except Exception as _e724_13:
     test("I724-13: stats invalid --by", False, str(_e724_13))
 
@@ -9657,16 +9699,23 @@ except Exception as _e724_14:
 # I724-15: sk session digest routing (no match)
 try:
     import subprocess as _sp724i
+
     _r724_skdig = _sp724i.run(
         ["python3", str(REPO / "sk.py"), "session", "digest", "zzznotexist999"],
-        capture_output=True, text=True, timeout=15
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-15a: sk session digest no-match exits non-zero",
-         _r724_skdig.returncode != 0,
-         f"rc={_r724_skdig.returncode}")
-    test("I724-15b: sk session digest no-match prints message",
-         "No session found matching" in _r724_skdig.stdout,
-         f"stdout={_r724_skdig.stdout[:100]}")
+    test(
+        "I724-15a: sk session digest no-match exits non-zero",
+        _r724_skdig.returncode != 0,
+        f"rc={_r724_skdig.returncode}",
+    )
+    test(
+        "I724-15b: sk session digest no-match prints message",
+        "No session found matching" in _r724_skdig.stdout,
+        f"stdout={_r724_skdig.stdout[:100]}",
+    )
 except Exception as _e724_15:
     test("I724-15: sk session digest routing", False, str(_e724_15))
 
@@ -9674,12 +9723,18 @@ except Exception as _e724_15:
 try:
     import json as _json724k
     import subprocess as _sp724k
+
     _r724_skst = _sp724k.run(
         ["python3", str(REPO / "sk.py"), "session", "stats", "--by", "day", "--since", "7", "--json"],
-        capture_output=True, text=True, timeout=15
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
-    test("I724-16a: sk session stats exits 0", _r724_skst.returncode == 0,
-         f"rc={_r724_skst.returncode} stderr={_r724_skst.stderr[:200]}")
+    test(
+        "I724-16a: sk session stats exits 0",
+        _r724_skst.returncode == 0,
+        f"rc={_r724_skst.returncode} stderr={_r724_skst.stderr[:200]}",
+    )
     try:
         _rows724k = _json724k.loads(_r724_skst.stdout)
         test("I724-16b: sk session stats returns list", isinstance(_rows724k, list))
