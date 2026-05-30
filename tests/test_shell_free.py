@@ -28,6 +28,7 @@ REMOVED_SHELL_ENTRYPOINTS = {
 }
 ALLOWED_SHELL_FILES = {
     "sk-rust/install.sh",
+    "sk-rust/examples/retry-listener.sh",
 }
 
 
@@ -59,16 +60,11 @@ print("\n🐍 Python-only tooling regression")
 shell_files = sorted(
     path.relative_to(REPO).as_posix()
     for path in files
-    if path.suffix == ".sh"
-    and path.relative_to(REPO).as_posix() not in ALLOWED_SHELL_FILES
+    if path.suffix == ".sh" and path.relative_to(REPO).as_posix() not in ALLOWED_SHELL_FILES
 )
 test("repository contains no unexpected .sh files", not shell_files, ", ".join(shell_files[:10]))
 
-removed_entrypoints = sorted(
-    str(path.relative_to(REPO))
-    for path in files
-    if path.name in REMOVED_SHELL_ENTRYPOINTS
-)
+removed_entrypoints = sorted(str(path.relative_to(REPO)) for path in files if path.name in REMOVED_SHELL_ENTRYPOINTS)
 test(
     "legacy shell entrypoints are removed",
     not removed_entrypoints,
@@ -83,10 +79,7 @@ for path in files:
     except (IndexError, OSError):
         continue
     is_shell_shebang = first_line.startswith(b"#!") and (
-        b"/sh" in first_line
-        or b" sh" in first_line
-        or b"/bash" in first_line
-        or b" bash" in first_line
+        b"/sh" in first_line or b" sh" in first_line or b"/bash" in first_line or b" bash" in first_line
     )
     if is_shell_shebang:
         rel = path.relative_to(REPO).as_posix()

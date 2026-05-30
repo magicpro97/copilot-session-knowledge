@@ -620,6 +620,8 @@ def _harness_check(args: list[str]) -> int:
 
     missing = []
     for cmd, meta in _DIRECT.items():
+        if meta.script is None:
+            continue  # native-binary-only command; no Python script to check
         script = str(meta)
         if not (tools_dir / script).exists():
             missing.append({"cmd": f"sk {cmd}", "script": script})
