@@ -2828,8 +2828,7 @@ def cmd_bulk_tag(args: list) -> None:
                 ).fetchone()
                 if not existing:
                     db.execute(
-                        "INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at)"
-                        " VALUES (?,?,?,?)",
+                        "INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at) VALUES (?,?,?,?)",
                         (eid, add_tag, "bulk-tag", now_str),
                     )
 
