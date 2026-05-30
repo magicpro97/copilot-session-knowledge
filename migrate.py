@@ -1726,6 +1726,17 @@ if __name__ == "__main__":
                 "ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER",
             ],
         ),
+        # v34: issues #715/#716 — User-defined session labels for quick tagging.
+        # label: freeform short text tag (e.g. "auth-refactor", "bug-fix-week12").
+        # Empty string is the default (no label); index enables label-based listing.
+        (
+            34,
+            "session_label",
+            [
+                "ALTER TABLE sessions ADD COLUMN label TEXT DEFAULT ''",
+                "CREATE INDEX IF NOT EXISTS idx_sessions_label ON sessions(label)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

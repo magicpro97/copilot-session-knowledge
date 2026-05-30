@@ -7167,6 +7167,813 @@ try:
 except Exception as _e707_8:
     test("I707-8: _fetch_pinned_p0_entries filter", False, str(_e707_8))
 
+    test("I707-8c: P1/P2 entries excluded", len(_pinned707h) == 1, f"count={len(_pinned707h)}")
+    _db707h.close()
+except Exception as _e707_8:
+    test("I707-8: _fetch_pinned_p0_entries filter", False, str(_e707_8))
+
+# ---------------------------------------------------------------------------
+# I714: briefing --preset support
+# ---------------------------------------------------------------------------
+print("\n🔍 I714: briefing --preset support")
+
+# I714-1: BRIEFING_PRESETS dict exists with the three built-in presets
+try:
+    import importlib.util as _ilu714a
+    _br714a_spec = _ilu714a.spec_from_file_location("br714a", REPO / "briefing.py")
+    _br714a = _ilu714a.module_from_spec(_br714a_spec)  # type: ignore[arg-type]
+    _br714a_spec.loader.exec_module(_br714a)  # type: ignore[union-attr]
+    _presets714a = getattr(_br714a, "BRIEFING_PRESETS", None)
+    test("I714-1a: BRIEFING_PRESETS exists in briefing.py", _presets714a is not None)
+    test("I714-1b: daily preset present", isinstance(_presets714a, dict) and "daily" in _presets714a)
+    test("I714-1c: sprint preset present", isinstance(_presets714a, dict) and "sprint" in _presets714a)
+    test("I714-1d: debug preset present", isinstance(_presets714a, dict) and "debug" in _presets714a)
+    # Verify preset flag content
+    _daily714 = _presets714a.get("daily", []) if isinstance(_presets714a, dict) else []
+    _sprint714 = _presets714a.get("sprint", []) if isinstance(_presets714a, dict) else []
+    _debug714 = _presets714a.get("debug", []) if isinstance(_presets714a, dict) else []
+    test("I714-1e: daily includes --wakeup", "--wakeup" in _daily714, f"daily={_daily714}")
+    test("I714-1f: daily includes --days 1", "--days" in _daily714 and "1" in _daily714, f"daily={_daily714}")
+    test("I714-1g: sprint includes --days 7", "--days" in _sprint714 and "7" in _sprint714, f"sprint={_sprint714}")
+    test("I714-1h: debug includes --days 30", "--days" in _debug714 and "30" in _debug714, f"debug={_debug714}")
+except Exception as _e714_1:
+    test("I714-1: BRIEFING_PRESETS dict", False, str(_e714_1))
+
+# I714-2: unknown preset exits 1 with an error message
+try:
+    _res714b = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "--preset", "nonexistent"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    test("I714-2a: unknown preset exits 1", _res714b.returncode == 1,
+         f"returncode={_res714b.returncode}")
+    test("I714-2b: error message mentions preset name",
+         "nonexistent" in _res714b.stderr or "nonexistent" in _res714b.stdout,
+         f"stderr={_res714b.stderr[:200]!r}")
+    test("I714-2c: error message mentions known presets",
+         any(name in (_res714b.stderr + _res714b.stdout) for name in ("daily", "sprint", "debug")),
+         f"stderr={_res714b.stderr[:200]!r}")
+except Exception as _e714_2:
+    test("I714-2: unknown preset error", False, str(_e714_2))
+
+# I714-3: user-supplied flags override preset defaults (flag merging precedence)
+try:
+    import importlib.util as _ilu714c
+    _br714c_spec = _ilu714c.spec_from_file_location("br714c", REPO / "briefing.py")
+    _br714c = _ilu714c.module_from_spec(_br714c_spec)  # type: ignore[arg-type]
+    _br714c_spec.loader.exec_module(_br714c)  # type: ignore[union-attr]
+    _presets714c = _br714c.BRIEFING_PRESETS
+
+    # Simulate the preset merging logic from main():
+    # Start with user args that already include --days 14, then apply sprint preset (--days 7).
+    # The user's --days 14 should win (preset flag not injected when flag already present).
+    _user_args = ["some query", "--days", "14"]
+    _p_name714c = "sprint"
+    _p_idx714c = -1  # --preset is not in user_args (already extracted)
+    _preset_flags714c = _presets714c[_p_name714c]
+    _merged714c = list(_user_args)
+    _i714c = 0
+    while _i714c < len(_preset_flags714c):
+        _flag714c = _preset_flags714c[_i714c]
+        _has_val714c = (
+            _i714c + 1 < len(_preset_flags714c)
+            and not _preset_flags714c[_i714c + 1].startswith("--")
+        )
+        if _flag714c not in _merged714c:
+            if _has_val714c:
+                _merged714c += [_flag714c, _preset_flags714c[_i714c + 1]]
+            else:
+                _merged714c += [_flag714c]
+        _i714c += 2 if _has_val714c else 1
+
+    test("I714-3a: user --days not overridden by preset --days",
+         "--days" in _merged714c and _merged714c[_merged714c.index("--days") + 1] == "14",
+         f"merged={_merged714c}")
+    test("I714-3b: preset --days 7 not injected when user has --days",
+         _merged714c.count("--days") == 1,
+         f"merged={_merged714c}")
+
+    # Verify preset flag IS injected when user does not supply it.
+    _user_args2 = ["some query"]
+    _merged714d = list(_user_args2)
+    _i714d = 0
+    while _i714d < len(_preset_flags714c):
+        _flag714d = _preset_flags714c[_i714d]
+        _has_val714d = (
+            _i714d + 1 < len(_preset_flags714c)
+            and not _preset_flags714c[_i714d + 1].startswith("--")
+        )
+        if _flag714d not in _merged714d:
+            if _has_val714d:
+                _merged714d += [_flag714d, _preset_flags714c[_i714d + 1]]
+            else:
+                _merged714d += [_flag714d]
+        _i714d += 2 if _has_val714d else 1
+
+    test("I714-3c: preset --days injected when user omits --days",
+         "--days" in _merged714d and _merged714d[_merged714d.index("--days") + 1] == "7",
+         f"merged={_merged714d}")
+except Exception as _e714_3:
+    test("I714-3: preset flag merging precedence", False, str(_e714_3))
+
+# ---------------------------------------------------------------------------
+# I712: sk knowledge export — structured export (json/markdown/csv)
+# ---------------------------------------------------------------------------
+print("\n🔍 I712: sk knowledge export — structured export")
+
+_I712_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL DEFAULT '',
+        document_id INTEGER,
+        category TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        tags TEXT DEFAULT '',
+        confidence REAL DEFAULT 1.0,
+        occurrence_count INTEGER DEFAULT 1,
+        first_seen TEXT,
+        last_seen TEXT,
+        source TEXT DEFAULT '',
+        topic_key TEXT,
+        revision_count INTEGER DEFAULT 1,
+        content_hash TEXT,
+        wing TEXT DEFAULT '',
+        room TEXT DEFAULT '',
+        facts TEXT DEFAULT '[]',
+        est_tokens INTEGER DEFAULT 0,
+        task_id TEXT DEFAULT '',
+        affected_files TEXT DEFAULT '[]',
+        source_section TEXT DEFAULT '',
+        source_file TEXT DEFAULT '',
+        start_line INTEGER,
+        end_line INTEGER,
+        code_language TEXT DEFAULT '',
+        code_snippet TEXT DEFAULT '',
+        is_resolved INTEGER DEFAULT 0,
+        recurrence_after_briefing INTEGER DEFAULT 0,
+        deleted_at TEXT DEFAULT NULL
+    );
+"""
+
+def _make_export_db(tmp_dir):
+    from pathlib import Path as _P
+    import sqlite3 as _sq
+    db_path = _P(tmp_dir) / ".copilot" / "session-state" / "knowledge.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = _sq.connect(str(db_path))
+    db.executescript(_I712_SCHEMA)
+    db.execute("""
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES ('mistake', 'Python import error', 'Always use absolute imports', 'python,imports', 0.9,
+                '2025-01-10T00:00:00', '2025-01-15T00:00:00')
+    """)
+    db.execute("""
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES ('pattern', 'Use context managers', 'Always wrap file ops in with-blocks', 'python,files', 0.8,
+                '2025-02-01T00:00:00', '2025-02-05T00:00:00')
+    """)
+    db.execute("""
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES ('decision', 'Prefer stdlib', 'Use stdlib over third-party when possible', 'python', 0.95,
+                '2025-03-01T00:00:00', '2025-03-10T00:00:00')
+    """)
+    db.execute("""
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen, deleted_at)
+        VALUES ('mistake', 'Soft-deleted entry', 'Should not appear in export', 'test', 0.5,
+                '2024-01-01T00:00:00', '2024-01-02T00:00:00', '2025-01-01T00:00:00')
+    """)
+    db.commit()
+    db.close()
+    return db_path
+
+# I712-1: compute_knowledge_export returns correct structure
+try:
+    import importlib.util as _ilu712
+    import sqlite3 as _sq712
+    import tempfile as _tf712
+
+    _kh_spec712 = _ilu712.spec_from_file_location("khealth_i712", REPO / "knowledge-health.py")
+    _kh712 = _ilu712.module_from_spec(_kh_spec712)  # type: ignore[arg-type]
+    _kh_spec712.loader.exec_module(_kh712)  # type: ignore[union-attr]
+
+    with _tf712.TemporaryDirectory(prefix="export-test-") as _i712_tmp:
+        _i712_db = _make_export_db(_i712_tmp)
+        _orig712 = _kh712.DB_PATH
+        _kh712.DB_PATH = _i712_db
+
+        _r712 = _kh712.compute_knowledge_export()
+
+        test("I712-1a: result has required keys",
+             all(k in _r712 for k in ["format", "count", "entries", "category", "tag", "since", "limit"]),
+             f"keys={list(_r712.keys())}")
+        test("I712-1b: count matches entries length",
+             _r712["count"] == len(_r712["entries"]),
+             f"count={_r712['count']}, entries={len(_r712['entries'])}")
+        test("I712-1c: soft-deleted entries excluded",
+             not any(e.get("title") == "Soft-deleted entry" for e in _r712["entries"]),
+             f"titles={[e['title'] for e in _r712['entries']]}")
+        test("I712-1d: active entries present (3 expected)",
+             _r712["count"] == 3,
+             f"count={_r712['count']}")
+
+        # I712-2: --category filter
+        _r712_cat = _kh712.compute_knowledge_export(category="mistake")
+        test("I712-2a: category filter returns only mistakes",
+             all(e["category"] == "mistake" for e in _r712_cat["entries"]),
+             f"cats={[e['category'] for e in _r712_cat['entries']]}")
+        test("I712-2b: category filter count=1 (1 non-deleted mistake)",
+             _r712_cat["count"] == 1,
+             f"count={_r712_cat['count']}")
+
+        # I712-3: --tag filter
+        _r712_tag = _kh712.compute_knowledge_export(tag="python")
+        test("I712-3a: tag filter returns entries with python tag",
+             all("python" in (e.get("tags") or "") for e in _r712_tag["entries"]),
+             f"tags={[e.get('tags') for e in _r712_tag['entries']]}")
+        test("I712-3b: tag filter returns 3 entries (all have python tag)",
+             _r712_tag["count"] == 3,
+             f"count={_r712_tag['count']}")
+
+        # I712-4: --since filter
+        _r712_since = _kh712.compute_knowledge_export(since="2025-02-01")
+        test("I712-4a: since filter excludes older entries",
+             not any(e["title"] == "Python import error" for e in _r712_since["entries"]),
+             f"titles={[e['title'] for e in _r712_since['entries']]}")
+        test("I712-4b: since filter returns 2 entries (Feb + Mar)",
+             _r712_since["count"] == 2,
+             f"count={_r712_since['count']}")
+
+        # I712-5: --limit filter
+        _r712_lim = _kh712.compute_knowledge_export(limit=2)
+        test("I712-5: limit=2 returns 2 entries", _r712_lim["count"] == 2,
+             f"count={_r712_lim['count']}")
+
+        # I712-6: _format_export_json produces valid JSON with entries key
+        _json712 = _kh712._format_export_json(_r712)
+        try:
+            _parsed712 = json.loads(_json712)
+            test("I712-6a: JSON output is valid", True)
+            test("I712-6b: JSON has entries key", "entries" in _parsed712,
+                 f"keys={list(_parsed712.keys())}")
+            test("I712-6c: JSON entries count matches", len(_parsed712["entries"]) == 3,
+                 f"count={len(_parsed712.get('entries', []))}")
+        except json.JSONDecodeError as _je712:
+            test("I712-6: JSON valid", False, str(_je712))
+
+        # I712-7: _format_export_markdown produces markdown structure
+        _md712 = _kh712._format_export_markdown(_r712)
+        test("I712-7a: markdown starts with #", _md712.startswith("#"),
+             f"start={_md712[:40]!r}")
+        test("I712-7b: markdown contains entry titles",
+             "Python import error" in _md712 or "Use context managers" in _md712,
+             f"excerpt={_md712[:200]!r}")
+        test("I712-7c: markdown contains ## heading",
+             "\n## " in _md712,
+             f"excerpt={_md712[:300]!r}")
+        test("I712-7d: markdown contains Confidence field",
+             "**Confidence**" in _md712,
+             f"excerpt={_md712[:400]!r}")
+
+        # I712-8: _format_export_csv produces CSV with header row
+        _csv712 = _kh712._format_export_csv(_r712)
+        _csv_lines712 = [l for l in _csv712.splitlines() if l.strip()]
+        test("I712-8a: CSV has at least 2 lines (header + data)",
+             len(_csv_lines712) >= 2,
+             f"lines={len(_csv_lines712)}")
+        test("I712-8b: CSV header contains 'id,category,title'",
+             _csv_lines712[0].startswith("id,category,title"),
+             f"header={_csv_lines712[0]!r}")
+        test("I712-8c: CSV has correct row count (header + 3 entries)",
+             len(_csv_lines712) == 4,
+             f"lines={len(_csv_lines712)}")
+
+        # I712-9: CLI --export --json exits 0 and emits valid JSON
+        import subprocess as _sp712
+        import os as _os712
+        _cli712 = _sp712.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--export", "--format", "json"],
+            capture_output=True, text=True,
+            env={**_os712.environ, "SK_DB_PATH": str(_i712_db)},
+        )
+        test("I712-9a: --export --format json exits 0", _cli712.returncode == 0,
+             f"stderr={_cli712.stderr!r}")
+        try:
+            _cli712_data = json.loads(_cli712.stdout)
+            test("I712-9b: CLI JSON has entries", "entries" in _cli712_data,
+                 f"keys={list(_cli712_data.keys())}")
+        except Exception as _e712_9:
+            test("I712-9b: CLI JSON parse", False, str(_e712_9))
+
+        # I712-10: CLI --export --format markdown exits 0
+        _cli712_md = _sp712.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--export", "--format", "markdown"],
+            capture_output=True, text=True,
+            env={**_os712.environ, "SK_DB_PATH": str(_i712_db)},
+        )
+        test("I712-10a: --export --format markdown exits 0", _cli712_md.returncode == 0,
+             f"stderr={_cli712_md.stderr!r}")
+        test("I712-10b: markdown output starts with #", _cli712_md.stdout.lstrip().startswith("#"),
+             f"start={_cli712_md.stdout[:40]!r}")
+
+        # I712-11: CLI --export --format csv exits 0
+        _cli712_csv = _sp712.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--export", "--format", "csv"],
+            capture_output=True, text=True,
+            env={**_os712.environ, "SK_DB_PATH": str(_i712_db)},
+        )
+        test("I712-11a: --export --format csv exits 0", _cli712_csv.returncode == 0,
+             f"stderr={_cli712_csv.stderr!r}")
+        test("I712-11b: csv output contains header", "id,category,title" in _cli712_csv.stdout,
+             f"start={_cli712_csv.stdout[:80]!r}")
+
+        _kh712.DB_PATH = _orig712
+
+except Exception as _e712:
+    test("I712: knowledge export", False, str(_e712))
+
+# ---------------------------------------------------------------------------
+# I713: sk knowledge archive — soft-delete old entries in chunks
+# ---------------------------------------------------------------------------
+print("\n🔍 I713: sk knowledge archive — soft-delete old entries")
+
+# I713-1: _parse_older_than parses 'Nd' format
+try:
+    import importlib.util as _ilu713a
+
+    _kh_spec713a = _ilu713a.spec_from_file_location("khealth_i713a", REPO / "knowledge-health.py")
+    _kh713a = _ilu713a.module_from_spec(_kh_spec713a)  # type: ignore[arg-type]
+    _kh_spec713a.loader.exec_module(_kh713a)  # type: ignore[union-attr]
+
+    test("I713-1a: '180d' → 180", _kh713a._parse_older_than("180d") == 180,
+         f"got {_kh713a._parse_older_than('180d')}")
+    test("I713-1b: '90d' → 90", _kh713a._parse_older_than("90d") == 90,
+         f"got {_kh713a._parse_older_than('90d')}")
+    test("I713-1c: '365' (no suffix) → 365", _kh713a._parse_older_than("365") == 365,
+         f"got {_kh713a._parse_older_than('365')}")
+    test("I713-1d: '  30d  ' (whitespace) → 30", _kh713a._parse_older_than("  30d  ") == 30,
+         f"got {_kh713a._parse_older_than('  30d  ')}")
+    try:
+        _kh713a._parse_older_than("notanumber")
+        test("I713-1e: invalid raises ValueError", False, "no exception raised")
+    except ValueError:
+        test("I713-1e: invalid raises ValueError", True)
+
+except Exception as _e713_1:
+    test("I713-1: _parse_older_than", False, str(_e713_1))
+
+def _make_archive_db(tmp_dir):
+    from pathlib import Path as _P
+    import sqlite3 as _sq
+    import time as _t
+    db_path = _P(tmp_dir) / ".copilot" / "session-state" / "knowledge.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = _sq.connect(str(db_path))
+    db.executescript(_I712_SCHEMA)
+    # Entry older than 180 days
+    old_date = _t.strftime("%Y-%m-%dT00:00:00", _t.gmtime(_t.time() - 200 * 86400))
+    # Entry older than 180 days, different category
+    old_date2 = _t.strftime("%Y-%m-%dT00:00:00", _t.gmtime(_t.time() - 190 * 86400))
+    # Recent entry (should not be archived)
+    new_date = _t.strftime("%Y-%m-%dT00:00:00", _t.gmtime(_t.time() - 10 * 86400))
+    db.execute(f"""
+        INSERT INTO knowledge_entries (category, title, content, first_seen, last_seen)
+        VALUES ('mistake', 'Old mistake', 'old content', '{old_date}', '{old_date}')
+    """)
+    db.execute(f"""
+        INSERT INTO knowledge_entries (category, title, content, first_seen, last_seen)
+        VALUES ('pattern', 'Old pattern', 'old content', '{old_date2}', '{old_date2}')
+    """)
+    db.execute(f"""
+        INSERT INTO knowledge_entries (category, title, content, first_seen, last_seen)
+        VALUES ('mistake', 'Recent mistake', 'new content', '{new_date}', '{new_date}')
+    """)
+    db.commit()
+    db.close()
+    return db_path
+
+# I713-2: dry_run returns correct preview_count
+try:
+    import importlib.util as _ilu713b
+    import tempfile as _tf713b
+
+    _kh_spec713b = _ilu713b.spec_from_file_location("khealth_i713b", REPO / "knowledge-health.py")
+    _kh713b = _ilu713b.module_from_spec(_kh_spec713b)  # type: ignore[arg-type]
+    _kh_spec713b.loader.exec_module(_kh713b)  # type: ignore[union-attr]
+
+    with _tf713b.TemporaryDirectory(prefix="archive-test-") as _i713b_tmp:
+        _i713b_db = _make_archive_db(_i713b_tmp)
+        _orig713b = _kh713b.DB_PATH
+        _kh713b.DB_PATH = _i713b_db
+
+        # Dry-run: should count 2 old entries (both older than 180 days)
+        _r713b = _kh713b.run_knowledge_archive(older_than_days=180, dry_run=True)
+        test("I713-2a: result has required keys",
+             all(k in _r713b for k in ["older_than_days", "category", "dry_run", "preview_count", "archived_count"]),
+             f"keys={list(_r713b.keys())}")
+        test("I713-2b: dry_run=True in result", _r713b["dry_run"] is True,
+             f"dry_run={_r713b['dry_run']}")
+        test("I713-2c: preview_count=2 (2 old entries)", _r713b["preview_count"] == 2,
+             f"preview_count={_r713b['preview_count']}")
+        test("I713-2d: archived_count=0 (dry-run)", _r713b["archived_count"] == 0,
+             f"archived_count={_r713b['archived_count']}")
+
+        # Dry-run with category filter
+        _r713b_cat = _kh713b.run_knowledge_archive(older_than_days=180, category="mistake", dry_run=True)
+        test("I713-2e: category filter dry_run preview_count=1", _r713b_cat["preview_count"] == 1,
+             f"preview_count={_r713b_cat['preview_count']}")
+
+        _kh713b.DB_PATH = _orig713b
+
+except Exception as _e713_2:
+    test("I713-2: archive dry-run", False, str(_e713_2))
+
+# I713-3: --confirm applies soft-delete
+try:
+    import importlib.util as _ilu713c
+    import sqlite3 as _sq713c
+    import tempfile as _tf713c
+
+    _kh_spec713c = _ilu713c.spec_from_file_location("khealth_i713c", REPO / "knowledge-health.py")
+    _kh713c = _ilu713c.module_from_spec(_kh_spec713c)  # type: ignore[arg-type]
+    _kh_spec713c.loader.exec_module(_kh713c)  # type: ignore[union-attr]
+
+    with _tf713c.TemporaryDirectory(prefix="archive-apply-test-") as _i713c_tmp:
+        _i713c_db = _make_archive_db(_i713c_tmp)
+        _orig713c = _kh713c.DB_PATH
+        _kh713c.DB_PATH = _i713c_db
+
+        # Apply archive (dry_run=False)
+        _r713c = _kh713c.run_knowledge_archive(older_than_days=180, dry_run=False)
+        test("I713-3a: dry_run=False in result", _r713c["dry_run"] is False,
+             f"dry_run={_r713c['dry_run']}")
+        test("I713-3b: archived_count=2", _r713c["archived_count"] == 2,
+             f"archived_count={_r713c['archived_count']}")
+        test("I713-3c: preview_count=2", _r713c["preview_count"] == 2,
+             f"preview_count={_r713c['preview_count']}")
+
+        # Verify soft-delete in DB: deleted_at set on 2 old entries, recent entry untouched
+        _check_db713c = _sq713c.connect(str(_i713c_db))
+        _deleted = _check_db713c.execute(
+            "SELECT COUNT(*) FROM knowledge_entries WHERE deleted_at IS NOT NULL AND deleted_at != ''"
+        ).fetchone()[0]
+        _active = _check_db713c.execute(
+            "SELECT COUNT(*) FROM knowledge_entries WHERE deleted_at IS NULL OR deleted_at = ''"
+        ).fetchone()[0]
+        _check_db713c.close()
+
+        test("I713-3d: 2 entries have deleted_at set", _deleted == 2,
+             f"deleted={_deleted}")
+        test("I713-3e: 1 recent entry still active", _active == 1,
+             f"active={_active}")
+
+        # Second dry-run after archive: nothing left to preview
+        _r713c2 = _kh713c.run_knowledge_archive(older_than_days=180, dry_run=True)
+        test("I713-3f: after archive, dry-run preview_count=0", _r713c2["preview_count"] == 0,
+             f"preview_count={_r713c2['preview_count']}")
+
+        _kh713c.DB_PATH = _orig713c
+
+except Exception as _e713_3:
+    test("I713-3: archive --confirm apply", False, str(_e713_3))
+
+# I713-4: CLI --archive --dry-run (no --confirm) exits 0 with preview message
+try:
+    import importlib.util as _ilu713d
+    import subprocess as _sp713d
+    import os as _os713d
+    import tempfile as _tf713d
+
+    with _tf713d.TemporaryDirectory(prefix="archive-cli-test-") as _i713d_tmp:
+        _i713d_db = _make_archive_db(_i713d_tmp)
+
+        _cli713d = _sp713d.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--archive", "--older-than", "180d"],
+            capture_output=True, text=True,
+            env={**_os713d.environ, "SK_DB_PATH": str(_i713d_db)},
+        )
+        test("I713-4a: --archive (dry-run) exits 0", _cli713d.returncode == 0,
+             f"stderr={_cli713d.stderr!r}")
+        test("I713-4b: output mentions would be archived",
+             "would be archived" in _cli713d.stdout or "preview" in _cli713d.stdout.lower(),
+             f"stdout={_cli713d.stdout!r}")
+
+        # --json dry-run
+        _cli713d_j = _sp713d.run(
+            [sys.executable, str(REPO / "knowledge-health.py"), "--archive", "--older-than", "180d", "--json"],
+            capture_output=True, text=True,
+            env={**_os713d.environ, "SK_DB_PATH": str(_i713d_db)},
+        )
+        test("I713-4c: --archive --json exits 0", _cli713d_j.returncode == 0,
+             f"stderr={_cli713d_j.stderr!r}")
+        try:
+            _j713d = json.loads(_cli713d_j.stdout)
+            test("I713-4d: JSON has preview_count", "preview_count" in _j713d,
+                 f"keys={list(_j713d.keys())}")
+            test("I713-4e: JSON dry_run=True", _j713d.get("dry_run") is True,
+                 f"dry_run={_j713d.get('dry_run')}")
+        except Exception as _e713d_j:
+            test("I713-4d: JSON parse", False, str(_e713d_j))
+
+except Exception as _e713_4:
+    test("I713-4: archive CLI dry-run", False, str(_e713_4))
+
+# ---------------------------------------------------------------------------
+# I715: session label set/get/list (query-session.py)
+# ---------------------------------------------------------------------------
+print("\n🔍 I715: session label set/get/list")
+
+# I715-1: set_session_label and get_session_label functions exist
+try:
+    import importlib.util as _ilu715a
+    _qs715a_spec = _ilu715a.spec_from_file_location("qs715a", REPO / "query-session.py")
+    _qs715a = _ilu715a.module_from_spec(_qs715a_spec)  # type: ignore[arg-type]
+    _qs715a_spec.loader.exec_module(_qs715a)  # type: ignore[union-attr]
+    test("I715-1a: set_session_label exists", hasattr(_qs715a, "set_session_label"))
+    test("I715-1b: get_session_label exists", hasattr(_qs715a, "get_session_label"))
+    test("I715-1c: list_session_labels exists", hasattr(_qs715a, "list_session_labels"))
+except Exception as _e715_1:
+    test("I715-1: label functions exist", False, str(_e715_1))
+
+# I715-2: set_session_label writes to DB; get_session_label reads it back
+try:
+    import importlib.util as _ilu715b
+    import sqlite3 as _sq715b
+    import io as _io715b
+    import sys as _sys715b
+    import os as _os715b
+
+    _qs715b_spec = _ilu715b.spec_from_file_location("qs715b", REPO / "query-session.py")
+    _qs715b = _ilu715b.module_from_spec(_qs715b_spec)  # type: ignore[arg-type]
+    _qs715b_spec.loader.exec_module(_qs715b)  # type: ignore[union-attr]
+
+    _td715b = REPO / f".test_label715b_{_os715b.getpid()}.db"
+    _setup715b = _sq715b.connect(str(_td715b))
+    _setup715b.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT DEFAULT '',
+            total_checkpoints INTEGER DEFAULT 0, total_research INTEGER DEFAULT 0,
+            total_files INTEGER DEFAULT 0, has_plan INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot', indexed_at TEXT DEFAULT '',
+            label TEXT DEFAULT ''
+        );
+        CREATE TABLE documents (id INTEGER PRIMARY KEY);
+        INSERT INTO sessions (id, path) VALUES ('abcdef1234567890abcdef1234', '/fake');
+    """)
+    _setup715b.commit()
+    _setup715b.close()
+
+    _orig715b_db = _qs715b.DB_PATH
+    _qs715b.DB_PATH = _td715b
+
+    _qs715b.set_session_label("abcdef", "test-label")
+    _chk715b = _sq715b.connect(str(_td715b))
+    _row715b = _chk715b.execute("SELECT label FROM sessions WHERE id LIKE 'abcdef%'").fetchone()
+    _chk715b.close()
+    test("I715-2a: set_session_label writes label to DB",
+         _row715b is not None and _row715b[0] == "test-label",
+         f"label={_row715b[0] if _row715b else None!r}")
+
+    _buf715b = _io715b.StringIO()
+    _orig_stdout715b = _sys715b.stdout
+    _sys715b.stdout = _buf715b
+    _qs715b.get_session_label("abcdef")
+    _sys715b.stdout = _orig_stdout715b
+    _out715b = _buf715b.getvalue()
+    test("I715-2b: get_session_label prints label text", "test-label" in _out715b,
+         f"out={_out715b!r}")
+
+    _qs715b.set_session_label("abcdef", "")
+    _chk715b2 = _sq715b.connect(str(_td715b))
+    _row715b_cleared = _chk715b2.execute("SELECT label FROM sessions WHERE id LIKE 'abcdef%'").fetchone()
+    _chk715b2.close()
+    test("I715-2c: set_session_label clears label when empty",
+         _row715b_cleared is not None and _row715b_cleared[0] == "",
+         f"label={_row715b_cleared[0] if _row715b_cleared else None!r}")
+
+    _qs715b.DB_PATH = _orig715b_db
+    try:
+        _td715b.unlink()
+    except OSError:
+        pass
+except Exception as _e715_2:
+    test("I715-2: set/get label DB roundtrip", False, str(_e715_2))
+    try:
+        (REPO / f".test_label715b_{os.getpid()}.db").unlink()
+    except Exception:
+        pass
+
+# I715-3: list_session_labels lists only labeled sessions
+try:
+    import importlib.util as _ilu715c
+    import sqlite3 as _sq715c
+    import io as _io715c
+    import sys as _sys715c
+    import os as _os715c
+
+    _qs715c_spec = _ilu715c.spec_from_file_location("qs715c", REPO / "query-session.py")
+    _qs715c = _ilu715c.module_from_spec(_qs715c_spec)  # type: ignore[arg-type]
+    _qs715c_spec.loader.exec_module(_qs715c)  # type: ignore[union-attr]
+
+    _td715c = REPO / f".test_label715c_{_os715c.getpid()}.db"
+    _setup715c = _sq715c.connect(str(_td715c))
+    _setup715c.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT DEFAULT '',
+            source TEXT DEFAULT 'copilot',
+            indexed_at TEXT DEFAULT '2025-01-01T00:00:00',
+            label TEXT DEFAULT ''
+        );
+        INSERT INTO sessions (id, label) VALUES ('aaa111', 'sprint-1');
+        INSERT INTO sessions (id, label) VALUES ('bbb222', '');
+        INSERT INTO sessions (id, label) VALUES ('ccc333', 'auth-refactor');
+    """)
+    _setup715c.commit()
+    _setup715c.close()
+
+    _orig715c_db = _qs715c.DB_PATH
+    _qs715c.DB_PATH = _td715c
+
+    _buf715c = _io715c.StringIO()
+    _orig_stdout715c = _sys715c.stdout
+    _sys715c.stdout = _buf715c
+    _qs715c.list_session_labels()
+    _sys715c.stdout = _orig_stdout715c
+    _out715c = _buf715c.getvalue()
+
+    test("I715-3a: list_session_labels shows sprint-1", "sprint-1" in _out715c,
+         f"out={_out715c!r}")
+    test("I715-3b: list_session_labels shows auth-refactor", "auth-refactor" in _out715c,
+         f"out={_out715c!r}")
+    test("I715-3c: list_session_labels excludes unlabeled bbb222",
+         "bbb222" not in _out715c, f"out={_out715c!r}")
+
+    _qs715c.DB_PATH = _orig715c_db
+    try:
+        _td715c.unlink()
+    except OSError:
+        pass
+except Exception as _e715_3:
+    test("I715-3: list_session_labels filtering", False, str(_e715_3))
+    try:
+        (REPO / f".test_label715c_{os.getpid()}.db").unlink()
+    except Exception:
+        pass
+
+# I715-4: list_sessions() prints label suffix for labeled sessions
+try:
+    import importlib.util as _ilu715d
+    import sqlite3 as _sq715d
+    import io as _io715d
+    import sys as _sys715d
+    import os as _os715d
+
+    _qs715d_spec = _ilu715d.spec_from_file_location("qs715d", REPO / "query-session.py")
+    _qs715d = _ilu715d.module_from_spec(_qs715d_spec)  # type: ignore[arg-type]
+    _qs715d_spec.loader.exec_module(_qs715d)  # type: ignore[union-attr]
+
+    _td715d = REPO / f".test_label715d_{_os715d.getpid()}.db"
+    _setup715d = _sq715d.connect(str(_td715d))
+    _setup715d.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT DEFAULT '',
+            source TEXT DEFAULT 'copilot', summary TEXT DEFAULT 'a session',
+            total_checkpoints INTEGER DEFAULT 0, total_research INTEGER DEFAULT 0,
+            total_files INTEGER DEFAULT 0, has_plan INTEGER DEFAULT 0,
+            indexed_at TEXT DEFAULT '2025-01-01T00:00:00', label TEXT DEFAULT ''
+        );
+        CREATE TABLE documents (id INTEGER PRIMARY KEY);
+        INSERT INTO sessions (id, label) VALUES ('labeled000session', 'mytag');
+        INSERT INTO sessions (id, label) VALUES ('unlabeled00session', '');
+    """)
+    _setup715d.commit()
+    _setup715d.close()
+
+    _orig715d_db = _qs715d.DB_PATH
+    _qs715d.DB_PATH = _td715d
+
+    _buf715d = _io715d.StringIO()
+    _orig_stdout715d = _sys715d.stdout
+    _sys715d.stdout = _buf715d
+    _qs715d.list_sessions()
+    _sys715d.stdout = _orig_stdout715d
+    _out715d = _buf715d.getvalue()
+
+    test("I715-4a: list_sessions shows [mytag] for labeled session",
+         "[mytag]" in _out715d, f"out={_out715d!r}")
+    test("I715-4b: list_sessions has no bracket for unlabeled",
+         "[" not in _out715d.split("unlabeled00..")[1] if "unlabeled00.." in _out715d else True,
+         f"out={_out715d!r}")
+
+    _qs715d.DB_PATH = _orig715d_db
+    try:
+        _td715d.unlink()
+    except OSError:
+        pass
+except Exception as _e715_4:
+    test("I715-4: list_sessions label suffix", False, str(_e715_4))
+    try:
+        (REPO / f".test_label715d_{os.getpid()}.db").unlink()
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
+# I716: watch --stats output structure (watch-sessions.py)
+# ---------------------------------------------------------------------------
+print("\n🔍 I716: watch --stats output structure")
+
+# I716-1: print_stats function exists in watch-sessions.py
+try:
+    import importlib.util as _ilu716a
+    _ws716a_spec = _ilu716a.spec_from_file_location("ws716a", REPO / "watch-sessions.py")
+    _ws716a = _ilu716a.module_from_spec(_ws716a_spec)  # type: ignore[arg-type]
+    _ws716a_spec.loader.exec_module(_ws716a)  # type: ignore[union-attr]
+    test("I716-1a: print_stats function exists", hasattr(_ws716a, "print_stats"))
+    test("I716-1b: print_stats is callable", callable(getattr(_ws716a, "print_stats", None)))
+except Exception as _e716_1:
+    test("I716-1: print_stats exists", False, str(_e716_1))
+
+# I716-2: print_stats outputs expected fields when DB exists
+try:
+    import importlib.util as _ilu716b
+    import sqlite3 as _sq716b
+    import io as _io716b
+    import sys as _sys716b
+    import tempfile as _tf716b
+    import os as _os716b
+
+    _ws716b_spec = _ilu716b.spec_from_file_location("ws716b", REPO / "watch-sessions.py")
+    _ws716b = _ilu716b.module_from_spec(_ws716b_spec)  # type: ignore[arg-type]
+    _ws716b_spec.loader.exec_module(_ws716b)  # type: ignore[union-attr]
+
+    # Create a temporary DB with sessions data
+    _td716b = REPO / f".test_watch_stats_{_os716b.getpid()}.db"
+    _db716b = _sq716b.connect(str(_td716b))
+    _db716b.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            path TEXT DEFAULT '',
+            source TEXT DEFAULT 'copilot',
+            indexed_at TEXT DEFAULT (datetime('now'))
+        );
+        INSERT INTO sessions (id, source) VALUES ('sess-a', 'copilot');
+        INSERT INTO sessions (id, source) VALUES ('sess-b', 'claude');
+    """)
+    _db716b.commit()
+    _db716b.close()
+
+    # Patch DB_PATH to point to our temp DB
+    _orig_db716b = _ws716b.DB_PATH
+    _ws716b.DB_PATH = _td716b
+
+    _buf716b = _io716b.StringIO()
+    _orig_stdout716b = _sys716b.stdout
+    _sys716b.stdout = _buf716b
+    try:
+        _ws716b.print_stats()
+    finally:
+        _sys716b.stdout = _orig_stdout716b
+
+    _out716b = _buf716b.getvalue()
+    _ws716b.DB_PATH = _orig_db716b
+
+    test("I716-2a: print_stats prints Total sessions", "Total sessions indexed" in _out716b or "total" in _out716b.lower(),
+         f"out={_out716b!r}")
+    test("I716-2b: print_stats prints today count", "today" in _out716b.lower(),
+         f"out={_out716b!r}")
+    test("I716-2c: print_stats prints week count", "week" in _out716b.lower(),
+         f"out={_out716b!r}")
+    test("I716-2d: print_stats prints last indexed", "last indexed" in _out716b.lower() or "Last indexed" in _out716b,
+         f"out={_out716b!r}")
+    test("I716-2e: print_stats prints source breakdown", "copilot" in _out716b or "Source" in _out716b,
+         f"out={_out716b!r}")
+    test("I716-2f: print_stats prints backlog", "backlog" in _out716b.lower() or "Backlog" in _out716b,
+         f"out={_out716b!r}")
+
+    # Cleanup temp DB
+    try:
+        _td716b.unlink()
+    except OSError:
+        pass
+except Exception as _e716_2:
+    test("I716-2: print_stats output structure", False, str(_e716_2))
+    try:
+        _td716b.unlink()
+    except Exception:
+        pass
+
+# I716-3: --stats in watch-sessions.py main arg list (string check)
+try:
+    _ws_src716c = (REPO / "watch-sessions.py").read_text(encoding="utf-8")
+    test("I716-3a: --stats flag handled in watch-sessions.py", '"--stats"' in _ws_src716c or "'--stats'" in _ws_src716c,
+         "no --stats string found")
+    test("I716-3b: print_stats function defined in watch-sessions.py", "def print_stats" in _ws_src716c,
+         "def print_stats not found")
+except Exception as _e716_3:
+    test("I716-3: --stats source check", False, str(_e716_3))
+
 # ---------------------------------------------------------------------------
     print("🎉 All tests passed!")
 else:

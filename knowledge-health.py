@@ -29,8 +29,20 @@ Usage:
     python knowledge-health.py --diff --since 2024-01-01  # Diff since a specific date
     python knowledge-health.py --diff --days 30           # Diff over the last 30 days
     python knowledge-health.py --diff --json              # JSON output of diff stats
+    python knowledge-health.py --export                   # Export knowledge entries (JSON default)
+    python knowledge-health.py --export --format markdown # Export as Markdown
+    python knowledge-health.py --export --format csv      # Export as CSV
+    python knowledge-health.py --export --category mistake --limit 50  # Filter by category
+    python knowledge-health.py --export --tag python      # Filter by tag
+    python knowledge-health.py --export --since 2024-01-01  # Filter by creation date
+    python knowledge-health.py --export --output entries.json  # Write to file
+    python knowledge-health.py --archive --older-than 180d  # Archive entries older than 180 days (dry-run)
+    python knowledge-health.py --archive --older-than 180d --confirm  # Apply archive
+    python knowledge-health.py --archive --older-than 90d --category mistake  # Filter by category
 """
 
+import csv
+import io
 import json
 import os
 import re
@@ -1912,6 +1924,244 @@ def format_diff_report(result: dict) -> str:
     return "\n".join(lines)
 
 
+def compute_knowledge_export(
+    fmt: str = "json",
+    category: str | None = None,
+    tag: str | None = None,
+    limit: int = 500,
+    since: str | None = None,
+) -> dict:
+    """Query knowledge entries with optional filters and return structured rows.
+
+    Args:
+        fmt:      Output format hint (json|markdown|csv) — stored in result for callers.
+        category: Restrict to a single category (e.g. 'mistake').
+        tag:      Restrict to entries whose tags column contains this value.
+        limit:    Maximum number of rows to return (default 500).
+        since:    ISO date string ``YYYY-MM-DD``; only entries with first_seen >= this date.
+
+    Returns a dict with:
+        format, category, tag, since, limit, count, entries (list of dicts).
+    """
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+    conditions: list[str] = [f"1=1 {_nd}"]
+    params: list = []
+
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    if tag:
+        conditions.append("(',' || tags || ',' LIKE '%,' || ? || ',%' OR tags = ?)")
+        params.append(tag)
+        params.append(tag)
+
+    if since:
+        conditions.append("first_seen >= ?")
+        params.append(since)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    try:
+        rows = db.execute(
+            f"""
+            SELECT id, session_id, category, title, content, tags,
+                   confidence, occurrence_count, first_seen, last_seen,
+                   wing, room, affected_files, facts, est_tokens, task_id,
+                   source_file, start_line, end_line
+            FROM knowledge_entries
+            WHERE {where}
+            ORDER BY confidence DESC, first_seen DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        db.close()
+        return {"format": fmt, "category": category, "tag": tag, "since": since, "limit": limit, "count": 0, "entries": []}
+
+    db.close()
+
+    _JSON_ARRAY_FIELDS = ("affected_files", "facts")
+    entries = []
+    for r in rows:
+        d = dict(r)
+        for field in _JSON_ARRAY_FIELDS:
+            if field in d and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (ValueError, TypeError):
+                    pass
+        entries.append(d)
+
+    return {
+        "format": fmt,
+        "category": category,
+        "tag": tag,
+        "since": since,
+        "limit": limit,
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+def _format_export_json(result: dict) -> str:
+    """Serialize export result as JSON string."""
+    output = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+    return output
+
+
+def _format_export_markdown(result: dict) -> str:
+    """Render export result as Markdown."""
+    entries = result.get("entries", [])
+    cat_label = (result.get("category") or "all").title()
+    lines = [f"# Knowledge Export — {cat_label}\n"]
+    if result.get("since"):
+        lines.append(f"_Entries since {result['since']}_\n")
+    lines.append(f"_{len(entries)} entries_\n")
+    for i, e in enumerate(entries, 1):
+        title = e.get("title") or "(untitled)"
+        category = e.get("category") or ""
+        confidence = e.get("confidence") or 0.0
+        tags = e.get("tags") or ""
+        first_seen = (e.get("first_seen") or "")[:10]
+        content = e.get("content") or ""
+        lines.append(f"## {i}. {title}\n")
+        lines.append(f"- **Category**: {category}")
+        lines.append(f"- **Confidence**: {float(confidence):.2f}")
+        if tags:
+            lines.append(f"- **Tags**: {tags}")
+        if first_seen:
+            lines.append(f"- **First seen**: {first_seen}")
+        lines.append(f"\n{content[:1000]}\n")
+        lines.append("---\n")
+    return "\n".join(lines)
+
+
+def _format_export_csv(result: dict) -> str:
+    """Render export result as CSV string."""
+    entries = result.get("entries", [])
+    buf = io.StringIO()
+    fieldnames = ["id", "category", "title", "confidence", "tags", "first_seen", "last_seen", "content"]
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
+    writer.writeheader()
+    for e in entries:
+        row = {k: e.get(k, "") for k in fieldnames}
+        # Truncate long content for CSV readability
+        if isinstance(row.get("content"), str) and len(row["content"]) > 500:
+            row["content"] = row["content"][:500] + "…"
+        writer.writerow(row)
+    return buf.getvalue()
+
+
+def _parse_older_than(value: str) -> int:
+    """Parse an 'Nd' age spec into integer days.  e.g. '180d' → 180, '90' → 90."""
+    v = value.strip().lower()
+    if v.endswith("d"):
+        v = v[:-1]
+    try:
+        return max(1, int(v))
+    except ValueError:
+        raise ValueError(f"Cannot parse --older-than {value!r}: expected integer or 'Nd' (e.g. '180d')")
+
+
+def run_knowledge_archive(
+    older_than_days: int = 180,
+    category: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Soft-delete knowledge entries older than *older_than_days* days.
+
+    Uses the ``first_seen`` column as the creation timestamp.
+    Operates in chunks of 500 to avoid locking the DB for long periods.
+
+    Args:
+        older_than_days: Archive entries whose first_seen is older than this many days.
+        category:        Restrict to a single category; None means all categories.
+        dry_run:         When True, only counts matching entries (no writes).
+
+    Returns a dict with:
+        older_than_days, category, dry_run, preview_count, archived_count.
+    """
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+
+    if "deleted_at" not in _ke_cols:
+        db.close()
+        return {
+            "older_than_days": older_than_days,
+            "category": category,
+            "dry_run": dry_run,
+            "preview_count": 0,
+            "archived_count": 0,
+            "error": "deleted_at column not present; soft-delete migration not applied",
+        }
+
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - older_than_days * 86400))
+
+    conditions: list[str] = ["first_seen < ?", "first_seen IS NOT NULL", "first_seen != ''", "(deleted_at IS NULL)"]
+    params: list = [cutoff]
+
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    where = " AND ".join(conditions)
+
+    # Preview count
+    count_row = db.execute(
+        f"SELECT COUNT(*) FROM knowledge_entries WHERE {where}",
+        params,
+    ).fetchone()
+    preview_count = int(count_row[0] if count_row else 0)
+
+    if dry_run or preview_count == 0:
+        db.close()
+        return {
+            "older_than_days": older_than_days,
+            "category": category,
+            "dry_run": dry_run,
+            "preview_count": preview_count,
+            "archived_count": 0,
+        }
+
+    # Batch UPDATE in chunks of 500
+    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    archived_total = 0
+    chunk_size = 500
+
+    while True:
+        id_rows = db.execute(
+            f"SELECT id FROM knowledge_entries WHERE {where} LIMIT ?",
+            params + [chunk_size],
+        ).fetchall()
+        if not id_rows:
+            break
+        ids = [r[0] for r in id_rows]
+        placeholders = ",".join("?" * len(ids))
+        db.execute(
+            f"UPDATE knowledge_entries SET deleted_at = ? WHERE id IN ({placeholders})",
+            [now_ts] + ids,
+        )
+        db.commit()
+        archived_total += len(ids)
+        if len(ids) < chunk_size:
+            break
+
+    db.close()
+    return {
+        "older_than_days": older_than_days,
+        "category": category,
+        "dry_run": False,
+        "preview_count": preview_count,
+        "archived_count": archived_total,
+    }
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1976,7 +2226,101 @@ def main():
             print(f"⚠ diff failed: {exc}", file=sys.stderr)
         return
 
-    if "--recall" in args:
+    if "--archive" in args:
+        older_than_str = "180d"
+        if "--older-than" in args:
+            idx = args.index("--older-than")
+            older_than_str = args[idx + 1] if idx + 1 < len(args) else "180d"
+        category = None
+        if "--category" in args:
+            idx = args.index("--category")
+            category = args[idx + 1] if idx + 1 < len(args) else None
+        dry_run = "--confirm" not in args
+
+        try:
+            days = _parse_older_than(older_than_str)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+
+        result = run_knowledge_archive(older_than_days=days, category=category, dry_run=dry_run)
+
+        if "--json" in args:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            cat_label = category or "all"
+            if result.get("error"):
+                print(f"⚠ archive unavailable: {result['error']}", file=sys.stderr)
+            elif dry_run:
+                print(
+                    f"📦 Archive preview  (--older-than {older_than_str}, category={cat_label}):\n"
+                    f"   {result['preview_count']} entr(ies) would be archived.\n"
+                    f"   Run with --confirm to apply."
+                )
+            else:
+                print(
+                    f"✅ Archived {result['archived_count']} entr(ies)  "
+                    f"(older-than={older_than_str}, category={cat_label})"
+                )
+        return
+
+    if "--export" in args:
+        fmt = "json"
+        if "--format" in args:
+            idx = args.index("--format")
+            fmt = args[idx + 1] if idx + 1 < len(args) else "json"
+        category = None
+        if "--category" in args:
+            idx = args.index("--category")
+            category = args[idx + 1] if idx + 1 < len(args) else None
+        tag = None
+        if "--tag" in args:
+            idx = args.index("--tag")
+            tag = args[idx + 1] if idx + 1 < len(args) else None
+        limit = 500
+        if "--limit" in args:
+            idx = args.index("--limit")
+            try:
+                limit = int(args[idx + 1]) if idx + 1 < len(args) else 500
+            except (ValueError, IndexError):
+                limit = 500
+        since = None
+        if "--since" in args:
+            idx = args.index("--since")
+            since = args[idx + 1] if idx + 1 < len(args) else None
+        output_file = None
+        if "--output" in args:
+            idx = args.index("--output")
+            output_file = args[idx + 1] if idx + 1 < len(args) else None
+
+        try:
+            result = compute_knowledge_export(fmt=fmt, category=category, tag=tag, limit=limit, since=since)
+        except Exception as exc:
+            print(f"⚠ export failed: {exc}", file=sys.stderr)
+            return
+
+        if fmt == "markdown":
+            text = _format_export_markdown(result)
+        elif fmt == "csv":
+            text = _format_export_csv(result)
+        else:
+            text = _format_export_json(result)
+
+        if output_file:
+            try:
+                Path(output_file).write_text(text, encoding="utf-8")
+                print(f"✅ Exported {result['count']} entr(ies) to {output_file}")
+            except OSError as exc:
+                print(f"⚠ Could not write {output_file}: {exc}", file=sys.stderr)
+        else:
+            try:
+                print(text)
+            except UnicodeEncodeError:
+                sys.stdout.buffer.write(text.encode("utf-8"))
+                sys.stdout.buffer.write(b"\n")
+        return
+
+
         recall_stats = compute_recall_stats()
         if "--json" in args:
             print(json.dumps(recall_stats, indent=2, ensure_ascii=False))

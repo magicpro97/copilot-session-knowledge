@@ -13,6 +13,7 @@ Usage:
     python watch-sessions.py --daemon         # Run as background process
     python watch-sessions.py --changed-only   # Print changed files, full re-extract
     python watch-sessions.py --install-hint   # Print auto-start setup instructions
+    python watch-sessions.py --stats          # Show indexing statistics and exit
 
 Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 """
@@ -448,6 +449,69 @@ def print_install_hint():
         print("WantedBy=default.target")
 
 
+def print_stats() -> None:
+    """Print watch indexing statistics from the DB and exit."""
+    if not DB_PATH.exists():
+        print(f"[watch] DB not found at {DB_PATH}")
+        print("[watch] Run 'sk index build' first.")
+        return
+
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+
+        # Total sessions and last indexed timestamp
+        row_total = db.execute("SELECT COUNT(*) as total, MAX(indexed_at) as last_indexed FROM sessions").fetchone()
+        total_sessions = row_total["total"] if row_total else 0
+        last_indexed = row_total["last_indexed"] if row_total else None
+
+        # Sessions indexed today
+        today_count = db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE date(indexed_at) = date('now')"
+        ).fetchone()[0]
+
+        # Sessions indexed this week (last 7 days)
+        week_count = db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE indexed_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+
+        # Source breakdown
+        source_rows = db.execute(
+            "SELECT COALESCE(source,'copilot') as source, COUNT(*) as cnt"
+            " FROM sessions GROUP BY COALESCE(source,'copilot') ORDER BY cnt DESC"
+        ).fetchall()
+
+        # Backlog estimate: files in watch dirs not yet in sessions table
+        watch_dirs = [root for _, root in KNOWN_HOSTS if root.exists()]
+        known_paths = set(
+            row[0] for row in db.execute("SELECT path FROM sessions").fetchall()
+        )
+        db.close()
+
+        backlog = 0
+        for base_dir in watch_dirs:
+            if not base_dir.exists():
+                continue
+            for session_dir in base_dir.iterdir():
+                if not session_dir.is_dir() or session_dir.name.startswith("."):
+                    continue
+                if str(session_dir) not in known_paths:
+                    backlog += 1
+
+        print("[watch] --- Indexing Statistics ---")
+        print(f"[watch] Total sessions indexed : {total_sessions}")
+        print(f"[watch] Indexed today          : {today_count}")
+        print(f"[watch] Indexed this week      : {week_count}")
+        print(f"[watch] Last indexed           : {last_indexed or 'never'}")
+        print("[watch] Source breakdown       :")
+        for src_row in source_rows:
+            print(f"[watch]   {src_row['source']:<12} {src_row['cnt']}")
+        print(f"[watch] Backlog estimate       : {backlog} session dir(s) not yet indexed")
+        print(f"[watch] DB path                : {DB_PATH}")
+    except Exception as e:
+        print(f"[watch] stats error: {e}", file=sys.stderr)
+
+
 def _adaptive_poll_interval(file_signatures: dict) -> int:
     """Compute next poll interval based on most recently modified session file.
 
@@ -501,6 +565,9 @@ def main():
         elif args[i] == "--install-hint":
             install_hint = True
             i += 1
+        elif args[i] == "--stats":
+            print_stats()
+            return
         elif args[i] in ("--help", "-h"):
             print(__doc__)
             return

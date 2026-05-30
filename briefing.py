@@ -3843,8 +3843,49 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text", wit
     return output
 
 
+# Built-in briefing presets (issue #714).
+# Each preset maps a name to a list of CLI flags that are injected into args
+# before the rest of main() parses them.  Flags already supplied by the caller
+# take precedence — preset values are only injected when the flag is absent.
+BRIEFING_PRESETS: dict[str, list[str]] = {
+    "daily":  ["--wakeup", "--pinned", "--days", "1"],
+    "sprint": ["--days", "7"],
+    "debug":  ["--days", "30"],
+}
+
+
 def main():
     args = sys.argv[1:]
+
+    # ── --preset <name>: inject built-in preset flags (issue #714) ───────────
+    # Processed before any other flag so preset defaults are established early.
+    # Caller-supplied flags take precedence: a preset flag is only appended when
+    # the same flag is not already present in args.
+    if "--preset" in args:
+        _p_idx = args.index("--preset")
+        _p_name = args[_p_idx + 1] if _p_idx + 1 < len(args) else ""
+        if not _p_name or _p_name not in BRIEFING_PRESETS:
+            _known = ", ".join(sorted(BRIEFING_PRESETS))
+            print(f"Error: unknown preset '{_p_name}'. Known presets: {_known}", file=sys.stderr)
+            sys.exit(1)
+        # Remove --preset <name> from args.
+        args = args[:_p_idx] + args[_p_idx + 2 :]
+        # Append preset flags not already supplied by the caller.
+        _preset_flags = BRIEFING_PRESETS[_p_name]
+        _i = 0
+        while _i < len(_preset_flags):
+            _flag = _preset_flags[_i]
+            # Determine if the next token is a value (not a flag).
+            _has_value = (
+                _i + 1 < len(_preset_flags) and not _preset_flags[_i + 1].startswith("--")
+            )
+            if _flag not in args:
+                if _has_value:
+                    args = args + [_flag, _preset_flags[_i + 1]]
+                else:
+                    args = args + [_flag]
+            _i += 2 if _has_value else 1
+    # ── end --preset ─────────────────────────────────────────────────────────
 
     # ── Level 0 skill index (issue #118): detect --session-start early ──────
     # Strip the flag so it is never treated as a query term by later argument

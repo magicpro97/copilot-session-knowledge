@@ -905,7 +905,8 @@ def list_sessions(source_filter: str = None):
     sql = """
         SELECT id, total_checkpoints, total_research, total_files, has_plan,
                SUBSTR(summary, 1, 80) as summary,
-               COALESCE(source, 'copilot') as source
+               COALESCE(source, 'copilot') as source,
+               COALESCE(label, '') as label
         FROM sessions
     """
     params = []
@@ -919,9 +920,10 @@ def list_sessions(source_filter: str = None):
         plan = "Yes" if row["has_plan"] else "-"
         summary = (row["summary"] or "(no summary)")[:50]
         src = row["source"][:7]
+        label_suffix = f"  [{row['label']}]" if row["label"] else ""
         print(
             f"{sid:10s} {src:>7s} {row['total_checkpoints']:3d} {row['total_research']:4d} "
-            f"{row['total_files']:5d} {plan:>4s}  {summary}"
+            f"{row['total_files']:5d} {plan:>4s}  {summary}{label_suffix}"
         )
 
     total = db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -965,6 +967,58 @@ def show_session(session_prefix: str):
         seq = f"#{doc['seq']:02d}" if doc["seq"] > 0 else "   "
         print(f"  {type_color}{doc['doc_type']:12s}{RESET} {seq} {doc['title']} ({doc['size_bytes'] // 1024}KB)")
 
+    db.close()
+
+
+def set_session_label(prefix: str, label: str) -> None:
+    """Set (or clear) a label on a session matched by ID prefix."""
+    db = get_db()
+    row = db.execute("SELECT id FROM sessions WHERE id LIKE ?", (f"{prefix}%",)).fetchone()
+    if not row:
+        print(f"No session found matching prefix: {prefix}")
+        db.close()
+        return
+    db.execute("UPDATE sessions SET label = ? WHERE id = ?", (label.strip(), row["id"]))
+    db.commit()
+    action = "cleared" if not label.strip() else f"set to {label.strip()!r}"
+    print(f"Session {row['id'][:12]}.. label {action}")
+    db.close()
+
+
+def get_session_label(prefix: str) -> None:
+    """Show the label for a session matched by ID prefix."""
+    db = get_db()
+    row = db.execute("SELECT id, COALESCE(label,'') as label FROM sessions WHERE id LIKE ?", (f"{prefix}%",)).fetchone()
+    if not row:
+        print(f"No session found matching prefix: {prefix}")
+        db.close()
+        return
+    label = row["label"] or "(no label)"
+    print(f"Session {row['id'][:12]}..  label: {label}")
+    db.close()
+
+
+def list_session_labels() -> None:
+    """List all sessions that have a non-empty label."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, COALESCE(label,'') as label, COALESCE(source,'copilot') as source, indexed_at"
+        " FROM sessions WHERE COALESCE(label,'') != '' ORDER BY label, indexed_at DESC"
+    ).fetchall()
+    if not rows:
+        print("No labeled sessions found.")
+        db.close()
+        return
+    print(f"\n{BOLD}Labeled Sessions{RESET}\n")
+    print(f"{'ID':12s} {'Label':30s} {'Src':>7s}  Indexed")
+    print(f"{'-'*12} {'-'*30} {'-'*7}  {'-'*20}")
+    for row in rows:
+        sid = row["id"][:10] + ".."
+        label = (row["label"] or "")[:30]
+        src = (row["source"] or "copilot")[:7]
+        indexed = (row["indexed_at"] or "")[:19]
+        print(f"{sid:12s} {label:30s} {src:>7s}  {indexed}")
+    print(f"\n{DIM}Total: {len(rows)} labeled session(s){RESET}")
     db.close()
 
 
@@ -2710,6 +2764,24 @@ def _run(args: list, compact: bool = False):
 
     if "--list" in args:
         list_sessions(source_filter)
+        return
+
+    # Positional subcommands: label <prefix> [value]  and  labels
+    if args and args[0] == "labels":
+        list_session_labels()
+        return
+
+    if args and args[0] == "label":
+        rest_label = [a for a in args[1:] if not a.startswith("--")]
+        if not rest_label:
+            print("Usage: query-session.py label <id-prefix> [label-text]")
+            print("  Omit label-text to show the current label.")
+            return
+        prefix = rest_label[0]
+        if len(rest_label) >= 2:
+            set_session_label(prefix, " ".join(rest_label[1:]))
+        else:
+            get_session_label(prefix)
         return
 
     if "--recent" in args:
