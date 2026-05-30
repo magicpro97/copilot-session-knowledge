@@ -10083,125 +10083,143 @@ _mcp717_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
 
 # I717-01: TOOLS list includes 'learn'
 try:
-    test("I717-01: TOOLS list contains learn tool",
-         '"name": "learn"' in _mcp717_src or "'name': 'learn'" in _mcp717_src,
-         "learn tool not found in TOOLS list")
+    test(
+        "I717-01: TOOLS list contains learn tool",
+        '"name": "learn"' in _mcp717_src or "'name': 'learn'" in _mcp717_src,
+        "learn tool not found in TOOLS list",
+    )
 except Exception as _e717_01:
     test("I717-01: learn in TOOLS", False, str(_e717_01))
 
 # I717-02: TOOLS list includes 'status'
 try:
-    test("I717-02: TOOLS list contains status tool",
-         '"name": "status"' in _mcp717_src or "'name': 'status'" in _mcp717_src,
-         "status tool not found in TOOLS list")
+    test(
+        "I717-02: TOOLS list contains status tool",
+        '"name": "status"' in _mcp717_src or "'name': 'status'" in _mcp717_src,
+        "status tool not found in TOOLS list",
+    )
 except Exception as _e717_02:
     test("I717-02: status in TOOLS", False, str(_e717_02))
 
 # I717-03: TOOLS list includes 'session_list'
 try:
-    test("I717-03: TOOLS list contains session_list tool",
-         '"name": "session_list"' in _mcp717_src or "'name': 'session_list'" in _mcp717_src,
-         "session_list tool not found in TOOLS list")
+    test(
+        "I717-03: TOOLS list contains session_list tool",
+        '"name": "session_list"' in _mcp717_src or "'name': 'session_list'" in _mcp717_src,
+        "session_list tool not found in TOOLS list",
+    )
 except Exception as _e717_03:
     test("I717-03: session_list in TOOLS", False, str(_e717_03))
 
 # I717-04: _run_learn function exists
 try:
-    test("I717-04: _run_learn function defined",
-         "def _run_learn(" in _mcp717_src,
-         "_run_learn not found")
+    test("I717-04: _run_learn function defined", "def _run_learn(" in _mcp717_src, "_run_learn not found")
 except Exception as _e717_04:
     test("I717-04: _run_learn defined", False, str(_e717_04))
 
 # I717-05: _run_status function exists
 try:
-    test("I717-05: _run_status function defined",
-         "def _run_status(" in _mcp717_src,
-         "_run_status not found")
+    test("I717-05: _run_status function defined", "def _run_status(" in _mcp717_src, "_run_status not found")
 except Exception as _e717_05:
     test("I717-05: _run_status defined", False, str(_e717_05))
 
 # I717-06: _run_session_list function exists
 try:
-    test("I717-06: _run_session_list function defined",
-         "def _run_session_list(" in _mcp717_src,
-         "_run_session_list not found")
+    test(
+        "I717-06: _run_session_list function defined",
+        "def _run_session_list(" in _mcp717_src,
+        "_run_session_list not found",
+    )
 except Exception as _e717_06:
     test("I717-06: _run_session_list defined", False, str(_e717_06))
 
 # I717-07: dispatch learn, status, session_list in _handle_tools_call
 try:
     _dispatch_body = _mcp717_src.split("def _handle_tools_call(")[1].split("def _read_exact(")[0]
-    test("I717-07a: dispatch learn in _handle_tools_call",
-         "_run_learn" in _dispatch_body,
-         "_run_learn not dispatched")
-    test("I717-07b: dispatch status in _handle_tools_call",
-         "_run_status" in _dispatch_body,
-         "_run_status not dispatched")
-    test("I717-07c: dispatch session_list in _handle_tools_call",
-         "_run_session_list" in _dispatch_body,
-         "_run_session_list not dispatched")
+    test("I717-07a: dispatch learn in _handle_tools_call", "_run_learn" in _dispatch_body, "_run_learn not dispatched")
+    test(
+        "I717-07b: dispatch status in _handle_tools_call", "_run_status" in _dispatch_body, "_run_status not dispatched"
+    )
+    test(
+        "I717-07c: dispatch session_list in _handle_tools_call",
+        "_run_session_list" in _dispatch_body,
+        "_run_session_list not dispatched",
+    )
 except Exception as _e717_07:
     test("I717-07: dispatch check", False, str(_e717_07))
 
 # I717-08: learn tool has category enum in schema
 try:
-    test("I717-08: learn schema has category enum",
-         "VALID_LEARN_CATEGORIES" in _mcp717_src or '"mistake"' in _mcp717_src,
-         "category enum missing from learn schema")
+    test(
+        "I717-08: learn schema has category enum",
+        "VALID_LEARN_CATEGORIES" in _mcp717_src or '"mistake"' in _mcp717_src,
+        "category enum missing from learn schema",
+    )
 except Exception as _e717_08:
     test("I717-08: learn category enum", False, str(_e717_08))
 
 # I717-09: learn uses subprocess (not importlib) for calling learn.py
 try:
     _learn_fn = _mcp717_src.split("def _run_learn(")[1].split("def _run_status(")[0]
-    test("I717-09: _run_learn uses subprocess.run",
-         "subprocess.run(" in _learn_fn,
-         "subprocess.run not used in _run_learn")
+    test(
+        "I717-09: _run_learn uses subprocess.run",
+        "subprocess.run(" in _learn_fn,
+        "subprocess.run not used in _run_learn",
+    )
 except Exception as _e717_09:
     test("I717-09: _run_learn subprocess", False, str(_e717_09))
 
 # I717-10: no SQL injection in session_list (uses ? placeholder)
 try:
     _sl_fn = _mcp717_src.split("def _run_session_list(")[1].split("def _handle_tools_call(")[0]
-    test("I717-10: session_list uses ? placeholder",
-         "?" in _sl_fn and "f\"SELECT" not in _sl_fn and "f'SELECT" not in _sl_fn,
-         "session_list may use string-interpolated SQL")
+    test(
+        "I717-10: session_list uses ? placeholder",
+        "?" in _sl_fn and 'f"SELECT' not in _sl_fn and "f'SELECT" not in _sl_fn,
+        "session_list may use string-interpolated SQL",
+    )
 except Exception as _e717_10:
     test("I717-10: session_list SQL safety", False, str(_e717_10))
 
 # I717-11: status returns watcher field
 try:
     _status_fn = _mcp717_src.split("def _run_status(")[1].split("def _run_session_list(")[0]
-    test("I717-11: status returns watcher field",
-         '"watcher"' in _status_fn or "'watcher'" in _status_fn,
-         "watcher field missing from status output")
+    test(
+        "I717-11: status returns watcher field",
+        '"watcher"' in _status_fn or "'watcher'" in _status_fn,
+        "watcher field missing from status output",
+    )
 except Exception as _e717_11:
     test("I717-11: status watcher field", False, str(_e717_11))
 
 # I717-12: status returns db_path field
 try:
     _status_fn12 = _mcp717_src.split("def _run_status(")[1].split("def _run_session_list(")[0]
-    test("I717-12: status returns db_path field",
-         '"db_path"' in _status_fn12 or "'db_path'" in _status_fn12,
-         "db_path missing from status output")
+    test(
+        "I717-12: status returns db_path field",
+        '"db_path"' in _status_fn12 or "'db_path'" in _status_fn12,
+        "db_path missing from status output",
+    )
 except Exception as _e717_12:
     test("I717-12: status db_path field", False, str(_e717_12))
 
 # I717-13: VALID_LEARN_CATEGORIES constant defined
 try:
-    test("I717-13: VALID_LEARN_CATEGORIES constant defined",
-         "VALID_LEARN_CATEGORIES" in _mcp717_src,
-         "VALID_LEARN_CATEGORIES not found")
+    test(
+        "I717-13: VALID_LEARN_CATEGORIES constant defined",
+        "VALID_LEARN_CATEGORIES" in _mcp717_src,
+        "VALID_LEARN_CATEGORIES not found",
+    )
 except Exception as _e717_13:
     test("I717-13: VALID_LEARN_CATEGORIES", False, str(_e717_13))
 
 # I717-14: learn schema requires category, title, description
 try:
-    _learn_schema = _mcp717_src[_mcp717_src.find('"name": "learn"'):_mcp717_src.find('"name": "status"')]
-    test("I717-14: learn required fields include title and description",
-         '"category"' in _learn_schema and '"title"' in _learn_schema and '"description"' in _learn_schema,
-         "learn schema missing required fields")
+    _learn_schema = _mcp717_src[_mcp717_src.find('"name": "learn"') : _mcp717_src.find('"name": "status"')]
+    test(
+        "I717-14: learn required fields include title and description",
+        '"category"' in _learn_schema and '"title"' in _learn_schema and '"description"' in _learn_schema,
+        "learn schema missing required fields",
+    )
 except Exception as _e717_14:
     test("I717-14: learn required fields", False, str(_e717_14))
 
@@ -10274,10 +10292,14 @@ try:
             CREATE TABLE documents (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, doc_type TEXT NOT NULL, title TEXT NOT NULL, file_path TEXT DEFAULT '', seq INTEGER DEFAULT 1, size_bytes INTEGER DEFAULT 0, source TEXT DEFAULT 'copilot');
             CREATE TABLE sections (id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, section_name TEXT DEFAULT '', content TEXT DEFAULT '');
         """)
-        _db717.execute("INSERT INTO sessions (id, path, summary, source, indexed_at) VALUES (?, ?, ?, ?, ?)",
-                       ("sess-i717-1", "/a/b", "Session I717 Alpha", "copilot", "2025-01-01T10:00:00"))
-        _db717.execute("INSERT INTO sessions (id, path, summary, source, indexed_at) VALUES (?, ?, ?, ?, ?)",
-                       ("sess-i717-2", "/c/d", "Session I717 Beta", "copilot", "2025-01-02T12:00:00"))
+        _db717.execute(
+            "INSERT INTO sessions (id, path, summary, source, indexed_at) VALUES (?, ?, ?, ?, ?)",
+            ("sess-i717-1", "/a/b", "Session I717 Alpha", "copilot", "2025-01-01T10:00:00"),
+        )
+        _db717.execute(
+            "INSERT INTO sessions (id, path, summary, source, indexed_at) VALUES (?, ?, ?, ?, ?)",
+            ("sess-i717-2", "/c/d", "Session I717 Beta", "copilot", "2025-01-02T12:00:00"),
+        )
         _db717.commit()
         _db717.close()
 
@@ -10288,13 +10310,21 @@ try:
         def _mcp717_roundtrip(method, params):
             proc = _sp717.Popen(
                 [sys.executable, str(REPO / "mcp-server.py")],
-                stdin=_sp717.PIPE, stdout=_sp717.PIPE, stderr=_sp717.PIPE,
+                stdin=_sp717.PIPE,
+                stdout=_sp717.PIPE,
+                stderr=_sp717.PIPE,
                 env=_env717,
             )
             try:
                 # initialize
-                init_msg = _json717.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                                           "params": {"protocolVersion": "2024-11-05", "capabilities": {}}}).encode()
+                init_msg = _json717.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                    }
+                ).encode()
                 proc.stdin.write(f"Content-Length: {len(init_msg)}\r\n\r\n".encode() + init_msg)
                 notif = _json717.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
                 proc.stdin.write(f"Content-Length: {len(notif)}\r\n\r\n".encode() + notif)
@@ -10325,8 +10355,8 @@ try:
                 hdr = remaining[:hdr_end].decode("ascii", errors="replace")
                 cl = int([l.split(":")[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()][0])
                 body_start = hdr_end + 4
-                body = remaining[body_start:body_start + cl]
-                remaining = remaining[body_start + cl:]
+                body = remaining[body_start : body_start + cl]
+                remaining = remaining[body_start + cl :]
                 try:
                     responses.append(_json717.loads(body))
                 except Exception:
@@ -10336,7 +10366,9 @@ try:
         # I717-15: tools/list includes all 6 tools
         try:
             _r717_list = _mcp717_roundtrip("tools/list", {})
-            _names717 = [t.get("name") for t in (_r717_list[0].get("result", {}).get("tools", []) if _r717_list else [])]
+            _names717 = [
+                t.get("name") for t in (_r717_list[0].get("result", {}).get("tools", []) if _r717_list else [])
+            ]
             test("I717-15: tools/list includes learn", "learn" in _names717, str(_names717))
             test("I717-16: tools/list includes status", "status" in _names717, str(_names717))
             test("I717-17: tools/list includes session_list", "session_list" in _names717, str(_names717))
@@ -10354,9 +10386,16 @@ try:
                 test("I717-18b: status has entry_count key", "entry_count" in _body717_s, str(_body717_s))
                 test("I717-18c: status has watcher key", "watcher" in _body717_s, str(_body717_s))
                 test("I717-18d: status has db_path key", "db_path" in _body717_s, str(_body717_s))
-                test("I717-18e: status session_count is int", isinstance(_body717_s.get("session_count"), int), str(_body717_s))
-                test("I717-18f: status watcher is running or stopped",
-                     _body717_s.get("watcher") in ("running", "stopped"), str(_body717_s))
+                test(
+                    "I717-18e: status session_count is int",
+                    isinstance(_body717_s.get("session_count"), int),
+                    str(_body717_s),
+                )
+                test(
+                    "I717-18f: status watcher is running or stopped",
+                    _body717_s.get("watcher") in ("running", "stopped"),
+                    str(_body717_s),
+                )
             else:
                 for sfx in ["a", "b", "c", "d", "e", "f"]:
                     test(f"I717-18{sfx}: status (no response)", False, "no MCP response")
@@ -10371,10 +10410,16 @@ try:
                 _body717_sl = _json717.loads(_r717_sl[0].get("result", {}).get("content", [{}])[0].get("text", "{}"))
                 test("I717-19a: session_list has sessions key", "sessions" in _body717_sl, str(_body717_sl))
                 test("I717-19b: session_list has count key", "count" in _body717_sl, str(_body717_sl))
-                test("I717-19c: session_list count matches len",
-                     _body717_sl.get("count") == len(_body717_sl.get("sessions", [])), str(_body717_sl))
-                test("I717-19d: session_list returns 2 sessions",
-                     _body717_sl.get("count") == 2, f"count={_body717_sl.get('count')}")
+                test(
+                    "I717-19c: session_list count matches len",
+                    _body717_sl.get("count") == len(_body717_sl.get("sessions", [])),
+                    str(_body717_sl),
+                )
+                test(
+                    "I717-19d: session_list returns 2 sessions",
+                    _body717_sl.get("count") == 2,
+                    f"count={_body717_sl.get('count')}",
+                )
                 _sess0 = _body717_sl.get("sessions", [{}])[0] if _body717_sl.get("sessions") else {}
                 test("I717-19e: session entry has id field", "id" in _sess0, str(_sess0))
                 test("I717-19f: session entry has summary field", "summary" in _sess0, str(_sess0))
@@ -10389,10 +10434,10 @@ try:
         try:
             _r717_sl20 = _mcp717_roundtrip("tools/call", {"name": "session_list", "arguments": {}})
             if _r717_sl20:
-                _body717_sl20 = _json717.loads(_r717_sl20[0].get("result", {}).get("content", [{}])[0].get("text", "{}"))
-                test("I717-20: session_list default limit works",
-                     "sessions" in _body717_sl20,
-                     str(_body717_sl20))
+                _body717_sl20 = _json717.loads(
+                    _r717_sl20[0].get("result", {}).get("content", [{}])[0].get("text", "{}")
+                )
+                test("I717-20: session_list default limit works", "sessions" in _body717_sl20, str(_body717_sl20))
             else:
                 test("I717-20: session_list default limit", False, "no response")
         except Exception as _e717_20:
@@ -10402,18 +10447,24 @@ try:
         try:
             _r717_learn = _mcp717_roundtrip(
                 "tools/call",
-                {"name": "learn", "arguments": {
-                    "category": "pattern",
-                    "title": "I717 MCP test pattern",
-                    "description": "Test pattern recorded via MCP learn tool",
-                    "tags": "mcp,i717",
-                }},
+                {
+                    "name": "learn",
+                    "arguments": {
+                        "category": "pattern",
+                        "title": "I717 MCP test pattern",
+                        "description": "Test pattern recorded via MCP learn tool",
+                        "tags": "mcp,i717",
+                    },
+                },
             )
             if _r717_learn:
                 _r717_lr = _r717_learn[0]
                 if "error" in _r717_lr:
-                    test("I717-21: learn tool records entry", False,
-                         _r717_lr["error"].get("message", str(_r717_lr["error"])))
+                    test(
+                        "I717-21: learn tool records entry",
+                        False,
+                        _r717_lr["error"].get("message", str(_r717_lr["error"])),
+                    )
                 else:
                     _body717_l = _json717.loads(_r717_lr.get("result", {}).get("content", [{}])[0].get("text", "{}"))
                     test("I717-21a: learn returns status ok", _body717_l.get("status") == "ok", str(_body717_l))
@@ -10430,34 +10481,65 @@ try:
         try:
             _r717_inv = _mcp717_roundtrip(
                 "tools/call",
-                {"name": "learn", "arguments": {
-                    "category": "invalid_cat",
-                    "title": "Test",
-                    "description": "Should fail",
-                }},
+                {
+                    "name": "learn",
+                    "arguments": {
+                        "category": "invalid_cat",
+                        "title": "Test",
+                        "description": "Should fail",
+                    },
+                },
             )
             if _r717_inv:
                 _r717_iv = _r717_inv[0]
-                test("I717-22: learn rejects invalid category",
-                     "error" in _r717_iv or _r717_iv.get("result", {}).get("isError"),
-                     str(_r717_inv))
+                test(
+                    "I717-22: learn rejects invalid category",
+                    "error" in _r717_iv or _r717_iv.get("result", {}).get("isError"),
+                    str(_r717_inv),
+                )
             else:
                 test("I717-22: learn invalid category", False, "no response")
         except Exception as _e717_22:
             test("I717-22: learn invalid category", False, str(_e717_22))
 
 except Exception as _e717_outer:
-    for _sfx in ["15", "16", "17", "18a", "18b", "18c", "18d", "18e", "18f",
-                 "19a", "19b", "19c", "19d", "19e", "19f", "20", "21a", "21b", "21c", "22"]:
+    for _sfx in [
+        "15",
+        "16",
+        "17",
+        "18a",
+        "18b",
+        "18c",
+        "18d",
+        "18e",
+        "18f",
+        "19a",
+        "19b",
+        "19c",
+        "19d",
+        "19e",
+        "19f",
+        "20",
+        "21a",
+        "21b",
+        "21c",
+        "22",
+    ]:
         test(f"I717-{_sfx}: MCP write tools (setup error)", False, str(_e717_outer))
 
 # I718-17: briefing.py 📌 badge source check
 try:
     _br_src718 = (REPO / "briefing.py").read_text(encoding="utf-8")
-    test("I718-17a: briefing.py has pinned_badge for P0", "pinned_badge" in _br_src718 or "📌" in _br_src718,
-         "pinned_badge or 📌 not found in briefing.py")
-    test("I718-17b: briefing.py checks priority P0 for badge", "P0" in _br_src718 and ("pinned_badge" in _br_src718 or "📌" in _br_src718),
-         "P0 badge logic not found in briefing.py")
+    test(
+        "I718-17a: briefing.py has pinned_badge for P0",
+        "pinned_badge" in _br_src718 or "📌" in _br_src718,
+        "pinned_badge or 📌 not found in briefing.py",
+    )
+    test(
+        "I718-17b: briefing.py checks priority P0 for badge",
+        "P0" in _br_src718 and ("pinned_badge" in _br_src718 or "📌" in _br_src718),
+        "P0 badge logic not found in briefing.py",
+    )
 except Exception as _e718_br:
     test("I718-17: briefing.py badge source check", False, str(_e718_br))
 
