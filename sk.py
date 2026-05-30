@@ -235,6 +235,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "pin": "knowledge-health.py",
         "unpin": "knowledge-health.py",
         "pins": "knowledge-health.py",
+        "bulk-tag": "knowledge-health.py",
     },
 }
 
@@ -988,6 +989,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run(_GROUPS[cmd][sub], ["--list"] + sub_rest)
         if cmd == "knowledge" and sub in ("pin", "unpin", "pins"):
             return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
+        if cmd == "knowledge" and sub == "bulk-tag":
+            return _run(_GROUPS[cmd][sub], ["bulk-tag"] + sub_rest)
         return _run(_GROUPS[cmd][sub], sub_rest)
 
     # Unknown
