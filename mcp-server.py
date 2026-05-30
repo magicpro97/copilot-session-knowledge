@@ -233,11 +233,14 @@ TOOLS = [
 ]
 
 
-def _require_string(arguments: dict[str, Any], key: str) -> str:
+def _require_string(arguments: dict[str, Any], key: str, max_length: int | None = None) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
         raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"'{key}' must be a non-empty string")
-    return value.strip()
+    stripped = value.strip()
+    if max_length is not None:
+        stripped = stripped[:max_length]
+    return stripped
 
 
 def _optional_string(arguments: dict[str, Any], key: str, max_length: int = 200) -> str:
@@ -472,14 +475,16 @@ def _run_query_memory(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
     """Write a knowledge entry by calling learn.py as a subprocess."""
+    _check_auth(arguments)
+
     category = _require_string(arguments, "category")
     if category not in VALID_LEARN_CATEGORIES:
         raise JsonRpcError(
             JSONRPC_INVALID_PARAMS,
             f"'category' must be one of: {', '.join(sorted(VALID_LEARN_CATEGORIES))}",
         )
-    title = _require_string(arguments, "title")
-    description = _require_string(arguments, "description")
+    title = _require_string(arguments, "title", max_length=500)
+    description = _require_string(arguments, "description", max_length=10_000)
     tags = _optional_string(arguments, "tags", max_length=500)
 
     learn_py = TOOLS_DIR / "learn.py"
@@ -487,7 +492,7 @@ def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, "learn.py not found")
 
     flag = f"--{category}"
-    cmd = [sys.executable, str(learn_py), flag, title, description]
+    cmd = [sys.executable, str(learn_py), flag, title, description, "--json"]
     if tags:
         cmd += ["--tags", tags]
 
@@ -502,13 +507,23 @@ def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
         msg = result.stderr.strip() or result.stdout.strip() or "learn.py failed"
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, msg)
 
-    combined = result.stdout + result.stderr
     entry_id = None
-    m = re.search(r"#(\d+)", combined)
-    if m:
-        entry_id = int(m.group(1))
+    try:
+        parsed = json.loads(result.stdout.strip())
+        raw_id = parsed.get("id")
+        if isinstance(raw_id, int) and raw_id > 0:
+            entry_id = raw_id
+    except (json.JSONDecodeError, AttributeError):
+        pass
 
-    body = {"status": "ok", "message": "Entry recorded", "id": entry_id}
+    status = "ok"
+    if entry_id is None:
+        # Fallback: scan for "Added new <category> #N" pattern in combined output
+        m = re.search(r"Added new \w+ #(\d+)", result.stdout + result.stderr)
+        if m:
+            entry_id = int(m.group(1))
+
+    body = {"status": status, "message": "Entry recorded", "id": entry_id}
     return {
         "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
         "structuredContent": body,
@@ -562,16 +577,18 @@ def _run_status(_arguments: dict[str, Any]) -> dict[str, Any]:
         db_uri = _DB_PATH.as_uri() + "?mode=ro"
         db = sqlite3.connect(db_uri, uri=True)
         try:
-            row = db.execute("SELECT COUNT(*) FROM sessions").fetchone()
-            session_count = row[0] if row else 0
-        except sqlite3.OperationalError:
-            session_count = 0
-        try:
-            row = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
-            entry_count = row[0] if row else 0
-        except sqlite3.OperationalError:
-            entry_count = 0
-        db.close()
+            try:
+                row = db.execute("SELECT COUNT(*) FROM sessions").fetchone()
+                session_count = row[0] if row else 0
+            except sqlite3.OperationalError:
+                session_count = 0
+            try:
+                row = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
+                entry_count = row[0] if row else 0
+            except sqlite3.OperationalError:
+                entry_count = 0
+        finally:
+            db.close()
     except Exception:
         pass
 
@@ -613,9 +630,9 @@ def _run_session_list(arguments: dict[str, Any]) -> dict[str, Any]:
                 (limit,),
             ).fetchall()
         except sqlite3.OperationalError as exc:
-            db.close()
             raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Query error: {exc}") from exc
-        db.close()
+        finally:
+            db.close()
     except JsonRpcError:
         raise
     except Exception as exc:
