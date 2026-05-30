@@ -1089,9 +1089,7 @@ def cmd_digest(prefix: str, as_json: bool = False) -> int:
             "cost_usd_est": cost,
             "knowledge": [{"title": r["title"], "category": r["category"]} for r in ke_rows],
             "files": [{"file_path": r["file_path"], "tool_name": r["tool_name"]} for r in sf_rows],
-            "checkpoints": [
-                {"checkpoint_number": r["checkpoint_number"], "title": r["title"]} for r in cp_rows
-            ],
+            "checkpoints": [{"checkpoint_number": r["checkpoint_number"], "title": r["title"]} for r in cp_rows],
         }
         print(_json_dig.dumps(result, indent=2))
         return 0
@@ -1167,9 +1165,9 @@ def cmd_stats(args: list) -> int:
         print(f"Error: --by must be one of {', '.join(valid_by)}", file=sys.stderr)
         return 1
 
-    since_date = (
-        _dt_stats.datetime.now(_dt_stats.timezone.utc) - _dt_stats.timedelta(days=since_days)
-    ).strftime("%Y-%m-%d")
+    since_date = (_dt_stats.datetime.now(_dt_stats.timezone.utc) - _dt_stats.timedelta(days=since_days)).strftime(
+        "%Y-%m-%d"
+    )
 
     db = get_db()
     session_cols = {r[1] for r in db.execute("PRAGMA table_info(sessions)").fetchall()}
@@ -1197,8 +1195,7 @@ def cmd_stats(args: list) -> int:
         " FROM sessions s"
         " LEFT JOIN knowledge_entries ke ON ke.session_id = s.id"
         " WHERE s.indexed_at >= ?"
-        " GROUP BY " + dim_expr +
-        " ORDER BY last_active DESC"
+        " GROUP BY " + dim_expr + " ORDER BY last_active DESC"
         " LIMIT ?"
     )
 
@@ -1225,7 +1222,7 @@ def cmd_stats(args: list) -> int:
 
     print(f"\n{BOLD}Session Stats — by {by} (last {since_days} days){RESET}\n")
     print(f"{'Dimension':25s} {'Sessions':>8s} {'Entries':>8s} {'Cost':>9s}  Last Active")
-    print(f"{'-'*25} {'-'*8} {'-'*8} {'-'*9}  {'-'*19}")
+    print(f"{'-' * 25} {'-' * 8} {'-' * 8} {'-' * 9}  {'-' * 19}")
     for r in rows:
         dim = (r["dimension"] or "(none)")[:25]
         cost_str = f"${r['total_cost']:.4f}" if r["total_cost"] else "$0.0000"
