@@ -327,8 +327,9 @@ Summary:
 | **Review** | Security issues, design flaws, scope creep | Never skip |
 | **Docs** | Stale README, outdated JSDoc, missing CHANGELOG | Internal refactors only |
 | **QA audit** | Hallucinated tests, spec mismatches, blind spots | Low-risk changes only |
+| **Harness** | Missing/unreachable success criteria | When harness.yaml absent |
 
-The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct.
+The first 4 gates are mandatory. When `harness.yaml` exists: run `sk harness check [--json]` as an additional gate before Phase 4. This verifies all success criteria commands are reachable and passing. Skipping any of them means you don't know if the agent output is correct.
 
 **Evidence requirement:** Each gate must produce concrete, recorded output before being marked as passed. Do not rely on agent claims that "lint is clean" or "tests pass" — run the commands yourself and attach or reference the output. A gate is only passed when you hold the proof, not when the sub-agent says it is. See Rule 9 (Claims Require Evidence) in `docs/AGENT-RULES.md`.
 
