@@ -3425,9 +3425,7 @@ def _cleanup_stale(dry_run: bool = False, stale_only: bool = False, session_dir:
                 if not dry_run and expired:
                     if fresh:
                         data["active_tentacles"] = fresh
-                        _DISPATCHED_MARKER_PATH.write_text(
-                            json.dumps(data, indent=2) + "\n", encoding="utf-8"
-                        )
+                        _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
                     else:
                         _DISPATCHED_MARKER_PATH.unlink(missing_ok=True)
         except (OSError, json.JSONDecodeError, ValueError):
@@ -3483,7 +3481,7 @@ def _cleanup_stale(dry_run: bool = False, stale_only: bool = False, session_dir:
                     pass
 
     if dry_run:
-        print(f"Old tentacles: would remove completed dirs >7d old (dry-run — see above)")
+        print("Old tentacles: would remove completed dirs >7d old (dry-run — see above)")
     else:
         print(f"Old tentacles: removed {dirs_removed} completed dirs (>7d old)")
 

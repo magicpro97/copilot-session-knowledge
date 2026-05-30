@@ -2494,7 +2494,7 @@ def _doctor_watcher_status() -> dict:
     Keys: running (bool), pid (int|None).
     """
     running = _watcher_running()
-    pid: "int | None" = None
+    pid: int | None = None
     if running and LOCK_FILE.is_file():
         try:
             raw = LOCK_FILE.read_text(encoding="utf-8").strip()
@@ -2560,7 +2560,12 @@ def _doctor_sync_status() -> dict:
     """
     sync_script = _SCRIPT_DIR / "sync-status.py"
     if not sync_script.is_file():
-        return {"configured": False, "gateway_available": False, "available": False, "error": "sync-status.py not found"}
+        return {
+            "configured": False,
+            "gateway_available": False,
+            "available": False,
+            "error": "sync-status.py not found",
+        }
     try:
         result = subprocess.run(
             [sys.executable, str(sync_script), "--json"],
@@ -2569,7 +2574,12 @@ def _doctor_sync_status() -> dict:
             timeout=10,
         )
         if result.returncode != 0 or not result.stdout.strip():
-            return {"configured": False, "gateway_available": False, "available": False, "error": result.stderr.strip()[:200]}
+            return {
+                "configured": False,
+                "gateway_available": False,
+                "available": False,
+                "error": result.stderr.strip()[:200],
+            }
         data = json.loads(result.stdout)
         gateway_health = data.get("gateway_health", {})
         return {
@@ -2672,6 +2682,7 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
             print("=" * 50)
         if as_json:
             import io as _io_doctor
+
             _dev_null = _io_doctor.StringIO()
             _orig_stdout = sys.stdout
             sys.stdout = _dev_null
@@ -2782,15 +2793,20 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
             print(f"  {WARN} No manifest found at {_tilde(manifest_path)}")
         _add_issue("manifest-missing", f"No manifest found at {_tilde(manifest_path)}", "warning")
         if as_json:
-            print(json.dumps({
-                "issues": issues_list,
-                "issue_count": len(issues_list),
-                "watcher": _doctor_watcher_status() if manifest_only else {},
-                "db": _doctor_db_size() if manifest_only else {},
-                "index_health": _doctor_index_health() if manifest_only else {},
-                "sync": _doctor_sync_status() if manifest_only else {},
-                "hooks": _doctor_hooks_count() if manifest_only else {},
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "issues": issues_list,
+                        "issue_count": len(issues_list),
+                        "watcher": _doctor_watcher_status() if manifest_only else {},
+                        "db": _doctor_db_size() if manifest_only else {},
+                        "index_health": _doctor_index_health() if manifest_only else {},
+                        "sync": _doctor_sync_status() if manifest_only else {},
+                        "hooks": _doctor_hooks_count() if manifest_only else {},
+                    },
+                    indent=2,
+                )
+            )
         return issues + 1
 
     manifest = _load_managed_manifest()
@@ -2799,15 +2815,20 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
             print(f"  {FAIL} Manifest is unreadable: {_tilde(manifest_path)}")
         _add_issue("manifest-unreadable", f"Manifest is unreadable at {_tilde(manifest_path)}", "error")
         if as_json:
-            print(json.dumps({
-                "issues": issues_list,
-                "issue_count": len(issues_list),
-                "watcher": _doctor_watcher_status() if manifest_only else {},
-                "db": _doctor_db_size() if manifest_only else {},
-                "index_health": _doctor_index_health() if manifest_only else {},
-                "sync": _doctor_sync_status() if manifest_only else {},
-                "hooks": _doctor_hooks_count() if manifest_only else {},
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "issues": issues_list,
+                        "issue_count": len(issues_list),
+                        "watcher": _doctor_watcher_status() if manifest_only else {},
+                        "db": _doctor_db_size() if manifest_only else {},
+                        "index_health": _doctor_index_health() if manifest_only else {},
+                        "sync": _doctor_sync_status() if manifest_only else {},
+                        "hooks": _doctor_hooks_count() if manifest_only else {},
+                    },
+                    indent=2,
+                )
+            )
         return issues + 1
 
     missing, modified, unsafe, tracked = _manifest_drift_report()
@@ -2818,15 +2839,20 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
         if not as_json:
             print(f"  {OK} No drift detected")
         if as_json:
-            print(json.dumps({
-                "issues": issues_list,
-                "issue_count": len(issues_list),
-                "watcher": _doctor_watcher_status(),
-                "db": _doctor_db_size(),
-                "index_health": _doctor_index_health(),
-                "sync": _doctor_sync_status(),
-                "hooks": _doctor_hooks_count(),
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "issues": issues_list,
+                        "issue_count": len(issues_list),
+                        "watcher": _doctor_watcher_status(),
+                        "db": _doctor_db_size(),
+                        "index_health": _doctor_index_health(),
+                        "sync": _doctor_sync_status(),
+                        "hooks": _doctor_hooks_count(),
+                    },
+                    indent=2,
+                )
+            )
         return issues
 
     if missing:
@@ -2855,15 +2881,20 @@ def doctor(*, manifest_only: bool = False, as_json: bool = False, auto_fix: bool
                 print(f"    - {key}")
 
     if as_json:
-        print(json.dumps({
-            "issues": issues_list,
-            "issue_count": len(issues_list),
-            "watcher": _doctor_watcher_status(),
-            "db": _doctor_db_size(),
-            "index_health": _doctor_index_health(),
-            "sync": _doctor_sync_status(),
-            "hooks": _doctor_hooks_count(),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "issues": issues_list,
+                    "issue_count": len(issues_list),
+                    "watcher": _doctor_watcher_status(),
+                    "db": _doctor_db_size(),
+                    "index_health": _doctor_index_health(),
+                    "sync": _doctor_sync_status(),
+                    "hooks": _doctor_hooks_count(),
+                },
+                indent=2,
+            )
+        )
     return issues + fix_failures
 
 

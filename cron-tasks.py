@@ -628,7 +628,9 @@ def _run_freshness_check(db_path: Path, days: int = 90, limit: int = 200) -> dic
                 from datetime import datetime as _dt
 
                 ls = r["last_seen"] or ""
-                age_days = int((time.time() - _dt.fromisoformat(ls.replace("Z", "+00:00")).timestamp()) / 86400) if ls else -1
+                age_days = (
+                    int((time.time() - _dt.fromisoformat(ls.replace("Z", "+00:00")).timestamp()) / 86400) if ls else -1
+                )
             except Exception:
                 age_days = -1
             entries.append(

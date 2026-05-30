@@ -1133,12 +1133,11 @@ def write_feedback_query(query: str, verdict_str: str) -> None:
         sys.exit(1)
 
     import sqlite3 as _sq
+
     db = _sq.connect(str(db_path))
     db.row_factory = _sq.Row
     try:
-        exists = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_feedback'"
-        ).fetchone()
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_feedback'").fetchone()
         if not exists:
             print("Error: search_feedback table not found — run 'sk index migrate' to upgrade the DB")
             sys.exit(1)
@@ -1786,9 +1785,7 @@ def search_knowledge_entries(
 
     # Resolved filter: exclude is_resolved=1 entries unless caller opts in.
     _resolved_clause = (
-        ""
-        if include_resolved or not has_is_resolved
-        else " AND (ke.is_resolved IS NULL OR ke.is_resolved = 0)"
+        "" if include_resolved or not has_is_resolved else " AND (ke.is_resolved IS NULL OR ke.is_resolved = 0)"
     )
 
     results = []
@@ -2581,9 +2578,9 @@ def generate_briefing(
     total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work) + (1 if constitution_entry else 0)
     pinned_block = ""
     if pinned_entries:
-        pinned_lines = [f"## 📌 Pinned P0 Entries (always shown)"]
+        pinned_lines = ["## 📌 Pinned P0 Entries (always shown)"]
         for pe in pinned_entries:
-            pinned_lines.append(f"- [{pe.get('id')}] **{pe.get('title','')}** ({pe.get('category','')})")
+            pinned_lines.append(f"- [{pe.get('id')}] **{pe.get('title', '')}** ({pe.get('category', '')})")
         pinned_block = "\n".join(pinned_lines) + "\n\n"
     output = ""
     if total_entries == 0 and not pinned_entries:
@@ -3422,9 +3419,7 @@ def generate_wakeup() -> str:
         ).fetchone()[0]
         total_count = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
         if total_count > 0 and stale_count / total_count >= 0.40:
-            lines.append(
-                f"⚠  {stale_count} stale entries (>90d) — run: sk knowledge evict --dry-run"
-            )
+            lines.append(f"⚠  {stale_count} stale entries (>90d) — run: sk knowledge evict --dry-run")
     except Exception:
         pass
 
@@ -3849,9 +3844,9 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text", wit
 # before the rest of main() parses them.  Flags already supplied by the caller
 # take precedence — preset values are only injected when the flag is absent.
 BRIEFING_PRESETS: dict[str, list[str]] = {
-    "daily":  ["--wakeup", "--pinned", "--days", "1"],
+    "daily": ["--wakeup", "--pinned", "--days", "1"],
     "sprint": ["--days", "7"],
-    "debug":  ["--days", "30"],
+    "debug": ["--days", "30"],
 }
 
 
@@ -3880,18 +3875,14 @@ def generate_briefing_history(days: int = 7, fmt: str = "text") -> str:
 
     try:
         # Check table exists
-        row = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='entry_recall_day_log'"
-        ).fetchone()
+        row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_recall_day_log'").fetchone()
         if row is None:
             msg = "Recall history is not available yet — no recall events have been recorded."
             if fmt == "json":
                 return json.dumps({"error": msg, "days": []})
             return msg
 
-        cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime(
-            "%Y-%m-%d"
-        )
+        cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
 
         # Fetch all (day, entry_id, title, category) rows within the window
         rows = db.execute(
@@ -3907,6 +3898,7 @@ def generate_briefing_history(days: int = 7, fmt: str = "text") -> str:
 
         # Group by day
         from collections import defaultdict
+
         day_map: dict[str, list[dict]] = defaultdict(list)
         for r in rows:
             day_map[r["day"]].append({"entry_id": r["entry_id"], "title": r["title"], "category": r["category"]})
@@ -3918,12 +3910,14 @@ def generate_briefing_history(days: int = 7, fmt: str = "text") -> str:
             result = []
             for day in sorted_days:
                 entries = day_map[day]
-                result.append({
-                    "date": day,
-                    "entries_recalled": len(entries),
-                    "top_titles": [e["title"] for e in entries[:3]],
-                    "entries": entries,
-                })
+                result.append(
+                    {
+                        "date": day,
+                        "entries_recalled": len(entries),
+                        "top_titles": [e["title"] for e in entries[:3]],
+                        "entries": entries,
+                    }
+                )
             return json.dumps({"days": result, "window_days": days}, indent=2)
 
         # Text / table output
@@ -3978,9 +3972,7 @@ def generate_never_recalled(fmt: str = "text") -> str:
 
     try:
         # Check table exists
-        row = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='entry_recall_day_log'"
-        ).fetchone()
+        row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_recall_day_log'").fetchone()
         if row is None:
             msg = "Recall tracking is not available yet — no recall events have been recorded."
             if fmt == "json":
@@ -4000,8 +3992,7 @@ def generate_never_recalled(fmt: str = "text") -> str:
 
         if fmt == "json":
             entries = [
-                {"id": r["id"], "title": r["title"], "category": r["category"], "priority": r["priority"]}
-                for r in rows
+                {"id": r["id"], "title": r["title"], "category": r["category"], "priority": r["priority"]} for r in rows
             ]
             return json.dumps({"entries": entries, "count": len(entries)}, indent=2)
 
@@ -4051,9 +4042,7 @@ def main():
         while _i < len(_preset_flags):
             _flag = _preset_flags[_i]
             # Determine if the next token is a value (not a flag).
-            _has_value = (
-                _i + 1 < len(_preset_flags) and not _preset_flags[_i + 1].startswith("--")
-            )
+            _has_value = _i + 1 < len(_preset_flags) and not _preset_flags[_i + 1].startswith("--")
             if _flag not in args:
                 if _has_value:
                     args = args + [_flag, _preset_flags[_i + 1]]
@@ -4091,7 +4080,11 @@ def main():
         if "--days" in args:
             _hist_idx = args.index("--days")
             try:
-                _hist_days = int(args[_hist_idx + 1]) if _hist_idx + 1 < len(args) and not args[_hist_idx + 1].startswith("--") else 7
+                _hist_days = (
+                    int(args[_hist_idx + 1])
+                    if _hist_idx + 1 < len(args) and not args[_hist_idx + 1].startswith("--")
+                    else 7
+                )
             except (ValueError, IndexError):
                 _hist_days = 7
         _hist_fmt = "json" if "--json" in args else "text"
@@ -4273,7 +4266,7 @@ def main():
         min_confidence = 0.0  # Show everything including low-confidence
 
     # --since YYYY-MM-DD / --days N: restrict results to entries seen on/after a date
-    since_date: "str | None" = None
+    since_date: str | None = None
     if "--since" in args:
         idx = args.index("--since")
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):

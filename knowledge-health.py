@@ -1616,6 +1616,7 @@ def _jaccard_similarity(text_a: str, text_b: str) -> float:
     Tokens are lowercased, non-alphanumeric characters stripped.
     Returns 0.0 if either token set is empty.
     """
+
     def _tokenize(s: str) -> set:
         return {t.lower() for t in re.findall(r"[a-z0-9]+", s.lower()) if t}
 
@@ -1846,15 +1847,30 @@ def compute_diff_stats(since: str | None = None, days: int = 7) -> dict:
         "category_delta": category_delta,
         "top_new_tags": top_new_tags,
         "new_entries": [
-            {"id": int(r["id"]), "category": r["category"] or "", "title": r["title"] or "", "first_seen": r["first_seen"] or ""}
+            {
+                "id": int(r["id"]),
+                "category": r["category"] or "",
+                "title": r["title"] or "",
+                "first_seen": r["first_seen"] or "",
+            }
             for r in new_rows
         ],
         "resolved_entries": [
-            {"id": int(r["id"]), "category": r["category"] or "", "title": r["title"] or "", "last_seen": r["last_seen"] or ""}
+            {
+                "id": int(r["id"]),
+                "category": r["category"] or "",
+                "title": r["title"] or "",
+                "last_seen": r["last_seen"] or "",
+            }
             for r in resolved_rows
         ],
         "bumped_entries": [
-            {"id": int(r["id"]), "category": r["category"] or "", "title": r["title"] or "", "recurrence_after_briefing": int(r["recurrence_after_briefing"] or 0)}
+            {
+                "id": int(r["id"]),
+                "category": r["category"] or "",
+                "title": r["title"] or "",
+                "recurrence_after_briefing": int(r["recurrence_after_briefing"] or 0),
+            }
             for r in bumped_rows
         ],
     }
@@ -1982,7 +1998,15 @@ def compute_knowledge_export(
         ).fetchall()
     except sqlite3.OperationalError:
         db.close()
-        return {"format": fmt, "category": category, "tag": tag, "since": since, "limit": limit, "count": 0, "entries": []}
+        return {
+            "format": fmt,
+            "category": category,
+            "tag": tag,
+            "since": since,
+            "limit": limit,
+            "count": 0,
+            "entries": [],
+        }
 
     db.close()
 
@@ -2066,7 +2090,7 @@ def _parse_older_than(value: str) -> int:
     try:
         return max(1, int(v))
     except ValueError:
-        raise ValueError(f"Cannot parse --older-than {value!r}: expected integer or 'Nd' (e.g. '180d')")
+        raise ValueError(f"Cannot parse --older-than {value!r}: expected integer or 'Nd' (e.g. '180d')") from None
 
 
 def run_knowledge_archive(
@@ -2432,7 +2456,6 @@ def main():
                 sys.stdout.buffer.write(b"\n")
         return
 
-
         recall_stats = compute_recall_stats()
         if "--json" in args:
             print(json.dumps(recall_stats, indent=2, ensure_ascii=False))
@@ -2475,18 +2498,35 @@ def main():
             for r in rows:
                 try:
                     from datetime import timezone as _tz
+
                     ls = r[3] or ""
                     if ls:
                         from datetime import datetime as _dt
+
                         dt = _dt.fromisoformat(ls.replace("Z", "+00:00"))
                         age_days = int((time.time() - dt.timestamp()) / 86400)
                     else:
                         age_days = -1
                 except Exception:
                     age_days = -1
-                entries.append({"id": r[0], "category": r[1], "title": r[2], "last_seen": r[3], "days_old": age_days, "confidence": r[4]})
+                entries.append(
+                    {
+                        "id": r[0],
+                        "category": r[1],
+                        "title": r[2],
+                        "last_seen": r[3],
+                        "days_old": age_days,
+                        "confidence": r[4],
+                    }
+                )
             if "--json" in args:
-                print(json.dumps({"days_threshold": days, "count": len(entries), "entries": entries}, indent=2, ensure_ascii=False))
+                print(
+                    json.dumps(
+                        {"days_threshold": days, "count": len(entries), "entries": entries},
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
             else:
                 print(f"📅 Stale entries (not updated in >{days} days): {len(entries)}")
                 for e in entries:
@@ -2646,7 +2686,7 @@ def cmd_pins() -> None:
         print("  " + "-" * (len(header) - 2))
         for r in rows:
             title = (r["title"] or "")[:60]
-            cat = (r["category"] or "")
+            cat = r["category"] or ""
             date = (r["created_at"] or "")[:10]
             print(f"  {str(r['id']):<{col_id}}  {cat:<{col_cat}}  {date:<{col_date}}  {title}")
     except Exception as exc:

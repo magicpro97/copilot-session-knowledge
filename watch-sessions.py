@@ -466,9 +466,7 @@ def print_stats() -> None:
         last_indexed = row_total["last_indexed"] if row_total else None
 
         # Sessions indexed today
-        today_count = db.execute(
-            "SELECT COUNT(*) FROM sessions WHERE date(indexed_at) = date('now')"
-        ).fetchone()[0]
+        today_count = db.execute("SELECT COUNT(*) FROM sessions WHERE date(indexed_at) = date('now')").fetchone()[0]
 
         # Sessions indexed this week (last 7 days)
         week_count = db.execute(
@@ -483,9 +481,7 @@ def print_stats() -> None:
 
         # Backlog estimate: files in watch dirs not yet in sessions table
         watch_dirs = [root for _, root in KNOWN_HOSTS if root.exists()]
-        known_paths = set(
-            row[0] for row in db.execute("SELECT path FROM sessions").fetchall()
-        )
+        known_paths = set(row[0] for row in db.execute("SELECT path FROM sessions").fetchall())
         db.close()
 
         backlog = 0

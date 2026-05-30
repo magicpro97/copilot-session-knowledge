@@ -551,6 +551,7 @@ def _fetch_today_stats() -> dict | None:
         return None
     try:
         import sqlite3 as _sq
+
         _db = _sq.connect(str(db_path))
         cols = {row[1] for row in _db.execute("PRAGMA table_info(sessions)").fetchall()}
         if "indexed_at" not in cols:
@@ -568,7 +569,6 @@ def _fetch_today_stats() -> dict | None:
         return None
 
 
-
 def _print_cost_trend() -> None:
     """Print a 7-day ASCII bar chart of daily session cost estimates.
 
@@ -582,6 +582,7 @@ def _print_cost_trend() -> None:
 
     try:
         import sqlite3 as _sqlite3
+
         db = _sqlite3.connect(str(db_path))
         # Check column exists (migration v33)
         cols = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
@@ -615,8 +616,13 @@ def _print_cost_trend() -> None:
     avg_per_day = weekly_total / 7  # average over a full week, not just days with data
 
     _day_abbr = {
-        "0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
-        "4": "Thu", "5": "Fri", "6": "Sat",
+        "0": "Sun",
+        "1": "Mon",
+        "2": "Tue",
+        "3": "Wed",
+        "4": "Thu",
+        "5": "Fri",
+        "6": "Sat",
     }
 
     print(f"\n{_ansi(BOLD)}{_CHART_ICON} Cost Trend — last 7 days{_ansi(RST)}")
@@ -625,6 +631,7 @@ def _print_cost_trend() -> None:
         # Compute abbreviated weekday name from ISO date string
         try:
             import datetime as _dt
+
             d = _dt.date.fromisoformat(day_str)
             label = _day_abbr.get(str(d.weekday() + 1 if d.weekday() < 6 else 0), day_str[-5:])
             # weekday(): Mon=0 … Sun=6 → Sun=0, Mon=1…Sat=6
@@ -640,8 +647,10 @@ def _print_cost_trend() -> None:
         print(f"  {label} {bar} {_ansi(Y)}{cost_str}{_ansi(RST)}")
 
     print()
-    print(f"  {_ansi(BOLD)}Total:{_ansi(RST)} {_ansi(Y)}{_fmt_cost(weekly_total)}/week{_ansi(RST)}"
-          f"   {_ansi(BOLD)}Avg:{_ansi(RST)} {_ansi(Y)}{_fmt_cost(avg_per_day)}/day{_ansi(RST)}")
+    print(
+        f"  {_ansi(BOLD)}Total:{_ansi(RST)} {_ansi(Y)}{_fmt_cost(weekly_total)}/week{_ansi(RST)}"
+        f"   {_ansi(BOLD)}Avg:{_ansi(RST)} {_ansi(Y)}{_fmt_cost(avg_per_day)}/day{_ansi(RST)}"
+    )
     print(f"  {_ansi(DIM)}Cost = token counts × model rates. Run sk index build to refresh.{_ansi(RST)}")
     print()
 

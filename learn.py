@@ -1200,9 +1200,10 @@ def add_entry(
     has_epistemic_humility_columns = all(c in ke_columns for c in ("certainty", "caveats"))
     has_deleted_at_column = "deleted_at" in ke_columns
     has_recurrence_column = "recurrence_after_briefing" in ke_columns
-    has_briefing_deliveries = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='briefing_deliveries'"
-    ).fetchone() is not None
+    has_briefing_deliveries = (
+        db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='briefing_deliveries'").fetchone()
+        is not None
+    )
     if code_location_set and not has_code_location_columns:
         print(
             "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
@@ -2278,9 +2279,7 @@ def list_unresolved(category: str = "mistake", limit: int = 20) -> None:
         conditions.append("(is_resolved IS NULL OR is_resolved = 0)")
     if has_deleted_at:
         conditions.append("deleted_at IS NULL")
-    recurrence_col = (
-        ", COALESCE(recurrence_after_briefing, 0) AS recurrence" if has_recurrence else ", 0 AS recurrence"
-    )
+    recurrence_col = ", COALESCE(recurrence_after_briefing, 0) AS recurrence" if has_recurrence else ", 0 AS recurrence"
     where_clause = " AND ".join(conditions)
     params.append(limit)
 
@@ -2389,15 +2388,10 @@ def retag_entries(
         changed_count = sum(
             1
             for row in rows
-            if _detect_wing(row["tags"] or "", row["title"] or "", row["content"] or "")
-            != (row["wing"] or "")
-            or _detect_room(row["tags"] or "", row["title"] or "", row["content"] or "")
-            != (row["room"] or "")
+            if _detect_wing(row["tags"] or "", row["title"] or "", row["content"] or "") != (row["wing"] or "")
+            or _detect_room(row["tags"] or "", row["title"] or "", row["content"] or "") != (row["room"] or "")
         )
-        print(
-            f"  Dry-run: {len(rows)} entries checked, "
-            f"{changed_count} would change wing/room."
-        )
+        print(f"  Dry-run: {len(rows)} entries checked, {changed_count} would change wing/room.")
     db.close()
     return tagged_count
 

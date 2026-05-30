@@ -1011,7 +1011,7 @@ def list_session_labels() -> None:
         return
     print(f"\n{BOLD}Labeled Sessions{RESET}\n")
     print(f"{'ID':12s} {'Label':30s} {'Src':>7s}  Indexed")
-    print(f"{'-'*12} {'-'*30} {'-'*7}  {'-'*20}")
+    print(f"{'-' * 12} {'-' * 30} {'-' * 7}  {'-' * 20}")
     for row in rows:
         sid = row["id"][:10] + ".."
         label = (row["label"] or "")[:30]
@@ -2689,9 +2689,7 @@ def write_feedback(entry_id: int, verdict_str: str, query: str = "") -> None:
     db = get_db()
     try:
         # Ensure table exists (graceful on older DBs)
-        exists = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_feedback'"
-        ).fetchone()
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_feedback'").fetchone()
         if not exists:
             print("Error: search_feedback table not found — run 'sk index migrate' to upgrade the DB")
             sys.exit(1)
@@ -3000,7 +2998,8 @@ def _run(args: list, compact: bool = False):
 
     # --since YYYY-MM-DD / --days N: restrict knowledge entries to those seen on/after date
     import datetime as _dt_qs
-    since_date_filter: "str | None" = None
+
+    since_date_filter: str | None = None
     if "--since" in args:
         idx = args.index("--since")
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
@@ -3009,9 +3008,9 @@ def _run(args: list, compact: bool = False):
         idx = args.index("--days")
         try:
             n_days = int(args[idx + 1]) if idx + 1 < len(args) and not args[idx + 1].startswith("--") else 7
-            since_date_filter = (
-                _dt_qs.datetime.now(_dt_qs.timezone.utc) - _dt_qs.timedelta(days=n_days)
-            ).strftime("%Y-%m-%d")
+            since_date_filter = (_dt_qs.datetime.now(_dt_qs.timezone.utc) - _dt_qs.timedelta(days=n_days)).strftime(
+                "%Y-%m-%d"
+            )
         except (ValueError, IndexError):
             pass
 
