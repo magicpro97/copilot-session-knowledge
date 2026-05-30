@@ -78,15 +78,15 @@ For `browse-ui/` changes: `cd browse-ui && pnpm typecheck && pnpm lint && pnpm f
 
 <!-- AI: Read this table before every task. Apply each principle as a checklist gate. -->
 
-| # | Principle | Rule | <!-- AI: enforcement note --> |
-|---|-----------|------|-------------------------------|
-| 1 | **No-Ship-Bugs** | CODE→COMPILE→TEST→VERIFY→COMMIT. Never commit without passing tests. | <!-- AI: run test_security.py && test_fixes.py before any commit --> |
-| 2 | **Follow-Workflow** | Clarify→Plan→Execute→Verify→Close. No skipping phases. | <!-- AI: check WORKFLOW.md or use PLAN→BUILD→TEST→VERIFY→COMMIT if absent --> |
-| 3 | **Quality-Over-Speed** | Multi-platform = no shortcuts. Verify on all surfaces. | <!-- AI: run all surface gates (Python + browse-ui + Rust) before closeout --> |
-| 4 | **Tentacle-Orchestration** | ≥3 files or ≥2 modules → tentacle required. | <!-- AI: count changed files; if ≥3, create tentacle before editing --> |
-| 5 | **No-Abandon** | confidence < 1.0 = research loop, never BLOCKED. Fix or delegate. | <!-- AI: never write BLOCKED; create research-<topic> tentacle instead --> |
-| 6 | **Rules-First** | Read AGENTS.md before every task. | <!-- AI: this table IS the rules — re-read on each new task --> |
-| 7 | **Knowledge-Recording** | `sk learn` after every bug fix or new pattern. | <!-- AI: call sk learn --mistake or --pattern before task_complete --> |
+| # | Principle | Rule | Command | <!-- AI: enforcement note --> |
+|---|-----------|------|---------|-------------------------------|
+| 1 | **No-Ship-Bugs** | CODE→COMPILE→TEST→VERIFY→COMMIT. Never commit without passing tests. | `python3 test_security.py && test_fixes.py` | <!-- AI: run test_security.py && test_fixes.py before any commit --> |
+| 2 | **Follow-Workflow** | Clarify→Plan→Execute→Verify→Close. No skipping phases. | `sk harness init` (new) · `sk harness check` (verify) | <!-- AI: check WORKFLOW.md or use PLAN→BUILD→TEST→VERIFY→COMMIT if absent --> |
+| 3 | **Quality-Over-Speed** | Multi-platform = no shortcuts. Verify on all surfaces. | `SK_HARNESS=1 sk <cmd>` | <!-- AI: run all surface gates (Python + browse-ui + Rust) before closeout --> |
+| 4 | **Tentacle-Orchestration** | ≥3 files or ≥2 modules → tentacle required. | `sk tentacle create <name> --briefing` | <!-- AI: count changed files; if ≥3, create tentacle before editing --> |
+| 5 | **No-Abandon** | confidence < 1.0 = research loop, never BLOCKED. Fix or delegate. | `sk briefing "<topic>"` | <!-- AI: never write BLOCKED; create research-<topic> tentacle instead --> |
+| 6 | **Rules-First** | Read AGENTS.md before every task. | `sk briefing --auto --compact` | <!-- AI: this table IS the rules — re-read on each new task --> |
+| 7 | **Knowledge-Recording** | `sk learn` after every bug fix or new pattern. | `sk learn --mistake/--pattern/--feature` | <!-- AI: call sk learn --mistake or --pattern before task_complete --> |
 
 > Canonical source: `templates/copilot-instructions.md § 🛡️ Harness Engineering — 7 Nguyên tắc`  
 > Full rule details: [docs/AGENT-RULES.md](docs/AGENT-RULES.md)
