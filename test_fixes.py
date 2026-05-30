@@ -3267,12 +3267,12 @@ try:
     _orig_gdb_p11 = _brf.get_db
     _orig_ghl_p11 = _brf._get_briefing_half_life
 
-    def _fake_ske_p11(db, query, cat, limit, min_confidence=0.0):
+    def _fake_ske_p11(db, query, cat, limit, min_confidence=0.0, since_date=None, include_resolved=False):
         if cat == "mistake":
             return list(_p11_fts_entries)
         return []
 
-    def _fake_ss_p11(db, query, cat, limit, min_confidence=0.0):
+    def _fake_ss_p11(db, query, cat, limit, min_confidence=0.0, include_resolved=False):
         if cat == "mistake":
             return [_p11_sem_entry]
         return []
@@ -3319,7 +3319,7 @@ try:
     _p12_cat_limit = 3
     _p12_fetch_limit = max(_p12_cat_limit * 2, _p12_cat_limit + 6)  # = 9 for cat_limit=3
 
-    def _fake_ss_p12(db, query, cat, limit, min_confidence=0.0):
+    def _fake_ss_p12(db, query, cat, limit, min_confidence=0.0, include_resolved=False):
         """Returns P0 hit only when caller passes widened fetch_limit."""
         if cat != "mistake":
             return []
@@ -3350,7 +3350,7 @@ try:
             ]
         return _p2_pool  # narrow call: P0 entry invisible to outer rerank
 
-    def _fake_ske_p12(db, query, cat, limit, min_confidence=0.0):
+    def _fake_ske_p12(db, query, cat, limit, min_confidence=0.0, since_date=None, include_resolved=False):
         return []  # FTS contributes nothing so only semantic entries are in play
 
     _p12_mock_db = _sqlite3_p12.connect(":memory:")
@@ -5580,6 +5580,169 @@ except Exception as _e699:
     test("I699: sk doctor --fix auto-remediation", False, str(_e699))
 
 # ---------------------------------------------------------------------------
+# I703: time-filtered recall (--since/--days) + sk query --why <id>
+# ---------------------------------------------------------------------------
+print("\n📅 I703: time-filtered recall (--since/--days) + --why explain")
+
+try:
+    import importlib.util as _ilu703
+    import datetime as _dt703
+
+    # Build a minimal test DB with two entries: one old, one recent
+    with tempfile.TemporaryDirectory(prefix="i703-test-") as _td703:
+        _home703 = Path(_td703) / "home"
+        _db_dir703 = _home703 / ".copilot" / "session-state"
+        _db_dir703.mkdir(parents=True)
+        _db703 = sqlite3.connect(str(_db_dir703 / "knowledge.db"))
+        _db703.executescript("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                doc_type TEXT NOT NULL,
+                seq INTEGER DEFAULT 0,
+                title TEXT NOT NULL,
+                file_path TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                est_tokens INTEGER DEFAULT 0,
+                intensity REAL DEFAULT 0.8,
+                priority TEXT DEFAULT 'P2'
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags,
+                content='knowledge_entries', content_rowid='id'
+            );
+        """)
+        _old_date703 = "2020-01-01 00:00:00"
+        _recent_date703 = _dt703.datetime.now(_dt703.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        _db703.execute(
+            "INSERT INTO knowledge_entries (session_id, category, title, content, confidence, last_seen, occurrence_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("sess-old", "mistake", "Old recall mistake", "This is an old entry", 0.9, _old_date703, 1),
+        )
+        _db703.execute(
+            "INSERT INTO knowledge_entries (session_id, category, title, content, confidence, last_seen, occurrence_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("sess-new", "mistake", "Recent recall mistake", "This is a recent entry", 0.9, _recent_date703, 3),
+        )
+        # Populate ke_fts
+        _db703.execute(
+            "INSERT INTO ke_fts (rowid, title, content, tags) SELECT id, title, content, tags FROM knowledge_entries"
+        )
+        _db703.commit()
+        _db703.close()
+
+        _env703 = {**os.environ, "HOME": str(_home703), "SK_DB_PATH": str(_db_dir703 / "knowledge.db")}
+
+        # --- I703-1: briefing.py --since filters out old entries ---
+        _since703 = "2024-01-01"
+        _r703_1 = subprocess.run(
+            [sys.executable, str(REPO / "briefing.py"), "recall mistake", "--since", _since703, "--compact"],
+            capture_output=True, text=True, env=_env703,
+        )
+        _out703_1 = _r703_1.stdout + _r703_1.stderr
+        test(
+            "I703-1: briefing.py --since filters old entries",
+            "Recent recall mistake" in _out703_1 and "Old recall mistake" not in _out703_1,
+            f"since={_since703!r} stdout={_out703_1[:300]!r}",
+        )
+
+        # --- I703-2: briefing.py --days N filters entries ---
+        _r703_2 = subprocess.run(
+            [sys.executable, str(REPO / "briefing.py"), "recall mistake", "--days", "30", "--compact"],
+            capture_output=True, text=True, env=_env703,
+        )
+        _out703_2 = _r703_2.stdout + _r703_2.stderr
+        test(
+            "I703-2: briefing.py --days filters old entries",
+            "Recent recall mistake" in _out703_2 and "Old recall mistake" not in _out703_2,
+            f"stdout={_out703_2[:300]!r}",
+        )
+
+        # --- I703-3: query-session.py --since filters old entries ---
+        _r703_3 = subprocess.run(
+            [sys.executable, str(REPO / "query-session.py"), "recall mistake", "--since", _since703],
+            capture_output=True, text=True, env=_env703,
+        )
+        _out703_3 = _r703_3.stdout + _r703_3.stderr
+        test(
+            "I703-3: query-session.py --since filters old entries",
+            "Recent recall mistake" in _out703_3 and "Old recall mistake" not in _out703_3,
+            f"stdout={_out703_3[:300]!r}",
+        )
+
+        # --- I703-4: query-session.py --days N filters old entries ---
+        _r703_4 = subprocess.run(
+            [sys.executable, str(REPO / "query-session.py"), "recall mistake", "--days", "30"],
+            capture_output=True, text=True, env=_env703,
+        )
+        _out703_4 = _r703_4.stdout + _r703_4.stderr
+        test(
+            "I703-4: query-session.py --days filters old entries",
+            "Recent recall mistake" in _out703_4 and "Old recall mistake" not in _out703_4,
+            f"stdout={_out703_4[:300]!r}",
+        )
+
+        # --- I703-5: query-session.py --why <id> shows scoring fields ---
+        _r703_5 = subprocess.run(
+            [sys.executable, str(REPO / "query-session.py"), "--why", "2"],
+            capture_output=True, text=True, env=_env703,
+        )
+        _out703_5 = _r703_5.stdout
+        test(
+            "I703-5a: --why shows recency_decay",
+            "Recency decay" in _out703_5 or "recency_decay" in _out703_5,
+            f"stdout={_out703_5[:300]!r}",
+        )
+        test(
+            "I703-5b: --why shows occurrence_count",
+            "occurrence_count" in _out703_5.lower() or "Occurrence count" in _out703_5,
+            f"stdout={_out703_5[:300]!r}",
+        )
+        test(
+            "I703-5c: --why shows final composite score",
+            "Final composite score" in _out703_5 or "final_score" in _out703_5,
+            f"stdout={_out703_5[:300]!r}",
+        )
+
+        # --- I703-6: query-session.py --why <id> --json produces valid JSON ---
+        _r703_6 = subprocess.run(
+            [sys.executable, str(REPO / "query-session.py"), "--why", "2", "--json"],
+            capture_output=True, text=True, env=_env703,
+        )
+        try:
+            _why703_json = json.loads(_r703_6.stdout)
+            test(
+                "I703-6a: --why --json has required keys",
+                all(
+                    k in _why703_json
+                    for k in ("entry_id", "recency_decay", "occurrence_count", "final_score", "recurrence_weight")
+                ),
+                f"keys={list(_why703_json.keys())}",
+            )
+            test(
+                "I703-6b: --why --json occurrence_count matches DB",
+                _why703_json.get("occurrence_count") == 3,
+                f"occurrence_count={_why703_json.get('occurrence_count')}",
+            )
+        except (json.JSONDecodeError, ValueError) as _e703_json:
+            test("I703-6a: --why --json has required keys", False, f"JSON parse error: {_e703_json}")
+            test("I703-6b: --why --json occurrence_count matches DB", False, "JSON parse error")
+
+except Exception as _e703:
+    test("I703: time-filtered recall + --why", False, str(_e703))
+
+# ---------------------------------------------------------------------------
 # I700: sk tentacle cleanup --stale
 # ---------------------------------------------------------------------------
 print("\n🧹 I700: sk tentacle cleanup --stale")
@@ -5762,6 +5925,594 @@ try:
 
 except Exception as _e700:
     test("I700: sk tentacle cleanup --stale", False, str(_e700))
+
+# ---------------------------------------------------------------------------
+# I704: sk knowledge dedup — near-duplicate detection via Jaccard similarity
+# ---------------------------------------------------------------------------
+print("\n🔍 I704: knowledge dedup — Jaccard similarity and dedup logic")
+
+# I704-1: _jaccard_similarity pure-function tests
+try:
+    import importlib.util as _ilu704
+
+    _kh_spec704 = _ilu704.spec_from_file_location("khealth_704", REPO / "knowledge-health.py")
+    _kh704 = _ilu704.module_from_spec(_kh_spec704)  # type: ignore[arg-type]
+    _kh_spec704.loader.exec_module(_kh704)  # type: ignore[union-attr]
+
+    _jac = _kh704._jaccard_similarity
+
+    test(
+        "I704-1a: identical strings → similarity 1.0",
+        _jac("foo bar baz", "foo bar baz") == 1.0,
+        f"got {_jac('foo bar baz', 'foo bar baz')}",
+    )
+    test(
+        "I704-1b: completely different strings → similarity 0.0",
+        _jac("alpha beta", "gamma delta") == 0.0,
+        f"got {_jac('alpha beta', 'gamma delta')}",
+    )
+    test(
+        "I704-1c: 50% overlap → similarity 0.333",
+        abs(_jac("a b c", "b c d") - 2 / 4) < 0.01,
+        f"got {_jac('a b c', 'b c d')}",
+    )
+    test(
+        "I704-1d: empty string → similarity 0.0",
+        _jac("", "something") == 0.0,
+        f"got {_jac('', 'something')}",
+    )
+    test(
+        "I704-1e: case-insensitive comparison",
+        _jac("Fix BUG", "fix bug") == 1.0,
+        f"got {_jac('Fix BUG', 'fix bug')}",
+    )
+
+except Exception as _e704_1:
+    test("I704-1: _jaccard_similarity basic tests", False, str(_e704_1))
+
+# I704-2: compute_dedup_candidates finds duplicates in same bucket
+try:
+    import importlib.util as _ilu704b
+    import sqlite3 as _sq704
+
+    _kh_spec704b = _ilu704b.spec_from_file_location("khealth_704b", REPO / "knowledge-health.py")
+    _kh704b = _ilu704b.module_from_spec(_kh_spec704b)  # type: ignore[arg-type]
+    _kh_spec704b.loader.exec_module(_kh704b)  # type: ignore[union-attr]
+
+    # Build a minimal in-memory DB fixture
+    _db704 = _sq704.connect(":memory:")
+    _db704.row_factory = _sq704.Row
+    _db704.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT '',
+            last_seen TEXT DEFAULT '',
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT ''
+        );
+    """)
+    # Two near-identical entries in same bucket (mistake / wing1 / room1)
+    _db704.execute(
+        "INSERT INTO knowledge_entries (session_id,category,title,content,confidence,wing,room)"
+        " VALUES ('s1','mistake','Fix import error in module','Always check import paths when fixing ModuleNotFoundError',0.9,'wing1','room1')"
+    )
+    _db704.execute(
+        "INSERT INTO knowledge_entries (session_id,category,title,content,confidence,wing,room)"
+        " VALUES ('s2','mistake','Fix import error in module','Check import paths when fixing ModuleNotFoundError errors',0.7,'wing1','room1')"
+    )
+    # One entry in a different bucket — should NOT be compared with the above
+    _db704.execute(
+        "INSERT INTO knowledge_entries (session_id,category,title,content,confidence,wing,room)"
+        " VALUES ('s3','pattern','Use virtual environments','Always use venv for Python projects',1.0,'wing2','room2')"
+    )
+    _db704.commit()
+
+    import os as _os704
+    import tempfile as _tf704
+
+    _td704 = _tf704.mkdtemp(prefix="i704-")
+    _db704_path = os.path.join(_td704, "knowledge.db")
+    # Write the in-memory DB to a file
+    import sqlite3 as _sq704f
+    _conn704f = _sq704f.connect(_db704_path)
+    for line in _db704.iterdump():
+        _conn704f.execute(line)
+    _conn704f.commit()
+    _conn704f.close()
+    _db704.close()
+
+    _orig_db704 = _kh704b.DB_PATH
+    _kh704b.DB_PATH = Path(_db704_path)
+    try:
+        _res704 = _kh704b.compute_dedup_candidates(threshold=0.5)
+    finally:
+        _kh704b.DB_PATH = _orig_db704
+    import shutil as _sh704
+    _sh704.rmtree(_td704, ignore_errors=True)
+
+    test(
+        "I704-2a: dedup finds 1 pair in same bucket above threshold",
+        len(_res704["pairs"]) == 1,
+        f"pairs={len(_res704['pairs'])}",
+    )
+    test(
+        "I704-2b: pair ids are from mistake bucket only",
+        _res704["pairs"][0]["id_a"] in (1, 2) and _res704["pairs"][0]["id_b"] in (1, 2),
+        f"pair ids: {_res704['pairs'][0]['id_a']},{_res704['pairs'][0]['id_b']}",
+    )
+    test(
+        "I704-2c: similarity is above threshold",
+        _res704["pairs"][0]["similarity"] >= 0.5,
+        f"sim={_res704['pairs'][0]['similarity']}",
+    )
+    test(
+        "I704-2d: superseded_id is lower-confidence entry (id=2, conf=0.7)",
+        _res704["pairs"][0]["superseded_id"] == 2,
+        f"superseded_id={_res704['pairs'][0]['superseded_id']}",
+    )
+    test(
+        "I704-2e: surviving_id is higher-confidence entry (id=1, conf=0.9)",
+        _res704["pairs"][0]["surviving_id"] == 1,
+        f"surviving_id={_res704['pairs'][0]['surviving_id']}",
+    )
+
+except Exception as _e704_2:
+    test("I704-2: compute_dedup_candidates integration", False, str(_e704_2))
+
+# I704-3: compute_dedup_candidates with --category filter excludes other categories
+try:
+    import importlib.util as _ilu704c
+    import sqlite3 as _sq704c
+    import tempfile as _tf704c
+    import shutil as _sh704c
+
+    _kh_spec704c = _ilu704c.spec_from_file_location("khealth_704c", REPO / "knowledge-health.py")
+    _kh704c = _ilu704c.module_from_spec(_kh_spec704c)  # type: ignore[arg-type]
+    _kh_spec704c.loader.exec_module(_kh704c)  # type: ignore[union-attr]
+
+    _db704c = _sq704c.connect(":memory:")
+    _db704c.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT ''
+        );
+        INSERT INTO knowledge_entries (session_id,category,title,content) VALUES
+            ('s1','mistake','same title content here','same title content here'),
+            ('s2','mistake','same title content here','same title content here'),
+            ('s3','pattern','same title content here','same title content here'),
+            ('s4','pattern','same title content here','same title content here');
+    """)
+    _db704c.commit()
+
+    _td704c = _tf704c.mkdtemp(prefix="i704c-")
+    _db704c_path = os.path.join(_td704c, "knowledge.db")
+    _conn704c = _sq704c.connect(_db704c_path)
+    for line in _db704c.iterdump():
+        _conn704c.execute(line)
+    _conn704c.commit()
+    _conn704c.close()
+    _db704c.close()
+
+    _orig_db704c = _kh704c.DB_PATH
+    _kh704c.DB_PATH = Path(_db704c_path)
+    try:
+        _res704c = _kh704c.compute_dedup_candidates(threshold=0.9, category="mistake")
+    finally:
+        _kh704c.DB_PATH = _orig_db704c
+    _sh704c.rmtree(_td704c, ignore_errors=True)
+
+    test(
+        "I704-3a: category filter returns only mistake pairs (1 pair expected)",
+        len(_res704c["pairs"]) == 1,
+        f"pairs={len(_res704c['pairs'])} (expected 1)",
+    )
+    test(
+        "I704-3b: result category field matches filter",
+        _res704c["category"] == "mistake",
+        f"category={_res704c['category']}",
+    )
+
+except Exception as _e704_3:
+    test("I704-3: compute_dedup_candidates category filter", False, str(_e704_3))
+
+# I704-4: compute_dedup_candidates returns empty list when no pairs exceed threshold
+try:
+    import importlib.util as _ilu704d
+    import sqlite3 as _sq704d
+    import tempfile as _tf704d
+    import shutil as _sh704d
+
+    _kh_spec704d = _ilu704d.spec_from_file_location("khealth_704d", REPO / "knowledge-health.py")
+    _kh704d = _ilu704d.module_from_spec(_kh_spec704d)  # type: ignore[arg-type]
+    _kh_spec704d.loader.exec_module(_kh704d)  # type: ignore[union-attr]
+
+    _db704d = _sq704d.connect(":memory:")
+    _db704d.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT ''
+        );
+        INSERT INTO knowledge_entries (session_id,category,title,content) VALUES
+            ('s1','pattern','Python typing hints','Use type annotations for better IDE support'),
+            ('s2','pattern','Database migrations','Always run migrate.py before deploying');
+    """)
+    _db704d.commit()
+
+    _td704d = _tf704d.mkdtemp(prefix="i704d-")
+    _db704d_path = os.path.join(_td704d, "knowledge.db")
+    _conn704d = _sq704d.connect(_db704d_path)
+    for line in _db704d.iterdump():
+        _conn704d.execute(line)
+    _conn704d.commit()
+    _conn704d.close()
+    _db704d.close()
+
+    _orig_db704d = _kh704d.DB_PATH
+    _kh704d.DB_PATH = Path(_db704d_path)
+    try:
+        _res704d = _kh704d.compute_dedup_candidates(threshold=0.7)
+    finally:
+        _kh704d.DB_PATH = _orig_db704d
+    _sh704d.rmtree(_td704d, ignore_errors=True)
+
+    test(
+        "I704-4: no pairs below threshold → empty list",
+        len(_res704d["pairs"]) == 0,
+        f"pairs={len(_res704d['pairs'])} (expected 0)",
+    )
+
+except Exception as _e704_4:
+    test("I704-4: empty pairs below threshold", False, str(_e704_4))
+
+# I704-5: _insert_supersedes_relation inserts correct row
+try:
+    import importlib.util as _ilu704e
+    import sqlite3 as _sq704e
+    import tempfile as _tf704e
+    import shutil as _sh704e
+
+    _kh_spec704e = _ilu704e.spec_from_file_location("khealth_704e", REPO / "knowledge-health.py")
+    _kh704e = _ilu704e.module_from_spec(_kh_spec704e)  # type: ignore[arg-type]
+    _kh_spec704e.loader.exec_module(_kh704e)  # type: ignore[union-attr]
+
+    _db704e = _sq704e.connect(":memory:")
+    _db704e.row_factory = _sq704e.Row
+    _db704e.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            confidence REAL DEFAULT 1.0
+        );
+        CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER,
+            target_id INTEGER,
+            source_stable_id TEXT DEFAULT '',
+            target_stable_id TEXT DEFAULT '',
+            relation_type TEXT NOT NULL,
+            stable_id TEXT,
+            confidence REAL DEFAULT 0.8,
+            created_at TEXT,
+            session_id TEXT DEFAULT '',
+            UNIQUE(source_id, target_id, relation_type)
+        );
+        INSERT INTO knowledge_entries (session_id,category,title,content) VALUES
+            ('s1','mistake','Entry A','content a'),
+            ('s2','mistake','Entry B','content b');
+    """)
+    _db704e.commit()
+
+    _kh704e._insert_supersedes_relation(_db704e, 1, 2)
+
+    _rel_row704e = _db704e.execute(
+        "SELECT * FROM knowledge_relations WHERE source_id=1 AND target_id=2"
+    ).fetchone()
+
+    test(
+        "I704-5a: _insert_supersedes_relation inserts a row",
+        _rel_row704e is not None,
+        "no row found in knowledge_relations",
+    )
+    test(
+        "I704-5b: relation_type is SUPERSEDES",
+        _rel_row704e is not None and _rel_row704e["relation_type"] == "SUPERSEDES",
+        f"relation_type={_rel_row704e['relation_type'] if _rel_row704e else 'N/A'}",
+    )
+    # Idempotent: calling again should not raise
+    try:
+        _kh704e._insert_supersedes_relation(_db704e, 1, 2)
+        test("I704-5c: _insert_supersedes_relation is idempotent (no exception on repeat)", True)
+    except Exception as _e704_idem:
+        test("I704-5c: _insert_supersedes_relation is idempotent (no exception on repeat)", False, str(_e704_idem))
+
+    _db704e.close()
+
+except Exception as _e704_5:
+    test("I704-5: _insert_supersedes_relation", False, str(_e704_5))
+
+# ---------------------------------------------------------------------------
+# I701: Mistake lifecycle — mark_resolved, list_unresolved, recurrence bump,
+#        briefing resolved-filter, retag
+# ---------------------------------------------------------------------------
+
+
+def _seed_lifecycle_db(db_path: Path) -> None:
+    """Create a minimal lifecycle-capable knowledge DB at db_path."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3 as _sq_seed
+    _sdb = _sq_seed.connect(str(db_path))
+    try:
+        _sdb.executescript("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT 'test-session',
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 0.7,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                stable_id TEXT,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                deleted_at TEXT DEFAULT NULL
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags, category, wing, room, facts
+            );
+            CREATE TABLE IF NOT EXISTS briefing_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                entry_id INTEGER NOT NULL,
+                delivered_at TEXT NOT NULL DEFAULT ''
+            );
+        """)
+        _sdb.commit()
+    finally:
+        _sdb.close()
+
+
+# I701-1: mark_resolved CLI sets is_resolved=1 and stores fix_steps
+try:
+    with tempfile.TemporaryDirectory(prefix="learn-lifecycle-") as _i701_tmp:
+        _i701_home = Path(_i701_tmp)
+        _i701_env = os.environ.copy()
+        _i701_env["HOME"] = str(_i701_home)
+        _i701_env["USERPROFILE"] = str(_i701_home)
+        _i701_db_path = _i701_home / ".copilot" / "session-state" / "knowledge.db"
+        _seed_lifecycle_db(_i701_db_path)
+
+        # Add an entry first
+        _i701_add = _run_utf8_text(
+            [sys.executable, str(REPO / "learn.py"), "--mistake", "Lifecycle test bug", "Details about the bug"],
+            capture_output=True, text=True, env=_i701_env,
+        )
+        # Get the entry ID
+        import sqlite3 as _sq701_check
+        _i701_conn = _sq701_check.connect(str(_i701_db_path))
+        _i701_eid = _i701_conn.execute(
+            "SELECT id FROM knowledge_entries WHERE title = 'Lifecycle test bug'"
+        ).fetchone()
+        _i701_conn.close()
+
+        if _i701_eid:
+            _eid_val = _i701_eid[0]
+            _i701_resolve = _run_utf8_text(
+                [
+                    sys.executable, str(REPO / "learn.py"),
+                    "--mark-resolved", str(_eid_val),
+                    "--fix-steps", "added null check",
+                ],
+                capture_output=True, text=True, env=_i701_env,
+            )
+            _i701_conn2 = _sq701_check.connect(str(_i701_db_path))
+            _i701_row = _i701_conn2.execute(
+                "SELECT is_resolved, fix_steps FROM knowledge_entries WHERE id = ?", (_eid_val,)
+            ).fetchone()
+            _i701_conn2.close()
+            test("I701-1a: --mark-resolved exits 0", _i701_resolve.returncode == 0,
+                 f"stderr={_i701_resolve.stderr!r}")
+            test("I701-1b: --mark-resolved sets is_resolved=1", _i701_row is not None and _i701_row[0] == 1,
+                 f"row={_i701_row}")
+            test("I701-1c: --mark-resolved stores fix_steps", _i701_row is not None and "null check" in (_i701_row[1] or ""),
+                 f"fix_steps={_i701_row[1] if _i701_row else 'N/A'}")
+        else:
+            test("I701-1: entry inserted for mark_resolved test", False, f"add_result={_i701_add.stderr!r}")
+except Exception as _e701_1:
+    test("I701-1: --mark-resolved CLI", False, str(_e701_1))
+
+# I701-2: --list-unresolved excludes resolved entries
+try:
+    with tempfile.TemporaryDirectory(prefix="learn-list-unresolved-") as _i702_tmp:
+        _i702_home = Path(_i702_tmp)
+        _i702_env = os.environ.copy()
+        _i702_env["HOME"] = str(_i702_home)
+        _i702_env["USERPROFILE"] = str(_i702_home)
+        _i702_db_path = _i702_home / ".copilot" / "session-state" / "knowledge.db"
+        _seed_lifecycle_db(_i702_db_path)
+        import sqlite3 as _sq702
+        _i702_conn = _sq702.connect(str(_i702_db_path))
+        _i702_conn.execute(
+            "INSERT INTO knowledge_entries (category, title, is_resolved) VALUES ('mistake', 'Open bug', 0)"
+        )
+        _i702_conn.execute(
+            "INSERT INTO knowledge_entries (category, title, is_resolved) VALUES ('mistake', 'Closed bug', 1)"
+        )
+        _i702_conn.commit()
+        _i702_conn.close()
+
+        _i702_res = _run_utf8_text(
+            [sys.executable, str(REPO / "learn.py"), "--list-unresolved"],
+            capture_output=True, text=True, env=_i702_env,
+        )
+        test("I701-2a: --list-unresolved exits 0", _i702_res.returncode == 0, f"stderr={_i702_res.stderr!r}")
+        test("I701-2b: --list-unresolved includes open entry", "Open bug" in _i702_res.stdout,
+             f"stdout={_i702_res.stdout!r}")
+        test("I701-2c: --list-unresolved excludes resolved entry", "Closed bug" not in _i702_res.stdout,
+             f"stdout={_i702_res.stdout!r}")
+except Exception as _e701_2:
+    test("I701-2: --list-unresolved CLI", False, str(_e701_2))
+
+# I701-3: recurrence auto-bump — re-recording a previously briefed mistake increments counter
+try:
+    with tempfile.TemporaryDirectory(prefix="learn-recurrence-") as _i703_tmp:
+        _i703_home = Path(_i703_tmp)
+        _i703_env = os.environ.copy()
+        _i703_env["HOME"] = str(_i703_home)
+        _i703_env["USERPROFILE"] = str(_i703_home)
+        _i703_db_path = _i703_home / ".copilot" / "session-state" / "knowledge.db"
+        _seed_lifecycle_db(_i703_db_path)
+        import sqlite3 as _sq703
+        _i703_conn = _sq703.connect(str(_i703_db_path))
+        # Insert an existing entry with recurrence_after_briefing=0
+        _i703_conn.execute(
+            "INSERT INTO knowledge_entries (id, category, title, content, occurrence_count, recurrence_after_briefing) VALUES (5, 'mistake', 'Repeated mistake', 'details', 1, 0)"
+        )
+        # Simulate it having been delivered in the current session
+        _i703_conn.execute(
+            "INSERT INTO briefing_deliveries (session_id, entry_id, delivered_at) VALUES ('test-session-xyz', 5, '2024-01-01T12:00:00')"
+        )
+        _i703_conn.commit()
+        _i703_conn.close()
+
+        # Add the same entry again with session_id=test-session-xyz to trigger bump
+        _i703_res = _run_utf8_text(
+            [
+                sys.executable, str(REPO / "learn.py"),
+                "--mistake", "Repeated mistake", "re-encountered details",
+                "--session", "test-session-xyz",
+            ],
+            capture_output=True, text=True, env=_i703_env,
+        )
+        _i703_conn2 = _sq703.connect(str(_i703_db_path))
+        _i703_row = _i703_conn2.execute(
+            "SELECT recurrence_after_briefing FROM knowledge_entries WHERE id = 5"
+        ).fetchone()
+        _i703_conn2.close()
+        test(
+            "I701-3: recurrence_after_briefing incremented on re-record after briefing",
+            _i703_row is not None and (_i703_row[0] or 0) >= 1,
+            f"recurrence={_i703_row[0] if _i703_row else 'N/A'} returncode={_i703_res.returncode}",
+        )
+except Exception as _e701_3:
+    test("I701-3: recurrence auto-bump", False, str(_e701_3))
+
+# I701-4: briefing resolved-filter — _ke_has_is_resolved helper exists in briefing.py
+try:
+    import importlib.util as _ilu701_br
+    _br_spec701 = _ilu701_br.spec_from_file_location("briefing_i701", REPO / "briefing.py")
+    _br701 = _ilu701_br.module_from_spec(_br_spec701)  # type: ignore[arg-type]
+    _br_spec701.loader.exec_module(_br701)  # type: ignore[union-attr]
+    test("I701-4a: _ke_has_is_resolved helper exists", hasattr(_br701, "_ke_has_is_resolved"))
+    test("I701-4b: _ke_has_recurrence helper exists", hasattr(_br701, "_ke_has_recurrence"))
+    # Verify search_knowledge_entries accepts include_resolved param
+    import inspect as _inspect701
+    _sig701 = _inspect701.signature(_br701.search_knowledge_entries) if hasattr(_br701, "search_knowledge_entries") else None
+    if _sig701 is not None:
+        test("I701-4c: search_knowledge_entries has include_resolved param", "include_resolved" in _sig701.parameters)
+    else:
+        test("I701-4c: search_knowledge_entries exists", False)
+    # Verify generate_briefing accepts include_resolved param
+    _gsig701 = _inspect701.signature(_br701.generate_briefing) if hasattr(_br701, "generate_briefing") else None
+    if _gsig701 is not None:
+        test("I701-4d: generate_briefing has include_resolved param", "include_resolved" in _gsig701.parameters)
+    else:
+        test("I701-4d: generate_briefing exists", False)
+except Exception as _e701_4:
+    test("I701-4: briefing resolved-filter helpers", False, str(_e701_4))
+
+# I701-5: --retag CLI runs without error on empty DB
+try:
+    with tempfile.TemporaryDirectory(prefix="learn-retag-") as _i705_tmp:
+        _i705_home = Path(_i705_tmp)
+        _i705_env = os.environ.copy()
+        _i705_env["HOME"] = str(_i705_home)
+        _i705_env["USERPROFILE"] = str(_i705_home)
+        _i705_db_path = _i705_home / ".copilot" / "session-state" / "knowledge.db"
+        _seed_lifecycle_db(_i705_db_path)
+        _i705_res = _run_utf8_text(
+            [sys.executable, str(REPO / "learn.py"), "--retag", "--dry-run"],
+            capture_output=True, text=True, env=_i705_env,
+        )
+        test("I701-5a: --retag --dry-run exits 0", _i705_res.returncode == 0,
+             f"stderr={_i705_res.stderr!r}")
+except Exception as _e701_5:
+    test("I701-5: --retag CLI", False, str(_e701_5))
+
+# I701-6: knowledge-health.py recurrence_rate is present in compute_recall_stats output
+try:
+    import importlib.util as _ilu701_kh
+    _kh_spec701 = _ilu701_kh.spec_from_file_location("khealth_i701", REPO / "knowledge-health.py")
+    _kh701 = _ilu701_kh.module_from_spec(_kh_spec701)  # type: ignore[arg-type]
+    _kh_spec701.loader.exec_module(_kh701)  # type: ignore[union-attr]
+    _i706_stats = {"available": True, "total_events": 0, "recurrence_rate": 0.25}
+    _i706_report = _kh701.format_recall_report(_i706_stats)
+    test("I701-6a: format_recall_report handles empty total_events gracefully", True)
+    _i706_stats2 = {
+        "available": True,
+        "total_events": 1,
+        "events_by_surface": [],
+        "avg_output_by_surface_mode": [],
+        "top_no_hit_queries": [],
+        "top_repeated_detail_opens": [],
+        "recurrence_rate": 0.25,
+    }
+    _i706_report2 = _kh701.format_recall_report(_i706_stats2)
+    test("I701-6b: format_recall_report includes recurrence_rate line", "recurrence rate" in _i706_report2.lower(),
+         f"report excerpt={_i706_report2[-200:]!r}")
+    _i706_stats3 = {
+        "available": True,
+        "total_events": 1,
+        "events_by_surface": [],
+        "avg_output_by_surface_mode": [],
+        "top_no_hit_queries": [],
+        "top_repeated_detail_opens": [],
+        "recurrence_rate": None,
+    }
+    _i706_report3 = _kh701.format_recall_report(_i706_stats3)
+    test("I701-6c: format_recall_report skips recurrence_rate when None", "recurrence rate" not in _i706_report3.lower(),
+         f"report={_i706_report3[-100:]!r}")
+except Exception as _e701_6:
+    test("I701-6: knowledge-health recurrence_rate", False, str(_e701_6))
 
 # ---------------------------------------------------------------------------
     print("🎉 All tests passed!")

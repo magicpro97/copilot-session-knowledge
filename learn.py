@@ -36,6 +36,17 @@ Usage:
     python learn.py --list                        # List recent entries
     python learn.py --stats                       # Show knowledge stats
 
+Lifecycle management:
+    python learn.py --mark-resolved <id>                          # Mark mistake #N as resolved
+    python learn.py --mark-resolved <id> --fix-steps "Step 1..."  # Record fix steps
+    python learn.py --mark-resolved <id> --prevention-hook "Hook" # Record prevention note
+    python learn.py --list-unresolved                             # List unresolved mistakes
+    python learn.py --list-unresolved --category pattern --limit 10
+    python learn.py --retag                                       # Re-run wing/room detection
+    python learn.py --retag --category mistake --dry-run          # Preview changes
+    python learn.py --retag --entry-id 42                        # Retag single entry
+    python learn.py --retag --wing backend                        # Retag all backend entries
+
 Auto-update cerebrum snapshot (opt-in):
     python learn.py --pattern "Title" "Desc" --update-cerebrum
     python learn.py --mistake "Title" "Desc" --update-cerebrum --cerebrum-output CEREBRUM.md
@@ -1187,6 +1198,10 @@ def add_entry(
     has_agent_id_column = "agent_id" in ke_columns
     has_epistemic_humility_columns = all(c in ke_columns for c in ("certainty", "caveats"))
     has_deleted_at_column = "deleted_at" in ke_columns
+    has_recurrence_column = "recurrence_after_briefing" in ke_columns
+    has_briefing_deliveries = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='briefing_deliveries'"
+    ).fetchone() is not None
     if code_location_set and not has_code_location_columns:
         print(
             "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
@@ -1350,6 +1365,23 @@ def add_entry(
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
         entry_id = existing["id"]
+        # Recurrence auto-bump: if this entry was already delivered in a briefing for
+        # the current session, the mistake recurred after being shown — bump counter.
+        if has_recurrence_column and has_briefing_deliveries and session_id and session_id != "manual":
+            try:
+                delivered = db.execute(
+                    "SELECT 1 FROM briefing_deliveries WHERE entry_id = ? AND session_id = ? LIMIT 1",
+                    (entry_id, session_id),
+                ).fetchone()
+                if delivered:
+                    db.execute(
+                        """UPDATE knowledge_entries
+                           SET recurrence_after_briefing = COALESCE(recurrence_after_briefing, 0) + 1
+                           WHERE id = ?""",
+                        (entry_id,),
+                    )
+            except Exception:
+                pass  # fail-open: recurrence tracking is non-critical
         if has_stable_id_column:
             _enqueue_sync_op_fail_open(
                 db,
@@ -2159,6 +2191,192 @@ def add_relation(subject: str, predicate: str, obj: str, session_id: str = None)
     db.close()
 
 
+def mark_resolved(entry_id: int, fix_steps: str = "", prevention_hook: str = "") -> bool:
+    """Mark a knowledge entry (typically a mistake) as resolved.
+
+    Sets is_resolved=1. Optionally updates fix_steps and prevention_hook when
+    those columns are present (v26+ DB schema).
+
+    Returns True on success, False when the entry is not found or schema is missing.
+    """
+    db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    if "is_resolved" not in ke_columns:
+        print(
+            "  ⚠ DB schema missing is_resolved column. Run migrate.py to enable lifecycle tracking.",
+            file=sys.stderr,
+        )
+        db.close()
+        return False
+    row = db.execute(
+        "SELECT id, title, category FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        print(f"  ⚠ Entry #{entry_id} not found.", file=sys.stderr)
+        db.close()
+        return False
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    set_parts = ["is_resolved = 1", "last_seen = ?"]
+    params: list = [now]
+    if fix_steps and "fix_steps" in ke_columns:
+        set_parts.append("fix_steps = ?")
+        params.append(fix_steps)
+    if prevention_hook and "prevention_hook" in ke_columns:
+        set_parts.append("prevention_hook = ?")
+        params.append(prevention_hook)
+    params.append(entry_id)
+    db.execute(f"UPDATE knowledge_entries SET {', '.join(set_parts)} WHERE id = ?", params)
+    db.commit()
+    db.close()
+    print(f"  ✅ Resolved #{entry_id} [{row['category']}] {row['title'][:60]}")
+    return True
+
+
+def list_unresolved(category: str = "mistake", limit: int = 20) -> None:
+    """List unresolved knowledge entries sorted by recurrence then confidence.
+
+    By default shows only 'mistake' category. Pass category='' to show all categories.
+    """
+    db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    has_is_resolved = "is_resolved" in ke_columns
+    has_recurrence = "recurrence_after_briefing" in ke_columns
+    has_deleted_at = "deleted_at" in ke_columns
+
+    conditions: list[str] = ["1=1"]
+    params: list = []
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+    if has_is_resolved:
+        conditions.append("(is_resolved IS NULL OR is_resolved = 0)")
+    if has_deleted_at:
+        conditions.append("deleted_at IS NULL")
+    recurrence_col = (
+        ", COALESCE(recurrence_after_briefing, 0) AS recurrence" if has_recurrence else ", 0 AS recurrence"
+    )
+    where_clause = " AND ".join(conditions)
+    params.append(limit)
+
+    rows = db.execute(
+        f"""
+        SELECT id, category, title, confidence, occurrence_count, last_seen{recurrence_col}
+        FROM knowledge_entries
+        WHERE {where_clause}
+        ORDER BY recurrence DESC, confidence DESC, occurrence_count DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+    cat_display = category or "all"
+    print(f"\nUnresolved {cat_display} entries (up to {limit})\n")
+    for r in rows:
+        rec = r["recurrence"] if has_recurrence else 0
+        badge = f" [RECURRING×{rec}]" if rec > 0 else ""
+        print(f"  #{r['id']:3d} [{r['category']:8s}] {r['title'][:60]}{badge}")
+        print(f"       conf={r['confidence']:.2f} ×{r['occurrence_count']}  {r['last_seen'] or '?'}")
+    if not rows:
+        print("  (none)")
+    db.close()
+
+
+def retag_entries(
+    entry_id: int | None = None,
+    category: str = "",
+    wing_filter: str = "",
+    dry_run: bool = False,
+) -> int:
+    """Re-run wing/room/auto-tag detection on matching entries.
+
+    Filters:
+      entry_id: re-tag a single entry by ID.
+      category: re-tag all entries in a category.
+      wing_filter: re-tag all entries with matching wing value.
+
+    When dry_run=True, prints what would change without writing to DB.
+    Returns the number of entries (re-)tagged.
+    """
+    db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    has_deleted_at = "deleted_at" in ke_columns
+
+    conditions: list[str] = ["1=1"]
+    params: list = []
+    if entry_id is not None:
+        conditions.append("id = ?")
+        params.append(entry_id)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+    if wing_filter:
+        conditions.append("wing = ?")
+        params.append(wing_filter)
+    if has_deleted_at:
+        conditions.append("deleted_at IS NULL")
+    where_clause = " AND ".join(conditions)
+
+    rows = db.execute(
+        f"SELECT id, category, title, content, tags, wing, room FROM knowledge_entries WHERE {where_clause}",
+        params,
+    ).fetchall()
+
+    if not rows:
+        print("  No matching entries found.")
+        db.close()
+        return 0
+
+    tagged_count = 0
+    for row in rows:
+        eid = row["id"]
+        title = row["title"] or ""
+        content = row["content"] or ""
+        tags = row["tags"] or ""
+        new_wing = _detect_wing(tags, title, content)
+        new_room = _detect_room(tags, title, content)
+        old_wing = row["wing"] or ""
+        old_room = row["room"] or ""
+        changed = new_wing != old_wing or new_room != old_room
+        if dry_run:
+            if changed:
+                print(
+                    f"  #{eid} [{row['category']}] {title[:50]}: "
+                    f"wing {old_wing!r}→{new_wing!r}, room {old_room!r}→{new_room!r}"
+                )
+            continue
+        db.execute(
+            "UPDATE knowledge_entries SET wing = ?, room = ? WHERE id = ?",
+            (new_wing, new_room, eid),
+        )
+        _auto_tag_entry(db, eid, title, content)
+        tagged_count += 1
+        if changed:
+            print(
+                f"  #{eid} [{row['category']}] {title[:50]}: "
+                f"wing {old_wing!r}→{new_wing!r}, room {old_room!r}→{new_room!r}"
+            )
+
+    if not dry_run:
+        db.commit()
+        print(f"  Retagged {tagged_count} entr{'y' if tagged_count == 1 else 'ies'}.")
+    else:
+        changed_count = sum(
+            1
+            for row in rows
+            if _detect_wing(row["tags"] or "", row["title"] or "", row["content"] or "")
+            != (row["wing"] or "")
+            or _detect_room(row["tags"] or "", row["title"] or "", row["content"] or "")
+            != (row["room"] or "")
+        )
+        print(
+            f"  Dry-run: {len(rows)} entries checked, "
+            f"{changed_count} would change wing/room."
+        )
+    db.close()
+    return tagged_count
+
+
 def soft_delete_entry(entry_id: int) -> bool:
     """Soft-delete a knowledge entry by setting deleted_at timestamp.
 
@@ -2534,6 +2752,62 @@ def main():
 
     if "--stats" in args:
         show_stats()
+        return
+
+    if "--mark-resolved" in args:
+        idx = args.index("--mark-resolved")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        try:
+            resolve_id = int(raw_id)
+        except (ValueError, TypeError):
+            print(f"Error: --mark-resolved requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        _mr_fix_steps = ""
+        if "--fix-steps" in args:
+            _fi = args.index("--fix-steps")
+            _mr_fix_steps = args[_fi + 1] if _fi + 1 < len(args) else ""
+        _mr_prevention = ""
+        if "--prevention-hook" in args:
+            _pi = args.index("--prevention-hook")
+            _mr_prevention = args[_pi + 1] if _pi + 1 < len(args) else ""
+        ok = mark_resolved(resolve_id, fix_steps=_mr_fix_steps, prevention_hook=_mr_prevention)
+        if not ok:
+            sys.exit(1)
+        return
+
+    if "--list-unresolved" in args:
+        _lu_cat = "mistake"
+        if "--category" in args:
+            _ci = args.index("--category")
+            _lu_cat = args[_ci + 1] if _ci + 1 < len(args) else "mistake"
+        _lu_limit = 20
+        if "--limit" in args:
+            _li = args.index("--limit")
+            try:
+                _lu_limit = int(args[_li + 1]) if _li + 1 < len(args) else 20
+            except (ValueError, TypeError):
+                _lu_limit = 20
+        list_unresolved(category=_lu_cat, limit=_lu_limit)
+        return
+
+    if "--retag" in args:
+        _rt_entry_id: int | None = None
+        if "--entry-id" in args:
+            _ei = args.index("--entry-id")
+            try:
+                _rt_entry_id = int(args[_ei + 1]) if _ei + 1 < len(args) else None
+            except (ValueError, TypeError):
+                _rt_entry_id = None
+        _rt_category = ""
+        if "--category" in args:
+            _ci = args.index("--category")
+            _rt_category = args[_ci + 1] if _ci + 1 < len(args) else ""
+        _rt_wing = ""
+        if "--wing" in args:
+            _wi = args.index("--wing")
+            _rt_wing = args[_wi + 1] if _wi + 1 < len(args) else ""
+        _rt_dry_run = "--dry-run" in args
+        retag_entries(entry_id=_rt_entry_id, category=_rt_category, wing_filter=_rt_wing, dry_run=_rt_dry_run)
         return
 
     if "--flush-inbox" in args:

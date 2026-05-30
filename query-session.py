@@ -34,6 +34,10 @@ Usage:
     python query-session.py "search" --budget 2000             # Cap output to 2000 chars
     python query-session.py --file src/auth.py --compact       # Titles-only with ~token hint
     python query-session.py --task my-task --compact           # Compact task recall
+    python query-session.py "search" --since 2025-01-01       # Only entries seen on/after date
+    python query-session.py "search" --days 30                 # Only entries seen in last 30 days
+    python query-session.py --why 42                           # Explain why entry #42 was scored
+    python query-session.py --why 42 --json                    # --why output as JSON
 
 Doc types: checkpoint, research, artifact, plan, claude-session
 Knowledge categories: mistake, pattern, decision, tool
@@ -1176,6 +1180,132 @@ def show_detail(entry_id: int):
     return {"opened_entry_id": int(entry_id), "hit_count": 1, "selected_entry_ids": [int(entry_id)]}
 
 
+def explain_why(entry_id: int, as_json: bool = False):
+    """Explain why an entry scored as it did: FTS rank, recency decay, recurrence weight, final score.
+
+    Re-computes the same signals used by briefing.py's _recency_composite_score so
+    the output is directly comparable to ranking decisions made during briefing.
+    """
+    import datetime as _dt
+    import math as _math
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT ke.id, ke.title, ke.category, ke.confidence,
+               ke.occurrence_count, ke.last_seen,
+               COALESCE(ke.intensity, ke.confidence) as intensity,
+               COALESCE(ke.priority, 'P2') as priority
+        FROM knowledge_entries ke WHERE ke.id = ?
+    """,
+        (entry_id,),
+    ).fetchone()
+
+    if not row:
+        print(f"No knowledge entry with ID {entry_id}")
+        db.close()
+        return
+
+    row_d = dict(row)
+
+    # ── recency decay (mirrors briefing._recency_decay) ──────────────────────
+    _half_life = 30.0
+    try:
+        _hl_row = db.execute("SELECT value FROM wakeup_config WHERE key='briefing_recency_half_life'").fetchone()
+        if _hl_row and _hl_row[0]:
+            v = float(_hl_row[0])
+            if v > 0:
+                _half_life = v
+    except Exception:
+        pass
+
+    last_seen_str = row_d.get("last_seen")
+    recency_decay = 1.0
+    age_days = None
+    if last_seen_str:
+        try:
+            ts_str = str(last_seen_str)[:19].replace("T", " ")
+            ts = _dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+            age_days = max(0.0, (now_utc - ts).total_seconds() / 86400.0)
+            recency_decay = 0.5 ** (age_days / _half_life)
+        except Exception:
+            recency_decay = 1.0
+
+    # ── recurrence weight ─────────────────────────────────────────────────────
+    occurrence_count = int(row_d.get("occurrence_count") or 1)
+    # Logarithmic diminishing returns: same formula used in briefing delivery tracking
+    recurrence_weight = 1.0 + _math.log1p(max(0, occurrence_count - 1)) * 0.1
+
+    # ── priority base (mirrors briefing._recency_composite_score) ─────────────
+    priority_bases = {"P0": 4.0, "P1": 2.0, "P2": 0.0, "P3": -2.0}
+    priority_raw = str(row_d.get("priority") or "P2")
+    priority_base = priority_bases.get(priority_raw, 0.0)
+
+    intensity = float(row_d.get("intensity") or row_d.get("confidence") or 0.5)
+    final_score = priority_base + intensity * recency_decay
+
+    # ── FTS rank (run a quick self-match) ─────────────────────────────────────
+    fts_rank = None
+    try:
+        fts_row = db.execute(
+            """
+            SELECT rank FROM ke_fts fts
+            JOIN knowledge_entries ke ON fts.rowid = ke.id
+            WHERE ke.id = ?
+            LIMIT 1
+        """,
+            (entry_id,),
+        ).fetchone()
+        if fts_row:
+            fts_rank = round(float(fts_row[0]), 6)
+    except Exception:
+        pass
+
+    db.close()
+
+    result = {
+        "entry_id": entry_id,
+        "title": row_d["title"],
+        "category": row_d["category"],
+        "priority": priority_raw,
+        "priority_base": priority_base,
+        "intensity": round(intensity, 4),
+        "confidence": round(float(row_d.get("confidence") or 0.5), 4),
+        "recency_decay": round(recency_decay, 6),
+        "recency_half_life_days": _half_life,
+        "age_days": round(age_days, 2) if age_days is not None else None,
+        "last_seen": last_seen_str,
+        "occurrence_count": occurrence_count,
+        "recurrence_weight": round(recurrence_weight, 6),
+        "fts_rank": fts_rank,
+        "final_score": round(final_score, 6),
+    }
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    print(f"\n{BOLD}Score breakdown for entry #{entry_id}{RESET}")
+    print(f"{'=' * 60}")
+    print(f"{BOLD}Title:{RESET}             {row_d['title']}")
+    print(f"{BOLD}Category:{RESET}          {row_d['category']}")
+    print(f"{BOLD}Priority:{RESET}          {priority_raw}  (base={priority_base:+.1f})")
+    print(f"{BOLD}Intensity:{RESET}         {intensity:.4f}")
+    print(f"{BOLD}Confidence:{RESET}        {float(row_d.get('confidence') or 0.5):.4f}")
+    print(f"{BOLD}Last seen:{RESET}         {last_seen_str or '(none)'}")
+    age_str = f"{age_days:.1f} days ago" if age_days is not None else "unknown"
+    print(f"{BOLD}Age:{RESET}               {age_str}  (half-life={_half_life}d)")
+    print(f"{BOLD}Recency decay:{RESET}     {recency_decay:.6f}")
+    print(f"{BOLD}Occurrence count:{RESET}  {occurrence_count}")
+    print(f"{BOLD}Recurrence weight:{RESET} {recurrence_weight:.6f}")
+    fts_str = f"{fts_rank:.6f}" if fts_rank is not None else "n/a (entry not in FTS index)"
+    print(f"{BOLD}FTS rank:{RESET}          {fts_str}")
+    print(f"{'─' * 60}")
+    print(f"{BOLD}Final composite score:{RESET}  {final_score:.6f}")
+    print(f"  = priority_base({priority_base:+.1f}) + intensity({intensity:.4f}) × recency_decay({recency_decay:.6f})")
+
+
 def show_context(entry_id: int):
     """Show a knowledge entry plus related entries from same session/category."""
     db = get_db()
@@ -1403,9 +1533,18 @@ def show_graph(topic: str):
 
 
 def search_knowledge(
-    query: str, limit: int = 10, export_fmt: str = None, retrieval_query: str = None, error_type: str = None
+    query: str,
+    limit: int = 10,
+    export_fmt: str = None,
+    retrieval_query: str = None,
+    error_type: str = None,
+    since_date: "str | None" = None,
 ):
-    """Search knowledge entries with FTS5 and adaptive strictness."""
+    """Search knowledge entries with FTS5 and adaptive strictness.
+
+    ``since_date`` is an optional ISO-8601 date string (``YYYY-MM-DD``).  When
+    provided, only entries whose ``last_seen >= since_date`` are returned.
+    """
     db = get_db()
     query_for_retrieval = retrieval_query if retrieval_query is not None else query
 
@@ -1426,17 +1565,24 @@ def search_knowledge(
         et_clause = " AND ke.error_type = ?"
         et_params = [error_type]
 
+    # Build optional date-filter clause
+    date_clause = ""
+    date_params: list = []
+    if since_date:
+        date_clause = " AND ke.last_seen >= ?"
+        date_params = [since_date]
+
     try:
         rows = db.execute(
             f"""
             SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
-            WHERE ke_fts MATCH ?{et_clause}
+            WHERE ke_fts MATCH ?{et_clause}{date_clause}
             ORDER BY rank
             LIMIT ?
         """,
-            [fts_query, *et_params, limit],
+            [fts_query, *et_params, *date_params, limit],
         ).fetchall()
     except sqlite3.OperationalError:
         rows = []
@@ -1450,11 +1596,11 @@ def search_knowledge(
                 SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
-                WHERE ke_fts MATCH ?{et_clause}
+                WHERE ke_fts MATCH ?{et_clause}{date_clause}
                 ORDER BY rank
                 LIMIT ?
             """,
-                [base_query, *et_params, limit],
+                [base_query, *et_params, *date_params, limit],
             ).fetchall()
         except sqlite3.OperationalError:
             rows = []
@@ -1465,12 +1611,14 @@ def search_knowledge(
         try:
             et_like = " AND ke.error_type = ?" if error_type else ""
             et_like_params = [error_type] if error_type else []
+            date_like = " AND ke.last_seen >= ?" if since_date else ""
+            date_like_params = [since_date] if since_date else []
             rows = db.execute(
                 f"""
                 SELECT ke.*,
                        SUBSTR(ke.content, MAX(1, INSTR(LOWER(ke.content), LOWER(?)) - 40), 128) as excerpt
                 FROM knowledge_entries ke
-                WHERE (LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?){et_like}
+                WHERE (LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?){et_like}{date_like}
                 ORDER BY ke.confidence DESC
                 LIMIT ?
             """,
@@ -1479,6 +1627,7 @@ def search_knowledge(
                     f"%{like_query_text.lower()}%",
                     f"%{like_query_text.lower()}%",
                     *et_like_params,
+                    *date_like_params,
                     limit,
                 ],
             ).fetchall()
@@ -2562,6 +2711,14 @@ def _run(args: list, compact: bool = False):
             print("Error: --context requires an entry ID")
         return
 
+    if "--why" in args:
+        idx = args.index("--why")
+        if idx + 1 < len(args):
+            explain_why(int(args[idx + 1]), as_json="--json" in args)
+        else:
+            print("Error: --why requires an entry ID")
+        return
+
     if "--related" in args:
         idx = args.index("--related")
         if idx + 1 < len(args):
@@ -2704,6 +2861,23 @@ def _run(args: list, compact: bool = False):
         idx = args.index("--error-type")
         error_type_filter = args[idx + 1] if idx + 1 < len(args) and not args[idx + 1].startswith("--") else None
 
+    # --since YYYY-MM-DD / --days N: restrict knowledge entries to those seen on/after date
+    import datetime as _dt_qs
+    since_date_filter: "str | None" = None
+    if "--since" in args:
+        idx = args.index("--since")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            since_date_filter = args[idx + 1]
+    if "--days" in args and since_date_filter is None:
+        idx = args.index("--days")
+        try:
+            n_days = int(args[idx + 1]) if idx + 1 < len(args) and not args[idx + 1].startswith("--") else 7
+            since_date_filter = (
+                _dt_qs.datetime.now(_dt_qs.timezone.utc) - _dt_qs.timedelta(days=n_days)
+            ).strftime("%Y-%m-%d")
+        except (ValueError, IndexError):
+            pass
+
     # limit/verbose already parsed above; re-read for semantic/search paths
     for shortcut, category in [
         ("--mistakes", "mistake"),
@@ -2738,7 +2912,7 @@ def _run(args: list, compact: bool = False):
         if args[i] == "--type" and i + 1 < len(args):
             doc_type = args[i + 1]
             i += 2
-        elif args[i] in ("--limit", "--export", "--source", "--in", "--from", "--error-type"):
+        elif args[i] in ("--limit", "--export", "--source", "--in", "--from", "--error-type", "--since", "--days"):
             i += 2  # skip flag + value (already parsed)
         elif args[i] in ("--verbose", "-v"):
             verbose = True
@@ -2844,7 +3018,7 @@ def _run(args: list, compact: bool = False):
 
             # Also search knowledge entries
             knowledge_meta = _coerce_recall_meta(
-                search_knowledge(query, limit=5, retrieval_query=rewritten_query),
+                search_knowledge(query, limit=5, retrieval_query=rewritten_query, since_date=since_date_filter),
                 {"hit_count": 0, "selected_entry_ids": []},
             )
             total_hit_count += int(knowledge_meta.get("hit_count", 0) or 0)

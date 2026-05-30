@@ -24,6 +24,8 @@ Usage:
     python briefing.py --task "memory-surface"              # Task-scoped recall for a task ID
     python briefing.py "project" --budget 2000 --session-start  # sessionStart: Level 0 skill index + briefing
     python briefing.py "task" --available-tokens 40000     # Dynamic budget: 5% of context (≤2000 chars)
+    python briefing.py "task" --since 2025-01-01           # Only entries seen on/after date
+    python briefing.py "task" --days 30                    # Only entries seen in last 30 days
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -1530,6 +1532,24 @@ def _ke_has_priority(db: sqlite3.Connection) -> bool:
         return False
 
 
+def _ke_has_is_resolved(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the is_resolved column (lifecycle migration applied)."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "is_resolved" in cols
+    except Exception:
+        return False
+
+
+def _ke_has_recurrence(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the recurrence_after_briefing column."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "recurrence_after_briefing" in cols
+    except Exception:
+        return False
+
+
 def _intensity_order_expr(alias: str = "ke", has_priority: bool = False) -> str:
     """SQL ORDER BY expression that ranks entries by priority then intensity.
 
@@ -1634,18 +1654,48 @@ def _recency_composite_score(entry: dict, half_life_days: float) -> float:
 
 
 def search_knowledge_entries(
-    db: sqlite3.Connection, query: str, category: str, limit: int = 3, min_confidence: float = 0.0
+    db: sqlite3.Connection,
+    query: str,
+    category: str,
+    limit: int = 3,
+    min_confidence: float = 0.0,
+    since_date: "str | None" = None,
+    include_resolved: bool = False,
 ) -> list[dict]:
-    """Search knowledge entries by category using FTS5 with adaptive strictness."""
+    """Search knowledge entries by category using FTS5 with adaptive strictness.
+
+    ``since_date`` is an optional ISO-8601 date string (``YYYY-MM-DD``).  When
+    provided, only entries whose ``last_seen >= since_date`` are returned.
+
+    ``include_resolved``: when False (default), entries with ``is_resolved=1``
+    are excluded so resolved mistakes don't clutter routine briefings.
+    Pass ``include_resolved=True`` to surface all entries regardless of status.
+    """
     fts_query, strictness, confidence_delta = _build_adaptive_fts_query(query)
     effective_confidence = max(0.0, min(1.0, min_confidence + confidence_delta))
 
     has_intensity = _ke_has_intensity(db)
     has_priority = _ke_has_priority(db)
+    has_recurrence = _ke_has_recurrence(db)
+    has_is_resolved = _ke_has_is_resolved(db)
     order_by = _intensity_order_expr("ke", has_priority) if has_intensity else "ke.confidence DESC, rank"
     # Extra columns fetched so Python-level recency composite scoring has priority + intensity + age.
     _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
     _priority_col = ", COALESCE(ke.priority, 'P2') as priority" if has_priority else ""
+    _recurrence_col = (
+        ", COALESCE(ke.recurrence_after_briefing, 0) AS recurrence_after_briefing" if has_recurrence else ""
+    )
+
+    # Build optional date-filter clause and params
+    _date_clause = " AND ke.last_seen >= ?" if since_date else ""
+    _date_params: list = [since_date] if since_date else []
+
+    # Resolved filter: exclude is_resolved=1 entries unless caller opts in.
+    _resolved_clause = (
+        ""
+        if include_resolved or not has_is_resolved
+        else " AND (ke.is_resolved IS NULL OR ke.is_resolved = 0)"
+    )
 
     results = []
     try:
@@ -1659,17 +1709,17 @@ def search_knowledge_entries(
                    d.doc_type as source_doc_type,
                    d.title as source_doc_title,
                    d.file_path as source_doc_file_path,
-                   d.seq as source_doc_seq{_rec_cols}{_priority_col}
+                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             LEFT JOIN documents d ON ke.document_id = d.id
             WHERE ke_fts MATCH ?
             AND ke.category = ?
-            AND ke.confidence >= ?
+            AND ke.confidence >= ?{_date_clause}{_resolved_clause}
             ORDER BY {order_by}
             LIMIT ?
         """,
-            (fts_query, category, effective_confidence, limit),
+            (fts_query, category, effective_confidence, *_date_params, limit),
         ).fetchall()
         results.extend([dict(r) for r in rows])
     except sqlite3.OperationalError:
@@ -1677,16 +1727,16 @@ def search_knowledge_entries(
             rows = db.execute(
                 f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
-                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}
+                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
                 AND ke.category = ?
-                AND ke.confidence >= ?
+                AND ke.confidence >= ?{_date_clause}{_resolved_clause}
                 ORDER BY {order_by}
                 LIMIT ?
             """,
-                (fts_query, category, effective_confidence, limit),
+                (fts_query, category, effective_confidence, *_date_params, limit),
             ).fetchall()
             results.extend([dict(r) for r in rows])
         except sqlite3.OperationalError:
@@ -1706,17 +1756,17 @@ def search_knowledge_entries(
                        d.doc_type as source_doc_type,
                        d.title as source_doc_title,
                        d.file_path as source_doc_file_path,
-                       d.seq as source_doc_seq{_rec_cols}{_priority_col}
+                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 LEFT JOIN documents d ON ke.document_id = d.id
                 WHERE ke_fts MATCH ?
                 AND ke.category = ?
-                AND ke.confidence >= ?
+                AND ke.confidence >= ?{_date_clause}{_resolved_clause}
                 ORDER BY {order_by}
                 LIMIT ?
             """,
-                (base_query, category, min_confidence, limit),
+                (base_query, category, min_confidence, *_date_params, limit),
             ).fetchall()
             results.extend([dict(r) for r in rows])
         except sqlite3.OperationalError:
@@ -1724,16 +1774,16 @@ def search_knowledge_entries(
                 rows = db.execute(
                     f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
-                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}
+                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}
                     FROM ke_fts fts
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
                     AND ke.category = ?
-                    AND ke.confidence >= ?
+                    AND ke.confidence >= ?{_date_clause}{_resolved_clause}
                     ORDER BY {order_by}
                     LIMIT ?
                 """,
-                    (base_query, category, min_confidence, limit),
+                    (base_query, category, min_confidence, *_date_params, limit),
                 ).fetchall()
                 results.extend([dict(r) for r in rows])
             except sqlite3.OperationalError:
@@ -1743,9 +1793,18 @@ def search_knowledge_entries(
 
 
 def search_semantic(
-    db: sqlite3.Connection, query: str, category: str, limit: int = 3, min_confidence: float = 0.0
+    db: sqlite3.Connection,
+    query: str,
+    category: str,
+    limit: int = 3,
+    min_confidence: float = 0.0,
+    include_resolved: bool = False,
 ) -> list[dict]:
-    """Search knowledge entries using vector embeddings."""
+    """Search knowledge entries using vector embeddings.
+
+    ``include_resolved``: when False (default), post-filters out is_resolved=1
+    entries so resolved mistakes don't surface in routine briefings.
+    """
     try:
         sys.path.insert(0, str(TOOLS_DIR))
         from embed import (
@@ -1866,6 +1925,13 @@ def search_semantic(
         pass  # embedding tables don't exist yet
 
     return []
+
+
+def _filter_resolved(results: list[dict], include_resolved: bool) -> list[dict]:
+    """Post-filter: remove is_resolved=1 entries unless include_resolved is True."""
+    if include_resolved:
+        return results
+    return [e for e in results if not e.get("is_resolved")]
 
 
 def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list[dict]:
@@ -2275,8 +2341,16 @@ def generate_briefing(
     infer_auto_mode: bool = True,
     with_meta: bool = False,
     include_superseded: bool = False,
+    since_date: "str | None" = None,
+    include_resolved: bool = False,
 ):
-    """Generate a structured briefing from the knowledge base."""
+    """Generate a structured briefing from the knowledge base.
+
+    ``include_resolved``: when False (default), entries with ``is_resolved=1``
+    are excluded from briefings so resolved mistakes don't clutter context.
+    Pass ``--include-resolved`` on the CLI or ``include_resolved=True`` to
+    show resolved entries alongside open ones.
+    """
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
     active_mode, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
@@ -2293,23 +2367,46 @@ def generate_briefing(
         # recent entries that would otherwise be hidden by the SQL LIMIT.
         cat_limit = per_cat_limit.get(cat, limit)
         fetch_limit = max(cat_limit * 2, cat_limit + 6)
-        fts_results = search_knowledge_entries(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
+        fts_results = search_knowledge_entries(
+            db,
+            rewritten_query,
+            cat,
+            fetch_limit,
+            min_confidence=min_confidence,
+            since_date=since_date,
+            include_resolved=include_resolved,
+        )
         # Widen semantic fetch symmetrically so the outer priority rerank has the same
         # wide candidate pool for semantic hits as it does for FTS hits (issue #121 Blocker 4).
         # Issue #369: use rewritten_query consistently for semantic search so FTS and
         # semantic paths operate on the same condensed terms.
-        sem_results = search_semantic(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
+        sem_results = search_semantic(
+            db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence, include_resolved=include_resolved
+        )
 
         merged = []
         for r in fts_results + sem_results:
             title = r.get("title", "")
             if title not in global_seen_titles:
                 global_seen_titles.add(title)
+                # Post-filter semantic results by since_date (FTS already filtered in SQL)
+                if since_date and r.get("last_seen") and str(r["last_seen"])[:10] < since_date:
+                    continue
                 merged.append(r)
 
-        # Rerank by composite recency score before truncating so that a recent
-        # entry can always surface ahead of an equally-intense stale one.
-        merged.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
+        # For mistakes, boost recurring entries to the top before composite recency sort.
+        # Recurring mistakes (re-encountered after a briefing) are the most actionable signal.
+        if cat == "mistake":
+            merged.sort(
+                key=lambda e: (
+                    -(int(e.get("recurrence_after_briefing") or 0)),
+                    -_recency_composite_score(e, half_life),
+                )
+            )
+        else:
+            # Rerank by composite recency score before truncating so that a recent
+            # entry can always surface ahead of an equally-intense stale one.
+            merged.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
         # WBS-014: defense-in-depth read-side credential/injection filter
         # Issue #377: universal status-note suppression — applied here so ALL
         # output formats (text, json, pack, compact) consistently omit Wave-style
@@ -2988,10 +3085,12 @@ def _format_compact(
             # title (common when title is the truncated start of a long sentence),
             # showing both creates noise like "Wave19 … tou: Wave19 … touched …".
             title_prefix = title.rstrip(".… ").lower()
+            recurrence = int(entry.get("recurrence_after_briefing") or 0)
+            recurring_badge = f"[RECURRING×{recurrence}] " if recurrence > 0 else ""
             if first_line.lower().startswith(title_prefix[:60]):
-                rendered.append(f"- {title}")
+                rendered.append(f"- {recurring_badge}{title}")
             else:
-                rendered.append(f"- {title}: {first_line}")
+                rendered.append(f"- {recurring_badge}{title}: {first_line}")
         if not rendered:
             return
         lines.append(f"<{cat}s>")
@@ -3814,6 +3913,22 @@ def main():
     if "--all" in args:
         min_confidence = 0.0  # Show everything including low-confidence
 
+    # --since YYYY-MM-DD / --days N: restrict results to entries seen on/after a date
+    since_date: "str | None" = None
+    if "--since" in args:
+        idx = args.index("--since")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            since_date = args[idx + 1]
+    if "--days" in args and since_date is None:
+        idx = args.index("--days")
+        try:
+            n_days = int(args[idx + 1]) if idx + 1 < len(args) and not args[idx + 1].startswith("--") else 7
+            since_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=n_days)).strftime(
+                "%Y-%m-%d"
+            )
+        except (ValueError, IndexError):
+            pass
+
     subagent_mode = "--for-subagent" in args
 
     if auto_mode:
@@ -3833,6 +3948,8 @@ def main():
                 "--available-tokens",
                 "--agent-tag",
                 "--msg-tag",
+                "--since",
+                "--days",
             ) and i + 1 < len(args):
                 consumed_value_indices.add(i + 1)
         query_parts = [
@@ -3890,6 +4007,8 @@ def main():
             infer_auto_mode=infer_auto_mode,
             with_meta=True,
             include_superseded="--include-superseded" in args,
+            since_date=since_date,
+            include_resolved="--include-resolved" in args,
         )
 
     if budget > 0 and len(output) > budget:
@@ -3924,6 +4043,8 @@ def main():
                     infer_auto_mode=infer_auto_mode,
                     with_meta=True,
                     include_superseded="--include-superseded" in args,
+                    since_date=since_date,
+                    include_resolved="--include-resolved" in args,
                 )
             if len(output) <= budget:
                 break

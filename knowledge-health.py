@@ -19,6 +19,12 @@ Usage:
     python knowledge-health.py --sync --json  # Sync runtime as JSON
     python knowledge-health.py --insights     # Derived actionable insights dashboard
     python knowledge-health.py --insights --json  # Insights as JSON
+    python knowledge-health.py --dedup        # Find near-duplicate entries (dry-run)
+    python knowledge-health.py --dedup --dry-run  # Explicitly dry-run (default)
+    python knowledge-health.py --dedup --apply    # Mark lower-confidence dupes as superseded
+    python knowledge-health.py --dedup --threshold 0.8  # Custom similarity threshold
+    python knowledge-health.py --dedup --category mistake  # Restrict to one category
+    python knowledge-health.py --dedup --json  # JSON output of duplicate pairs
 """
 
 import json
@@ -363,6 +369,19 @@ def compute_recall_stats() -> dict:
                 """
             ).fetchall()
         ]
+        recurrence_rate = None
+        try:
+            ke_cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+            if "recurrence_after_briefing" in ke_cols:
+                total_m = db.execute(
+                    "SELECT COUNT(*) FROM knowledge_entries WHERE category='mistake' AND (deleted_at IS NULL OR deleted_at='')"
+                ).fetchone()[0]
+                recurring_m = db.execute(
+                    "SELECT COUNT(*) FROM knowledge_entries WHERE category='mistake' AND recurrence_after_briefing > 0 AND (deleted_at IS NULL OR deleted_at='')"
+                ).fetchone()[0]
+                recurrence_rate = round(recurring_m / total_m, 4) if total_m > 0 else 0.0
+        except Exception:
+            pass  # fail-open: recurrence_rate stays None
         return {
             "available": True,
             "total_events": total_events,
@@ -370,6 +389,7 @@ def compute_recall_stats() -> dict:
             "avg_output_by_surface_mode": avg_output,
             "top_no_hit_queries": no_hit_queries,
             "top_repeated_detail_opens": repeated_detail,
+            "recurrence_rate": recurrence_rate,
         }
     finally:
         db.close()
@@ -1422,6 +1442,12 @@ def format_recall_report(stats: dict) -> str:
     else:
         lines.append("  - (none)")
 
+    recurrence_rate = stats.get("recurrence_rate")
+    if recurrence_rate is not None:
+        pct = round(recurrence_rate * 100, 1)
+        lines.append("")
+        lines.append(f"Mistake recurrence rate: {pct}%  (fraction of mistakes re-encountered after a briefing)")
+
     return "\n".join(lines)
 
 
@@ -1568,11 +1594,189 @@ def compute_eviction_candidates(limit: int = 20) -> dict:
     return {"candidates": scored[:limit]}
 
 
+def _jaccard_similarity(text_a: str, text_b: str) -> float:
+    """Return Jaccard similarity between two strings using unigram token sets.
+
+    Tokens are lowercased, non-alphanumeric characters stripped.
+    Returns 0.0 if either token set is empty.
+    """
+    def _tokenize(s: str) -> set:
+        return {t.lower() for t in re.findall(r"[a-z0-9]+", s.lower()) if t}
+
+    tokens_a = _tokenize(text_a)
+    tokens_b = _tokenize(text_b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = len(tokens_a & tokens_b)
+    union = len(tokens_a | tokens_b)
+    return intersection / union if union > 0 else 0.0
+
+
+def _insert_supersedes_relation(db: sqlite3.Connection, source_id: int, target_id: int) -> None:
+    """Insert a SUPERSEDES relation from source_id → target_id in knowledge_relations.
+
+    source_id is the surviving (higher-confidence) entry.
+    target_id is the near-duplicate to be marked superseded.
+    Idempotent via INSERT OR IGNORE.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute(
+        """
+        INSERT OR IGNORE INTO knowledge_relations
+            (source_id, target_id, relation_type, confidence, created_at, session_id)
+        VALUES (?, ?, 'SUPERSEDES', 1.0, ?, '')
+        """,
+        (source_id, target_id, now),
+    )
+    db.commit()
+
+
+def compute_dedup_candidates(threshold: float = 0.7, category: str | None = None) -> dict:
+    """Find near-duplicate knowledge entries using Jaccard similarity on title+content tokens.
+
+    Entries are compared only within the same (category, wing, room) bucket to limit
+    combinatorial explosion.  Only pairs with similarity >= threshold are returned.
+
+    Args:
+        threshold: Minimum Jaccard similarity to report (default 0.7).
+        category: Restrict comparison to a single category (e.g. 'mistake').
+
+    Returns a dict with keys:
+        threshold, category, pairs: list of {id_a, id_b, similarity, title_a, title_b,
+        conf_a, conf_b, superseded_id (the lower-confidence one)}.
+    """
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+    params: list = []
+    cat_filter = ""
+    if category:
+        cat_filter = "AND category = ?"
+        params.append(category)
+
+    rows = db.execute(
+        f"""
+        SELECT id, category, wing, room, title, content, confidence
+        FROM knowledge_entries
+        WHERE 1=1 {_nd} {cat_filter}
+        ORDER BY category, wing, room, id
+        """,
+        params,
+    ).fetchall()
+    db.close()
+
+    # Group into (category, wing, room) buckets
+    buckets: dict[tuple, list] = {}
+    for r in rows:
+        key = (r["category"] or "", r["wing"] or "", r["room"] or "")
+        buckets.setdefault(key, []).append(r)
+
+    pairs = []
+    for entries in buckets.values():
+        n = len(entries)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = entries[i]
+                b = entries[j]
+                text_a = (a["title"] or "") + " " + (a["content"] or "")
+                text_b = (b["title"] or "") + " " + (b["content"] or "")
+                sim = _jaccard_similarity(text_a, text_b)
+                if sim >= threshold:
+                    conf_a = float(a["confidence"] or 0.0)
+                    conf_b = float(b["confidence"] or 0.0)
+                    # The lower-confidence entry is the candidate for superseding
+                    superseded_id = b["id"] if conf_a >= conf_b else a["id"]
+                    surviving_id = a["id"] if conf_a >= conf_b else b["id"]
+                    pairs.append(
+                        {
+                            "id_a": int(a["id"]),
+                            "id_b": int(b["id"]),
+                            "similarity": round(sim, 4),
+                            "title_a": str(a["title"] or ""),
+                            "title_b": str(b["title"] or ""),
+                            "conf_a": round(conf_a, 4),
+                            "conf_b": round(conf_b, 4),
+                            "superseded_id": int(superseded_id),
+                            "surviving_id": int(surviving_id),
+                        }
+                    )
+
+    pairs.sort(key=lambda p: p["similarity"], reverse=True)
+    return {"threshold": threshold, "category": category, "pairs": pairs}
+
+
+def format_dedup_report(result: dict, dry_run: bool = True) -> str:
+    """Format dedup candidates as a human-readable table."""
+    pairs = result["pairs"]
+    thr = result["threshold"]
+    cat = result.get("category") or "all"
+    lines = [
+        f"🔍 Near-duplicate knowledge entries  (threshold={thr:.2f}, category={cat})",
+        f"   Found {len(pairs)} pair(s).",
+    ]
+    if not pairs:
+        lines.append("   ✅ No near-duplicates detected.")
+        return "\n".join(lines)
+
+    lines.append("")
+    header = f"  {'ID-A':>6}  {'ID-B':>6}  {'Sim':>6}  {'Conf-A':>6}  {'Conf-B':>6}  Title-A / Title-B"
+    lines.append(header)
+    lines.append("  " + "-" * (len(header) - 2))
+    for p in pairs:
+        lines.append(
+            f"  #{p['id_a']:5d}  #{p['id_b']:5d}  {p['similarity']:6.3f}"
+            f"  {p['conf_a']:6.3f}  {p['conf_b']:6.3f}"
+            f"  {p['title_a'][:40]!r}"
+        )
+        lines.append(f"  {'':>6}  {'':>6}  {'':>6}  {'':>6}  {'':>6}  vs {p['title_b'][:40]!r}")
+        lines.append(f"  {'':>6}  {'':>6}  {'':>6}  {'':>6}  {'':>6}  → supersede #{p['superseded_id']}")
+
+    if dry_run:
+        lines.append("\n  (dry-run — use --apply to mark superseded entries)")
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
 
     if "--help" in args or "-h" in args:
         print(__doc__)
+        return
+
+    if "--dedup" in args:
+        threshold = 0.7
+        category = None
+        dry_run = "--dry-run" in args
+        apply_flag = "--apply" in args
+        if "--threshold" in args:
+            idx = args.index("--threshold")
+            try:
+                threshold = float(args[idx + 1]) if idx + 1 < len(args) else 0.7
+            except (ValueError, IndexError):
+                threshold = 0.7
+        if "--category" in args:
+            idx = args.index("--category")
+            category = args[idx + 1] if idx + 1 < len(args) else None
+        try:
+            result = compute_dedup_candidates(threshold=threshold, category=category)
+            if "--json" in args:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(format_dedup_report(result, dry_run=not apply_flag))
+            if apply_flag and not dry_run and result["pairs"]:
+                db = get_db()
+                applied = 0
+                for p in result["pairs"]:
+                    try:
+                        _insert_supersedes_relation(db, p["surviving_id"], p["superseded_id"])
+                        applied += 1
+                    except Exception as exc:
+                        print(f"  ⚠ Could not mark #{p['superseded_id']}: {exc}", file=sys.stderr)
+                db.close()
+                print(f"\n  ✅ Marked {applied} entr(ies) as superseded.")
+        except Exception as exc:
+            print(f"⚠ dedup failed: {exc}", file=sys.stderr)
         return
 
     if "--recall" in args:
