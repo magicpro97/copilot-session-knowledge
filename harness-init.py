@@ -37,7 +37,7 @@ success_criteria:
 
 reporting:
   format: "jsonl"
-  output_dir: ".copilot/harness-reports/"
+  output_dir: ".harness/reports/"
   telemetry: true
 
 # Uncomment to enable SK_HARNESS dispatch middleware:
@@ -90,12 +90,12 @@ def _detect_node_pm(target_dir: str) -> str:
 def _detect_project(target_dir: str) -> dict:
     markers = [
         ("pyproject.toml", "python-uv", "python3 -m pytest", "python3 -m ruff check ."),
-        ("requirements.txt", "python-pip", "python3 -m pytest", "python3 -m ruff check . 2>/dev/null || true"),
-        ("setup.py", "python-pip", "python3 -m pytest", "python3 -m ruff check . 2>/dev/null || true"),
+        ("requirements.txt", "python-pip", "python3 -m pytest", "python3 -m ruff check ."),
+        ("setup.py", "python-pip", "python3 -m pytest", "python3 -m ruff check ."),
         ("Cargo.toml", "rust", "cargo test", "cargo clippy -- -D warnings"),
-        ("go.mod", "go", "go test ./...", "golangci-lint run 2>/dev/null || go vet ./..."),
-        ("pom.xml", "java-maven", "mvn test -q", "mvn checkstyle:check -q 2>/dev/null || true"),
-        ("build.gradle", "java-gradle", "./gradlew test -q", "./gradlew check -q 2>/dev/null || true"),
+        ("go.mod", "go", "go test ./...", "go vet ./..."),
+        ("pom.xml", "java-maven", "mvn test -q", "mvn checkstyle:check -q"),
+        ("build.gradle", "java-gradle", "./gradlew test -q", "./gradlew check -q"),
     ]
 
     proj_type = "unknown"
@@ -113,7 +113,7 @@ def _detect_project(target_dir: str) -> dict:
         pm = _detect_node_pm(target_dir)
         proj_type = "node"
         test_cmd = f"{pm} test"
-        lint_cmd = f"{pm} run lint 2>/dev/null || true"
+        lint_cmd = f"{pm} run lint"
 
     return {
         "type": proj_type,
@@ -211,8 +211,11 @@ def main(argv: list[str] | None = None) -> int:
 
     harness_yaml_path = os.path.join(target, "harness.yaml")
     if os.path.exists(harness_yaml_path) and not args.force and not args.skeleton_only:
-        print(f"✗ harness.yaml already exists at {harness_yaml_path}")
-        print("  Use --force to overwrite.")
+        if args.output_json:
+            print(json.dumps({"status": "error", "error": "harness.yaml already exists", "path": harness_yaml_path}))
+        else:
+            print(f"✗ harness.yaml already exists at {harness_yaml_path}")
+            print("  Use --force to overwrite.")
         return 1
 
     if not args.yes:
@@ -234,7 +237,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.skeleton_only:
-        print("✓ .harness/ directory initialized (skeleton-only)")
+        if args.output_json:
+            print(json.dumps({"status": "ok", "target": target, "created": [".harness/"], "project": info}))
+        else:
+            print("✓ .harness/ directory initialized (skeleton-only)")
         return 0
 
     # harness.yaml

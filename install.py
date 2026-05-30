@@ -236,6 +236,7 @@ TOOL_FILES = [
     "preset-manager.py",
     "install.py",
     "statusline.py",
+    "harness-init.py",
 ]
 
 SUPPORT_FILES = [

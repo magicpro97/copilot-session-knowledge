@@ -700,7 +700,7 @@
     },
     "harness config": {
       "script": "sk.py",
-      "description": "Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING)",
+      "description": "Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING, SK_TOOLS_DIR)",
       "tags": [
         "harness",
         "config",

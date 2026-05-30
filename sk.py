@@ -881,7 +881,9 @@ def _run_harness(args: list[str]) -> int:
     if sub == "doctor":
         return _harness_doctor(args[1:])
     print("sk harness subcommands: init, config, show, check, doctor")
-    print("  sk harness init [--target PATH] [--name NAME] [--skeleton-only] [--ci] [--yes]")
+    print(
+        "  sk harness init [--target PATH] [--name NAME] [--skeleton-only] [--ci] [--no-ci] [--force] [--yes] [--json]"
+    )
     print("  sk harness config list|get|set")
     print("  sk harness show [--tag TAG] [--json]  List all registered commands with metadata")
     print("  sk harness check [--json]  Verify all registered scripts exist on disk")
@@ -932,7 +934,7 @@ def _print_help() -> None:
         f"{direct_list}\n"
         "\nGrouped namespaces:\n"
         f"{_help_groups()}\n"
-        "  sk harness init      Scaffold universal harness for any project [--target PATH] [--ci] [--yes]\n"
+        "  sk harness init      Scaffold universal harness for any project [--target PATH] [--name NAME] [--skeleton-only] [--ci] [--no-ci] [--force] [--yes] [--json]\n"
         "  sk harness config    Manage harness env vars (SK_HARNESS, SK_DRY_RUN, SK_DEBUG_TIMING, SK_TOOLS_DIR)\n"
         "  sk harness show      List all registered commands with metadata [--tag TAG] [--json]\n"
         "  sk harness check     Verify all registered scripts exist [--json]\n"
