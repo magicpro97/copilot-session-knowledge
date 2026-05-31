@@ -1658,6 +1658,41 @@ def add_entry(
     return entry_id
 
 
+def _find_similar_entries(
+    db: sqlite3.Connection,
+    title: str,
+    content: str,
+    category: str,
+    threshold: float = -3.0,
+) -> list[dict]:
+    """Find near-duplicate knowledge entries using FTS5 BM25 similarity.
+
+    BM25 scores in FTS5 are negative — lower (more negative) = more relevant.
+    threshold=-3.0 means 'very similar'.
+    Returns list of {id, title, score} dicts.
+    """
+    query_text = re.sub(r'["\*\(\)]', " ", f"{title} {content[:80]}").strip()
+    if not query_text:
+        return []
+    fts_query = " ".join(f'"{w}"' for w in query_text.split()[:10] if len(w) > 2)
+    if not fts_query:
+        return []
+    try:
+        rows = db.execute(
+            """SELECT ke.id, ke.title, bm25(knowledge_fts) AS score
+               FROM knowledge_fts kf
+               JOIN knowledge_entries ke ON ke.id = kf.rowid
+               WHERE knowledge_fts MATCH ?
+                 AND ke.category = ?
+               ORDER BY score
+               LIMIT 3""",
+            (fts_query, category),
+        ).fetchall()
+        return [{"id": r[0], "title": r[1], "score": r[2]} for r in rows if r[2] is not None and r[2] <= threshold]
+    except Exception:
+        return []
+
+
 def _update_fts(
     db: sqlite3.Connection,
     entry_id: int,
@@ -3156,6 +3191,33 @@ def main():
         idx = args.index("--caveats")
         caveats = args[idx + 1] if idx + 1 < len(args) else ""
 
+    # --dedupe: warn (default), block, or off
+    dedupe = "warn"
+    if "--dedupe" in args:
+        idx = args.index("--dedupe")
+        raw_dedupe = args[idx + 1] if idx + 1 < len(args) else "warn"
+        if raw_dedupe not in ("warn", "block", "off"):
+            print(
+                f"Error: --dedupe must be one of: warn, block, off (got {raw_dedupe!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        dedupe = raw_dedupe
+
+    # --merge <id>: UPDATE existing entry instead of INSERT
+    merge_id: int | None = None
+    if "--merge" in args:
+        idx = args.index("--merge")
+        raw_merge = args[idx + 1] if idx + 1 < len(args) else ""
+        if not raw_merge or raw_merge.startswith("--"):
+            print("Error: --merge requires an integer entry ID", file=sys.stderr)
+            sys.exit(1)
+        try:
+            merge_id = int(raw_merge)
+        except ValueError:
+            print(f"Error: --merge value must be an integer ID (got {raw_merge!r})", file=sys.stderr)
+            sys.exit(1)
+
     supersedes_id = None
     if "--supersedes" in args:
         idx = args.index("--supersedes")
@@ -3219,6 +3281,8 @@ def main():
             "--cerebrum-output",
             "--cerebrum-sections",
             "--confidence-threshold",
+            "--dedupe",
+            "--merge",
         ):
             _next = args[i + 1] if i + 1 < len(args) else None
             skip_next = bool(_next and not _next.startswith("--"))
@@ -3329,6 +3393,51 @@ def main():
         "certainty": certainty,
         "caveats": caveats,
     }
+
+    # --merge: UPDATE existing entry instead of INSERT
+    if merge_id is not None:
+        _db = get_db()
+        row = _db.execute("SELECT id FROM knowledge_entries WHERE id = ?", (merge_id,)).fetchone()
+        if not row:
+            print(f"Error: --merge entry #{merge_id} not found", file=sys.stderr)
+            _db.close()
+            sys.exit(1)
+        now = __import__("datetime").datetime.now().isoformat()
+        _db.execute(
+            """UPDATE knowledge_entries
+               SET title = ?, content = ?, category = ?, tags = ?,
+                   last_seen = ?, occurrence_count = occurrence_count + 1
+               WHERE id = ?""",
+            (title, content, category, tags, now, merge_id),
+        )
+        _update_fts(_db, merge_id, title, content, tags, category, wing, room)
+        _db.commit()
+        _db.close()
+        print(f"  Merged into existing entry #{merge_id} [{category}]")
+        print("Done.")
+        return
+
+    # --dedupe: FTS5 BM25 pre-write similarity check (fail-open: skip if DB unavailable)
+    if dedupe != "off":
+        similar: list[dict] = []
+        try:
+            _dedup_db = get_db()
+            similar = _find_similar_entries(_dedup_db, title, content, category)
+            # Do not close _dedup_db explicitly — closing the connection here would
+            # invalidate a shared/mocked connection in tests.  It will be released
+            # when the local variable goes out of scope.
+            del _dedup_db
+        except SystemExit:
+            pass  # DB unavailable — skip check (fail-open)
+        if similar:
+            names = "; ".join(f"#{s['id']} '{s['title'][:40]}' (score {s['score']:.1f})" for s in similar)
+            print(f"⚠️  Similar entries found: {names}", file=sys.stderr)
+            if dedupe == "block":
+                print(
+                    "Blocked — use --dedupe=off to force insert or --merge <id> to replace",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
     try:
         queue_on_lock = _learn_queue_on_lock_enabled()
