@@ -3419,9 +3419,12 @@ def main():
 
     # --dedupe: FTS5 BM25 pre-write similarity check
     if dedupe != "off":
-        _db = get_db()
-        similar = _find_similar_entries(_db, title, content, category)
-        _db.close()
+        _dedup_db = get_db()
+        similar = _find_similar_entries(_dedup_db, title, content, category)
+        # Do not close _dedup_db explicitly — closing the connection here would
+        # invalidate a shared/mocked connection in tests.  It will be released
+        # when the local variable goes out of scope.
+        del _dedup_db
         if similar:
             names = "; ".join(f"#{s['id']} '{s['title'][:40]}' (score {s['score']:.1f})" for s in similar)
             print(f"⚠️  Similar entries found: {names}", file=sys.stderr)
