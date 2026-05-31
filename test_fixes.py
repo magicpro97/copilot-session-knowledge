@@ -13036,6 +13036,135 @@ except Exception as _e836:
     for _lbl836 in ["1a", "1b", "1c", "1d", "2a", "2b", "3a", "3b", "4a", "4b"]:
         test(f"I836-{_lbl836}: Aider & Windsurf adapters", False, str(_e836))
 
+# I837: sk learn --amend <id> — in-place knowledge entry refinement
+# ---------------------------------------------------------------------------
+print("\n🔍 I837: sk learn --amend <id> — in-place knowledge entry refinement")
+try:
+    import importlib as _il837
+    import sqlite3 as _sq837
+    import subprocess as _sp837
+    import tempfile as _tf837
+
+    _learn837 = _il837.import_module("learn")
+
+    _tf837_dir = _tf837.mkdtemp(prefix="sk_test_i837_")
+    _db837_path = Path(_tf837_dir) / "knowledge.db"
+
+    # Bootstrap full schema via migrate.py subprocess
+    _mg837_res = _sp837.run(
+        [sys.executable, str(REPO / "migrate.py"), str(_db837_path)],
+        capture_output=True,
+        text=True,
+    )
+    if _mg837_res.returncode != 0:
+        raise RuntimeError(f"migrate.py failed: {_mg837_res.stderr[:200]}")
+
+    _orig_db837 = _learn837.DB_PATH
+    _learn837.DB_PATH = _db837_path
+
+    # Insert a base entry to amend
+    _id837 = _learn837.add_entry(
+        "mistake",
+        "Amend base entry",
+        "original content for amend test",
+        tags="original-tag",
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+    test("I837-0: base entry inserted for amend tests", _id837 >= 0, str(_id837))
+
+    # I837-1: amend content only
+    _ok837_1 = _learn837.amend_entry(_id837, content="updated content after amend")
+    _conn837b = _sq837.connect(str(_db837_path))
+    _conn837b.row_factory = _sq837.Row
+    _row837 = _conn837b.execute("SELECT content, tags FROM knowledge_entries WHERE id = ?", (_id837,)).fetchone()
+    test("I837-1a: amend_entry returns True", _ok837_1 is True)
+    test(
+        "I837-1b: content updated",
+        _row837 and "updated content after amend" in _row837["content"],
+        str(_row837["content"] if _row837 else "no row"),
+    )
+    test(
+        "I837-1c: tags unchanged after content-only amend",
+        _row837 and "original-tag" in _row837["tags"],
+        str(_row837["tags"] if _row837 else "no row"),
+    )
+
+    # I837-2: amend tags only
+    _ok837_2 = _learn837.amend_entry(_id837, tags="new-tag,amended")
+    _row837b = _conn837b.execute("SELECT tags FROM knowledge_entries WHERE id = ?", (_id837,)).fetchone()
+    test("I837-2a: amend tags returns True", _ok837_2 is True)
+    test(
+        "I837-2b: tags updated",
+        _row837b and "new-tag" in _row837b["tags"],
+        str(_row837b["tags"] if _row837b else "no row"),
+    )
+
+    # I837-3: amend title only
+    _ok837_3 = _learn837.amend_entry(_id837, title="Amended Title")
+    _row837c = _conn837b.execute("SELECT title FROM knowledge_entries WHERE id = ?", (_id837,)).fetchone()
+    test(
+        "I837-3: title updated",
+        _row837c and _row837c["title"] == "Amended Title",
+        str(_row837c["title"] if _row837c else "no row"),
+    )
+
+    # I837-4: amend confidence and verify history row written
+    _ok837_4 = _learn837.amend_entry(_id837, confidence=0.99)
+    _hist837 = _conn837b.execute(
+        "SELECT confidence_after, change_source FROM knowledge_entry_history WHERE entry_id = ? ORDER BY id DESC LIMIT 1",
+        (_id837,),
+    ).fetchone()
+    test("I837-4a: amend confidence returns True", _ok837_4 is True)
+    test(
+        "I837-4b: history row written on confidence change",
+        _hist837 is not None and abs(float(_hist837[0]) - 0.99) < 0.001,
+        str(_hist837[0] if _hist837 else "no history"),
+    )
+    test(
+        "I837-4c: change_source is 'amend'",
+        _hist837 is not None and _hist837[1] == "amend",
+        str(_hist837[1] if _hist837 else "no history"),
+    )
+
+    # I837-5: unknown ID returns False and does not crash
+    _ok837_5 = _learn837.amend_entry(999999, content="should not exist")
+    test("I837-5: unknown ID returns False", _ok837_5 is False)
+
+    # I837-6: no fields supplied — main() prints message and returns without error
+    import io as _io837
+    import sys as _sys837
+
+    _argv837_save = _sys837.argv
+    _sys837.argv = ["learn.py", "--amend", str(_id837)]
+    _buf837 = _io837.StringIO()
+    _exit837 = None
+    try:
+        from contextlib import redirect_stdout as _rs837
+
+        with _rs837(_buf837):
+            _learn837.main()
+    except SystemExit as _se837:
+        _exit837 = _se837.code
+    finally:
+        _sys837.argv = _argv837_save
+    _out837 = _buf837.getvalue()
+    test("I837-6: no fields supplied prints usage message", "No fields to update" in _out837, repr(_out837[:200]))
+    test("I837-6b: no fields supplied exits 0", _exit837 is None or _exit837 == 0, str(_exit837))
+
+    _conn837b.close()
+    _learn837.DB_PATH = _orig_db837
+
+    import shutil as _sh837
+
+    _sh837.rmtree(_tf837_dir, ignore_errors=True)
+
+except Exception as _e837:
+    for _lbl837 in ["0", "1a", "1b", "1c", "2a", "2b", "3", "4a", "4b", "4c", "5", "6", "6b"]:
+        test(f"I837-{_lbl837}: sk learn --amend", False, str(_e837))
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
