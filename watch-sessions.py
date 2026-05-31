@@ -20,6 +20,7 @@ Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 
 import atexit
 import hashlib
+import json
 import os
 import re
 import signal
@@ -53,6 +54,93 @@ DEFAULT_INTERVAL = 60  # seconds
 # preserve timestamps.  Value of 30 ≈ 30 min at 60 s default interval.
 _PERIODIC_VERIFY_INTERVAL: int = 30
 _check_and_index_poll: int = 0
+
+# Tail-reading constants for large JSONL files
+_FAST_PATH_BYTES = 256 * 1024  # >256KB triggers tail-read
+_TAIL_CHUNK_SIZE = 64 * 1024  # read 64KB at a time
+_TAIL_MAX_BYTES = 1024 * 1024  # read at most 1MB from end
+
+# Bootstrap message markers (system prompt detection)
+_BOOTSTRAP_MARKERS = [
+    "<environment_context>",
+    "agents.md instructions",
+    "<instructions>",
+    "you are a coding agent",
+    "copilot cli",
+]
+
+
+def _is_bootstrap_message(content: str) -> bool:
+    """Detect system prompt / bootstrap messages that should not be indexed."""
+    if not content:
+        return False
+    normalized = content.lower()
+    if "<environment_context>" in normalized:
+        return True
+    hits = sum(1 for m in _BOOTSTRAP_MARKERS if m in normalized)
+    return hits >= 2
+
+
+def _read_jsonl_tail(path, max_messages: int = 500, *, filter_bootstrap: bool = False) -> list:
+    """Read last *max_messages* lines from a JSONL file.
+
+    For files <= _FAST_PATH_BYTES, reads the whole file and returns the
+    last *max_messages* entries.  For larger files, reads backwards in
+    64 KB chunks (up to _TAIL_MAX_BYTES) and parses the suffix.
+
+    When *filter_bootstrap* is True, messages whose ``content`` field
+    matches :func:`_is_bootstrap_message` are dropped before the
+    *max_messages* cap is applied.
+    """
+    file_size = os.path.getsize(path)
+    if file_size <= _FAST_PATH_BYTES:
+        # Small file: sequential read
+        lines = []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            lines.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        except OSError:
+            pass
+    else:
+        # Large file: read backwards in chunks
+        chunks: list[bytes] = []
+        total_read = 0
+        try:
+            with open(path, "rb") as f:
+                pos = file_size
+                while pos > 0 and total_read < _TAIL_MAX_BYTES:
+                    read_size = min(_TAIL_CHUNK_SIZE, pos, _TAIL_MAX_BYTES - total_read)
+                    pos -= read_size
+                    f.seek(pos)
+                    chunk = f.read(read_size)
+                    chunks.insert(0, chunk)
+                    total_read += read_size
+        except OSError:
+            return []
+
+        tail_bytes = b"".join(chunks)
+        tail_text = tail_bytes.decode("utf-8", errors="replace")
+        lines = []
+        for raw in tail_text.splitlines():
+            raw = raw.strip()
+            if raw:
+                try:
+                    lines.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    pass
+
+    # Optional bootstrap filtering
+    if filter_bootstrap:
+        lines = [m for m in lines if not _is_bootstrap_message(m.get("content", "") if isinstance(m, dict) else "")]
+
+    return lines[-max_messages:] if len(lines) > max_messages else lines
+
 
 # Matches canonical UUID format (8-4-4-4-12 hex digits)
 _UUID_RE = re.compile(
@@ -179,9 +267,34 @@ def _content_hash(path: Path) -> str:
     """Compute a quick content hash for change detection (SHA256, first 16 hex chars).
 
     Reads in chunks so large files don't load entirely into memory.
+    For large JSONL files (> _FAST_PATH_BYTES) only the tail portion is
+    hashed — JSONL sessions are append-only so a tail-hash is sufficient
+    to detect new messages without reading the entire file.
+
     Returns empty string on any OS error — callers treat '' as 'unknown,
     assume changed' which is the safe fallback.
     """
+    try:
+        file_size = path.stat().st_size
+    except OSError:
+        return ""
+
+    # Large JSONL optimisation: hash only the tail
+    if path.suffix == ".jsonl" and file_size > _FAST_PATH_BYTES:
+        h = hashlib.sha256()
+        try:
+            tail_size = min(file_size, _TAIL_MAX_BYTES)
+            with open(path, "rb") as f:
+                f.seek(file_size - tail_size)
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+            return h.hexdigest()[:16]
+        except OSError:
+            return ""
+
     h = hashlib.sha256()
     try:
         with open(path, "rb") as f:

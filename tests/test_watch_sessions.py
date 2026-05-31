@@ -321,7 +321,7 @@ if _sig_changed:
     test(
         "hot-path: _content_hash IS called after mtime changes",
         called_after_change,
-        f"hash NOT called despite content change",
+        "hash NOT called despite content change",
     )
     test(
         "hot-path: new hash stored after change",
@@ -401,6 +401,85 @@ test("stale lock is recovered and acquired", stale_acquired)
 _ws.release_lock()
 
 _ws.LOCK_FILE = orig_lock
+
+
+# ── _is_bootstrap_message ────────────────────────────────────────────────────
+
+print("\n🔑 _is_bootstrap_message")
+
+test("empty string → not bootstrap", not _ws._is_bootstrap_message(""))
+test("plain user message → not bootstrap", not _ws._is_bootstrap_message("How do I fix my code?"))
+test("<environment_context> alone → bootstrap", _ws._is_bootstrap_message("<environment_context>\nYou are in /home"))
+test("two markers → bootstrap", _ws._is_bootstrap_message("you are a coding agent with copilot cli"))
+test("single non-env marker → not bootstrap", not _ws._is_bootstrap_message("agents.md instructions only"))
+
+# ── _read_jsonl_tail ─────────────────────────────────────────────────────────
+
+print("\n🔑 _read_jsonl_tail")
+
+# Small file: respects max_messages
+_small_jsonl = SCRATCH / "small.jsonl"
+_small_jsonl.write_text(
+    "\n".join(json.dumps({"i": i}) for i in range(10)) + "\n",
+    encoding="utf-8",
+)
+_small_result = _ws._read_jsonl_tail(str(_small_jsonl), max_messages=3)
+test("small file respects max_messages", len(_small_result) == 3)
+test("small file returns last entries", [m["i"] for m in _small_result] == [7, 8, 9])
+
+# Malformed lines are skipped
+_bad_jsonl = SCRATCH / "bad.jsonl"
+_bad_jsonl.write_text('{"ok":1}\nnot-json\n{"ok":2}\n', encoding="utf-8")
+_bad_result = _ws._read_jsonl_tail(str(_bad_jsonl))
+test("malformed lines skipped", len(_bad_result) == 2)
+
+# filter_bootstrap=True removes bootstrap messages
+_boot_jsonl = SCRATCH / "boot.jsonl"
+_boot_jsonl.write_text(
+    json.dumps({"content": "<environment_context>\nsystem prompt"})
+    + "\n"
+    + json.dumps({"content": "user: hello"})
+    + "\n",
+    encoding="utf-8",
+)
+_boot_result = _ws._read_jsonl_tail(str(_boot_jsonl), filter_bootstrap=True)
+test("bootstrap messages filtered", len(_boot_result) == 1)
+test("non-bootstrap message kept", _boot_result[0]["content"] == "user: hello")
+
+# Large file: tail-read path (create file > _FAST_PATH_BYTES)
+_large_jsonl = SCRATCH / "large.jsonl"
+# Write enough data to exceed 256KB threshold
+_padding_line = json.dumps({"p": "x" * 200}) + "\n"
+_padding_count = (_ws._FAST_PATH_BYTES // len(_padding_line)) + 100
+with open(_large_jsonl, "w", encoding="utf-8") as _f:
+    for _j in range(_padding_count):
+        _f.write(_padding_line)
+    # Write known tail entries
+    for _j in range(5):
+        _f.write(json.dumps({"tail": _j}) + "\n")
+
+_large_size = os.path.getsize(_large_jsonl)
+test("large file exceeds threshold", _large_size > _ws._FAST_PATH_BYTES)
+_large_result = _ws._read_jsonl_tail(str(_large_jsonl), max_messages=3)
+test("large file respects max_messages", len(_large_result) == 3)
+test("large file returns tail entries", [m.get("tail") for m in _large_result] == [2, 3, 4])
+
+# ── _content_hash tail-hash for large JSONL ──────────────────────────────────
+
+print("\n🔑 _content_hash tail-hash optimization")
+
+_hash1 = _ws._content_hash(Path(_large_jsonl))
+test("large JSONL tail-hash returns non-empty", len(_hash1) == 16)
+
+# Appending changes the hash
+with open(_large_jsonl, "a", encoding="utf-8") as _f:
+    _f.write(json.dumps({"new": True}) + "\n")
+_hash2 = _ws._content_hash(Path(_large_jsonl))
+test("appending to large JSONL changes tail-hash", _hash1 != _hash2)
+
+# Small JSONL uses full hash (different from tail hash of same content)
+_hash_small = _ws._content_hash(Path(_small_jsonl))
+test("small JSONL returns full hash", len(_hash_small) == 16)
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────
