@@ -63,7 +63,7 @@ fn sanitize_session_id(sid: &str) -> String {
     if sid.is_empty() {
         return "default-session".to_string();
     }
-    let mut s = sid.replace('/', "_").replace('\\', "_");
+    let mut s = sid.replace(['/', '\\'], "_");
     s = s.replace('\0', "");
     // Collapse dot-dot sequences.
     while s.contains("..") {
@@ -369,16 +369,23 @@ mod tests {
     #[test]
     fn get_session_id_fallback_to_pid() {
         // Clear env vars for this test.
-        let saved: Vec<_> = ["COPILOT_AGENT_SESSION_ID", "COPILOT_SESSION_ID", "COPILOT_SESSION_STATE"]
-            .iter()
-            .map(|k| (*k, std::env::var(k).ok()))
-            .collect();
+        let saved: Vec<_> = [
+            "COPILOT_AGENT_SESSION_ID",
+            "COPILOT_SESSION_ID",
+            "COPILOT_SESSION_STATE",
+        ]
+        .iter()
+        .map(|k| (*k, std::env::var(k).ok()))
+        .collect();
         for (k, _) in &saved {
             std::env::remove_var(k);
         }
         let data = json!({});
         let id = get_session_id(&data);
-        assert!(id.starts_with("ppid-"), "should fallback to ppid-; got: {id}");
+        assert!(
+            id.starts_with("ppid-"),
+            "should fallback to ppid-; got: {id}"
+        );
         // Restore.
         for (k, v) in saved {
             match v {
@@ -393,7 +400,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let markers = tmp.path().join(".copilot").join("markers");
         fs::create_dir_all(&markers).unwrap();
-        let state_path = markers.join("session-state-test-record");
+        let _state_path = markers.join("session-state-test-record");
 
         // We can't easily override resolve_home_dir, so test the inner logic directly.
         let mut state = serde_json::Map::new();
