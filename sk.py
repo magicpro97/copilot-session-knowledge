@@ -62,6 +62,7 @@ Usage:
     sk --version  Show version
 """
 
+import difflib
 import json
 import os
 import subprocess
@@ -586,6 +587,103 @@ def _run_events(extra_args: list[str]) -> int:
     return _run("events.py", extra_args)
 
 
+_BASH_COMPLETION = """\
+_sk_completion() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local commands="{commands}"
+    COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+}
+complete -F _sk_completion sk
+"""
+
+_ZSH_COMPLETION = """\
+#compdef sk
+
+_sk() {{
+    local -a commands
+    commands=(
+{zsh_commands}
+    )
+    _describe 'sk command' commands
+}}
+
+_sk "$@"
+"""
+
+_FISH_COMPLETION = """\
+# Fish completion for sk
+{fish_commands}
+"""
+
+
+def _run_completion(extra_args: list[str]) -> int:
+    """Print shell completion script or install it into the rc file."""
+    # Include built-in commands that aren't in _DIRECT (e.g. completion, init, doctor)
+    all_cmds = sorted(set(list(_DIRECT) + list(_GROUPS) + ["completion", "init", "doctor"]))
+
+    # --install: append source line to rc file (idempotent)
+    if extra_args and extra_args[0] == "--install":
+        import os as _os
+
+        shell = _os.environ.get("SHELL", "")
+        if "zsh" in shell:
+            rc = Path.home() / ".zshrc"
+            shell_name = "zsh"
+        else:
+            rc = Path.home() / ".bashrc"
+            shell_name = "bash"
+        guard = "# sk-completion-managed"
+        source_line = f'eval "$(sk completion {shell_name})"  {guard}'
+        try:
+            existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
+        except OSError:
+            existing = ""
+        if guard in existing:
+            print(f"sk completion already installed in {rc} (idempotent, skipping).")
+            return 0
+        with rc.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n{source_line}\n")
+        print(f"sk completion installed in {rc}. Restart your shell or run: source {rc}")
+        return 0
+
+    # Determine shell from positional arg or --shell flag
+    shell_arg = None
+    for a in extra_args:
+        if a in ("bash", "zsh", "fish"):
+            shell_arg = a
+            break
+        if a.startswith("--shell="):
+            shell_arg = a.split("=", 1)[1]
+            break
+        if a == "--shell" and extra_args.index(a) + 1 < len(extra_args):
+            shell_arg = extra_args[extra_args.index(a) + 1]
+            break
+
+    if shell_arg is None:
+        print("Usage: sk completion <bash|zsh|fish> [--install]", file=sys.stderr)
+        print("       sk completion --shell <bash|zsh|fish>", file=sys.stderr)
+        print("       sk completion --install", file=sys.stderr)
+        return 2
+
+    if shell_arg == "bash":
+        cmds_str = " ".join(all_cmds)
+        print(_BASH_COMPLETION.replace("{commands}", cmds_str), end="")
+        return 0
+
+    if shell_arg == "zsh":
+        zsh_lines = "\n".join(f"        '{c}'" for c in all_cmds)
+        print(_ZSH_COMPLETION.format(zsh_commands=zsh_lines), end="")
+        return 0
+
+    if shell_arg == "fish":
+        fish_lines = "\n".join(f"complete -c sk -f -a '{c}' -d ''" for c in all_cmds)
+        print(_FISH_COMPLETION.replace("{fish_commands}", fish_lines), end="")
+        return 0
+
+    print(f"sk completion: unknown shell '{shell_arg}'. Choose: bash, zsh, fish", file=sys.stderr)
+    return 2
+
+
 def _run_cron(extra_args: list[str]) -> int:
     """Dispatch ``sk cron ...`` to cron-tasks.py."""
     if not extra_args or extra_args[0] in ("-h", "--help"):
@@ -1012,6 +1110,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run("doctor.py", rest)
     if cmd == "init":
         return _run("setup-project.py", ["--init-mode"] + rest)
+    if cmd == "completion":
+        return _run_completion(rest)
     if cmd in _DIRECT:
         meta = _DIRECT[cmd]
         if meta.script is None:
@@ -1055,10 +1155,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # Unknown
     all_cmds = sorted(list(_DIRECT) + list(_GROUPS))
-    print(
-        f"sk: unknown command '{cmd}'. Available: {', '.join(all_cmds)}",
-        file=sys.stderr,
-    )
+    msg = f"sk: unknown command '{cmd}'."
+    suggestions = difflib.get_close_matches(cmd, all_cmds, n=3, cutoff=0.6)
+    if suggestions:
+        msg += f" Did you mean: {', '.join(suggestions)}?"
+    else:
+        msg += f" Available: {', '.join(all_cmds)}"
+    print(msg, file=sys.stderr)
     print("Run `sk --help` for usage.", file=sys.stderr)
     return 2
 

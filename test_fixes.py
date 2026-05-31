@@ -14731,6 +14731,221 @@ except Exception as _e858:
         test(f"I858-{_lbl858}: multi-predicate relations", False, str(_e858))
 
 # ---------------------------------------------------------------------------
+# I857: sk fuzzy-match unknown commands + shell tab-completion
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu857
+    import io as _io857
+    import subprocess as _sp857
+
+    _spec857 = _ilu857.spec_from_file_location("sk857", REPO / "sk.py")
+    _sk857 = _ilu857.module_from_spec(_spec857)
+    _spec857.loader.exec_module(_sk857)
+
+    # --- I857-1: fuzzy "Did you mean" on unknown commands ---
+    _stderr857 = _io857.StringIO()
+    _orig_stderr857 = sys.stderr
+    sys.stderr = _stderr857
+    _rc857_typo = _sk857.main(["brieffing"])
+    sys.stderr = _orig_stderr857
+    _err857 = _stderr857.getvalue()
+    test(
+        "I857-1a: typo 'brieffing' exits with code 2",
+        _rc857_typo == 2,
+        f"rc={_rc857_typo}",
+    )
+    test(
+        "I857-1b: typo 'brieffing' suggests 'briefing' via Did you mean",
+        "Did you mean" in _err857 and "briefing" in _err857,
+        repr(_err857),
+    )
+
+    _stderr857b = _io857.StringIO()
+    sys.stderr = _stderr857b
+    _sk857.main(["querys"])
+    sys.stderr = _orig_stderr857
+    _err857b = _stderr857b.getvalue()
+    test(
+        "I857-1c: typo 'querys' shows Did you mean with query suggestion",
+        "Did you mean" in _err857b,
+        repr(_err857b),
+    )
+
+    _stderr857c = _io857.StringIO()
+    sys.stderr = _stderr857c
+    _rc857_nosugg = _sk857.main(["xyzzy_unknown_cmd_that_has_no_match"])
+    sys.stderr = _orig_stderr857
+    _err857c = _stderr857c.getvalue()
+    test(
+        "I857-1d: completely unknown command shows Available list (no Did you mean)",
+        "Did you mean" not in _err857c and "Available" in _err857c,
+        repr(_err857c),
+    )
+
+    # --- I857-2: sk completion bash output ---
+    _stdout857 = _io857.StringIO()
+    _orig_stdout857 = sys.stdout
+    sys.stdout = _stdout857
+    _rc857_bash = _sk857.main(["completion", "bash"])
+    sys.stdout = _orig_stdout857
+    _bash_out = _stdout857.getvalue()
+    test(
+        "I857-2a: completion bash exits 0",
+        _rc857_bash == 0,
+        f"rc={_rc857_bash}",
+    )
+    test(
+        "I857-2b: completion bash output contains _sk_completion function",
+        "_sk_completion" in _bash_out and "complete -F _sk_completion sk" in _bash_out,
+        repr(_bash_out[:200]),
+    )
+    test(
+        "I857-2c: completion bash output contains known command names",
+        "briefing" in _bash_out and "query" in _bash_out and "learn" in _bash_out,
+        repr(_bash_out[:200]),
+    )
+
+    # --- I857-3: sk completion zsh output ---
+    _stdout857z = _io857.StringIO()
+    sys.stdout = _stdout857z
+    _rc857_zsh = _sk857.main(["completion", "zsh"])
+    sys.stdout = _orig_stdout857
+    _zsh_out = _stdout857z.getvalue()
+    test(
+        "I857-3a: completion zsh exits 0",
+        _rc857_zsh == 0,
+        f"rc={_rc857_zsh}",
+    )
+    test(
+        "I857-3b: completion zsh output starts with #compdef sk",
+        _zsh_out.strip().startswith("#compdef sk"),
+        repr(_zsh_out[:100]),
+    )
+
+    # --- I857-4: sk completion fish output ---
+    _stdout857f = _io857.StringIO()
+    sys.stdout = _stdout857f
+    _rc857_fish = _sk857.main(["completion", "fish"])
+    sys.stdout = _orig_stdout857
+    _fish_out = _stdout857f.getvalue()
+    test(
+        "I857-4a: completion fish exits 0",
+        _rc857_fish == 0,
+        f"rc={_rc857_fish}",
+    )
+    test(
+        "I857-4b: completion fish output contains complete -c sk",
+        "complete -c sk" in _fish_out,
+        repr(_fish_out[:200]),
+    )
+
+    # --- I857-5: sk completion unknown shell returns 2 ---
+    _stderr857d = _io857.StringIO()
+    sys.stderr = _stderr857d
+    _rc857_bad = _sk857.main(["completion", "powershell"])
+    sys.stderr = _orig_stderr857
+    test(
+        "I857-5: completion with unknown shell returns 2",
+        _rc857_bad == 2,
+        f"rc={_rc857_bad}",
+    )
+
+    # --- I857-6: completion bash is valid bash syntax ---
+    _bash_check = _sp857.run(
+        ["bash", "-n", "-c", _bash_out],
+        capture_output=True,
+        text=True,
+    )
+    test(
+        "I857-6: completion bash output passes bash -n syntax check",
+        _bash_check.returncode == 0,
+        _bash_check.stderr,
+    )
+
+    # --- I857-7: _fuzzy_title_search in query-session.py ---
+    _spec857q = _ilu857.spec_from_file_location("qs857", REPO / "query-session.py")
+    _qs857 = _ilu857.module_from_spec(_spec857q)
+    _spec857q.loader.exec_module(_qs857)
+
+    _db857 = REPO / "test_i857_fuzzy.db"
+    try:
+        _conn857 = _qs857.sqlite3.connect(str(_db857))
+        _conn857.row_factory = _qs857.sqlite3.Row
+        _conn857.execute(
+            "CREATE TABLE knowledge_entries"
+            "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, confidence REAL,"
+            " content TEXT, tags TEXT, session_id TEXT, last_seen TEXT,"
+            " error_type TEXT, severity TEXT, root_cause TEXT)"
+        )
+        _conn857.execute(
+            "INSERT INTO knowledge_entries VALUES"
+            "(1,'mistake','fuzzy search algorithm fix',0.9,'content here','tag1','sess1','2024-01-01',NULL,NULL,NULL)"
+        )
+        _conn857.execute(
+            "INSERT INTO knowledge_entries VALUES"
+            "(2,'pattern','database connection pattern',0.8,'db pattern','tag2','sess2','2024-01-02',NULL,NULL,NULL)"
+        )
+        _conn857.execute(
+            "INSERT INTO knowledge_entries VALUES"
+            "(3,'feature','async event loop feature',0.7,'async feature','tag3','sess3','2024-01-03',NULL,NULL,NULL)"
+        )
+        _conn857.commit()
+
+        _fuzzy857 = _qs857._fuzzy_title_search(_conn857, "fuzzy search", limit=5)
+        test(
+            "I857-7a: _fuzzy_title_search returns result for matching word",
+            len(_fuzzy857) >= 1,
+            str([r["title"] for r in _fuzzy857]),
+        )
+        test(
+            "I857-7b: _fuzzy_title_search top result contains matched word",
+            "fuzzy" in (_fuzzy857[0]["title"] or "").lower() if _fuzzy857 else False,
+            str(_fuzzy857[0]["title"] if _fuzzy857 else "no results"),
+        )
+
+        _fuzzy857_none = _qs857._fuzzy_title_search(_conn857, "xyzzy_no_match_at_all", limit=5)
+        test(
+            "I857-7c: _fuzzy_title_search returns empty list for no-match query",
+            _fuzzy857_none == [],
+            str(_fuzzy857_none),
+        )
+
+        _fuzzy857_empty = _qs857._fuzzy_title_search(_conn857, "", limit=5)
+        test(
+            "I857-7d: _fuzzy_title_search handles empty query gracefully",
+            _fuzzy857_empty == [],
+            str(_fuzzy857_empty),
+        )
+    finally:
+        _conn857.close()
+        try:
+            _db857.unlink()
+        except Exception:
+            pass
+
+except Exception as _e857:
+    for _label857 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "4a",
+        "4b",
+        "5",
+        "6",
+        "7a",
+        "7b",
+        "7c",
+        "7d",
+    ]:
+        test(f"I857-{_label857}: fuzzy-match + completion", False, str(_e857))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
