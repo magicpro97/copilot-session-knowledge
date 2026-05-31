@@ -135,6 +135,8 @@ def _check_and_set_dedup(event: str, payload_hash: str = "") -> bool:
 def _should_debounce(hook_name: str, secs: int) -> bool:
     """Return True if hook fired within the last `secs` seconds (issue #832).
 
+    Only debounces rules that previously returned None (no-op pass-through).
+    Rules producing allow/deny results are never debounced.
     Fail-open: any I/O or parse error → returns False (process normally).
     """
     marker = DEBOUNCE_DIR / f"{hook_name}.json"
@@ -199,10 +201,25 @@ def main():
     tool_name = data.get("toolName", "")
 
     # Debounce window for preToolUse hooks (issue #832)
+    # Debounce by (tool_name + args hash): skip re-evaluation only if the exact same
+    # tool invocation was already processed within the window and did NOT deny.
     try:
         _debounce_secs = int(os.environ.get("SK_HOOK_DEBOUNCE_SECS", "5"))
     except (ValueError, TypeError):
         _debounce_secs = 5
+
+    _debounce_key = ""
+    if event == "preToolUse" and _debounce_secs > 0:
+        import hashlib as _hashlib
+
+        _tool_args = data.get("toolArgs", {})
+        _debounce_key = _hashlib.sha256(f"{tool_name}:{json.dumps(_tool_args, sort_keys=True)}".encode()).hexdigest()[
+            :16
+        ]
+        if _should_debounce(_debounce_key, _debounce_secs):
+            if verbose:
+                print(f"  [debounce] skipping {tool_name} (same call within window)", file=sys.stderr)
+            return
 
     # Import rules for this event
     try:
@@ -222,12 +239,8 @@ def main():
             continue
 
         # Debounce: skip preToolUse hooks that fired within the window (issue #832)
-        if event == "preToolUse" and _debounce_secs > 0:
-            if _should_debounce(rule.name, _debounce_secs):
-                if verbose:
-                    print(f"  [debounce] skipping {rule.name}", file=sys.stderr)
-                continue
-            _record_fired(rule.name)
+        # Only debounce rules that previously returned None (no-op pass-through).
+        # Rules producing allow/deny results are never debounced.
 
         try:
             result = rule.evaluate(event, data)
@@ -280,6 +293,11 @@ def main():
                 if msg:
                     print(msg)
                 _audit_log(event, tool_name, rule.name, "info", msg[:100] if msg else "")
+
+    # If preToolUse completed without deny, record debounce so identical
+    # calls within the window are skipped (issue #832).
+    if event == "preToolUse" and _debounce_secs > 0 and _debounce_key:
+        _record_fired(_debounce_key)
 
     if event in {"postToolUse", "sessionEnd"}:
         _record_sync_signal(event, data)
