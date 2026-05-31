@@ -12278,10 +12278,10 @@ print("\n🔍 I832: hook debounce / rate limiting")
 
 try:
     import importlib.util as _ilu832
-    import tempfile as _tf832
-    import shutil as _sh832
-    import time as _time832
     import json as _json832
+    import shutil as _sh832
+    import tempfile as _tf832
+    import time as _time832
     import types as _types832
     from pathlib import Path as _Path832
 
