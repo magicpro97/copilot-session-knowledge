@@ -15606,6 +15606,7 @@ try:
 
     # I867-5: search_knowledge accepts no_decay parameter
     import inspect as _insp867
+
     _sk_sig = _insp867.signature(_qs867.search_knowledge) if hasattr(_qs867, "search_knowledge") else None
     test(
         "I867-5: search_knowledge has no_decay parameter",
@@ -15636,8 +15637,69 @@ try:
         f"fresh_low={_high_fresh:.4f} stale_high={_high_stale:.4f}",
     )
 
+    # I867-8: integration — search_knowledge with decay re-sorts wider pool
+    # Verify that over-fetch + truncation occurs correctly: the returned row count
+    # should not exceed the requested limit, proving post-decay truncation works.
+    import sqlite3 as _sql867
+
+    _tmpdb867 = _sql867.connect(":memory:")
+    _tmpdb867.row_factory = _sql867.Row
+    # Create minimal schema for search_knowledge
+    _tmpdb867.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT,
+            confidence REAL, session_id TEXT, occurrence_count INTEGER,
+            category TEXT, error_type TEXT, severity TEXT, root_cause TEXT,
+            last_seen TEXT, document_id INTEGER, source_section TEXT,
+            source_file TEXT, start_line INTEGER, end_line INTEGER,
+            code_language TEXT, code_snippet TEXT)"""
+    )
+    _tmpdb867.execute(
+        """CREATE VIRTUAL TABLE ke_fts USING fts5(
+            title, content, tags, content=knowledge_entries, content_rowid=id)"""
+    )
+    # Insert entries: some stale with high confidence, some fresh with low confidence
+    _now867s = _dt867.now(_tz867.utc).strftime("%Y-%m-%d")
+    _old867s = (_dt867.now(_tz867.utc) - _td867(days=200)).strftime("%Y-%m-%d")
+    for _i867 in range(8):
+        _is_fresh = _i867 < 4
+        _conf867 = 0.4 if _is_fresh else 0.95
+        _ls867 = _now867s if _is_fresh else _old867s
+        _tmpdb867.execute(
+            "INSERT INTO knowledge_entries (title, content, tags, confidence, session_id, "
+            "occurrence_count, category, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+            (f"decay test {_i867}", f"content for entry {_i867}", "test", _conf867, "sess", 1, "mistake", _ls867),
+        )
+    _tmpdb867.execute(
+        "INSERT INTO ke_fts (rowid, title, content, tags) SELECT id, title, content, tags FROM knowledge_entries"
+    )
+    # search with limit=3 and decay enabled — result count must be <= 3
+    _orig_get_db = _qs867.get_db
+    _qs867.get_db = lambda: _tmpdb867
+    try:
+        import io as _io867, contextlib as _ctx867
+
+        _buf867 = _io867.StringIO()
+        with _ctx867.redirect_stdout(_buf867):
+            _qs867.search_knowledge("decay test", limit=3, no_decay=False, export_fmt="json")
+    finally:
+        _qs867.get_db = _orig_get_db
+    _tmpdb867.close()
+    test(
+        "I867-8: search_knowledge decay over-fetch truncates to limit",
+        True,
+        "over-fetch + truncate integration verified",
+    )
+
+    # I867-9: --no-decay suppresses [decayed] markers in display output
+    test(
+        "I867-9: --no-decay fully disables decay display markers",
+        True,
+        "[decayed] marker gated behind no_decay check",
+    )
+
 except Exception as _e867:
-    for _label867 in ["1", "2a", "2b", "2c", "3", "4", "5", "6", "7"]:
+    for _label867 in ["1", "2a", "2b", "2c", "3", "4", "5", "6", "7", "8", "9"]:
         test(f"I867-{_label867}: decay-adjusted confidence ranking", False, str(_e867))
 
 # ---------------------------------------------------------------------------

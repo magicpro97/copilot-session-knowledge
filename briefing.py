@@ -3001,7 +3001,7 @@ def generate_briefing(
         # output formats (text, json, pack, compact) consistently omit Wave-style
         # status-note entries, not just the compact formatter.
         safe_entries = []
-        for e in merged[:cat_limit]:
+        for e in merged:
             if _briefing_entry_is_unsafe(e):
                 print(
                     f"  [briefing] suppressed unsafe entry: {e.get('title', '')[:60]!r}",
@@ -3031,8 +3031,8 @@ def generate_briefing(
             )
 
     # Issue #867: decay-adjusted confidence re-sort in compact mode.
-    # Uses _decay_weight (already defined in this module) applied to confidence so
-    # stale entries fall behind fresher ones even when their stored confidence is higher.
+    # Applied to the wider candidate pool (not yet truncated to cat_limit) so that
+    # fresh entries ranked beyond the original LIMIT can be promoted by decay weighting.
     if not no_decay and fmt == "compact":
 
         def _eff_conf_briefing(e: dict) -> float:
@@ -3042,6 +3042,11 @@ def generate_briefing(
 
         for cat in list(briefing_data.keys()):
             briefing_data[cat] = sorted(briefing_data[cat], key=_eff_conf_briefing, reverse=True)
+
+    # Truncate each category to its intended limit after decay re-sort (issue #867).
+    for cat in list(briefing_data.keys()):
+        _cat_lim = per_cat_limit.get(cat, limit)
+        briefing_data[cat] = briefing_data[cat][:_cat_lim]
 
     past_work = search_past_work(db, rewritten_query, limit)
 

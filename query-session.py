@@ -2091,6 +2091,11 @@ def search_knowledge(
     ``no_decay``: when True, skip the decay-adjusted confidence re-sort (issue #867).
     """
     db = get_db()
+    # Issue #867: widen the SQL fetch so decay re-sort can promote fresher entries
+    # that would otherwise be excluded by the raw BM25/confidence LIMIT.
+    _original_limit = limit
+    if not no_decay:
+        limit = max(limit * 3, limit + 10)
     query_for_retrieval = retrieval_query if retrieval_query is not None else query
 
     # If retrieval_query is already a pre-built FTS5 query (contains OR conjunction
@@ -2220,7 +2225,9 @@ def search_knowledge(
             if export_fmt != "json":
                 print(f"{DIM}(no exact matches — showing fuzzy title matches){RESET}")
 
-    # Issue #867: re-sort by decay-adjusted confidence unless --no-decay
+    # Issue #867: re-sort by decay-adjusted confidence unless --no-decay.
+    # The SQL queries above over-fetched (limit * 3) so that fresh entries ranked
+    # beyond the original LIMIT can be promoted by decay weighting.
     if not no_decay and rows:
         rows = sorted(
             rows,
@@ -2230,6 +2237,8 @@ def search_knowledge(
             ),
             reverse=True,
         )
+    # Truncate to the caller's original limit after decay re-sort.
+    rows = rows[:_original_limit]
 
     if export_fmt == "json" and rows:
         # Issue #377: suppress status-note entries in all output formats
@@ -2271,10 +2280,14 @@ def search_knowledge(
             if root_cause:
                 meta_parts.append(f"cause:{root_cause[:40]}")
             meta_str = f" {DIM}({', '.join(meta_parts)}){RESET}" if meta_parts else ""
-            # Issue #867: show [decayed] marker when effective confidence drops below 50% of original
-            _orig_conf = float(r["confidence"] or 0.5)
-            _eff_conf = _decay_adj_conf(_orig_conf, r["last_seen"] if "last_seen" in r.keys() else None)
-            _decay_marker = f" {DIM}[decayed]{RESET}" if _eff_conf < 0.5 * _orig_conf else ""
+            # Issue #867: show [decayed] marker when effective confidence drops below 50% of original.
+            # When --no-decay is active, suppress the marker entirely (reviewer feedback).
+            if no_decay:
+                _decay_marker = ""
+            else:
+                _orig_conf = float(r["confidence"] or 0.5)
+                _eff_conf = _decay_adj_conf(_orig_conf, r["last_seen"] if "last_seen" in r.keys() else None)
+                _decay_marker = f" {DIM}[decayed]{RESET}" if _eff_conf < 0.5 * _orig_conf else ""
             print(
                 f"{BOLD}{i}. [fuzzy][{r['category']}] {r['title']}{RESET}{meta_str}{_decay_marker}"
                 if _fuzzy_result
