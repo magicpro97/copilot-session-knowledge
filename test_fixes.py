@@ -11529,6 +11529,121 @@ except Exception as _e759:
         test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
 
 # ---------------------------------------------------------------------------
+# I840 — Parallel session indexing with concurrent.futures
+# ---------------------------------------------------------------------------
+print("\n── I840: parallel session indexing ──")
+
+try:
+    import importlib.util
+    import tempfile as _tempfile840
+
+    _bsi840_path = REPO / "build-session-index.py"
+    _spec840 = importlib.util.spec_from_file_location("build_session_index_840", str(_bsi840_path))
+    _bsi840 = importlib.util.module_from_spec(_spec840)
+    _spec840.loader.exec_module(_bsi840)
+
+    test(
+        "I840-1: index_sessions_parallel is exported",
+        hasattr(_bsi840, "index_sessions_parallel"),
+        "index_sessions_parallel not found",
+    )
+    test(
+        "I840-2: MAX_WORKERS defaults to 4",
+        _bsi840.MAX_WORKERS == 4,
+        f"got {_bsi840.MAX_WORKERS}",
+    )
+    test(
+        "I840-3: SK_INDEX_WORKERS env override respected",
+        int(os.environ.get("SK_INDEX_WORKERS", "4")) == _bsi840.MAX_WORKERS,
+        "env var not reflected at import time (expected: already set or default 4)",
+    )
+
+    # I840-4: parallel produces same DB entries as sequential on a temp fixture
+    _tmpdir840 = Path(_tempfile840.mkdtemp(prefix="i840-"))
+    try:
+        _db_seq840 = _tmpdir840 / "seq.db"
+        _db_par840 = _tmpdir840 / "par.db"
+
+        # Build two session dirs with a checkpoint each
+        def _make_session840(base: Path, name: str, cp_text: str) -> Path:
+            sd = base / name
+            sd.mkdir(parents=True, exist_ok=True)
+            cp_dir = sd / "checkpoints"
+            cp_dir.mkdir()
+            idx = cp_dir / "index.json"
+            idx.write_text(
+                json.dumps([{"seq": 1, "file": "cp1.md", "title": "Test checkpoint"}]),
+                encoding="utf-8",
+            )
+            (cp_dir / "cp1.md").write_text(
+                f"<!-- overview -->\n{cp_text}\n<!-- /overview -->",
+                encoding="utf-8",
+            )
+            return sd
+
+        _s1_840 = _make_session840(_tmpdir840, "aaaaaaaa-0001-0001-0001-000000000001", "session one overview")
+        _s2_840 = _make_session840(_tmpdir840, "bbbbbbbb-0002-0002-0002-000000000002", "session two overview")
+        _sessions840 = [_s1_840, _s2_840]
+
+        # Sequential run
+        _db_conn_seq = _bsi840.create_db(_db_seq840)
+        for _sd in _sessions840:
+            _bsi840.index_session(_db_conn_seq, _sd, False)
+        _db_conn_seq.commit()
+        _seq_rows840 = set(
+            r[0] for r in _db_conn_seq.execute("SELECT id FROM sessions").fetchall()
+        )
+        _db_conn_seq.close()
+
+        # Parallel run
+        _par_results840 = _bsi840.index_sessions_parallel(_sessions840, _db_par840, False, workers=2)
+        _db_conn_par = _bsi840.create_db(_db_par840)
+        _par_rows840 = set(
+            r[0] for r in _db_conn_par.execute("SELECT id FROM sessions").fetchall()
+        )
+        _db_conn_par.close()
+
+        test(
+            "I840-4a: parallel indexes same sessions as sequential",
+            _par_rows840 == _seq_rows840,
+            f"seq={_seq_rows840} par={_par_rows840}",
+        )
+        test(
+            "I840-4b: parallel returns result list with one entry per session",
+            len(_par_results840) == len(_sessions840),
+            f"got {len(_par_results840)} results for {len(_sessions840)} sessions",
+        )
+        _par_errors840 = [r for r in _par_results840 if r.get("error")]
+        test(
+            "I840-4c: parallel results have no errors",
+            len(_par_errors840) == 0,
+            str(_par_errors840),
+        )
+
+        # I840-5: workers=1 falls back to sequential path without error
+        _db_seq1_840 = _tmpdir840 / "seq1.db"
+        _seq1_results840 = _bsi840.index_sessions_parallel(_sessions840, _db_seq1_840, False, workers=1)
+        test(
+            "I840-5: workers=1 returns correct result count",
+            len(_seq1_results840) == len(_sessions840),
+            f"got {len(_seq1_results840)}",
+        )
+        _seq1_errors840 = [r for r in _seq1_results840 if r.get("error")]
+        test(
+            "I840-5b: workers=1 sequential path has no errors",
+            len(_seq1_errors840) == 0,
+            str(_seq1_errors840),
+        )
+
+    finally:
+        import shutil as _shutil840
+        _shutil840.rmtree(str(_tmpdir840), ignore_errors=True)
+
+except Exception as _e840:
+    for _label840 in ["1", "2", "3", "4a", "4b", "4c", "5", "5b"]:
+        test(f"I840-{_label840}: parallel session indexing", False, str(_e840))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

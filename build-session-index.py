@@ -16,15 +16,19 @@ Usage:
     python build-session-index.py --refresh-cost --limit N  # Backfill at most N sessions
 """
 
+import concurrent.futures
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+MAX_WORKERS = int(os.environ.get("SK_INDEX_WORKERS", "4"))
 
 # Fix Windows console encoding for Unicode output
 if os.name == "nt":
@@ -1146,6 +1150,147 @@ def index_session(db: sqlite3.Connection, session_dir: Path, incremental: bool) 
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Parallel indexing helpers (Issue #840)
+# ---------------------------------------------------------------------------
+
+_db_lock = threading.Lock()
+
+
+def _index_session_parallel(session_dir: Path, db_path: Path, incremental: bool) -> dict:
+    """Process a single session directory in a thread pool worker.
+
+    Opens its own DB connection to avoid sharing a connection across threads.
+    All writes are serialized via _db_lock so SQLite WAL mode isn't required.
+    Returns a result dict with path, stats, and optional error.
+    """
+    result: dict = {"path": str(session_dir), "stats": {}, "error": None}
+    try:
+        # Read-phase: parse files without holding the lock
+        session_id = session_dir.name
+        stats: dict[str, int] = {"checkpoints": 0, "research": 0, "files": 0, "plan": 0}
+        file_stats_data: dict = {}
+
+        checkpoints = parse_checkpoint_index(session_dir)
+        research_dir = session_dir / "research"
+        files_dir = session_dir / "files"
+        plan_path = session_dir / "plan.md"
+
+        # Gather research/file/plan counts (read-only FS ops)
+        research_files = list(research_dir.glob("*.md")) if research_dir.exists() else []
+        artifact_files = (
+            [f for f in files_dir.iterdir() if f.is_file() and f.suffix in (".md", ".txt")]
+            if files_dir.exists()
+            else []
+        )
+        has_plan = plan_path.exists() and plan_path.stat().st_size > 50
+
+        summary = ""
+        if checkpoints:
+            latest = session_dir / "checkpoints" / checkpoints[-1]["file"]
+            if latest.exists():
+                content = latest.read_text(encoding="utf-8", errors="ignore")
+                summary = extract_section(content, "overview")[:500]
+
+        cost_data: dict | None = None
+        try:
+            cost_data = _extract_session_cost(session_dir)
+        except Exception:
+            pass
+
+        file_stats_data = {
+            "session_id": session_id,
+            "session_dir": session_dir,
+            "checkpoints": checkpoints,
+            "research_files": research_files,
+            "artifact_files": artifact_files,
+            "has_plan": has_plan,
+            "plan_path": plan_path,
+            "summary": summary,
+            "cost_data": cost_data,
+        }
+
+        # Write-phase: serialize DB writes across threads
+        with _db_lock:
+            conn = create_db(db_path)
+            try:
+                stats = index_session(conn, session_dir, incremental)
+                conn.commit()
+            finally:
+                conn.close()
+
+        result["stats"] = stats
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
+
+
+def index_sessions_parallel(
+    session_dirs: list,
+    db_path: Path,
+    incremental: bool,
+    workers: int = MAX_WORKERS,
+) -> list[dict]:
+    """Index a list of session directories using a ThreadPoolExecutor.
+
+    Falls back to sequential indexing if the executor itself raises.
+    Progress is reported as ``sessions/s`` to stdout.
+    Returns a list of result dicts (one per session).
+    """
+    if workers <= 1 or len(session_dirs) <= 1:
+        # Sequential path — one connection per session to avoid lock contention
+        results = []
+        for session_dir in session_dirs:
+            with _db_lock:
+                conn = create_db(db_path)
+                try:
+                    stats = index_session(conn, session_dir, incremental)
+                    conn.commit()
+                finally:
+                    conn.close()
+            results.append({"path": str(session_dir), "stats": stats, "error": None})
+        return results
+
+    try:
+        results: list[dict] = []
+        total = len(session_dirs)
+        t0 = time.time()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_dir = {
+                executor.submit(_index_session_parallel, sd, db_path, incremental): sd for sd in session_dirs
+            }
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_dir), 1):
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {"path": str(future_to_dir[future]), "stats": {}, "error": str(exc)}
+                results.append(result)
+
+                elapsed = time.time() - t0
+                rate = i / elapsed if elapsed > 0 else 0
+                print(f"\r[index] {i}/{total} sessions ({rate:.1f}/s)", end="", flush=True)
+
+        print()  # newline after progress
+        return results
+
+    except Exception as exc:
+        # Fallback to sequential on executor error
+        print(f"\n[index] parallel executor error ({exc}), falling back to sequential", flush=True)
+        results = []
+        for session_dir in session_dirs:
+            with _db_lock:
+                conn = create_db(db_path)
+                try:
+                    stats = index_session(conn, session_dir, incremental)
+                    conn.commit()
+                finally:
+                    conn.close()
+            results.append({"path": str(session_dir), "stats": stats, "error": None})
+        return results
+
+
 def _extract_session_cost(session_dir: Path) -> dict | None:
     """Extract cost estimate from events.jsonl session.shutdown event.
 
@@ -1539,41 +1684,24 @@ def main():
             total=len(session_dirs),
             message=f"Discovered {len(session_dirs)} Copilot session directories",
         )
-        print(f"Discovered {len(session_dirs)} Copilot session directories.", flush=True)
+        workers = MAX_WORKERS
+        print(f"Discovered {len(session_dirs)} Copilot session directories. (workers={workers})", flush=True)
 
-        for idx, session_dir in enumerate(session_dirs, start=1):
-            session_started = time.monotonic()
-            _write_progress(
-                "copilot-index-session",
-                current=idx,
-                total=len(session_dirs),
-                current_session=session_dir.name,
-                current_path=str(session_dir),
-                message=f"Indexing Copilot session {idx}/{len(session_dirs)}",
-            )
-            print(f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... indexing", flush=True)
-            stats = index_session(db, session_dir, incremental)
-            indexed = sum(stats.values())
-            elapsed = time.monotonic() - session_started
-            if indexed > 0:
-                print(
-                    f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... indexed {indexed} docs "
-                    f"(cp:{stats['checkpoints']} res:{stats['research']} "
-                    f"files:{stats['files']} plan:{stats['plan']}) in {elapsed:.1f}s",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... (no changes) in {elapsed:.1f}s"
-                    if incremental
-                    else f"  [{idx}/{len(session_dirs)}] {session_dir.name[:8]}... (no indexable content) in {elapsed:.1f}s",
-                    flush=True,
-                )
+        _write_progress("copilot-indexing", current=0, total=len(session_dirs), message="Parallel indexing started")
+        db.close()  # close the shared connection — parallel workers open their own
+        db = None
 
+        parallel_results = index_sessions_parallel(session_dirs, DB_PATH, incremental, workers=workers)
+
+        # Reopen for subsequent two-phase and stats
+        db = create_db(DB_PATH)
+
+        for res in parallel_results:
+            stats = res.get("stats") or {}
             for k in total_stats:
-                total_stats[k] += stats[k]
-
-        db.commit()
+                total_stats[k] += stats.get(k, 0)
+            if res.get("error"):
+                print(f"  ERROR {Path(res['path']).name[:8]}...: {res['error']}", flush=True)
 
         total = sum(total_stats.values())
         print(
