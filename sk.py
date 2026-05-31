@@ -195,6 +195,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "health": "knowledge-health.py",
         "embed": "embed.py",
         "tag": "tag-entries.py",
+        "cross-tag": "tag-entries.py",
     },
     "sync": {
         "run": "sync-daemon.py",
@@ -1152,6 +1153,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
         if cmd == "knowledge" and sub == "bulk-tag":
             return _run(_GROUPS[cmd][sub], ["bulk-tag"] + sub_rest)
+        if cmd == "index" and sub == "cross-tag":
+            return _run(_GROUPS[cmd][sub], ["--cross-session"] + sub_rest)
         return _run(_GROUPS[cmd][sub], sub_rest)
 
     # Unknown

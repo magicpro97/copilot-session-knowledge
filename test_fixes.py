@@ -14980,6 +14980,243 @@ except Exception as _e870:
         test(f"I870-{_label870}: sk tui browser", False, str(_e870))
 
 # ---------------------------------------------------------------------------
+# === I872: cross-session recurrence auto-tagging ===
+print("\n🔍 I872: cross-session recurrence auto-tagging")
+
+try:
+    import importlib.util as _ilu872
+    import os as _os872
+    import sqlite3 as _sq872
+
+    _spec872 = _ilu872.spec_from_file_location("tag_entries_i872", REPO / "tag-entries.py")
+    _te872 = _ilu872.module_from_spec(_spec872)  # type: ignore[arg-type]
+    _spec872.loader.exec_module(_te872)  # type: ignore[union-attr]
+
+    _src872 = (REPO / "tag-entries.py").read_text(encoding="utf-8")
+    _sk872_src = (REPO / "sk.py").read_text(encoding="utf-8")
+    _kh872_src = (REPO / "knowledge-health.py").read_text(encoding="utf-8")
+
+    # 1. Source-level checks
+    test(
+        "I872-1a: --cross-session flag in tag-entries.py",
+        '"--cross-session"' in _src872 or "'--cross-session'" in _src872,
+    )
+    test("I872-1b: --threshold flag in tag-entries.py", '"--threshold"' in _src872 or "'--threshold'" in _src872)
+    test("I872-1c: run_cross_session_tag function defined", "def run_cross_session_tag(" in _src872)
+    test("I872-1d: high-recurrence tag constant defined", "high-recurrence" in _src872)
+    test("I872-1e: HAVING COUNT(DISTINCT session_id) query present", "HAVING COUNT(DISTINCT" in _src872)
+    test("I872-1f: sk.py has cross-tag subcommand", '"cross-tag"' in _sk872_src or "'cross-tag'" in _sk872_src)
+    test("I872-1g: sk.py routes cross-tag to --cross-session", "--cross-session" in _sk872_src)
+    test("I872-1h: knowledge-health.py has high_recurrence_count metric", "high_recurrence_count" in _kh872_src)
+    test("I872-1i: knowledge-health.py has high_recurrence_pct metric", "high_recurrence_pct" in _kh872_src)
+
+    def _make_cross_db872(name: str) -> Path:
+        """Create a test DB with entries spread across multiple sessions."""
+        _path = REPO / f".test_i872_{_os872.getpid()}_{name}.db"
+        try:
+            _path.unlink()
+        except FileNotFoundError:
+            pass
+        _db = _sq872.connect(str(_path))
+        _db.execute(
+            """CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY,
+                title TEXT DEFAULT '',
+                content TEXT DEFAULT '',
+                session_id TEXT DEFAULT ''
+            )"""
+        )
+        _db.execute(
+            """CREATE TABLE entry_concept_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'auto',
+                tagged_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(entry_id, tag)
+            )"""
+        )
+        # 3 entries with concept tag 'python' from 3 distinct sessions → meets threshold=3
+        for _i, _sess in enumerate(["sess-A", "sess-B", "sess-C"], start=1):
+            _db.execute(
+                "INSERT INTO knowledge_entries (id, title, content, session_id) VALUES (?,?,?,?)",
+                (_i, f"Python entry {_i}", "Python content", _sess),
+            )
+            _db.execute("INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (?,?,?)", (_i, "python", "auto"))
+        # 2 entries with concept tag 'rust' from 2 distinct sessions → below threshold=3
+        for _i, _sess in enumerate(["sess-X", "sess-Y"], start=4):
+            _db.execute(
+                "INSERT INTO knowledge_entries (id, title, content, session_id) VALUES (?,?,?,?)",
+                (_i, f"Rust entry {_i}", "Rust content", _sess),
+            )
+            _db.execute("INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (?,?,?)", (_i, "rust", "auto"))
+        _db.commit()
+        _db.close()
+        return _path
+
+    _orig_db872 = _te872.DB_PATH
+    _db872_path = _make_cross_db872("main")
+    try:
+        _te872.DB_PATH = _db872_path
+
+        # 2. Dry-run: no writes but scanned count correct
+        _dry872 = _te872.run_cross_session_tag(threshold=3, dry_run=True, quiet=True)
+        test("I872-2a: dry-run returns available=True", _dry872.get("available") is True, str(_dry872))
+        test("I872-2b: dry-run scanned=3 (python entries)", _dry872.get("scanned") == 3, str(_dry872))
+        test("I872-2c: dry-run tagged=3 (would tag)", _dry872.get("tagged") == 3, str(_dry872))
+        test("I872-2d: dry-run errors=0", _dry872.get("errors") == 0, str(_dry872))
+
+        # Confirm no writes happened
+        _check872 = _sq872.connect(str(_db872_path))
+        _written_dry = _check872.execute(
+            "SELECT COUNT(*) FROM entry_concept_tags WHERE tag='high-recurrence'"
+        ).fetchone()[0]
+        _check872.close()
+        test("I872-2e: dry-run writes nothing to DB", _written_dry == 0, f"found {_written_dry} rows")
+
+        # 3. Live run: tags entries meeting threshold
+        _live872 = _te872.run_cross_session_tag(threshold=3, dry_run=False, quiet=True)
+        test("I872-3a: live run tagged=3", _live872.get("tagged") == 3, str(_live872))
+        test("I872-3b: live run errors=0", _live872.get("errors") == 0, str(_live872))
+
+        _check872b = _sq872.connect(str(_db872_path))
+        _tagged_ids = {
+            r[0]
+            for r in _check872b.execute(
+                "SELECT entry_id FROM entry_concept_tags WHERE tag='high-recurrence'"
+            ).fetchall()
+        }
+        _check872b.close()
+        test("I872-3c: entries 1,2,3 (python) tagged high-recurrence", _tagged_ids == {1, 2, 3}, str(_tagged_ids))
+
+        # 4. Rust entries (below threshold) not tagged
+        test(
+            "I872-4a: entries 4,5 (rust, 2 sessions) NOT tagged",
+            4 not in _tagged_ids and 5 not in _tagged_ids,
+            str(_tagged_ids),
+        )
+
+        # 5. Idempotency: re-run should skip already-tagged entries
+        _idem872 = _te872.run_cross_session_tag(threshold=3, dry_run=False, quiet=True)
+        test("I872-5a: second run tagged=0 (already tagged)", _idem872.get("tagged") == 0, str(_idem872))
+        test("I872-5b: second run already_tagged=3", _idem872.get("already_tagged") == 3, str(_idem872))
+
+        # 6. Higher threshold: nothing should be tagged
+        _db872_high = _make_cross_db872("high")
+        _te872.DB_PATH = _db872_high
+        _high872 = _te872.run_cross_session_tag(threshold=4, dry_run=False, quiet=True)
+        test(
+            "I872-6a: threshold=4 tags nothing (python only has 3 sessions)", _high872.get("tagged") == 0, str(_high872)
+        )
+        try:
+            _db872_high.unlink()
+        except Exception:
+            pass
+
+    finally:
+        _te872.DB_PATH = _orig_db872
+        try:
+            _db872_path.unlink()
+        except Exception:
+            pass
+
+    # 7. knowledge-health.py high_recurrence_count field
+    import importlib.util as _ilu872kh
+
+    _spec872kh = _ilu872kh.spec_from_file_location("knowledge_health_i872", REPO / "knowledge-health.py")
+    _kh872 = _ilu872kh.module_from_spec(_spec872kh)  # type: ignore[arg-type]
+    _spec872kh.loader.exec_module(_kh872)  # type: ignore[union-attr]
+
+    _db872_kh = REPO / f".test_i872_{_os872.getpid()}_kh.db"
+    try:
+        _db872_kh.unlink()
+    except FileNotFoundError:
+        pass
+    _kdb = _sq872.connect(str(_db872_kh))
+    _kdb.execute(
+        "CREATE TABLE knowledge_entries (id INTEGER PRIMARY KEY, title TEXT, content TEXT, "
+        "session_id TEXT, category TEXT, last_seen TEXT, first_seen TEXT, confidence REAL, "
+        "wing TEXT, room TEXT)"
+    )
+    _kdb.execute(
+        "CREATE TABLE entry_concept_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "entry_id INTEGER NOT NULL, tag TEXT NOT NULL, source TEXT DEFAULT 'auto', "
+        "tagged_at TEXT DEFAULT (datetime('now')), UNIQUE(entry_id, tag))"
+    )
+    for _i in range(1, 4):
+        _kdb.execute(
+            "INSERT INTO knowledge_entries (id, title, content, session_id, category, confidence) VALUES (?,?,?,?,?,?)",
+            (_i, f"Entry {_i}", "content", f"sess-{_i}", "pattern", 0.9),
+        )
+        _kdb.execute(
+            "INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (?,?,?)",
+            (_i, "high-recurrence", "auto"),
+        )
+    _kdb.commit()
+    _kdb.close()
+
+    _orig_kh872_db = _kh872.DB_PATH
+    try:
+        _kh872.DB_PATH = _db872_kh
+        _health872 = _kh872.compute_health()
+        test(
+            "I872-7a: health dict has high_recurrence_count key",
+            "high_recurrence_count" in _health872,
+            str(list(_health872.keys())),
+        )
+        test(
+            "I872-7b: high_recurrence_count=3",
+            _health872.get("high_recurrence_count") == 3,
+            str(_health872.get("high_recurrence_count")),
+        )
+        test(
+            "I872-7c: high_recurrence_pct present",
+            "high_recurrence_pct" in _health872,
+            str(list(_health872.keys())),
+        )
+        test(
+            "I872-7d: high_recurrence_pct=100.0 (3/3 entries)",
+            _health872.get("high_recurrence_pct") == 100.0,
+            str(_health872.get("high_recurrence_pct")),
+        )
+    finally:
+        _kh872.DB_PATH = _orig_kh872_db
+        try:
+            _db872_kh.unlink()
+        except Exception:
+            pass
+
+except Exception as _e872:
+    for _label872 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "1f",
+        "1g",
+        "1h",
+        "1i",
+        "2a",
+        "2b",
+        "2c",
+        "2d",
+        "2e",
+        "3a",
+        "3b",
+        "3c",
+        "4a",
+        "5a",
+        "5b",
+        "6a",
+        "7a",
+        "7b",
+        "7c",
+        "7d",
+    ]:
+        test(f"I872-{_label872}: cross-session recurrence auto-tagging", False, str(_e872))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
