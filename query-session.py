@@ -313,6 +313,8 @@ def get_db() -> sqlite3.Connection:
         print("Run 'python build-session-index.py' first to build the index.")
         sys.exit(1)
     db = sqlite3.connect(str(DB_PATH))
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
     db.row_factory = sqlite3.Row
     return db
 

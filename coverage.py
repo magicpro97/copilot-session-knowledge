@@ -17,11 +17,20 @@ DB_PATH = Path.home() / ".copilot" / "tools" / "knowledge.db"
 STALE_DAYS = 90
 
 
+def _wal_connect(path: "str | Path", **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
 def _get_db(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         print(f"Error: DB not found at {db_path}", file=sys.stderr)
         sys.exit(1)
-    return sqlite3.connect(db_path)
+    conn = _wal_connect(db_path)
+    return conn
 
 
 def _coverage_report(db: sqlite3.Connection, path_filter: str | None, limit: int) -> list[dict]:

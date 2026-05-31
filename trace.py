@@ -155,6 +155,9 @@ def _open_db(readonly: bool = False) -> sqlite3.Connection | None:
     uri = _DB_PATH.as_uri() + ("?mode=ro" if readonly else "")
     db = sqlite3.connect(uri, uri=True)
     db.row_factory = sqlite3.Row
+    if not readonly:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=5000")
     return db
 
 
@@ -316,7 +319,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
     """Analyze tool-call patterns from indexed spans."""
-    db = sqlite3.connect(str(_DB_PATH))
+    db = _open_db()
+    if db is None:
+        return 1
     report = getattr(args, "report", "tool-frequency")
     limit = getattr(args, "limit", 20)
 

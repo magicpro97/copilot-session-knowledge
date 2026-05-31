@@ -51,6 +51,14 @@ VALID_LEARN_CATEGORIES = {"mistake", "pattern", "decision", "tool", "feature", "
 _MCP_AUTH_ERROR = -32600  # reuse INVALID_REQUEST for auth failures
 
 
+def _wal_connect(path: "str | Path", busy_timeout: int = 5000, **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute(f"PRAGMA busy_timeout={int(busy_timeout)}")
+    return db
+
+
 class JsonRpcError(Exception):
     def __init__(self, code: int, message: str, data: Any = None):
         super().__init__(message)
@@ -772,9 +780,7 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
 
     created_ids: list[int] = []
     try:
-        db = sqlite3.connect(str(_DB_PATH), timeout=30.0)
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=30000")
+        db = _wal_connect(_DB_PATH, busy_timeout=30000, timeout=30.0)
         try:
             ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
             has_stable_id = "stable_id" in ke_columns
@@ -1090,7 +1096,7 @@ def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Knowledge DB not found: {_DB_PATH}")
 
     try:
-        db = sqlite3.connect(str(_DB_PATH))
+        db = _wal_connect(_DB_PATH)
     except sqlite3.OperationalError as exc:
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB open error: {exc}") from exc
 

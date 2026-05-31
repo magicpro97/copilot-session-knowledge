@@ -241,6 +241,12 @@ class RollbackRunbookTests(unittest.TestCase):
 
         for suffix in ("-wal", "-shm"):
             (db_path.with_name(db_path.name + suffix)).unlink(missing_ok=True)
+        # Checkpoint + switch journal mode so the backup is self-contained
+        with sqlite3.connect(backup_path) as _bak:
+            _bak.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            _bak.execute("PRAGMA journal_mode=DELETE")
+        for suffix in ("-wal", "-shm"):
+            backup_path.with_name(backup_path.name + suffix).unlink(missing_ok=True)
         shutil.copy2(backup_path, db_path)
 
         self.assertEqual(_db_scalar(db_path, "PRAGMA quick_check"), "ok")

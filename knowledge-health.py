@@ -87,11 +87,19 @@ def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
         return
 
 
+def _wal_connect(path: "str | Path", **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
         print("Error: Knowledge database not found.", file=sys.stderr)
         sys.exit(1)
-    db = sqlite3.connect(str(DB_PATH))
+    db = _wal_connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
     return db
 

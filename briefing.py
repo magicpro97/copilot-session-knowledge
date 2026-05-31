@@ -479,11 +479,19 @@ def _generate_skill_index(skills_dir: "Path | None" = None) -> str:
         return ""  # always fail-open
 
 
+def _wal_connect(path: "str | Path", **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
         print("Error: Knowledge database not found. Run build-session-index.py first.", file=sys.stderr)
         sys.exit(1)
-    db = sqlite3.connect(str(DB_PATH))
+    db = _wal_connect(DB_PATH)
     db.row_factory = sqlite3.Row
     return db
 
@@ -661,7 +669,7 @@ def _record_recall_event(
     )
     db = None
     try:
-        db = sqlite3.connect(str(DB_PATH))
+        db = _wal_connect(str(DB_PATH))
         db.execute(
             """
             INSERT INTO recall_events (
@@ -4306,7 +4314,7 @@ def generate_briefing_history(days: int = 7, fmt: str = "text") -> str:
         return msg
 
     try:
-        db = sqlite3.connect(str(DB_PATH))
+        db = _wal_connect(str(DB_PATH))
         db.row_factory = sqlite3.Row
     except Exception as exc:
         msg = f"Cannot open database: {exc}"
@@ -4403,7 +4411,7 @@ def generate_never_recalled(fmt: str = "text") -> str:
         return msg
 
     try:
-        db = sqlite3.connect(str(DB_PATH))
+        db = _wal_connect(str(DB_PATH))
         db.row_factory = sqlite3.Row
     except Exception as exc:
         msg = f"Cannot open database: {exc}"
@@ -4464,7 +4472,7 @@ def generate_never_recalled(fmt: str = "text") -> str:
 def _query_code_context(db_path: Path, query: str, token_budget: int = 1000) -> list[dict]:
     """Query code_fts for relevant snippets. Returns [] if table missing or error."""
     try:
-        db = sqlite3.connect(str(db_path))
+        db = _wal_connect(str(db_path))
         has = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has:
             db.close()
@@ -4625,7 +4633,7 @@ def _delta_report(db_path: "Path", window: str) -> None:
         return
 
     try:
-        db = sqlite3.connect(str(db_path))
+        db = _wal_connect(str(db_path))
         db.row_factory = sqlite3.Row
     except Exception as exc:
         print(f"Cannot open database: {exc}", file=sys.stderr)
@@ -4912,7 +4920,7 @@ def _statistical_reflect(entries: list[dict], question: str) -> str:
 
 def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
     """Run --reflect mode: fetch entries, synthesize insight, optionally store."""
-    db = sqlite3.connect(db_path)
+    db = _wal_connect(db_path)
     entries = _fetch_reflect_entries(db, question)
 
     if not entries:
@@ -4950,8 +4958,7 @@ def _run_watch(db_path: str, interval: int = 30, broadcast_check: bool = False) 
         print(f"[watch] Database not found: {db_path}", file=sys.stderr)
         sys.exit(1)
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = _wal_connect(db_path)
     last_max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM knowledge_entries").fetchone()[0]
 
     print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop")
@@ -5082,7 +5089,7 @@ def _group_by_relations(db: sqlite3.Connection, entries: list[dict]) -> dict[str
 
 def _run_rag_briefing(db_path: str, query: str, mode: str = "auto") -> None:
     """RAG synthesis mode: retrieve top entries then synthesize into prose."""
-    db = sqlite3.connect(db_path)
+    db = _wal_connect(db_path)
     db.row_factory = sqlite3.Row
     entries = _fetch_rag_entries(db, query)
     if not entries:
@@ -5153,7 +5160,7 @@ def main():
         no_danger = "--no-danger" in args
         if not no_danger and DB_PATH.exists():
             try:
-                _db = sqlite3.connect(str(DB_PATH))
+                _db = _wal_connect(str(DB_PATH))
                 _db.row_factory = sqlite3.Row
                 danger = _fetch_danger_lane(_db)
                 if danger:
@@ -5742,7 +5749,7 @@ def main():
     # when --no-danger is not set (issue #781).
     if not no_danger and fmt in ("compact", "pack", "md") and DB_PATH.exists():
         try:
-            _dl_db = sqlite3.connect(str(DB_PATH))
+            _dl_db = _wal_connect(str(DB_PATH))
             _dl_db.row_factory = sqlite3.Row
             danger = _fetch_danger_lane(_dl_db, since_date=since_date)
             if danger:
