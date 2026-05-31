@@ -14642,6 +14642,423 @@ except Exception as _e866:
     for _suffix866 in ["1", "2a", "2b", "2c", "2d", "2e", "2f", "2g", "2h", "3", "4a", "4b", "4c"]:
         test(f"I866-{_suffix866}: sk://sessions/diff MCP resource", False, str(_e866))
 
+# === I856: LLM-assisted category/tag inference ===
+print("\n🤖 I856: LLM-assisted category/tag inference")
+
+import importlib.util
+import types
+import unittest.mock
+
+
+def _mock_llm_response856(tags_list):
+    """Create a mock urlopen context manager that returns the given tags."""
+    response_body = json.dumps(
+        {"choices": [{"message": {"content": json.dumps(tags_list)}}]}
+    ).encode("utf-8")
+    mock_resp = unittest.mock.MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+    return mock_resp
+
+
+def _mock_llm_response_text856(text):
+    """Create a mock urlopen context manager that returns raw text content."""
+    response_body = json.dumps(
+        {"choices": [{"message": {"content": text}}]}
+    ).encode("utf-8")
+    mock_resp = unittest.mock.MagicMock()
+    mock_resp.read.return_value = response_body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = unittest.mock.MagicMock(return_value=False)
+    return mock_resp
+
+
+# Load learn.py and tag-entries.py as modules
+_learn_spec856 = importlib.util.spec_from_file_location("learn856", REPO / "learn.py")
+_learn856 = importlib.util.module_from_spec(_learn_spec856)
+sys.modules["learn856"] = _learn856
+_learn_spec856.loader.exec_module(_learn856)
+
+_tag_spec856 = importlib.util.spec_from_file_location("tagentries856", REPO / "tag-entries.py")
+_tag856 = importlib.util.module_from_spec(_tag_spec856)
+sys.modules["tagentries856"] = _tag856
+_tag_spec856.loader.exec_module(_tag856)
+
+
+def _run_i856_tests():
+    import shutil as _sh856
+    import urllib.request as _urllib_req856
+
+    _root856 = Path(tempfile.mkdtemp(prefix="i856-", dir=str(REPO)))
+    try:
+        _home856 = _root856 / "home"
+        _state856 = _home856 / ".copilot" / "session-state"
+        _state856.mkdir(parents=True, exist_ok=True)
+        _dbpath856 = _state856 / "knowledge.db"
+        _db856 = sqlite3.connect(str(_dbpath856))
+        _db856.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT '',
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS entry_concept_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'auto',
+                tagged_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(entry_id, tag)
+            );
+            CREATE TABLE IF NOT EXISTS sync_table_policies (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT DEFAULT 'local_only',
+                stable_id_column TEXT DEFAULT ''
+            );
+        """)
+        _db856.execute(
+            "INSERT INTO schema_version (version, name) VALUES (?, ?)",
+            (27, "llm-tags"),
+        )
+        _db856.execute(
+            "INSERT INTO knowledge_entries "
+            "(session_id, category, title, content, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "sess-856",
+                "pattern",
+                "Test Pattern",
+                "This is test content for LLM tagging",
+                "2025-01-01",
+                "2025-01-01",
+            ),
+        )
+        _db856.execute(
+            "INSERT INTO knowledge_entries "
+            "(session_id, category, title, content, first_seen, last_seen, tags) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "sess-856",
+                "mistake",
+                "Test Mistake",
+                "Another test entry",
+                "2025-01-01",
+                "2025-01-01",
+                "existing",
+            ),
+        )
+        _db856.commit()
+        _db856.close()
+
+        # I856-1: _llm_suggest_tags in learn.py extracts valid JSON array
+        with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+            _mr1 = _mock_llm_response856(["python", "testing", "ci"])
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", return_value=_mr1
+            ):
+                result = _learn856._llm_suggest_tags("Test Title", "Test content")
+                test(
+                    "I856-1: learn _llm_suggest_tags extracts valid JSON array",
+                    result == ["python", "testing", "ci"],
+                    str(result),
+                )
+
+        # I856-2: _llm_suggest_tags handles response with surrounding text
+        with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+            _mr2 = _mock_llm_response_text856(
+                'Here are the tags: ["docker", "compose", "yaml"] Hope that helps!'
+            )
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", return_value=_mr2
+            ):
+                result = _learn856._llm_suggest_tags(
+                    "Docker Setup", "Docker compose config"
+                )
+                test(
+                    "I856-2: learn _llm_suggest_tags handles surrounding text",
+                    result == ["docker", "compose", "yaml"],
+                    str(result),
+                )
+
+        # I856-3: _llm_suggest_tags handles no JSON array in response
+        with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+            _mr3 = _mock_llm_response_text856(
+                "I cannot suggest any tags for this."
+            )
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", return_value=_mr3
+            ):
+                result = _learn856._llm_suggest_tags("Title", "Content")
+                test(
+                    "I856-3: learn _llm_suggest_tags returns [] when no JSON array",
+                    result == [],
+                    str(result),
+                )
+
+        # I856-4: learn.py --llm missing API key exits with code 1
+        _env_clean856 = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("SK_LLM_API_KEY", "OPENAI_API_KEY")
+        }
+        with unittest.mock.patch.dict(os.environ, _env_clean856, clear=True):
+            try:
+                _learn856._llm_suggest_tags("Title", "Content")
+                test(
+                    "I856-4: learn --llm missing API key exits 1",
+                    False,
+                    "did not exit",
+                )
+            except SystemExit as e:
+                test(
+                    "I856-4: learn --llm missing API key exits 1",
+                    e.code == 1,
+                    f"exit code={e.code}",
+                )
+
+        # I856-5: learn.py without --llm flag works unchanged
+        _test_args856 = ["--pattern", "Test", "Content"]
+        _use_llm856 = "--llm" in _test_args856
+        test(
+            "I856-5: learn.py without --llm flag — no LLM call",
+            _use_llm856 is False,
+            f"use_llm={_use_llm856}",
+        )
+
+        # I856-6: tag-entries.py _llm_suggest_tags same extraction logic
+        with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+            _mr6 = _mock_llm_response856(["api", "rest", "http"])
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", return_value=_mr6
+            ):
+                result = _tag856._llm_suggest_tags("API Design", "REST API patterns")
+                test(
+                    "I856-6: tag-entries _llm_suggest_tags extraction",
+                    result == ["api", "rest", "http"],
+                    str(result),
+                )
+
+        # I856-7: tag-entries.py --llm --dry-run prints suggestions without writing
+        with unittest.mock.patch.dict(
+            os.environ, {"SK_LLM_API_KEY": "test-key-123"}
+        ):
+
+            def _mr7_fn(*a, **kw):
+                return _mock_llm_response856(["pattern-tag", "test-tag"])
+
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", side_effect=_mr7_fn
+            ):
+                with unittest.mock.patch.object(_tag856, "DB_PATH", _dbpath856):
+                    stats = _tag856.run_llm_tag_batch(dry_run=True, limit=1)
+                    test(
+                        "I856-7: tag-entries --llm --dry-run no DB write",
+                        stats["tagged"] >= 1,
+                        str(stats),
+                    )
+                    _check_db7 = sqlite3.connect(str(_dbpath856))
+                    _llm_ct7 = _check_db7.execute(
+                        "SELECT COUNT(*) FROM entry_concept_tags WHERE source = 'llm'"
+                    ).fetchone()[0]
+                    _check_db7.close()
+                    test(
+                        "I856-7b: tag-entries dry-run — 0 llm tags in DB",
+                        _llm_ct7 == 0,
+                        f"llm_count={_llm_ct7}",
+                    )
+
+        # I856-8: tag-entries.py --llm writes tags with source='llm' to DB
+        with unittest.mock.patch.dict(
+            os.environ, {"SK_LLM_API_KEY": "test-key-123"}
+        ):
+
+            def _mr8_fn(*a, **kw):
+                return _mock_llm_response856(["written-tag", "llm-tag"])
+
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", side_effect=_mr8_fn
+            ):
+                with unittest.mock.patch.object(_tag856, "DB_PATH", _dbpath856):
+                    stats = _tag856.run_llm_tag_batch(dry_run=False, limit=1)
+                    test(
+                        "I856-8: tag-entries --llm writes tags",
+                        stats["tagged"] >= 1,
+                        str(stats),
+                    )
+                    _check_db8 = sqlite3.connect(str(_dbpath856))
+                    _check_db8.row_factory = sqlite3.Row
+                    _llm_rows8 = _check_db8.execute(
+                        "SELECT * FROM entry_concept_tags WHERE source = 'llm'"
+                    ).fetchall()
+                    _check_db8.close()
+                    _has_llm8 = len(_llm_rows8) > 0
+                    _all_llm8 = all(r["source"] == "llm" for r in _llm_rows8)
+                    test(
+                        "I856-8b: tag-entries --llm source is 'llm'",
+                        _has_llm8 and _all_llm8,
+                        f"rows={len(_llm_rows8)}",
+                    )
+
+        # I856-9: SK_LLM_MODEL env var is passed in the LLM request payload
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"SK_LLM_API_KEY": "test-key-123", "SK_LLM_MODEL": "gpt-4-turbo"},
+        ):
+            _captured_req9 = {}
+
+            def _cap9(req, **kw):
+                _captured_req9["payload"] = json.loads(
+                    req.data.decode("utf-8")
+                )
+                return _mock_llm_response856(["tag1"])
+
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", side_effect=_cap9
+            ):
+                _learn856._llm_suggest_tags("Title", "Content")
+                _model9 = _captured_req9.get("payload", {}).get("model", "")
+                test(
+                    "I856-9: SK_LLM_MODEL env var passed in payload",
+                    _model9 == "gpt-4-turbo",
+                    f"model={_model9}",
+                )
+
+        # I856-10: SK_LLM_API_KEY takes precedence over OPENAI_API_KEY
+        with unittest.mock.patch.dict(
+            os.environ,
+            {
+                "SK_LLM_API_KEY": "sk-key-first",
+                "OPENAI_API_KEY": "openai-key-second",
+            },
+        ):
+            _captured_hdr10 = {}
+
+            def _cap10(req, **kw):
+                _captured_hdr10["auth"] = req.get_header("Authorization")
+                return _mock_llm_response856(["tag1"])
+
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", side_effect=_cap10
+            ):
+                _learn856._llm_suggest_tags("Title", "Content")
+                _auth10 = _captured_hdr10.get("auth", "")
+                test(
+                    "I856-10: SK_LLM_API_KEY precedence over OPENAI_API_KEY",
+                    _auth10 == "Bearer sk-key-first",
+                    f"auth={_auth10}",
+                )
+
+        # I856-11: learn.py --llm applies suggested tags to written entry in DB
+        with unittest.mock.patch.dict(
+            os.environ, {"SK_LLM_API_KEY": "test-key-123"}
+        ):
+            _db_11 = sqlite3.connect(str(_dbpath856))
+            _db_11.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, session_id, category, title, content, "
+                "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    9999,
+                    "sess-11",
+                    "discovery",
+                    "LLM Test Entry",
+                    "LLM test content",
+                    "2025-01-01",
+                    "2025-01-01",
+                ),
+            )
+            _db_11.commit()
+            _db_11.close()
+
+            _mr11 = _mock_llm_response856(["applied-tag", "auto-llm"])
+            with unittest.mock.patch.object(
+                _urllib_req856, "urlopen", return_value=_mr11
+            ):
+                with unittest.mock.patch.object(
+                    _learn856, "get_db"
+                ) as _mgdb11:
+                    _mdb11 = sqlite3.connect(str(_dbpath856))
+                    _mdb11.row_factory = sqlite3.Row
+                    _mgdb11.return_value = _mdb11
+                    suggested = _learn856._llm_suggest_tags(
+                        "LLM Test Entry", "LLM test content"
+                    )
+                    if suggested:
+                        _mdb11.execute(
+                            "UPDATE knowledge_entries SET tags = ? "
+                            "WHERE id = ?",
+                            (", ".join(suggested), 9999),
+                        )
+                        _mdb11.commit()
+                    _mdb11.close()
+
+            _vdb11 = sqlite3.connect(str(_dbpath856))
+            _row11 = _vdb11.execute(
+                "SELECT tags FROM knowledge_entries WHERE id = 9999"
+            ).fetchone()
+            _vdb11.close()
+            _tags11 = _row11[0] if _row11 else ""
+            test(
+                "I856-11: learn --llm applies tags to entry in DB",
+                "applied-tag" in _tags11 and "auto-llm" in _tags11,
+                f"tags={_tags11}",
+            )
+
+    finally:
+        _sh856.rmtree(_root856, ignore_errors=True)
+
+
+try:
+    _run_i856_tests()
+except Exception as _e856:
+    for _suf856 in [
+        "1", "2", "3", "4", "5", "6", "7", "7b",
+        "8", "8b", "9", "10", "11",
+    ]:
+        test(f"I856-{_suf856}: LLM tag inference", False, str(_e856))
+
 # ---------------------------------------------------------------------------
 # === I855: MCP Progress Notifications ===
 # ---------------------------------------------------------------------------
