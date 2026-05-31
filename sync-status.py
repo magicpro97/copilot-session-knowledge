@@ -295,7 +295,8 @@ def collect_status(db_path: Path = DB_PATH, check_health: bool = True) -> dict:
         try:
             cfg_raw = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else "{}"
             cfg_obj = json.loads(cfg_raw) if cfg_raw else {}
-            out["namespace"] = str(cfg_obj.get("namespace", "default"))
+            ns = str(cfg_obj.get("namespace", "default")).strip()
+            out["namespace"] = ns if ns else "default"
         except (json.JSONDecodeError, OSError):
             out["namespace"] = "default"
 

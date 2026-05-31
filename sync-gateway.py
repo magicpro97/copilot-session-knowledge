@@ -98,10 +98,11 @@ class GatewayStore:
                 """
                 CREATE TABLE IF NOT EXISTS txns (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    txn_id TEXT NOT NULL UNIQUE,
+                    txn_id TEXT NOT NULL,
                     replica_id TEXT NOT NULL,
                     namespace TEXT NOT NULL DEFAULT 'default',
-                    payload_json TEXT NOT NULL
+                    payload_json TEXT NOT NULL,
+                    UNIQUE(namespace, txn_id)
                 );
                 CREATE TABLE IF NOT EXISTS ops (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +139,7 @@ class GatewayStore:
                 (txn["txn_id"], txn["replica_id"], namespace, payload),
             )
         except sqlite3.IntegrityError as exc:
-            if "UNIQUE constraint failed: txns.txn_id" in str(exc):
+            if "UNIQUE constraint failed" in str(exc):
                 return False
             raise
 
@@ -193,7 +194,10 @@ class GatewayStore:
         with self.lock:
             after_seq = 0
             if after_txn_id:
-                row = self.conn.execute("SELECT seq FROM txns WHERE txn_id = ? LIMIT 1", (after_txn_id,)).fetchone()
+                row = self.conn.execute(
+                    "SELECT seq FROM txns WHERE txn_id = ? AND namespace = ? LIMIT 1",
+                    (after_txn_id, namespace),
+                ).fetchone()
                 if row is None:
                     raise ValueError("unknown_after")
                 after_seq = int(row["seq"])

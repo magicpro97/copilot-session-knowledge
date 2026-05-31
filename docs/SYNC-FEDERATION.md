@@ -46,21 +46,22 @@ Entries in `knowledge_entries` now have a `visibility` column:
 ### Marking entries private
 
 ```bash
-# Via sk learn
-sk learn --private "API key rotation procedure for prod"
-
-# Via direct SQL (admin)
+# Via direct SQL (admin use)
 UPDATE knowledge_entries SET visibility = 'private' WHERE id = 42;
+
+# Or via a future `sk learn --private` flag (not yet implemented)
 ```
 
 ### How it works
 
 - On **push**, all entries (public + private) are sent to the gateway.
-  The gateway stores everything.
+  The gateway stores everything in its own database.
 - On **pull**, the gateway filters out ops whose `row_payload` contains
   `"visibility": "private"` before returning them to the requesting replica.
-- This means private entries exist only on the originating replica's
-  local database.
+- This means private entries are stored on the gateway but are **never
+  distributed** to other replicas during sync. They remain accessible
+  only on the originating replica's local database and on the gateway's
+  storage (for backup/audit purposes).
 
 ## Deployment
 
