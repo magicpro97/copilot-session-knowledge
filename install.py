@@ -244,6 +244,7 @@ TOOL_FILES = [
     "session-compare.py",
     "session-compact.py",
     "repo-map.py",
+    "coverage.py",
     "entity-extract.py",
 ]
 
