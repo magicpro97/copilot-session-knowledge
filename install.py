@@ -249,6 +249,7 @@ TOOL_FILES = [
     "trace.py",
     "knowledge-broadcast.py",
     "curate.py",
+    "knowledge-import.py",
 ]
 
 SUPPORT_FILES = [
