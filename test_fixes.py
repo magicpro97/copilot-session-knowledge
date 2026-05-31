@@ -12272,6 +12272,82 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# I832: hook debounce / rate limiting for preToolUse hooks
+# ---------------------------------------------------------------------------
+print("\n🔍 I832: hook debounce / rate limiting")
+
+try:
+    import importlib.util as _ilu832
+    import json as _json832
+    import shutil as _sh832
+    import tempfile as _tf832
+    import time as _time832
+    import types as _types832
+    from pathlib import Path as _Path832
+
+    # Load hook_runner from hooks/ subdirectory
+    _hr832_spec = _ilu832.spec_from_file_location(
+        "hook_runner_i832",
+        str(_Path832(__file__).parent / "hooks" / "hook_runner.py"),
+    )
+    _hr832 = _ilu832.module_from_spec(_hr832_spec)
+    _hr832_spec.loader.exec_module(_hr832)
+
+    # Create an isolated debounce dir for testing
+    _ddir832 = _Path832(_tf832.mkdtemp())
+    _orig_ddir832 = _hr832.DEBOUNCE_DIR
+    _hr832.DEBOUNCE_DIR = _ddir832
+
+    # I832-1: _should_debounce returns False when no marker exists
+    test("I832-1: no marker → not debounced", not _hr832._should_debounce("test-hook", 5))
+
+    # I832-2: _record_fired creates a marker file with last_fired timestamp
+    _before832 = _time832.time()
+    _hr832._record_fired("test-hook")
+    _marker832 = _ddir832 / "test-hook.json"
+    _data832 = _json832.loads(_marker832.read_text(encoding="utf-8"))
+    test("I832-2a: _record_fired creates marker file", _marker832.is_file())
+    test(
+        "I832-2b: last_fired is recent",
+        _time832.time() - _data832.get("last_fired", 0) < 2,
+    )
+
+    # I832-3: _should_debounce returns True after _record_fired within window
+    test("I832-3: within window → debounced", _hr832._should_debounce("test-hook", 5))
+
+    # I832-4: _should_debounce returns False after window expires
+    # Backdate the marker to simulate expiry
+    _expired832 = {"last_fired": _time832.time() - 10}
+    _marker832.write_text(_json832.dumps(_expired832), encoding="utf-8")
+    test("I832-4: expired window → not debounced", not _hr832._should_debounce("test-hook", 5))
+
+    # I832-5: different hook names are tracked independently
+    _hr832._record_fired("hook-a")
+    _hr832._record_fired("hook-b")
+    test("I832-5a: hook-a debounced independently", _hr832._should_debounce("hook-a", 60))
+    test("I832-5b: hook-b debounced independently", _hr832._should_debounce("hook-b", 60))
+    test("I832-5c: hook-c not debounced (never fired)", not _hr832._should_debounce("hook-c", 60))
+
+    # I832-6: SK_HOOK_DEBOUNCE_SECS=0 disables debounce (window 0 → always False)
+    _hr832._record_fired("test-zero")
+    test("I832-6: window=0 → not debounced", not _hr832._should_debounce("test-zero", 0))
+
+    # I832-7: DEBOUNCE_DIR is defined at module level
+    test("I832-7: DEBOUNCE_DIR defined in hook_runner", hasattr(_hr832, "DEBOUNCE_DIR"))
+
+    # I832-8: _should_debounce and _record_fired functions are exported
+    test("I832-8a: _should_debounce callable", callable(getattr(_hr832, "_should_debounce", None)))
+    test("I832-8b: _record_fired callable", callable(getattr(_hr832, "_record_fired", None)))
+
+    # Restore original DEBOUNCE_DIR
+    _hr832.DEBOUNCE_DIR = _orig_ddir832
+    _sh832.rmtree(str(_ddir832), ignore_errors=True)
+
+except Exception as _e832:
+    for _lbl832 in ["1", "2a", "2b", "3", "4", "5a", "5b", "5c", "6", "7", "8a", "8b"]:
+        test(f"I832-{_lbl832}: hook debounce", False, str(_e832))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
