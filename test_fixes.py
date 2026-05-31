@@ -13940,6 +13940,115 @@ except Exception as _e854:
         test(f"I854-{_lbl854}: sk knowledge decay --preview dashboard", False, str(_e854))
 
 # ---------------------------------------------------------------------------
+# === I851: briefing semantic dedup — TF-IDF cosine near-duplicate collapse ===
+print("\n🔍 I851: briefing semantic dedup — _dedup_entries TF-IDF cosine collapse")
+
+try:
+    import importlib.util as _ilu851
+    import sys as _sys851
+
+    _spec851 = _ilu851.spec_from_file_location("briefing851", Path(__file__).parent / "briefing.py")
+    _bmod851 = _ilu851.module_from_spec(_spec851)
+    _spec851.loader.exec_module(_bmod851)  # type: ignore[union-attr]
+    _dedup851 = _bmod851._dedup_entries
+
+    # I851-1: empty list → empty list (no-op)
+    test("I851-1: empty list → empty list", _dedup851([]) == [], "")
+
+    # I851-2: single entry → returned unchanged
+    _e851_single = [{"id": 1, "title": "foo", "content": "bar", "confidence": 0.9}]
+    test("I851-2: single entry returned unchanged", _dedup851(_e851_single) == _e851_single, "")
+
+    # I851-3: two identical entries → only one kept (highest confidence wins)
+    _txt851 = "fix null pointer exception crash on startup"
+    _e851_dups = [
+        {"id": 1, "title": _txt851, "content": _txt851, "confidence": 0.7},
+        {"id": 2, "title": _txt851, "content": _txt851, "confidence": 0.9},
+    ]
+    _r851_3 = _dedup851(_e851_dups, threshold=0.85)
+    test(
+        "I851-3: identical entries collapse to one (highest confidence kept)",
+        len(_r851_3) == 1 and _r851_3[0].get("id") == 2,
+        str(_r851_3),
+    )
+
+    # I851-4: merged entry carries _merged_ids annotation
+    test(
+        "I851-4: merged entry has _merged_ids annotation",
+        len(_r851_3) == 1 and "1" in _r851_3[0].get("_merged_ids", []),
+        str(_r851_3),
+    )
+
+    # I851-5: dissimilar entries both kept
+    _e851_diff = [
+        {"id": 10, "title": "fix null pointer exception", "content": "crash on startup null ref", "confidence": 0.8},
+        {
+            "id": 11,
+            "title": "deploy to kubernetes cluster",
+            "content": "helm chart ingress tls cert",
+            "confidence": 0.8,
+        },
+    ]
+    _r851_5 = _dedup851(_e851_diff, threshold=0.85)
+    test(
+        "I851-5: dissimilar entries both kept",
+        len(_r851_5) == 2,
+        str(_r851_5),
+    )
+
+    # I851-6: threshold=0.0 collapses everything into one cluster (cosine 0 >= 0.0)
+    _r851_6 = _dedup851(_e851_diff, threshold=0.0)
+    test(
+        "I851-6: threshold=0.0 collapses any pair into one cluster",
+        len(_r851_6) == 1,
+        str(_r851_6),
+    )
+
+    # I851-7: threshold=1.0 keeps all entries (nothing matches perfectly unless identical)
+    _r851_7 = _dedup851(_e851_diff, threshold=1.0)
+    test(
+        "I851-7: threshold=1.0 keeps all dissimilar entries",
+        len(_r851_7) == len(_e851_diff),
+        str(_r851_7),
+    )
+
+    # I851-8: --no-dedup flag is parsed from args (present in CLI arg list)
+    _src851 = Path(__file__).parent.joinpath("briefing.py").read_text(encoding="utf-8")
+    test(
+        "I851-8: --no-dedup flag present in CLI arg parsing",
+        '"--no-dedup"' in _src851 or "'--no-dedup'" in _src851,
+        "",
+    )
+
+    # I851-9: generate_briefing accepts no_dedup keyword argument
+    import inspect as _inspect851
+
+    _sig851 = _inspect851.signature(_bmod851.generate_briefing)
+    test(
+        "I851-9: generate_briefing has no_dedup parameter",
+        "no_dedup" in _sig851.parameters,
+        str(list(_sig851.parameters.keys())),
+    )
+
+    # I851-10: dedup only runs for compact fmt (not full/md/json in generate_briefing logic)
+    test(
+        "I851-10: dedup pass keyed on fmt == 'compact' in source",
+        'fmt == "compact"' in _src851 or 'fmt == "compact"' in _src851,
+        "",
+    )
+
+    # I851-11: compact renderer shows merge notice for collapsed entries
+    test(
+        "I851-11: compact renderer reads _merged_ids for merge notice",
+        "_merged_ids" in _src851 and "merge_tag" in _src851,
+        "",
+    )
+
+except Exception as _e851:
+    for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
+        test(f"I851-{_lbl851}: briefing semantic dedup", False, str(_e851))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
