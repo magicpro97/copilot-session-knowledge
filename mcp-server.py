@@ -230,6 +230,25 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "code_search",
+        "description": (
+            "Search indexed source-code symbols, snippets, and file contents "
+            "in registered projects. Returns file path, line range, and matched content. "
+            "Use sk code-search --index <path> first to index a project."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Symbol name, function name, or keyword"},
+                "language": {"type": "string", "description": "Filter by language (python, rust, typescript, etc.)"},
+                "project_id": {"type": "string", "description": "Restrict to a specific project"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Max results (default 10)"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -654,6 +673,82 @@ def _run_session_list(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_code_search(arguments: dict) -> dict:
+    """Search code_index table via FTS5."""
+    query_text = _require_string(arguments, "query", max_length=500)
+    language = _optional_string(arguments, "language", max_length=50)
+    project_id = _optional_string(arguments, "project_id", max_length=200)
+    limit = _optional_int(arguments, "limit", default=10, minimum=1, maximum=50)
+
+    if not _DB_PATH.exists():
+        body = {
+            "results": [],
+            "count": 0,
+            "query": query_text,
+            "error": f"DB not found: {_DB_PATH}",
+        }
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+    try:
+        db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+    except sqlite3.OperationalError as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB open error: {exc}") from exc
+
+    try:
+        has_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
+        if not has_table:
+            body = {
+                "results": [],
+                "count": 0,
+                "query": query_text,
+                "error": "code_index not found — run: sk code-search --index <path>",
+            }
+            return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+        conditions: list[str] = []
+        params: list = []
+        if language:
+            conditions.append("ci.language = ?")
+            params.append(language)
+        if project_id:
+            conditions.append("ci.project_id = ?")
+            params.append(project_id)
+
+        where_sql = ("WHERE " + " AND ".join(conditions) + " AND ") if conditions else "WHERE "
+        fts_safe = re.sub(r'["*]|\b(?:OR|AND|NOT|NEAR)\b', " ", query_text, flags=re.IGNORECASE).strip()
+        if not fts_safe:
+            fts_safe = query_text.replace('"', "")
+        try:
+            rows = db.execute(
+                f"""SELECT ci.file_path, ci.project_id, ci.language,
+                       ci.start_line, ci.end_line, ci.symbol_name, ci.symbol_kind, ci.content_snippet
+                FROM code_fts fts JOIN code_index ci ON fts.rowid = ci.id
+                {where_sql}code_fts MATCH ? ORDER BY rank LIMIT ?""",
+                [*params, f'"{fts_safe}"', limit],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            like = f"%{query_text.lower()}%"
+            rows = db.execute(
+                f"""SELECT file_path, project_id, language,
+                       start_line, end_line, symbol_name, symbol_kind, content_snippet
+                FROM code_index ci
+                {"WHERE " + " AND ".join(conditions) + " AND " if conditions else "WHERE "}
+                (LOWER(symbol_name) LIKE ? OR LOWER(content_snippet) LIKE ?)
+                ORDER BY file_path LIMIT ?""",
+                [*params, like, like, limit],
+            ).fetchall()
+    finally:
+        db.close()
+
+    results = [dict(r) for r in rows]
+    body = {"results": results, "count": len(results), "query": query_text}
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+        "structuredContent": body,
+    }
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -675,6 +770,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_status(arguments)
     if name == "session_list":
         return _run_session_list(arguments)
+    if name == "code_search":
+        return _run_code_search(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

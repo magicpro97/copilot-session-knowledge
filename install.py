@@ -238,6 +238,7 @@ TOOL_FILES = [
     "statusline.py",
     "harness-init.py",
     "doctor.py",
+    "code-search.py",
 ]
 
 SUPPORT_FILES = [

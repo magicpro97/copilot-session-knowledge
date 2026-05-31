@@ -328,6 +328,8 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("entry_dream_scores", "local_only", ""),
         ("file_annotations", "local_only", ""),
         ("project_registry", "canonical", "project_id"),
+        ("code_index", "local_only", ""),
+        ("code_fts", "local_only", ""),
     ]
     db.executemany(
         """
@@ -1735,6 +1737,41 @@ if __name__ == "__main__":
             [
                 "ALTER TABLE sessions ADD COLUMN label TEXT DEFAULT ''",
                 "CREATE INDEX IF NOT EXISTS idx_sessions_label ON sessions(label)",
+            ],
+        ),
+        # v35: issue #740 — Lexical source-code search via ripgrep + SQLite FTS5.
+        # code_index: mtime-tracked symbol/chunk table; code_fts: FTS5 search index.
+        (
+            35,
+            "code_index",
+            [
+                """CREATE TABLE IF NOT EXISTS code_index (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL DEFAULT '',
+                    file_path TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT '',
+                    symbol_kind TEXT NOT NULL DEFAULT '',
+                    symbol_name TEXT NOT NULL DEFAULT '',
+                    start_line INTEGER NOT NULL DEFAULT 0,
+                    end_line INTEGER NOT NULL DEFAULT 0,
+                    content_snippet TEXT NOT NULL DEFAULT '',
+                    file_mtime REAL NOT NULL DEFAULT 0.0,
+                    indexed_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(project_id, file_path, start_line, symbol_name)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_ci_project ON code_index(project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_ci_language ON code_index(language)",
+                "CREATE INDEX IF NOT EXISTS idx_ci_symbol ON code_index(symbol_name)",
+                "CREATE INDEX IF NOT EXISTS idx_ci_file ON code_index(file_path)",
+                "CREATE INDEX IF NOT EXISTS idx_ci_mtime ON code_index(file_mtime)",
+                """CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
+                    symbol_name,
+                    content_snippet,
+                    file_path UNINDEXED,
+                    language UNINDEXED,
+                    project_id UNINDEXED,
+                    tokenize='porter unicode61 remove_diacritics 2'
+                )""",
             ],
         ),
     ]

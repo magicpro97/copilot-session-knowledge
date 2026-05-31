@@ -25,6 +25,7 @@ Usage:
     sk retro    [<args>...]       Run retro.py
     sk heal     [<args>...]       Run copilot-cli-healer.py
     sk doctor   [<args>...]       Run doctor.py health checks
+    sk code-search [<args>...]    Search source code (ripgrep + FTS5 index)
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
@@ -157,6 +158,9 @@ _DIRECT: dict[str, CommandMeta] = {
         "statusline.py", "Alias: session token usage footer", ("session", "cost"), aliases=("status",)
     ),
     "mcp": CommandMeta(None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")),
+    "code-search": CommandMeta(
+        "code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")
+    ),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
