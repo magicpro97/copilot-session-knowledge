@@ -14944,6 +14944,41 @@ except Exception as _e857:
         "7d",
     ]:
         test(f"I857-{_label857}: fuzzy-match + completion", False, str(_e857))
+# === I870: sk tui — interactive terminal knowledge browser ===
+print("\n🖥  I870: sk tui — interactive terminal knowledge browser")
+_TOOLS_DIR870 = Path(__file__).parent
+_TUI_PATH870 = _TOOLS_DIR870 / "tui.py"
+try:
+    import ast as _ast870
+
+    _tui_src870 = _TUI_PATH870.read_text(encoding="utf-8")
+    _tui_tree870 = _ast870.parse(_tui_src870)
+    _tui_names870 = {n.name for n in _ast870.walk(_tui_tree870) if isinstance(n, _ast870.FunctionDef)}
+
+    test("I870-1a: tui.py exists", _TUI_PATH870.is_file())
+    test("I870-1b: tui.py is valid Python (AST parses)", True)
+    test("I870-1c: tui.py defines main()", "main" in _tui_names870, str(_tui_names870))
+    test("I870-1d: tui.py defines _run_tui()", "_run_tui" in _tui_names870, str(_tui_names870))
+    test("I870-1e: tui.py defines _load_entries()", "_load_entries" in _tui_names870, str(_tui_names870))
+
+    test("I870-2a: tui.py calls curses.wrapper", "curses.wrapper" in _tui_src870)
+    test("I870-2b: tui.py handles KEY_DOWN navigation", "KEY_DOWN" in _tui_src870)
+    test("I870-2c: tui.py handles KEY_UP navigation", "KEY_UP" in _tui_src870)
+    test("I870-2d: tui.py supports category filter keys", "CATEGORY_KEYS" in _tui_src870)
+    test("I870-2e: tui.py supports detail_mode expand", "detail_mode" in _tui_src870)
+
+    _sk_src870 = (_TOOLS_DIR870 / "sk.py").read_text(encoding="utf-8")
+    test("I870-3a: sk.py registers tui command", '"tui"' in _sk_src870 or "'tui'" in _sk_src870)
+    test("I870-3b: sk.py maps tui to tui.py", "tui.py" in _sk_src870)
+
+    _install_src870 = (_TOOLS_DIR870 / "install.py").read_text(encoding="utf-8")
+    test(
+        "I870-4a: install.py lists tui.py in TOOL_FILES", '"tui.py"' in _install_src870 or "'tui.py'" in _install_src870
+    )
+
+except Exception as _e870:
+    for _label870 in ["1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "2d", "2e", "3a", "3b", "4a"]:
+        test(f"I870-{_label870}: sk tui browser", False, str(_e870))
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:

@@ -252,6 +252,7 @@ TOOL_FILES = [
     "knowledge-broadcast.py",
     "curate.py",
     "knowledge-import.py",
+    "tui.py",
 ]
 
 SUPPORT_FILES = [
