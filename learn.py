@@ -2286,11 +2286,62 @@ def mark_resolved(entry_id: int, fix_steps: str = "", prevention_hook: str = "")
     if prevention_hook and "prevention_hook" in ke_columns:
         set_parts.append("prevention_hook = ?")
         params.append(prevention_hook)
+    # FSRS stability: resolving a mistake signals strong recall — boost half-life.
+    if "stability_factor" in ke_columns and row["category"] == "mistake":
+        cur_sf = db.execute(
+            "SELECT COALESCE(stability_factor, 1.0) FROM knowledge_entries WHERE id = ?", (entry_id,)
+        ).fetchone()[0]
+        new_sf = min(4.0, (cur_sf or 1.0) * 1.5)
+        set_parts.append("stability_factor = ?")
+        params.append(new_sf)
     params.append(entry_id)
     db.execute(f"UPDATE knowledge_entries SET {', '.join(set_parts)} WHERE id = ?", params)
     db.commit()
     db.close()
     print(f"  ✅ Resolved #{entry_id} [{row['category']}] {row['title'][:60]}")
+    return True
+
+
+def update_stability_factor(entry_id: int, verdict: str) -> bool:
+    """Update FSRS stability_factor for an entry based on recall feedback (issue #797).
+
+    verdict: 'good' multiplies by 1.3 (capped at 4.0) — slower decay.
+             'bad'  multiplies by 0.8 (floored at 0.5) — faster decay.
+    Returns True on success, False when entry not found or schema is pre-v37.
+    """
+    if verdict not in ("good", "bad"):
+        print(f"  ⚠ --feedback verdict must be 'good' or 'bad' (got {verdict!r})", file=sys.stderr)
+        return False
+    db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    if "stability_factor" not in ke_columns:
+        print(
+            "  ⚠ DB schema missing stability_factor column. Run migrate.py to enable FSRS stability.",
+            file=sys.stderr,
+        )
+        db.close()
+        return False
+    row = db.execute(
+        "SELECT id, title, COALESCE(stability_factor, 1.0) AS stability_factor FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        print(f"  ⚠ Entry #{entry_id} not found.", file=sys.stderr)
+        db.close()
+        return False
+    cur_sf = float(row["stability_factor"] or 1.0)
+    if verdict == "good":
+        new_sf = min(4.0, cur_sf * 1.3)
+    else:
+        new_sf = max(0.5, cur_sf * 0.8)
+    db.execute(
+        "UPDATE knowledge_entries SET stability_factor = ? WHERE id = ?",
+        (new_sf, entry_id),
+    )
+    db.commit()
+    db.close()
+    label = "↑" if verdict == "good" else "↓"
+    print(f"  {label} stability_factor #{entry_id}: {cur_sf:.3f} → {new_sf:.3f} ({verdict})")
     return True
 
 
@@ -2806,6 +2857,20 @@ def main():
 
     if "--stats" in args:
         show_stats()
+        return
+
+    if "--feedback" in args:
+        idx = args.index("--feedback")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        raw_verdict = args[idx + 2] if idx + 2 < len(args) else ""
+        try:
+            fb_id = int(raw_id)
+        except (ValueError, TypeError):
+            print(f"Error: --feedback requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        ok = update_stability_factor(fb_id, raw_verdict)
+        if not ok:
+            sys.exit(1)
         return
 
     if "--mark-resolved" in args:

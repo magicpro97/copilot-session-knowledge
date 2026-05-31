@@ -1839,6 +1839,17 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_tool_spans_tool ON tool_spans (tool_name)",
             ],
         ),
+        # v37: issue #797 — FSRS-style recall stability factor.
+        # stability_factor scales the Ebbinghaus half-life in briefing decay scoring.
+        # Default 1.0 = unchanged; ×1.3 on good feedback, ×0.8 on bad feedback,
+        # ×1.5 on mark-resolved (mistake). Clamped to [0.5, 4.0].
+        (
+            41,
+            "fsrs_stability_factor",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN stability_factor REAL DEFAULT 1.0",
+            ],
+        ),
         (
             42,
             "search_feedback_note",
