@@ -246,6 +246,7 @@ TOOL_FILES = [
     "repo-map.py",
     "coverage.py",
     "entity-extract.py",
+    "trace.py",
 ]
 
 SUPPORT_FILES = [

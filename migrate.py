@@ -1822,6 +1822,23 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_ke_last_accessed ON knowledge_entries(last_accessed_at)",
             ],
         ),
+        (
+            39,
+            "tool_spans",
+            [
+                """CREATE TABLE IF NOT EXISTS tool_spans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    turn_index INTEGER,
+                    duration_ms REAL,
+                    status TEXT DEFAULT 'unknown',
+                    created_at REAL DEFAULT (unixepoch('now'))
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_tool_spans_session ON tool_spans (session_id)",
+                "CREATE INDEX IF NOT EXISTS idx_tool_spans_tool ON tool_spans (tool_name)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

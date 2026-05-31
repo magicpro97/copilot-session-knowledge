@@ -170,6 +170,7 @@ _DIRECT: dict[str, CommandMeta] = {
     ),
     "repo-map": CommandMeta("repo-map.py", "PageRank-ranked symbol map for AI context injection", ("index", "map")),
     "coverage": CommandMeta("coverage.py", "Per-file knowledge coverage heatmap showing blind spots", ("index", "map")),
+    "trace": CommandMeta("trace.py", "Parse Copilot JSONL tool-call spans into SQLite", ("index", "observability")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
