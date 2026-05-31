@@ -102,8 +102,8 @@ class TestToolsList(unittest.TestCase):
         self.tools = {t["name"]: t for t in mcp.TOOLS}
 
     def test_exactly_two_tools(self):
-        # Updated: wave 8 added learn, status, session_list; code_search added later; now 7 tools total
-        self.assertEqual(len(mcp.TOOLS), 7)
+        # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry added (#820); now 8 tools total
+        self.assertEqual(len(mcp.TOOLS), 8)
 
     def test_briefing_tool_present(self):
         self.assertIn("briefing", self.tools)
@@ -1097,8 +1097,23 @@ class TestQueryMemoryTool(unittest.TestCase):
         self.assertTrue(self.tools["code_search"]["description"])
 
     def test_exactly_three_tools(self):
-        # Updated: wave 8 added learn, status, session_list; code_search added later; now 7 tools total
-        self.assertEqual(len(mcp.TOOLS), 7)
+        # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry added (#820); now 8 tools total
+        self.assertEqual(len(mcp.TOOLS), 8)
+
+    def test_rate_entry_tool_present(self):
+        self.assertIn("rate_entry", self.tools)
+
+    def test_rate_entry_has_description(self):
+        self.assertTrue(self.tools["rate_entry"]["description"])
+
+    def test_rate_entry_required_fields(self):
+        schema = self.tools["rate_entry"]["inputSchema"]
+        self.assertIn("entry_id", schema["required"])
+        self.assertIn("verdict", schema["required"])
+
+    def test_rate_entry_verdict_enum(self):
+        schema = self.tools["rate_entry"]["inputSchema"]
+        self.assertEqual(schema["properties"]["verdict"]["enum"], ["good", "bad", "neutral"])
 
 
 # ---------------------------------------------------------------------------
