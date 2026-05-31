@@ -4530,6 +4530,7 @@ def main():
             },
         )
 
+    # TODO(issue #754): add focused coverage for pack/code-context budget interactions.
     if with_code_context and query and fmt != "json":
         snippets = _query_code_context(DB_PATH, query, token_budget=code_tokens)
         if snippets:

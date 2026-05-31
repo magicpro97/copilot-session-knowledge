@@ -293,13 +293,9 @@ def _optional_int(arguments: dict[str, Any], key: str, *, default: int, minimum:
 
 def _optional_bool(arguments: dict[str, Any], key: str, *, default: bool) -> bool:
     value = arguments.get(key, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "false"}:
-            return lowered == "true"
-    raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"'{key}' must be a boolean")
+    if not isinstance(value, bool):
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"'{key}' must be a boolean")
+    return value
 
 
 def _capture_module_main(module, argv: list[str]) -> tuple[int, str, str]:

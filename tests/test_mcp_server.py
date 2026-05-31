@@ -320,6 +320,35 @@ class TestHandleToolsCall(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
 
+    def test_briefing_with_code_context_non_bool_raises(self):
+        with self.assertRaises(mcp.JsonRpcError) as ctx:
+            mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "hello", "with_code_context": "false"},
+                }
+            )
+        self.assertEqual(ctx.exception.code, mcp.JSONRPC_INVALID_PARAMS)
+
+    def test_briefing_with_code_context_passes_flags(self):
+        captured_argv = []
+
+        def fake_capture(_module, argv):
+            captured_argv.extend(argv)
+            return 0, json.dumps({"entries": {"patterns": []}}), ""
+
+        with patch.object(mcp, "_capture_module_main", side_effect=fake_capture):
+            mcp._handle_tools_call(
+                {
+                    "name": "briefing",
+                    "arguments": {"task": "hello", "with_code_context": True, "code_tokens": 1200},
+                }
+            )
+
+        self.assertIn("--with-code-context", captured_argv)
+        self.assertIn("--code-tokens", captured_argv)
+        self.assertIn("1200", captured_argv)
+
     def test_briefing_valid_returns_content_block(self):
         fake_output = json.dumps({"entries": {"mistakes": []}})
         with patch.object(mcp, "_capture_module_main", return_value=(0, fake_output, "")):
