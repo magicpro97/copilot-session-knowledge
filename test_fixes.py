@@ -11571,7 +11571,12 @@ try:
     # I851-5: dissimilar entries both kept
     _e851_diff = [
         {"id": 10, "title": "fix null pointer exception", "content": "crash on startup null ref", "confidence": 0.8},
-        {"id": 11, "title": "deploy to kubernetes cluster", "content": "helm chart ingress tls cert", "confidence": 0.8},
+        {
+            "id": 11,
+            "title": "deploy to kubernetes cluster",
+            "content": "helm chart ingress tls cert",
+            "confidence": 0.8,
+        },
     ]
     _r851_5 = _dedup851(_e851_diff, threshold=0.85)
     test(
@@ -11580,11 +11585,11 @@ try:
         str(_r851_5),
     )
 
-    # I851-6: threshold=0.0 collapses everything into one cluster (extreme)
+    # I851-6: threshold=0.0 collapses everything into one cluster (cosine 0 >= 0.0)
     _r851_6 = _dedup851(_e851_diff, threshold=0.0)
     test(
-        "I851-6: threshold=0.0 collapses any pair sharing at least one token",
-        len(_r851_6) <= 2,  # may or may not share tokens; just verify no crash
+        "I851-6: threshold=0.0 collapses any pair into one cluster",
+        len(_r851_6) == 1,
         str(_r851_6),
     )
 
@@ -11606,6 +11611,7 @@ try:
 
     # I851-9: generate_briefing accepts no_dedup keyword argument
     import inspect as _inspect851
+
     _sig851 = _inspect851.signature(_bmod851.generate_briefing)
     test(
         "I851-9: generate_briefing has no_dedup parameter",
@@ -11616,12 +11622,19 @@ try:
     # I851-10: dedup only runs for compact fmt (not full/md/json in generate_briefing logic)
     test(
         "I851-10: dedup pass keyed on fmt == 'compact' in source",
-        "fmt == \"compact\"" in _src851 or 'fmt == "compact"' in _src851,
+        'fmt == "compact"' in _src851 or 'fmt == "compact"' in _src851,
+        "",
+    )
+
+    # I851-11: compact renderer shows merge notice for collapsed entries
+    test(
+        "I851-11: compact renderer reads _merged_ids for merge notice",
+        "_merged_ids" in _src851 and "merge_tag" in _src851,
         "",
     )
 
 except Exception as _e851:
-    for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]:
+    for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
         test(f"I851-{_lbl851}: briefing semantic dedup", False, str(_e851))
 
 # ---------------------------------------------------------------------------

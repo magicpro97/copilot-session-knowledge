@@ -489,7 +489,7 @@ def _dedup_entries(entries: list, threshold: float = 0.85) -> list:
         tokenized = [set(t.lower().split()) for t in texts]
         N = len(texts)
         df: Counter = Counter(w for doc in tokenized for w in doc)
-        idf = {w: math.log(N / (1 + df[w])) for w in df}
+        idf = {w: math.log(1 + N / (1 + df[w])) for w in df}
         vecs = []
         for doc in tokenized:
             tf: Counter = Counter(doc)
@@ -3590,10 +3590,12 @@ def _format_compact(
             recurrence = int(entry.get("recurrence_after_briefing") or 0)
             recurring_badge = f"[RECURRING×{recurrence}] " if recurrence > 0 else ""
             pinned_badge = "📌 " if (entry.get("priority") or "") == "P0" else ""
+            merged_ids = entry.get("_merged_ids")
+            merge_tag = f" [merged #{',#'.join(merged_ids)}]" if merged_ids else ""
             if first_line.lower().startswith(title_prefix[:60]):
-                rendered.append(f"- {pinned_badge}{recurring_badge}{title}")
+                rendered.append(f"- {pinned_badge}{recurring_badge}{title}{merge_tag}")
             else:
-                rendered.append(f"- {pinned_badge}{recurring_badge}{title}: {first_line}")
+                rendered.append(f"- {pinned_badge}{recurring_badge}{title}: {first_line}{merge_tag}")
         if not rendered:
             return
         lines.append(f"<{cat}s>")
