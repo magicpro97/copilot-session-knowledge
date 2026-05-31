@@ -80,10 +80,17 @@ class BriefingBudget:
     constitution_max: int = 1000
     code_context_max: int = 2000
     pinned_entries_max: int = 500
+    danger_slot: int = 250
 
     @property
     def knowledge_budget(self) -> int:
-        used = self.response_reserve + self.constitution_max + self.code_context_max + self.pinned_entries_max
+        used = (
+            self.response_reserve
+            + self.constitution_max
+            + self.code_context_max
+            + self.pinned_entries_max
+            + self.danger_slot
+        )
         return max(500, self.total_available - used)
 
     @property
@@ -378,6 +385,45 @@ def get_db() -> sqlite3.Connection:
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
     return db
+
+
+def _fetch_danger_lane(db: sqlite3.Connection, budget: int = 250, since_date: "str | None" = None) -> str:
+    """Fetch critical mistake/antipattern entries for danger-lane section.
+
+    Returns a formatted ⚠️ DANGER section string, or '' if no danger entries.
+    """
+    try:
+        date_clause = ""
+        params: list = []
+        if since_date:
+            date_clause = " AND (updated_at >= ? OR created_at >= ?)"
+            params = [since_date, since_date]
+        rows = db.execute(
+            f"""SELECT title, content FROM knowledge_entries
+               WHERE (category = 'mistake'
+                  OR tags LIKE '%antipattern%'
+                  OR tags LIKE '%security%'
+                  OR tags LIKE '%breaking-change%')
+               {date_clause}
+               ORDER BY confidence DESC, priority ASC
+               LIMIT 5""",
+            params,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return ""
+    if not rows:
+        return ""
+    lines = ["⚠️  DANGER — always check before proceeding:"]
+    remaining = budget
+    for title, content in rows:
+        snippet = f"  • {title}: {content[:80]}" if content else f"  • {title}"
+        if len(snippet) > remaining:
+            break
+        lines.append(snippet)
+        remaining -= len(snippet)
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
 
 
 def _safe_int_list(values) -> list[int]:
@@ -4410,6 +4456,17 @@ def main():
 
     # Handle --wakeup mode (ultra-compact, no query needed)
     if "--wakeup" in args:
+        no_danger = "--no-danger" in args
+        if not no_danger and DB_PATH.exists():
+            try:
+                _db = sqlite3.connect(str(DB_PATH))
+                _db.row_factory = sqlite3.Row
+                danger = _fetch_danger_lane(_db)
+                if danger:
+                    print(danger)
+                    print()
+            except Exception:
+                pass
         print(generate_wakeup())
         return
 
@@ -4637,6 +4694,7 @@ def main():
             pass
 
     subagent_mode = "--for-subagent" in args
+    no_danger = "--no-danger" in args
 
     # --with-code-context: append relevant code spans from code_index (issue #747)
     with_code_context = "--with-code-context" in args
@@ -4873,6 +4931,19 @@ def main():
                             code_section = code_section[:remaining].rsplit("\n", 1)[0]
                     if code_section:
                         output = output + code_section
+
+    # Danger lane: prepend ⚠️ DANGER section for compact/pack/wakeup/agent modes
+    # when --no-danger is not set (issue #781).
+    if not no_danger and fmt in ("compact", "pack", "md") and DB_PATH.exists():
+        try:
+            _dl_db = sqlite3.connect(str(DB_PATH))
+            _dl_db.row_factory = sqlite3.Row
+            danger = _fetch_danger_lane(_dl_db, since_date=since_date)
+            if danger:
+                print(danger)
+                print()
+        except Exception:
+            pass
 
     print(output)
 
