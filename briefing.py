@@ -30,6 +30,8 @@ Usage:
     python briefing.py "task" --feedback "task desc" bad   # Record bad feedback for a query
     python briefing.py "task" --pinned                     # Also show top-3 P0 pinned entries
     python briefing.py "task" --pinned 5                   # Also show top-5 P0 pinned entries
+    python briefing.py "task" --no-repeat                  # Skip entries already served this session
+    python briefing.py "task" --no-repeat=off              # Disable session-scoped deduplication
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -441,6 +443,28 @@ def _detect_session_id() -> str:
     if state_dir:
         return os.path.basename(state_dir)
     return ""
+
+
+def _briefed_cache_path(session_id: str) -> Path:
+    markers = Path.home() / ".copilot" / "markers"
+    markers.mkdir(parents=True, exist_ok=True)
+    return markers / f"session-briefed-{session_id}.json"
+
+
+def _load_briefed_ids(session_id: str) -> set[int]:
+    path = _briefed_cache_path(session_id)
+    try:
+        return set(json.loads(path.read_text()))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return set()
+
+
+def _save_briefed_ids(session_id: str, ids: set[int]) -> None:
+    path = _briefed_cache_path(session_id)
+    try:
+        path.write_text(json.dumps(sorted(ids)))
+    except OSError:
+        pass  # fail-open
 
 
 def _estimate_tokens(output_chars: int) -> int:
@@ -1896,6 +1920,7 @@ def search_knowledge_entries(
     min_confidence: float = 0.0,
     since_date: "str | None" = None,
     include_resolved: bool = False,
+    exclude_ids: "set[int] | None" = None,
 ) -> list[dict]:
     """Search knowledge entries by category using FTS5 with adaptive strictness.
 
@@ -1930,6 +1955,9 @@ def search_knowledge_entries(
         "" if include_resolved or not has_is_resolved else " AND (ke.is_resolved IS NULL OR ke.is_resolved = 0)"
     )
 
+    # Session-scoped dedup: exclude already-served entry IDs (issue #783 --no-repeat).
+    _exclude_clause = f" AND ke.id NOT IN ({','.join(str(i) for i in exclude_ids) or 'NULL'})" if exclude_ids else ""
+
     results = []
     try:
         rows = db.execute(
@@ -1948,7 +1976,7 @@ def search_knowledge_entries(
             LEFT JOIN documents d ON ke.document_id = d.id
             WHERE ke_fts MATCH ?
             AND ke.category = ?
-            AND ke.confidence >= ?{_date_clause}{_resolved_clause}
+            AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
             ORDER BY {order_by}
             LIMIT ?
         """,
@@ -1965,7 +1993,7 @@ def search_knowledge_entries(
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
                 AND ke.category = ?
-                AND ke.confidence >= ?{_date_clause}{_resolved_clause}
+                AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
                 ORDER BY {order_by}
                 LIMIT ?
             """,
@@ -1995,7 +2023,7 @@ def search_knowledge_entries(
                 LEFT JOIN documents d ON ke.document_id = d.id
                 WHERE ke_fts MATCH ?
                 AND ke.category = ?
-                AND ke.confidence >= ?{_date_clause}{_resolved_clause}
+                AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
                 ORDER BY {order_by}
                 LIMIT ?
             """,
@@ -2012,7 +2040,7 @@ def search_knowledge_entries(
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
                     AND ke.category = ?
-                    AND ke.confidence >= ?{_date_clause}{_resolved_clause}
+                   AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
                     ORDER BY {order_by}
                     LIMIT ?
                 """,
@@ -2577,6 +2605,7 @@ def generate_briefing(
     since_date: "str | None" = None,
     include_resolved: bool = False,
     pinned_n: int = 0,
+    exclude_ids: "set[int] | None" = None,
 ):
     """Generate a structured briefing from the knowledge base.
 
@@ -2613,6 +2642,7 @@ def generate_briefing(
             min_confidence=min_confidence,
             since_date=since_date,
             include_resolved=include_resolved,
+            exclude_ids=exclude_ids,
         )
         # Widen semantic fetch symmetrically so the outer priority rerank has the same
         # wide candidate pool for semantic hits as it does for FTS hits (issue #121 Blocker 4).
@@ -4769,6 +4799,16 @@ def main():
         else:
             pinned_n = 3
 
+    # --no-repeat [=off]: session-scoped entry deduplication (issue #783).
+    # Auto-enables when COPILOT_SESSION_ID is set; use --no-repeat=off to disable.
+    no_repeat = "--no-repeat=off" not in args  # default: auto-ON when session ID available
+    if "--no-repeat=off" in args:
+        no_repeat = False
+    _no_repeat_session_id = os.environ.get("COPILOT_SESSION_ID", "")
+    already_served: set[int] = set()
+    if no_repeat and _no_repeat_session_id:
+        already_served = _load_briefed_ids(_no_repeat_session_id)
+
     if auto_mode:
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
@@ -4865,6 +4905,7 @@ def main():
             since_date=since_date,
             include_resolved="--include-resolved" in args,
             pinned_n=pinned_n,
+            exclude_ids=already_served if (no_repeat and _no_repeat_session_id) else None,
         )
 
     if budget > 0 and len(output) > budget:
@@ -4902,6 +4943,7 @@ def main():
                     since_date=since_date,
                     include_resolved="--include-resolved" in args,
                     pinned_n=pinned_n,
+                    exclude_ids=already_served if (no_repeat and _no_repeat_session_id) else None,
                 )
             if len(output) <= budget:
                 break
@@ -4994,6 +5036,13 @@ def main():
                 print()
         except Exception:
             pass
+
+    # Save served entry IDs to the session-briefed cache (issue #783 --no-repeat).
+    if no_repeat and _no_repeat_session_id and isinstance(output_meta, dict):
+        _save_briefed_ids(
+            _no_repeat_session_id,
+            already_served | set(output_meta.get("selected_entry_ids", [])),
+        )
 
     print(output)
 
