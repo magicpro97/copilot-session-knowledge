@@ -26,6 +26,7 @@ Usage:
     sk heal     [<args>...]       Run copilot-cli-healer.py
     sk doctor   [<args>...]       Run doctor.py health checks
     sk code-search [<args>...]    Search source code (ripgrep + FTS5 index)
+    sk code-index [<args>...]     Extract code symbols into SQLite index
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
@@ -161,6 +162,7 @@ _DIRECT: dict[str, CommandMeta] = {
     "code-search": CommandMeta(
         "code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")
     ),
+    "code-index": CommandMeta("code-index.py", "Extract and index code symbols (regex + FTS5)", ("search", "index")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}

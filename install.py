@@ -239,6 +239,7 @@ TOOL_FILES = [
     "harness-init.py",
     "doctor.py",
     "code-search.py",
+    "code-index.py",
 ]
 
 SUPPORT_FILES = [
