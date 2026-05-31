@@ -159,27 +159,69 @@ _CONCEPT_STOPWORDS = frozenset(
 )
 
 
-def extract_concept_tags(text: str, top_k: int = 5) -> list[str]:
-    """Extract top_k concept tags from text using pure-stdlib term frequency.
+def _compute_idf_cache(db: sqlite3.Connection | None = None) -> dict[str, float]:
+    """Compute IDF weights from the full knowledge_entries corpus.
 
-    Distinct from existing tag parsing that reads explicit user-supplied tags.
-    Pure stdlib: no numpy/sklearn/ML imports.
+    IDF(term) = log((1 + N) / (1 + df)) + 1   (sklearn smooth-IDF formula)
+    where N = total docs, df = docs containing the term.
+
+    Returns {term: idf_weight} or {} if DB unavailable.
+    """
+    import math
+
+    if db is None:
+        return {}
+    try:
+        rows = db.execute("SELECT title, content FROM knowledge_entries LIMIT 5000").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    n_docs = len(rows)
+    if n_docs < 10:  # Too small to compute meaningful IDF
+        return {}
+
+    df: dict[str, int] = {}
+    for row in rows:
+        text = f"{row[0]} {row[1]}"
+        tokens = set(re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower()))
+        for tok in tokens:
+            df[tok] = df.get(tok, 0) + 1
+
+    idf: dict[str, float] = {}
+    for term, doc_freq in df.items():
+        idf[term] = math.log((1 + n_docs) / (1 + doc_freq)) + 1.0
+    return idf
+
+
+def extract_concept_tags(text: str, top_k: int = 5, idf_cache: dict | None = None) -> list[str]:
+    """Extract top_k concept tags using TF-IDF when corpus IDF available, else pure TF.
 
     Args:
         text: Combined title and content text to analyze.
         top_k: Maximum number of concept tags to return.
+        idf_cache: Optional {term: idf_weight} from _compute_idf_cache(). When provided,
+                   scores are TF * IDF; otherwise falls back to pure TF.
 
     Returns:
-        List of up to top_k lowercase concept tag strings, sorted by frequency desc.
+        List of up to top_k lowercase concept tag strings, sorted by score desc.
     """
     if not text:
         return []
     tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower())
-    freq: dict[str, int] = {}
+    tf: dict[str, int] = {}
     for tok in tokens:
         if tok not in _CONCEPT_STOPWORDS:
-            freq[tok] = freq.get(tok, 0) + 1
-    ranked = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+            tf[tok] = tf.get(tok, 0) + 1
+    if not tf:
+        return []
+    # Normalize TF by document length to avoid bias toward long entries
+    max_tf = max(tf.values())
+    scores: dict[str, float] = {}
+    for term, freq in tf.items():
+        norm_tf = freq / max_tf
+        idf = idf_cache.get(term, 1.0) if idf_cache else 1.0
+        scores[term] = norm_tf * idf
+    ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     return [tag for tag, _ in ranked[:top_k]]
 
 
@@ -299,6 +341,7 @@ def run_batch_tag(
                 rows = db.execute(query).fetchall()
 
         stats = {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0, "available": True}
+        idf_cache = _compute_idf_cache(db)
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
         for row in rows:
@@ -308,7 +351,7 @@ def run_batch_tag(
             stats["processed"] += 1
 
             try:
-                tags = extract_concept_tags(f"{title} {content}", top_k=5)
+                tags = extract_concept_tags(f"{title} {content}", top_k=5, idf_cache=idf_cache)
                 if not tags:
                     stats["skipped"] += 1
                     continue
