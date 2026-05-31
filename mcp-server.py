@@ -580,6 +580,31 @@ def _run_query_memory(arguments: dict[str, Any]) -> dict[str, Any]:
                     """,
                     [*like_params, limit],
                 ).fetchall()
+
+            # Trigram fallback: augment with ke_fts_trigram when FTS5 returns < 3 results (#873)
+            if len(rows) < 3:
+                try:
+                    tri_safe = re.sub(
+                        r'[*():\\^"-]|\b(?:OR|AND|NOT|NEAR)\b', " ", query_text.replace("'", " "), flags=re.IGNORECASE
+                    ).strip()
+                    tri_cond = where_sql + (" AND " if where_sql else "WHERE ") + "ke_fts_trigram MATCH ?"
+                    tri_rows = db.execute(
+                        f"""
+                        SELECT ke.id, ke.category, ke.title, ke.content, ke.tags,
+                               ke.agent_id, ke.confidence, ke.session_id
+                        FROM ke_fts_trigram fts
+                        JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id
+                        {tri_cond}
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        [*params, f'"{tri_safe}"', limit],
+                    ).fetchall()
+                    existing_ids = {r["id"] for r in rows}
+                    rows = list(rows) + [r for r in tri_rows if r["id"] not in existing_ids]
+                    rows = rows[:limit]
+                except sqlite3.OperationalError:
+                    pass  # ke_fts_trigram not yet available on older schemas
         else:
             rows = db.execute(
                 f"""
