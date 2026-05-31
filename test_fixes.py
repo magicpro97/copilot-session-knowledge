@@ -15546,10 +15546,14 @@ except Exception as _e873:
 # === I867: decay-adjusted confidence ranking ===
 # ---------------------------------------------------------------------------
 try:
+    import contextlib as _ctx867
     import importlib.util as _ilu867
+    import io as _io867
     import math as _math867
     import sqlite3 as _sq867
-    from datetime import datetime as _dt867, timedelta as _td867, timezone as _tz867
+    from datetime import datetime as _dt867
+    from datetime import timedelta as _td867
+    from datetime import timezone as _tz867
     from pathlib import Path as _Path867
 
     _kh_spec867 = _ilu867.spec_from_file_location("kh867", REPO / "knowledge-health.py")
@@ -15640,10 +15644,8 @@ try:
     # I867-8: integration — search_knowledge with decay re-sorts wider pool
     # Verify that over-fetch + truncation occurs correctly: the returned row count
     # should not exceed the requested limit, proving post-decay truncation works.
-    import sqlite3 as _sql867
-
-    _tmpdb867 = _sql867.connect(":memory:")
-    _tmpdb867.row_factory = _sql867.Row
+    _tmpdb867 = _sq867.connect(":memory:")
+    _tmpdb867.row_factory = _sq867.Row
     # Create minimal schema for search_knowledge
     _tmpdb867.execute(
         """CREATE TABLE knowledge_entries (
@@ -15677,7 +15679,8 @@ try:
     _orig_get_db = _qs867.get_db
     _qs867.get_db = lambda: _tmpdb867
     try:
-        import io as _io867, contextlib as _ctx867
+        import contextlib as _ctx867
+        import io as _io867
 
         _buf867 = _io867.StringIO()
         with _ctx867.redirect_stdout(_buf867):
