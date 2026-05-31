@@ -202,6 +202,121 @@ def check_mcp() -> dict:
         return _check("mcp", "mcp", WARN, f"mcp-server.py error: {e}")
 
 
+def check_mcp_smoke(timeout: int = 5) -> dict:
+    """Spawn mcp-server.py, send initialize + tools/list, verify expected tools.
+
+    The server uses LSP-style framing: Content-Length header + CRLF + body.
+    """
+    import threading
+    import time
+
+    mcp_path = TOOLS_DIR / "mcp-server.py"
+    if not mcp_path.exists():
+        return _check("mcp_smoke", "mcp", INFO, "mcp-server.py not found — skipping smoke test")
+
+    def _encode(payload: dict) -> bytes:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        return header + body
+
+    def _read_response(stream) -> dict:
+        """Read one LSP-framed JSON-RPC message from stream."""
+        headers: dict[str, str] = {}
+        while True:
+            line = stream.readline()
+            if not line:
+                raise EOFError("stdout closed")
+            if line in (b"\r\n", b"\n"):
+                break
+            decoded = line.decode("ascii")
+            if ":" in decoded:
+                k, v = decoded.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+        content_length = int(headers["content-length"])
+        body = stream.read(content_length)
+        return json.loads(body.decode("utf-8"))
+
+    t0 = time.time()
+    proc = None
+    result_holder: list = []
+    error_holder: list = []
+
+    def _run() -> None:
+        nonlocal proc
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(mcp_path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            proc.stdin.write(
+                _encode(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {},
+                            "clientInfo": {"name": "doctor", "version": "1.0"},
+                        },
+                    }
+                )
+            )
+            proc.stdin.flush()
+            _read_response(proc.stdout)  # initialize response; validate it parses
+
+            proc.stdin.write(_encode({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
+            proc.stdin.flush()
+            resp2 = _read_response(proc.stdout)
+            result_holder.append(resp2)
+        except Exception as exc:
+            error_holder.append(exc)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    latency = round((time.time() - t0) * 1000)
+
+    if proc is not None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    if t.is_alive() or (not result_holder and not error_holder):
+        return _check(
+            "mcp_smoke",
+            "mcp",
+            ERROR,
+            f"MCP smoke FAIL — server timed out after {timeout}s",
+            "Run: python3 mcp-server.py",
+        )
+    if error_holder:
+        return _check("mcp_smoke", "mcp", ERROR, f"MCP smoke FAIL — {error_holder[0]}", "Run: python3 mcp-server.py")
+
+    resp2 = result_holder[0]
+    tool_names = {t["name"] for t in resp2.get("result", {}).get("tools", [])}
+    expected = {"briefing", "learn", "query_session"}
+    missing = expected - tool_names
+    if missing:
+        return _check(
+            "mcp_smoke",
+            "mcp",
+            ERROR,
+            f"MCP smoke FAIL — missing tools: {sorted(missing)} (latency {latency}ms)",
+            "Check mcp-server.py tool registration",
+        )
+    return _check(
+        "mcp_smoke",
+        "mcp",
+        OK,
+        f"MCP smoke PASS — {len(tool_names)} tools registered (latency {latency}ms)",
+    )
+
+
 def check_binary() -> dict:
     sk_bin = shutil.which("sk")
     if sk_bin:
@@ -402,6 +517,7 @@ ALL_CHECKS = [
     check_embedding_config,
     check_hooks,
     check_mcp,
+    check_mcp_smoke,
     check_binary,
     # recall health checks
     check_recall_hit_rate,
@@ -415,7 +531,7 @@ CATEGORY_MAP = {
     "db": [check_db_exists, check_db_schema, check_db_migrate],
     "config": [check_embedding_config],
     "hooks": [check_hooks],
-    "mcp": [check_mcp],
+    "mcp": [check_mcp, check_mcp_smoke],
     "binary": [check_binary],
     "recall": [check_recall_hit_rate, check_knowledge_growth, check_stale_knowledge, check_recurring_mistakes],
 }

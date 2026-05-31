@@ -12272,6 +12272,82 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# I835: sk doctor — MCP server smoke-test check
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu835
+    import types as _types835
+
+    _spec835 = _ilu835.spec_from_file_location("doctor835", REPO / "doctor.py")
+    _doc835 = _ilu835.module_from_spec(_spec835)
+    _spec835.loader.exec_module(_doc835)
+
+    # I835-1: check_mcp_smoke function exists
+    test("I835-1: check_mcp_smoke exists in doctor.py", hasattr(_doc835, "check_mcp_smoke"))
+
+    # I835-2: check_mcp_smoke is registered in ALL_CHECKS
+    test(
+        "I835-2: check_mcp_smoke in ALL_CHECKS",
+        _doc835.check_mcp_smoke in _doc835.ALL_CHECKS,
+    )
+
+    # I835-3: check_mcp_smoke is in CATEGORY_MAP["mcp"]
+    test(
+        "I835-3: check_mcp_smoke in CATEGORY_MAP['mcp']",
+        _doc835.check_mcp_smoke in _doc835.CATEGORY_MAP.get("mcp", []),
+    )
+
+    # I835-4: returns SKIP/INFO when mcp-server.py absent
+    import unittest.mock as _mock835
+
+    with _mock835.patch.object(_doc835.Path, "exists", return_value=False):
+        # Patch TOOLS_DIR / "mcp-server.py" path.exists
+        _fake_path835 = _mock835.MagicMock()
+        _fake_path835.exists.return_value = False
+        with _mock835.patch.object(_doc835, "TOOLS_DIR", new=Path("/nonexistent_path_835xyz")):
+            _r835_skip = _doc835.check_mcp_smoke()
+    test(
+        "I835-4: check_mcp_smoke returns INFO when mcp-server.py absent",
+        _r835_skip["status"] in ("info", "skip"),
+        str(_r835_skip),
+    )
+
+    # I835-5: result dict has required keys
+    test(
+        "I835-5: result has id/category/status/message keys",
+        all(k in _r835_skip for k in ("id", "category", "status", "message")),
+        str(_r835_skip),
+    )
+
+    # I835-6: check_mcp_smoke id is "mcp_smoke"
+    test("I835-6: result id is 'mcp_smoke'", _r835_skip["id"] == "mcp_smoke", str(_r835_skip))
+
+    # I835-7: check_mcp_smoke category is "mcp"
+    test("I835-7: result category is 'mcp'", _r835_skip["category"] == "mcp", str(_r835_skip))
+
+    # I835-8: live smoke test when mcp-server.py present
+    _mcp835_path = REPO / "mcp-server.py"
+    if _mcp835_path.exists():
+        _r835_live = _doc835.check_mcp_smoke(timeout=10)
+        test(
+            "I835-8: live smoke PASS or FAIL (not exception)",
+            _r835_live["status"] in ("ok", "error"),
+            str(_r835_live),
+        )
+        test(
+            "I835-8b: live smoke result has latency or reason",
+            "latency" in _r835_live["message"] or "reason" in _r835_live or "FAIL" in _r835_live["message"],
+            str(_r835_live),
+        )
+    else:
+        test("I835-8: live smoke skipped (mcp-server.py not present)", True)
+        test("I835-8b: live smoke latency skipped", True)
+
+except Exception as _e835:
+    for _lbl835 in ["1", "2", "3", "4", "5", "6", "7", "8", "8b"]:
+        test(f"I835-{_lbl835}: mcp smoke check", False, str(_e835))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
