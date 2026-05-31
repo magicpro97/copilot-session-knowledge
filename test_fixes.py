@@ -3662,7 +3662,9 @@ try:
             ]
         return _p2_pool  # narrow call: P0 entry invisible to outer rerank
 
-    def _fake_ske_p12(db, query, cat, limit, min_confidence=0.0, since_date=None, include_resolved=False, exclude_ids=None):
+    def _fake_ske_p12(
+        db, query, cat, limit, min_confidence=0.0, since_date=None, include_resolved=False, exclude_ids=None
+    ):
         return []  # FTS contributes nothing so only semantic entries are in play
 
     _p12_mock_db = _sqlite3_p12.connect(":memory:")
