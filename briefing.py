@@ -32,6 +32,7 @@ Usage:
     python briefing.py "task" --pinned 5                   # Also show top-5 P0 pinned entries
     python briefing.py "task" --no-repeat                  # Skip entries already served this session
     python briefing.py "task" --no-repeat=off              # Disable session-scoped deduplication
+    python briefing.py "task" --available-tokens 5000 --pressure-compact  # Auto-compact if < 20% context left
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -469,6 +470,29 @@ def _save_briefed_ids(session_id: str, ids: set[int]) -> None:
 
 def _estimate_tokens(output_chars: int) -> int:
     return int(math.ceil(output_chars / 4)) if output_chars > 0 else 0
+
+
+def _check_pressure_compact(available_tokens: int, threshold: float = 0.20) -> bool:
+    """Return True if context pressure warrants auto-compact instead of briefing."""
+    context_size_hint = int(os.environ.get("SK_CONTEXT_SIZE", "128000"))
+    sk_threshold = float(os.environ.get("SK_PRESSURE_THRESHOLD", str(threshold)))
+    return available_tokens < sk_threshold * context_size_hint
+
+
+def _run_pressure_compact(db_path: str, session_id: str | None = None) -> None:
+    """Delegate to session-compact.py when under context pressure."""
+    tools_dir = Path(__file__).parent
+    compact_script = tools_dir / "session-compact.py"
+    cmd = [sys.executable, str(compact_script)]
+    if session_id:
+        cmd += [session_id]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode == 0:
+        print("[pressure-compact] Context pressure detected — running session compact:")
+        print(result.stdout)
+    else:
+        print(f"[pressure-compact] Warning: compact failed — {result.stderr[:200]}", file=sys.stderr)
+        # Fall through to normal briefing
 
 
 def _compute_dynamic_budget(explicit_budget: int, available_tokens: int = 0) -> int:
@@ -5041,6 +5065,14 @@ def main():
                 available_tokens = int(args[idx + 1])
             except ValueError:
                 available_tokens = 0
+
+    # --pressure-compact: auto-compact when context window < SK_PRESSURE_THRESHOLD remaining
+    if "--pressure-compact" in args and available_tokens > 0:
+        if _check_pressure_compact(available_tokens):
+            db_path_str = str(TOOLS_DIR / "knowledge.db")
+            _run_pressure_compact(db_path_str)
+            return
+
     budget = _compute_dynamic_budget(explicit_budget, available_tokens)
 
     # Auto-select output tier from BriefingBudget when --available-tokens is set
