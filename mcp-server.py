@@ -104,6 +104,16 @@ TOOLS = [
                     "type": "string",
                     "description": "Filter entries by message tag (e.g. 'msg:review'). Issue #399.",
                 },
+                "with_code_context": {
+                    "type": "boolean",
+                    "description": "Include relevant code spans from indexed codebase (requires sk code-index first).",
+                },
+                "code_tokens": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 4000,
+                    "description": "Approximate token budget for code context (default 1000).",
+                },
             },
             "required": ["task"],
             "additionalProperties": False,
@@ -311,11 +321,15 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
     limit = _optional_int(arguments, "limit", default=3, minimum=1, maximum=20)
     agent_tag = _optional_string(arguments, "agent_tag")
     msg_tag = _optional_string(arguments, "msg_tag")
+    with_code_context = arguments.get("with_code_context", False)
+    code_tokens = _optional_int(arguments, "code_tokens", default=1000, minimum=100, maximum=4000)
     argv = [task, "--pack", "--mode", mode, "--limit", str(limit)]
     if agent_tag:
         argv += ["--agent-tag", agent_tag]
     if msg_tag:
         argv += ["--msg-tag", msg_tag]
+    if with_code_context:
+        argv += ["--with-code-context", "--code-tokens", str(code_tokens)]
     exit_code, stdout_text, stderr_text = _capture_module_main(briefing_mod, argv)
     if exit_code != 0:
         message = stderr_text.strip() or stdout_text.strip() or "briefing failed"

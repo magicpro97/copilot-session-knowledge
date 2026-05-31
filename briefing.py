@@ -4020,6 +4020,72 @@ def generate_never_recalled(fmt: str = "text") -> str:
             pass
 
 
+def _query_code_context(db_path: Path, query: str, token_budget: int = 1000) -> list[dict]:
+    """Query code_fts for relevant snippets. Returns [] if table missing or error."""
+    try:
+        db = sqlite3.connect(str(db_path))
+        has = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
+        if not has:
+            db.close()
+            return []
+        char_budget = token_budget * 4
+        results = []
+        safe_q = re.sub(r'["*]|\b(?:OR|AND|NOT|NEAR)\b', " ", query, flags=re.IGNORECASE).strip()
+        if safe_q:
+            try:
+                rows = db.execute(
+                    """SELECT ci.file_path, ci.language, ci.start_line, ci.symbol_name,
+                              ci.content_snippet
+                       FROM code_fts fts JOIN code_index ci ON fts.rowid = ci.id
+                       WHERE code_fts MATCH ? ORDER BY rank LIMIT 10""",
+                    [f'"{safe_q}"'],
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = db.execute(
+                    """SELECT file_path, language, start_line, symbol_name, content_snippet
+                       FROM code_index
+                       WHERE LOWER(content_snippet) LIKE ? OR LOWER(symbol_name) LIKE ?
+                       LIMIT 10""",
+                    [f"%{query.lower()}%", f"%{query.lower()}%"],
+                ).fetchall()
+            used = 0
+            for r in rows:
+                snippet = r[4] if isinstance(r, tuple) else r["content_snippet"]
+                if used + len(snippet) > char_budget:
+                    break
+                results.append(
+                    {
+                        "file_path": r[0],
+                        "language": r[1],
+                        "start_line": r[2],
+                        "symbol_name": r[3],
+                        "content": snippet,
+                    }
+                )
+                used += len(snippet)
+        db.close()
+        return results
+    except Exception:
+        return []
+
+
+def _format_code_context(snippets: list[dict]) -> str:
+    """Format code snippets as fenced markdown blocks."""
+    if not snippets:
+        return ""
+    lines = ["\n## Relevant Code Context"]
+    for s in snippets:
+        lang = s.get("language", "")
+        fname = s.get("file_path", "")
+        lineno = s.get("start_line", 0)
+        sym = s.get("symbol_name", "")
+        lines.append(f"\n### {fname}:{lineno} — {sym} ({lang})")
+        lines.append(f"```{lang}")
+        lines.append(s.get("content", "").rstrip())
+        lines.append("```")
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
 
@@ -4283,6 +4349,17 @@ def main():
 
     subagent_mode = "--for-subagent" in args
 
+    # --with-code-context: append relevant code spans from code_index (issue #747)
+    with_code_context = "--with-code-context" in args
+    code_tokens = 1000
+    if "--code-tokens" in args:
+        idx = args.index("--code-tokens")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            try:
+                code_tokens = max(100, min(4000, int(args[idx + 1])))
+            except ValueError:
+                code_tokens = 1000
+
     # --pinned [N]: always include top-N P0 entries regardless of query (issue #708)
     pinned_n = 0
     if "--pinned" in args:
@@ -4314,6 +4391,7 @@ def main():
                 "--msg-tag",
                 "--since",
                 "--days",
+                "--code-tokens",
             ) and i + 1 < len(args):
                 consumed_value_indices.add(i + 1)
         query_parts = [
@@ -4451,6 +4529,12 @@ def main():
                 "output_chars": len(output),
             },
         )
+
+    if with_code_context and query and fmt not in ("json", "pack"):
+        snippets = _query_code_context(DB_PATH, query, token_budget=code_tokens)
+        code_section = _format_code_context(snippets)
+        if code_section:
+            output = output + code_section
 
     print(output)
 
