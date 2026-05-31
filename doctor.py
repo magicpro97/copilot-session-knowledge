@@ -225,7 +225,7 @@ def check_recall_hit_rate() -> dict:
     if not DB_PATH.exists():
         return _check("recall_hit_rate", "recall", WARN, "DB not found — skipping recall check")
     try:
-        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        db = sqlite3.connect(DB_PATH.as_uri() + "?mode=ro", uri=True)
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         if "search_feedback" not in tables:
             db.close()
@@ -238,6 +238,7 @@ def check_recall_hit_rate() -> dict:
         row = db.execute(
             "SELECT COUNT(*) AS total, SUM(CASE WHEN verdict=1 THEN 1 ELSE 0 END) AS good,"
             " SUM(CASE WHEN verdict=-1 THEN 1 ELSE 0 END) AS bad FROM search_feedback"
+            " WHERE verdict IN (1, -1)"
         ).fetchone()
         db.close()
         total, good, bad = row[0], row[1] or 0, row[2] or 0
@@ -275,7 +276,7 @@ def check_knowledge_growth() -> dict:
     if not DB_PATH.exists():
         return _check("knowledge_growth", "recall", WARN, "DB not found — skipping growth check")
     try:
-        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        db = sqlite3.connect(DB_PATH.as_uri() + "?mode=ro", uri=True)
         rows = db.execute(
             """SELECT strftime('%Y-%W', first_seen) AS week, COUNT(*) AS cnt
                FROM knowledge_entries
@@ -313,24 +314,25 @@ def check_knowledge_growth() -> dict:
 
 
 def check_stale_knowledge() -> dict:
-    """Check for knowledge entries never recalled (access_count=0 or missing)."""
+    """Check for knowledge entries never recalled (no stats row or recall_count=0)."""
     if not DB_PATH.exists():
         return _check("stale_knowledge", "recall", WARN, "DB not found — skipping stale check")
     try:
-        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
-        cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
-        if "access_count" not in cols:
+        db = sqlite3.connect(DB_PATH.as_uri() + "?mode=ro", uri=True)
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "entry_recall_stats" not in tables:
             db.close()
             return _check(
                 "stale_knowledge",
                 "recall",
                 INFO,
-                "access_count column not yet migrated — run: python3 migrate.py",
+                "entry_recall_stats table not yet migrated — run: python3 migrate.py",
             )
         row = db.execute(
             """SELECT COUNT(*) AS total,
-                      SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) AS never_accessed
-               FROM knowledge_entries"""
+                      SUM(CASE WHEN ers.entry_id IS NULL OR ers.recall_count = 0 THEN 1 ELSE 0 END) AS never_accessed
+               FROM knowledge_entries ke
+               LEFT JOIN entry_recall_stats ers ON ers.entry_id = ke.id"""
         ).fetchone()
         db.close()
         total, never = row[0], row[1] or 0
@@ -368,7 +370,7 @@ def check_recurring_mistakes() -> dict:
     if not DB_PATH.exists():
         return _check("recurring_mistakes", "recall", WARN, "DB not found — skipping mistake check")
     try:
-        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        db = sqlite3.connect(DB_PATH.as_uri() + "?mode=ro", uri=True)
         rows = db.execute(
             """SELECT title, COUNT(*) AS cnt
                FROM knowledge_entries
