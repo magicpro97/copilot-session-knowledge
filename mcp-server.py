@@ -1658,6 +1658,8 @@ def _handle_resources_read(params: dict) -> dict:
         if not a or not b:
             raise JsonRpcError(JSONRPC_INVALID_PARAMS, "sk://sessions/diff requires ?a=<id>&b=<id>")
         data = _resource_sessions_diff(a, b)
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
 
     # sk://knowledge/search?q=<term>&limit=N — must be checked before generic sk://knowledge/<id>
     base_uri, qs_params = _parse_query_string(uri)
