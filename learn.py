@@ -80,6 +80,20 @@ DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS = 250
 _DISPATCHED_MARKER_PATH = Path.home() / ".copilot" / "markers" / "dispatched-subagent-active"
 _MARKER_ENTRY_TTL = 4 * 3600  # 4 hours
 
+# Predefined relation types (predicate → inverse).  "related_to" is its own inverse.
+RELATION_TYPES: dict[str, str] = {
+    "causes": "caused_by",
+    "fixes": "fixed_by",
+    "requires": "required_by",
+    "SUPERSEDES": "superseded_by",
+    "related_to": "related_to",
+    "navigates_to": "navigated_from",
+    "uses": "used_by",
+    "implements": "implemented_by",
+    "documents": "documented_by",
+    "tests": "tested_by",
+}
+
 
 def _should_use_writer_broker() -> bool:
     """Return True when the writer-broker should be auto-enabled.
@@ -2745,7 +2759,9 @@ def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str 
             db.close()
             sys.exit(1)
 
-        now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         sid = session_id or ""
         db.execute(
             """
@@ -2759,6 +2775,156 @@ def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str 
         print(f"  ↩ Supersedes #{target_id}: {target_row['title'][:60]}")
     except Exception as exc:  # noqa: BLE001
         print(f"  ⚠ Could not record SUPERSEDES relation: {exc}", file=sys.stderr)
+    finally:
+        db.close()
+
+
+# ---- Typed relation helpers (Issue #858) -----------------------------------
+
+
+def _insert_typed_relation(
+    source_id: int,
+    predicate: str,
+    target_id: int,
+    session_id: str | None = None,
+) -> None:
+    """Insert a typed relation between two knowledge_entries IDs.
+
+    Warns if predicate is not in RELATION_TYPES (but still writes it).
+    Auto-creates the inverse relation when a known inverse exists.
+    """
+    predicate = predicate.strip()
+    if predicate not in RELATION_TYPES:
+        print(
+            f"  ⚠ Unknown predicate '{predicate}'. Known types: {', '.join(sorted(RELATION_TYPES))}",
+            file=sys.stderr,
+        )
+    db = get_db()
+    try:
+        source_row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (source_id,)).fetchone()
+        target_row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (target_id,)).fetchone()
+        if not source_row:
+            print(f"Error: source ID {source_id} not found in knowledge_entries", file=sys.stderr)
+            db.close()
+            sys.exit(1)
+        if not target_row:
+            print(f"Error: target ID {target_id} not found in knowledge_entries", file=sys.stderr)
+            db.close()
+            sys.exit(1)
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        sid = session_id or ""
+
+        # Check if stable_id columns exist
+        _cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_relations)").fetchall()}
+        _has_stable = "stable_id" in _cols
+
+        if _has_stable:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO knowledge_relations
+                    (source_id, target_id, relation_type, confidence, created_at, session_id,
+                     source_stable_id, target_stable_id, stable_id)
+                VALUES (?, ?, ?, 1.0, ?, ?,
+                        (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                        (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                        lower(hex(randomblob(8))))
+                """,
+                (source_id, target_id, predicate, now, sid, source_id, target_id),
+            )
+        else:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO knowledge_relations
+                    (source_id, target_id, relation_type, confidence, created_at, session_id)
+                VALUES (?, ?, ?, 1.0, ?, ?)
+                """,
+                (source_id, target_id, predicate, now, sid),
+            )
+        print(f"  ✅ #{source_id} --[{predicate}]--> #{target_id}: {target_row['title'][:50]}")
+
+        # Auto-create inverse relation when predicate has a known, distinct inverse.
+        inverse = RELATION_TYPES.get(predicate)
+        if inverse and inverse != predicate:
+            if _has_stable:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_relations
+                        (source_id, target_id, relation_type, confidence, created_at, session_id,
+                         source_stable_id, target_stable_id, stable_id)
+                    VALUES (?, ?, ?, 1.0, ?, ?,
+                            (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                            (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                            lower(hex(randomblob(8))))
+                    """,
+                    (target_id, source_id, inverse, now, sid, target_id, source_id),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_relations
+                        (source_id, target_id, relation_type, confidence, created_at, session_id)
+                    VALUES (?, ?, ?, 1.0, ?, ?)
+                    """,
+                    (target_id, source_id, inverse, now, sid),
+                )
+            print(f"  ↩  #{target_id} --[{inverse}]--> #{source_id} (auto-inverse)")
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠ Could not record typed relation: {exc}", file=sys.stderr)
+    finally:
+        db.close()
+
+
+def show_relate_list(entry_id: int) -> None:
+    """Print all outgoing and incoming knowledge_relations for an entry."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            print(f"Error: ID {entry_id} not found in knowledge_entries", file=sys.stderr)
+            sys.exit(1)
+        print(f"\nRelations for #{entry_id} [{row['title'][:60]}]")
+        print("=" * 60)
+
+        outgoing = db.execute(
+            """
+            SELECT kr.relation_type, ke.id, ke.title, ke.category
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON ke.id = kr.target_id
+            WHERE kr.source_id = ?
+            ORDER BY kr.relation_type, ke.id
+            """,
+            (entry_id,),
+        ).fetchall()
+
+        incoming = db.execute(
+            """
+            SELECT kr.relation_type, ke.id, ke.title, ke.category
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON ke.id = kr.source_id
+            WHERE kr.target_id = ?
+            ORDER BY kr.relation_type, ke.id
+            """,
+            (entry_id,),
+        ).fetchall()
+
+        if outgoing:
+            print("\nOutgoing:")
+            for r in outgoing:
+                print(f"  #{entry_id} --[{r['relation_type']}]--> #{r['id']} [{r['category']}] {r['title'][:50]}")
+        if incoming:
+            print("\nIncoming:")
+            for r in incoming:
+                print(f"  #{r['id']} --[{r['relation_type']}]--> #{entry_id} [{r['category']}] {r['title'][:50]}")
+        if not outgoing and not incoming:
+            print("  (no relations)")
+        total = len(outgoing) + len(incoming)
+        print(f"\n--- {total} relation(s) ---")
+    except sqlite3.OperationalError as exc:
+        print(f"⚠ knowledge_relations table not found: {exc}", file=sys.stderr)
     finally:
         db.close()
 
@@ -3286,6 +3452,18 @@ def main():
             sys.exit(1)
         return
 
+    # Handle --relate-list command (#858)
+    if "--relate-list" in args:
+        idx = args.index("--relate-list")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        try:
+            entry_id = int(raw_id)
+        except (ValueError, TypeError):
+            print(f"Error: --relate-list requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        show_relate_list(entry_id)
+        return
+
     # Handle --relate command
     if "--relate" in args:
         idx = args.index("--relate")
@@ -3293,8 +3471,16 @@ def main():
         if len(positional) < 3:
             print("Error: --relate needs 3 args: subject predicate object")
             print('  Example: python learn.py --relate "copyToGroup" "reads_from" "config.json"')
+            print("  Example (typed, by ID): python learn.py --relate 3 causes 1")
             return
-        add_relation(positional[0], positional[1], positional[2])
+        # Detect typed relation: both subject and object are integer IDs → knowledge_relations
+        try:
+            src_id = int(positional[0])
+            tgt_id = int(positional[2])
+            _insert_typed_relation(src_id, positional[1], tgt_id)
+        except ValueError:
+            # Fall back to entity_relations path (string subjects/objects)
+            add_relation(positional[0], positional[1], positional[2])
         return
 
     # Handle --soft-delete command (#387)
