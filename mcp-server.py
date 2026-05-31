@@ -258,6 +258,10 @@ TOOLS = [
                 "language": {"type": "string", "description": "Filter by language (python, rust, typescript, etc.)"},
                 "project_id": {"type": "string", "description": "Restrict to a specific project"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Max results (default 10)"},
+                "fuzzy": {
+                    "type": "boolean",
+                    "description": "Use trigram index for partial-symbol and error-string matching",
+                },
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -707,6 +711,7 @@ def _run_code_search(arguments: dict) -> dict:
     language = _optional_string(arguments, "language", max_length=50)
     project_id = _optional_string(arguments, "project_id", max_length=200)
     limit = _optional_int(arguments, "limit", default=10, minimum=1, maximum=50)
+    fuzzy = bool(arguments.get("fuzzy", False))
 
     if not _DB_PATH.exists():
         body = {
@@ -747,8 +752,30 @@ def _run_code_search(arguments: dict) -> dict:
         fts_safe = re.sub(r'["*]|\b(?:OR|AND|NOT|NEAR)\b', " ", query_text, flags=re.IGNORECASE).strip()
         if not fts_safe:
             fts_safe = query_text.replace('"', "")
+
+        rows: list = []
+
+        # Trigram search when --fuzzy requested and table exists
+        if fuzzy and len(query_text.strip()) >= 3:
+            has_trigram = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_fts_trigram'"
+            ).fetchone()
+            if has_trigram:
+                try:
+                    safe_trigram = query_text.replace('"', "")
+                    rows = db.execute(
+                        f"""SELECT ci.file_path, ci.project_id, ci.language,
+                               ci.start_line, ci.end_line, ci.symbol_name, ci.symbol_kind, ci.content_snippet
+                        FROM code_fts_trigram fts JOIN code_index ci ON fts.rowid = ci.id
+                        {where_sql}code_fts_trigram MATCH ? ORDER BY rank LIMIT ?""",
+                        [*params, safe_trigram, limit],
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+
+        # Porter FTS search (always run; merged with trigram results)
         try:
-            rows = db.execute(
+            porter_rows = db.execute(
                 f"""SELECT ci.file_path, ci.project_id, ci.language,
                        ci.start_line, ci.end_line, ci.symbol_name, ci.symbol_kind, ci.content_snippet
                 FROM code_fts fts JOIN code_index ci ON fts.rowid = ci.id
@@ -757,7 +784,7 @@ def _run_code_search(arguments: dict) -> dict:
             ).fetchall()
         except sqlite3.OperationalError:
             like = f"%{query_text.lower()}%"
-            rows = db.execute(
+            porter_rows = db.execute(
                 f"""SELECT file_path, project_id, language,
                        start_line, end_line, symbol_name, symbol_kind, content_snippet
                 FROM code_index ci
@@ -766,6 +793,15 @@ def _run_code_search(arguments: dict) -> dict:
                 ORDER BY file_path LIMIT ?""",
                 [*params, like, like, limit],
             ).fetchall()
+
+        # Merge with deduplication (trigram rows first)
+        seen: set[tuple] = {(r["file_path"], r["symbol_name"]) for r in rows}
+        for r in porter_rows:
+            key = (r["file_path"], r["symbol_name"])
+            if key not in seen:
+                rows.append(r)
+                seen.add(key)
+        rows = rows[:limit]
     finally:
         db.close()
 

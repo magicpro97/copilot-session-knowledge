@@ -134,6 +134,11 @@ def _check_tables(db: sqlite3.Connection) -> None:
         sys.exit(1)
 
 
+def _has_trigram_table(db: sqlite3.Connection) -> bool:
+    row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_fts_trigram'").fetchone()
+    return row is not None
+
+
 def _ensure_project(db: sqlite3.Connection, root: Path) -> str:
     """Register project in project_registry if table exists, return project_id."""
     has_registry = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_registry'").fetchone()
@@ -249,6 +254,11 @@ def _index_file(
         "DELETE FROM code_fts WHERE rowid IN (SELECT id FROM code_index WHERE file_path=? AND project_id=?)",
         [fp_str, project_id],
     )
+    if _has_trigram_table(db):
+        db.execute(
+            "DELETE FROM code_fts_trigram WHERE rowid IN (SELECT id FROM code_index WHERE file_path=? AND project_id=?)",
+            [fp_str, project_id],
+        )
     db.execute(
         "DELETE FROM code_index WHERE file_path=? AND project_id=?",
         [fp_str, project_id],
@@ -271,6 +281,13 @@ def _index_file(
         " FROM code_index WHERE file_path=? AND project_id=?",
         [fp_str, project_id],
     )
+    if _has_trigram_table(db):
+        db.execute(
+            "INSERT INTO code_fts_trigram(rowid, symbol_name, content_snippet, file_path, language, project_id)"
+            " SELECT id, symbol_name, content_snippet, file_path, language, project_id"
+            " FROM code_index WHERE file_path=? AND project_id=?",
+            [fp_str, project_id],
+        )
 
     return len(symbols)
 

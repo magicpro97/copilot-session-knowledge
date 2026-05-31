@@ -544,6 +544,50 @@ def search_fts(
     return [dict(r) for r in rows]
 
 
+def search_fts_trigram(
+    conn: sqlite3.Connection,
+    query: str,
+    language: str,
+    project_id: str,
+    limit: int,
+) -> list[dict]:
+    """Search using FTS5 trigram tokenizer — enables partial-symbol and error-string matching."""
+    if len(query.strip()) < 3:
+        return []
+    has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_fts_trigram'").fetchone()
+    if not has_table:
+        return []
+
+    conditions: list[str] = []
+    params: list = []
+    if language:
+        conditions.append("ci.language = ?")
+        params.append(language)
+    if project_id:
+        conditions.append("ci.project_id = ?")
+        params.append(project_id)
+
+    where_prefix = ("WHERE " + " AND ".join(conditions) + " AND ") if conditions else "WHERE "
+    # Trigram ignores most FTS operators but strip quotes to avoid parse errors
+    safe_query = query.replace('"', "")
+
+    try:
+        rows = conn.execute(
+            f"""SELECT ci.file_path, ci.project_id, ci.language,
+                       ci.start_line, ci.end_line, ci.symbol_name,
+                       ci.symbol_kind, ci.content_snippet,
+                       bm25(code_fts_trigram) AS rank_score
+                FROM code_fts_trigram AS fts
+                JOIN code_index AS ci ON ci.id = fts.rowid
+                {where_prefix}code_fts_trigram MATCH ?
+                ORDER BY rank_score LIMIT ?""",
+            [*params, safe_query, limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
 def search(
     query: str,
     lang: str = "",
@@ -551,6 +595,7 @@ def search(
     limit: int = 10,
     context_lines: int = 3,
     rank_mode: str = "hybrid",
+    fuzzy: bool = False,
 ) -> list[dict]:
     """Primary search entry point: tries FTS first, then ripgrep fallback."""
     if not DB_PATH.exists():
@@ -561,11 +606,24 @@ def search(
         has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has_table:
             return []
-        results = search_fts(conn, query, lang, project_id, limit, rank_mode)
+
+        results: list[dict] = []
+        if fuzzy:
+            results = search_fts_trigram(conn, query, lang, project_id, limit)
+
+        porter_results = search_fts(conn, query, lang, project_id, limit, rank_mode)
+
+        # Merge with deduplication — trigram results first for fuzzy mode
+        seen = {(r["file_path"], r["symbol_name"]) for r in results}
+        for r in porter_results:
+            key = (r["file_path"], r["symbol_name"])
+            if key not in seen:
+                results.append(r)
+                seen.add(key)
     finally:
         conn.close()
 
-    return results
+    return results[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +691,11 @@ def main() -> None:
         default="hybrid",
         help="BM25 column weight mode: symbol (name-boosted), content (body-boosted), hybrid (default)",
     )
+    parser.add_argument(
+        "--fuzzy",
+        action="store_true",
+        help="Use trigram FTS5 index for partial-symbol and error-string matching (requires 3+ char query)",
+    )
 
     args = parser.parse_args()
 
@@ -653,6 +716,7 @@ def main() -> None:
         limit=args.limit,
         context_lines=args.context,
         rank_mode=args.rank,
+        fuzzy=args.fuzzy,
     )
 
     if args.as_json:
