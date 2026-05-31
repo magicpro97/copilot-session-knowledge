@@ -1795,6 +1795,24 @@ if __name__ == "__main__":
                 "CREATE TRIGGER IF NOT EXISTS code_fts_trigram_au AFTER UPDATE ON code_index BEGIN INSERT INTO code_fts_trigram(code_fts_trigram, rowid, symbol_name, content_snippet, file_path, language, project_id) VALUES ('delete', old.id, old.symbol_name, old.content_snippet, old.file_path, old.language, old.project_id); INSERT INTO code_fts_trigram(rowid, symbol_name, content_snippet, file_path, language, project_id) VALUES (new.id, new.symbol_name, new.content_snippet, new.file_path, new.language, new.project_id); END",
             ],
         ),
+        # v37: issue #770 — Entity-linked recall: file_path/function/error_type/tool/symbol
+        # entities extracted from knowledge entries for graph-boosted briefing scoring.
+        (
+            37,
+            "knowledge_entities_table",
+            [
+                """CREATE TABLE IF NOT EXISTS knowledge_entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL REFERENCES knowledge_entries(id),
+                    entity_type TEXT NOT NULL,
+                    entity_value TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(entry_id, entity_type, entity_value)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_ke_ent_entry ON knowledge_entities(entry_id)",
+                "CREATE INDEX IF NOT EXISTS idx_ke_ent_type_val ON knowledge_entities(entity_type, entity_value)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
