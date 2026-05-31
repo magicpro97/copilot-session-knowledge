@@ -5132,6 +5132,7 @@ def main():
 
     subagent_mode = "--for-subagent" in args
     no_danger = "--no-danger" in args
+    broadcast_check = "--broadcast-check" in args
 
     # --with-code-context: append relevant code spans from code_index (issue #747)
     with_code_context = "--with-code-context" in args
@@ -5408,6 +5409,19 @@ def main():
             _no_repeat_session_id,
             already_served | set(output_meta.get("selected_entry_ids", [])),
         )
+
+    if broadcast_check:
+        since = time.time() - 3600  # last 1 hour
+        broadcast_path = Path.home() / ".copilot" / "markers" / "knowledge-broadcast.jsonl"
+        new_count = 0
+        if broadcast_path.exists():
+            try:
+                with broadcast_path.open(encoding="utf-8") as f:
+                    new_count = sum(1 for line in f if line.strip() and json.loads(line).get("ts", 0) >= since)
+            except Exception:
+                pass
+        if new_count > 0:
+            print(f"⚡ {new_count} new entries from parallel agents (last 1h) — run: sk knowledge broadcast")
 
     print(output)
 
