@@ -12272,6 +12272,176 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# I832: hook debounce / rate limiting for preToolUse hooks
+# ---------------------------------------------------------------------------
+print("\n🔍 I832: hook debounce / rate limiting")
+
+try:
+    import importlib.util as _ilu832
+    import json as _json832
+    import shutil as _sh832
+    import tempfile as _tf832
+    import time as _time832
+    import types as _types832
+    from pathlib import Path as _Path832
+
+    # Load hook_runner from hooks/ subdirectory
+    _hr832_spec = _ilu832.spec_from_file_location(
+        "hook_runner_i832",
+        str(_Path832(__file__).parent / "hooks" / "hook_runner.py"),
+    )
+    _hr832 = _ilu832.module_from_spec(_hr832_spec)
+    _hr832_spec.loader.exec_module(_hr832)
+
+    # Create an isolated debounce dir for testing
+    _ddir832 = _Path832(_tf832.mkdtemp())
+    _orig_ddir832 = _hr832.DEBOUNCE_DIR
+    _hr832.DEBOUNCE_DIR = _ddir832
+
+    # I832-1: _should_debounce returns False when no marker exists
+    test("I832-1: no marker → not debounced", not _hr832._should_debounce("test-hook", 5))
+
+    # I832-2: _record_fired creates a marker file with last_fired timestamp
+    _before832 = _time832.time()
+    _hr832._record_fired("test-hook")
+    _marker832 = _ddir832 / "test-hook.json"
+    _data832 = _json832.loads(_marker832.read_text(encoding="utf-8"))
+    test("I832-2a: _record_fired creates marker file", _marker832.is_file())
+    test(
+        "I832-2b: last_fired is recent",
+        _time832.time() - _data832.get("last_fired", 0) < 2,
+    )
+
+    # I832-3: _should_debounce returns True after _record_fired within window
+    test("I832-3: within window → debounced", _hr832._should_debounce("test-hook", 5))
+
+    # I832-4: _should_debounce returns False after window expires
+    # Backdate the marker to simulate expiry
+    _expired832 = {"last_fired": _time832.time() - 10}
+    _marker832.write_text(_json832.dumps(_expired832), encoding="utf-8")
+    test("I832-4: expired window → not debounced", not _hr832._should_debounce("test-hook", 5))
+
+    # I832-5: different hook names are tracked independently
+    _hr832._record_fired("hook-a")
+    _hr832._record_fired("hook-b")
+    test("I832-5a: hook-a debounced independently", _hr832._should_debounce("hook-a", 60))
+    test("I832-5b: hook-b debounced independently", _hr832._should_debounce("hook-b", 60))
+    test("I832-5c: hook-c not debounced (never fired)", not _hr832._should_debounce("hook-c", 60))
+
+    # I832-6: SK_HOOK_DEBOUNCE_SECS=0 disables debounce (window 0 → always False)
+    _hr832._record_fired("test-zero")
+    test("I832-6: window=0 → not debounced", not _hr832._should_debounce("test-zero", 0))
+
+    # I832-7: DEBOUNCE_DIR is defined at module level
+    test("I832-7: DEBOUNCE_DIR defined in hook_runner", hasattr(_hr832, "DEBOUNCE_DIR"))
+
+    # I832-8: _should_debounce and _record_fired functions are exported
+    test("I832-8a: _should_debounce callable", callable(getattr(_hr832, "_should_debounce", None)))
+    test("I832-8b: _record_fired callable", callable(getattr(_hr832, "_record_fired", None)))
+
+    # Restore original DEBOUNCE_DIR
+    _hr832.DEBOUNCE_DIR = _orig_ddir832
+    _sh832.rmtree(str(_ddir832), ignore_errors=True)
+
+except Exception as _e832:
+    for _lbl832 in ["1", "2a", "2b", "3", "4", "5a", "5b", "5c", "6", "7", "8a", "8b"]:
+        test(f"I832-{_lbl832}: hook debounce", False, str(_e832))
+
+# ---------------------------------------------------------------------------
+# I834: retro --capture flag
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu834
+    import io as _io834
+    import subprocess as _sp834
+    from contextlib import redirect_stderr as _re834
+    from contextlib import redirect_stdout as _rs834
+
+    _retro834_path = REPO / "retro.py"
+    _spec834 = _ilu834.spec_from_file_location("retro834", str(_retro834_path))
+    _retro834 = _ilu834.module_from_spec(_spec834)
+    _spec834.loader.exec_module(_retro834)
+
+    # I834-1: _parse_args accepts --capture flag
+    _args834 = _retro834._parse_args(["--capture"])
+    test("I834-1: _parse_args accepts --capture flag", _args834.get("capture") is True, str(_args834))
+
+    # I834-2: --capture is False by default
+    _args834_def = _retro834._parse_args([])
+    test("I834-2: capture defaults to False", _args834_def.get("capture") is False, str(_args834_def))
+
+    # I834-3: --capture combined with other flags parses correctly
+    _args834_combo = _retro834._parse_args(["--mode", "repo", "--capture", "--days", "7"])
+    test(
+        "I834-3: --capture combines with --mode and --days",
+        _args834_combo.get("capture") is True
+        and _args834_combo.get("mode") == "repo"
+        and _args834_combo.get("days") == 7,
+        str(_args834_combo),
+    )
+
+    # I834-4: main() with --capture actually invokes subprocess.run with learn.py
+    _calls834: list = []
+    _orig_run834 = _sp834.run
+
+    def _mock_run834(*_a, **_kw):
+        _calls834.append((_a, _kw))
+
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return _R()
+
+    # Patch subprocess.run in the retro module's namespace
+    _retro834.subprocess.run = _mock_run834
+    _retro834_sys = _retro834.main.__globals__["sys"]
+    _orig_argv834 = _retro834_sys.argv
+    _retro834_sys.argv = ["retro.py", "--capture", "--mode", "repo"]
+    _buf834 = _io834.StringIO()
+    _ebuf834 = _io834.StringIO()
+    try:
+        with _rs834(_buf834), _re834(_ebuf834):
+            _retro834.main()
+    except SystemExit:
+        pass
+    finally:
+        _retro834_sys.argv = _orig_argv834
+        _retro834.subprocess.run = _orig_run834
+
+    _out834 = _buf834.getvalue()
+    # Find the learn.py call among all subprocess.run calls
+    _learn_calls834 = [c for c in _calls834 if any("learn.py" in str(x) for x in (c[0][0] if c[0] else []))]
+    test("I834-4a: main() invoked learn.py subprocess", len(_learn_calls834) >= 1, f"calls={len(_learn_calls834)}")
+    if _learn_calls834:
+        _cmd834 = _learn_calls834[0][0][0]
+        test("I834-4b: subprocess cmd contains --discovery", "--discovery" in _cmd834, str(_cmd834))
+        test(
+            "I834-4c: subprocess cmd contains retro tags",
+            any("retro,session-retrospective" in str(c) for c in _cmd834),
+            str(_cmd834),
+        )
+        test(
+            "I834-4d: subprocess cmd contains date tag",
+            any("date:" in str(c) for c in _cmd834),
+            str(_cmd834),
+        )
+    else:
+        for _l in ["4b", "4c", "4d"]:
+            test(f"I834-{_l}: skipped (no learn.py call found)", False, "learn.py not called")
+
+    # I834-5: success message only prints on returncode==0
+    test("I834-5: [retro] success message printed", "[retro] Saved as knowledge entry:" in _out834, repr(_out834[:200]))
+
+    # I834-6: --help/docstring mentions --capture
+    _doc834 = _retro834.__doc__ or ""
+    test("I834-6: docstring mentions --capture", "--capture" in _doc834, _doc834[:200])
+
+except Exception as _e834:
+    for _lbl834 in ["1", "2", "3", "4a", "4b", "4c", "4d", "5", "6"]:
+        test(f"I834-{_lbl834}: retro --capture", False, str(_e834))
+
 # I833: batch_learn MCP tool — bulk atomic knowledge writes
 # ---------------------------------------------------------------------------
 print("\n📝 I833: batch_learn MCP tool")
@@ -12322,12 +12492,12 @@ except Exception as _e833_04:
 
 # I833-05: live MCP roundtrip — batch insert and rollback on validation error
 import importlib as _imp833
+import json as _json833
+import os as _os833
 import sqlite3 as _sq833
 import subprocess as _sp833
 import sys as _sys833
-import json as _json833
 import tempfile as _tf833
-import os as _os833
 
 print("  I833-05..06: live roundtrip")
 try:

@@ -732,9 +732,43 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
     if not _DB_PATH.exists():
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Knowledge DB not found: {_DB_PATH}")
 
-    import datetime as _dt
+    # --- Prompt-injection / credential scanning (mirrors learn.py) ---
+    import re as _re833
 
-    now = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+    _INJECTION_PATTERNS_833 = [
+        (r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b", "prompt injection: 'ignore previous instructions'"),
+        (r"(?i)\byou\s+are\s+now\b", "role hijacking: 'you are now'"),
+        (r"(?i)\bsystem\s*:\s*", "role injection: 'system:' prefix"),
+        (r"(?i)\b(assistant|user|human)\s*:\s*", "role injection: fake role prefix"),
+        (r"(?i)\bforget\s+(everything|all|your)\b", "memory manipulation: 'forget everything'"),
+        (r"(?i)\bdo\s+not\s+follow\b", "instruction override: 'do not follow'"),
+        (r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S+", "credential leak: API key/password/token"),
+        (r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----", "credential leak: private key"),
+        (r"(?i)\beval\s*\(", "code injection: eval()"),
+        (r"(?i)\bexec\s*\(", "code injection: exec()"),
+        (r"[\u200b\u200c\u200d\u2060\ufeff]", "invisible Unicode characters (zero-width)"),
+        (r"(?i)\bACT\s+AS\b", "role hijacking: 'act as'"),
+        (r"(?i)\bpretend\s+(you\s+are|to\s+be)\b", "role hijacking: 'pretend to be'"),
+        (r"(?i)\b(curl|wget|nc|ncat)\s+.*\|\s*(ba)?sh\b", "remote code execution pattern"),
+        (r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "credential leak: GitHub access token"),
+        (r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b", "credential leak: JWT token"),
+        (r"(?i)\bAuthorization\s*:\s*Bearer\s+\S{16,}", "credential leak: Authorization Bearer token"),
+        (r"\bAKIA[0-9A-Z]{16}\b", "credential leak: AWS access key ID"),
+    ]
+    for idx, entry in enumerate(validated):
+        text = f"{entry['title']}\n{entry['content']}"
+        for pat_str, desc in _INJECTION_PATTERNS_833:
+            if _re833.search(pat_str, text):
+                raise JsonRpcError(
+                    JSONRPC_INVALID_PARAMS,
+                    f"entries[{idx}] rejected — {desc}",
+                )
+
+    import datetime as _dt
+    import uuid as _uuid833
+
+    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    batch_session_id = f"batch_{_uuid833.uuid4().hex[:12]}"
 
     created_ids: list[int] = []
     try:
@@ -764,9 +798,9 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
                                 (category, title, stable_id, content, tags, confidence,
                                  session_id, occurrence_count, first_seen, last_seen,
                                  est_tokens)
-                            VALUES (?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                             """,
-                            (cat, ttl, stable_id, body, tgs, conf, now, now, est_tokens),
+                            (cat, ttl, stable_id, body, tgs, conf, batch_session_id, now, now, est_tokens),
                         )
                     else:
                         db.execute(
@@ -775,9 +809,9 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
                                 (category, title, content, tags, confidence,
                                  session_id, occurrence_count, first_seen, last_seen,
                                  est_tokens)
-                            VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                             """,
-                            (cat, ttl, body, tgs, conf, now, now, est_tokens),
+                            (cat, ttl, body, tgs, conf, batch_session_id, now, now, est_tokens),
                         )
                     entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
