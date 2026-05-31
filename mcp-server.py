@@ -796,6 +796,188 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 
+# ── MCP Resources ──────────────────────────────────────────────────────────────
+# Static resource URI catalog — browseable by MCP clients.
+RESOURCES = [
+    {
+        "uri": "sk://status",
+        "name": "sk status",
+        "description": "sk version, DB path, and health info",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "sk://sessions/recent",
+        "name": "Recent sessions",
+        "description": "Last 20 indexed session titles and IDs",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "sk://knowledge/list",
+        "name": "Knowledge entries",
+        "description": "List of all knowledge entry IDs and titles",
+        "mimeType": "application/json",
+    },
+]
+
+
+def _resource_status() -> dict:
+    info: dict = {
+        "version": SERVER_INFO.get("version", "unknown"),
+        "db_path": str(_DB_PATH),
+        "db_exists": _DB_PATH.exists(),
+        "protocol_version": PROTOCOL_VERSION,
+    }
+    if _DB_PATH.exists():
+        try:
+            db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+            row = db.execute("PRAGMA user_version").fetchone()
+            info["schema_version"] = row[0] if row else None
+            ke = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
+            info["knowledge_entries"] = ke[0] if ke else 0
+            sess = db.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            info["sessions"] = sess[0] if sess else 0
+            db.close()
+        except Exception:
+            info["db_error"] = "could not query DB"
+    return info
+
+
+def _resource_sessions_recent() -> list:
+    if not _DB_PATH.exists():
+        return []
+    try:
+        db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        rows = db.execute("SELECT id, summary, indexed_at FROM sessions ORDER BY indexed_at DESC LIMIT 20").fetchall()
+        db.close()
+        return [{"id": r["id"], "summary": r["summary"], "indexed_at": r["indexed_at"]} for r in rows]
+    except Exception:
+        return []
+
+
+def _resource_knowledge_list() -> list:
+    if not _DB_PATH.exists():
+        return []
+    try:
+        db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            "SELECT id, title, entry_type, tags FROM knowledge_entries ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+        db.close()
+        return [{"id": r["id"], "title": r["title"], "type": r["entry_type"], "tags": r["tags"]} for r in rows]
+    except Exception:
+        return []
+
+
+def _resource_knowledge_entry(entry_id: str) -> dict | None:
+    if not _DB_PATH.exists():
+        return None
+    try:
+        db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT id, title, body, entry_type, tags, wing, room, created_at FROM knowledge_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        db.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def _resource_code_symbols(project_id: str) -> list:
+    if not _DB_PATH.exists():
+        return []
+    try:
+        db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        has = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
+        if not has:
+            db.close()
+            return []
+        rows = db.execute(
+            "SELECT file_path, symbol_name, symbol_kind, start_line, language FROM code_index WHERE project_id=? ORDER BY file_path, start_line LIMIT 500",
+            (project_id,),
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _handle_resources_list() -> dict:
+    resources = list(RESOURCES)
+    # Add dynamic resources for knowledge entries if DB exists
+    if _DB_PATH.exists():
+        try:
+            db = sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True)
+            db.row_factory = sqlite3.Row
+            rows = db.execute("SELECT id, title FROM knowledge_entries ORDER BY created_at DESC LIMIT 20").fetchall()
+            db.close()
+            for r in rows:
+                eid = str(r["id"])
+                resources.append(
+                    {
+                        "uri": f"sk://knowledge/{eid}",
+                        "name": r["title"] or f"Entry {eid}",
+                        "description": f"Knowledge entry #{eid}",
+                        "mimeType": "text/plain",
+                    }
+                )
+        except Exception:
+            pass
+    return {"resources": resources}
+
+
+def _handle_resources_read(params: dict) -> dict:
+    uri = params.get("uri")
+    if not isinstance(uri, str) or not uri:
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'uri' must be a non-empty string")
+
+    if uri == "sk://status":
+        data = _resource_status()
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    if uri == "sk://sessions/recent":
+        data = _resource_sessions_recent()
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    if uri == "sk://knowledge/list":
+        data = _resource_knowledge_list()
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    if uri.startswith("sk://knowledge/") and not uri.endswith("/list"):
+        entry_id = uri[len("sk://knowledge/") :]
+        entry = _resource_knowledge_entry(entry_id)
+        if entry is None:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Knowledge entry not found: {entry_id}")
+        lines = [f"# {entry.get('title', 'Untitled')}"]
+        lines.append(f"Type: {entry.get('entry_type', '')}")
+        if entry.get("tags"):
+            lines.append(f"Tags: {entry['tags']}")
+        if entry.get("wing"):
+            lines.append(f"Wing: {entry['wing']}")
+        if entry.get("room"):
+            lines.append(f"Room: {entry['room']}")
+        lines.append(f"Created: {entry.get('created_at', '')}")
+        lines.append("")
+        lines.append(entry.get("body", ""))
+        text = "\n".join(lines)
+        return {"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]}
+
+    if uri.startswith("sk://code/symbols/"):
+        project_id = uri[len("sk://code/symbols/") :]
+        symbols = _resource_code_symbols(project_id)
+        text = json.dumps(symbols, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown resource URI: {uri}")
+
+
 def _read_exact(stream, length: int) -> bytes:
     chunks = []
     remaining = length
@@ -878,9 +1060,9 @@ def _handle_request(message: dict[str, Any]) -> tuple[bool, dict[str, Any] | Non
         )
         return False, {
             "protocolVersion": protocol,
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {"tools": {"listChanged": False}, "resources": {"subscribe": False, "listChanged": False}},
             "serverInfo": SERVER_INFO,
-            "instructions": "Read-only tools backed by briefing.py and query-session.py.",
+            "instructions": "Read-only tools and resources backed by sk session knowledge.",
         }
     if method == "ping":
         return False, {}
@@ -890,6 +1072,10 @@ def _handle_request(message: dict[str, Any]) -> tuple[bool, dict[str, Any] | Non
         return False, {"tools": TOOLS}
     if method == "tools/call":
         return False, _handle_tools_call(params)
+    if method == "resources/list":
+        return False, _handle_resources_list()
+    if method == "resources/read":
+        return False, _handle_resources_read(params)
     if method in {"notifications/initialized", "exit"}:
         return method == "exit", None
     raise JsonRpcError(JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
