@@ -4086,6 +4086,197 @@ def _format_code_context(snippets: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
+    """Analyze recall quality from recall_events and search_feedback."""
+    if not db_path.exists():
+        if as_json:
+            print(json.dumps({"error": "No knowledge database found."}))
+        else:
+            print("No knowledge database found.")
+        return
+
+    try:
+        db = sqlite3.connect(str(db_path) + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+    except Exception as exc:
+        if as_json:
+            print(json.dumps({"error": f"Cannot open database: {exc}"}))
+        else:
+            print(f"Cannot open database: {exc}")
+        return
+
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "recall_events" not in tables:
+        if as_json:
+            print(json.dumps({"error": "No recall_events yet — run sk briefing first"}))
+        else:
+            print("No recall events yet — run 'sk briefing' first to populate recall data.")
+        db.close()
+        return
+
+    cutoff = f"-{days} days"
+
+    # 1. Precision by query (from search_feedback verdicts)
+    precision_by_query = []
+    if "search_feedback" in tables:
+        rows = db.execute(
+            """
+            SELECT query,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN verdict = 1 THEN 1 ELSE 0 END) AS good,
+                   SUM(CASE WHEN verdict = -1 THEN 1 ELSE 0 END) AS bad
+            FROM search_feedback
+            WHERE date(created_at) >= date('now', ?)
+              AND query IS NOT NULL AND query != ''
+            GROUP BY query
+            HAVING total >= 2
+            ORDER BY CAST(good AS REAL)/total DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+        for r in rows:
+            pct = round(r["good"] / r["total"] * 100) if r["total"] else 0
+            precision_by_query.append(
+                {
+                    "query": r["query"],
+                    "total": r["total"],
+                    "good": r["good"],
+                    "bad": r["bad"],
+                    "precision_pct": pct,
+                }
+            )
+
+    # 2. Dead knowledge — entries never in any recall event's selected_entry_ids
+    dead_entries = []
+    if "knowledge_entries" in tables:
+        selected_raw = db.execute(
+            "SELECT selected_entry_ids FROM recall_events WHERE selected_entry_ids != '[]'"
+        ).fetchall()
+        ever_recalled: set[str] = set()
+        for row in selected_raw:
+            try:
+                ids = json.loads(row[0])
+                if isinstance(ids, list):
+                    ever_recalled.update(str(i) for i in ids)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        dead_rows = db.execute(
+            """SELECT id, title, entry_type, priority, created_at FROM knowledge_entries
+               WHERE date(created_at) <= date('now', ?)""",
+            (cutoff,),
+        ).fetchall()
+        dead_entries = [
+            {"id": r["id"], "title": r["title"], "type": r["entry_type"], "priority": r["priority"]}
+            for r in dead_rows
+            if str(r["id"]) not in ever_recalled
+        ]
+
+    # 3. Always-hit entries — in selected_entry_ids in >80% of events in window
+    pin_candidates = []
+    window_events = db.execute(
+        "SELECT selected_entry_ids FROM recall_events WHERE date(created_at) >= date('now', ?)",
+        (cutoff,),
+    ).fetchall()
+    total_window = len(window_events)
+    if total_window >= 5:
+        freq: dict[str, int] = {}
+        for row in window_events:
+            try:
+                ids = json.loads(row[0])
+                if isinstance(ids, list):
+                    for eid in ids:
+                        key = str(eid)
+                        freq[key] = freq.get(key, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                pass
+        threshold = 0.8
+        for eid, cnt in sorted(freq.items(), key=lambda x: -x[1]):
+            if cnt / total_window >= threshold:
+                title = "(unknown)"
+                if "knowledge_entries" in tables:
+                    row = db.execute("SELECT title FROM knowledge_entries WHERE id=?", (eid,)).fetchone()
+                    if row:
+                        title = row["title"]
+                pin_candidates.append(
+                    {
+                        "id": eid,
+                        "title": title,
+                        "hit_rate_pct": round(cnt / total_window * 100),
+                        "hits": cnt,
+                        "total_events": total_window,
+                    }
+                )
+
+    # 4. Category breakdown
+    category_breakdown = []
+    if "knowledge_entries" in tables and total_window > 0:
+        cat_rows = db.execute(
+            """SELECT ke.entry_type AS category, COUNT(DISTINCT re.id) AS events
+               FROM recall_events re
+               JOIN knowledge_entries ke ON ke.id = re.opened_entry_id
+               WHERE date(re.created_at) >= date('now', ?)
+               GROUP BY ke.entry_type
+               ORDER BY events DESC""",
+            (cutoff,),
+        ).fetchall()
+        category_breakdown = [{"category": r["category"], "events": r["events"]} for r in cat_rows]
+
+    db.close()
+
+    if as_json:
+        output = {
+            "days": days,
+            "total_recall_events": total_window,
+            "precision_by_query": precision_by_query,
+            "dead_knowledge_count": len(dead_entries),
+            "dead_knowledge": dead_entries[:20],
+            "pin_candidates": pin_candidates,
+            "category_breakdown": category_breakdown,
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        return
+
+    print(f"\nRecall Quality Report — last {days} days")
+    print("━" * 44)
+    print(f"  Total recall events : {total_window}")
+
+    if precision_by_query:
+        print("\nBy query precision (feedback-based):")
+        high = [q for q in precision_by_query if q["precision_pct"] >= 70]
+        low = [q for q in precision_by_query if q["precision_pct"] < 40]
+        for q in high[:5]:
+            bar = "█" * round(q["precision_pct"] / 10) + "░" * (10 - round(q["precision_pct"] / 10))
+            print(f"  ✅ {q['query'][:40]:<40} {q['precision_pct']:3}%  {bar}  ({q['total']} hits)")
+        if low:
+            print("\nLow-precision queries (< 40%):")
+            for q in low[:5]:
+                print(f"  ⚠  {q['query'][:40]:<40} {q['precision_pct']:3}%  ({q['total']} hits, {q['bad']} bad)")
+    else:
+        print("\n  No feedback data yet — use 'sk query --feedback <id> good|bad|neutral' to train.")
+
+    print(f"\nDead knowledge (never recalled, older than {days}d): {len(dead_entries)} entries")
+    if dead_entries:
+        print("  → Consider running: sk knowledge evict --dry-run")
+        for e in dead_entries[:3]:
+            print(f"    #{e['id']} [{e['priority']}] {e['title'][:60]}")
+        if len(dead_entries) > 3:
+            print(f"    ... and {len(dead_entries) - 3} more")
+
+    if pin_candidates:
+        print("\nAuto-pin candidates (hit rate ≥ 80%):")
+        for p in pin_candidates[:5]:
+            print(f"  📌 #{p['id']} {p['title'][:50]} — {p['hit_rate_pct']}% ({p['hits']}/{p['total_events']} events)")
+        print("  → Run: sk knowledge pin <id>")
+
+    if category_breakdown:
+        print("\nCategory recall breakdown:")
+        for c in category_breakdown:
+            print(f"  {c['category']:<15} {c['events']} events")
+
+    print()
+
+
 def main():
     args = sys.argv[1:]
 
@@ -4161,6 +4352,21 @@ def main():
     if "--never-recalled" in args:
         _nr_fmt = "json" if "--json" in args else "text"
         print(generate_never_recalled(fmt=_nr_fmt))
+        return
+
+    # Handle --recall-quality mode (issue #757)
+    if "--recall-quality" in args:
+        _rq_days = 30
+        if "--days" in args:
+            _rq_idx = args.index("--days")
+            try:
+                _rq_days = (
+                    int(args[_rq_idx + 1]) if _rq_idx + 1 < len(args) and not args[_rq_idx + 1].startswith("--") else 30
+                )
+            except (ValueError, IndexError):
+                _rq_days = 30
+        _rq_json = "--json" in args
+        _recall_quality_report(DB_PATH, _rq_days, _rq_json)
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)
