@@ -4735,6 +4735,89 @@ def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
     print()
 
 
+def _fetch_reflect_entries(db: sqlite3.Connection, question: str, limit: int = 15) -> list[dict]:
+    """Fetch top entries relevant to the reflect question via FTS5."""
+    safe_q = re.sub(r'["\*\(\)]', " ", question)[:100].strip()
+    try:
+        rows = db.execute(
+            "SELECT ke.id, ke.category, ke.title, ke.content, ke.tags, ke.confidence "
+            "FROM knowledge_entries ke "
+            "JOIN knowledge_fts kf ON ke.id = kf.rowid "
+            "WHERE knowledge_fts MATCH ? "
+            "ORDER BY rank LIMIT ?",
+            (safe_q, limit),
+        ).fetchall()
+    except Exception:
+        rows = db.execute(
+            "SELECT id, category, title, content, tags, confidence FROM knowledge_entries "
+            "ORDER BY confidence DESC, last_seen DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {"id": r[0], "category": r[1], "title": r[2], "content": r[3], "tags": r[4], "confidence": r[5]} for r in rows
+    ]
+
+
+def _statistical_reflect(entries: list[dict], question: str) -> str:
+    """Fallback: pattern-find via tag/title frequency when no LLM available."""
+    import collections
+
+    tag_counts: collections.Counter = collections.Counter()
+    for e in entries:
+        for tag in (e.get("tags") or "").split(","):
+            t = tag.strip()
+            if t:
+                tag_counts[t] += 1
+
+    mistake_count = sum(1 for e in entries if e.get("category") == "mistake")
+    pattern_count = sum(1 for e in entries if e.get("category") == "pattern")
+    top_tags = [f"{t}({c})" for t, c in tag_counts.most_common(5)]
+
+    lines = [
+        f"## Reflection: {question[:80]}",
+        "",
+        f"Based on {len(entries)} related entries:",
+        f"  \u2022 {mistake_count} mistakes, {pattern_count} patterns",
+        f"  \u2022 Top tags: {', '.join(top_tags) or 'none'}",
+        "",
+        "### Entry titles:",
+    ]
+    for e in entries[:8]:
+        lines.append(f"  [{e['category']}] {e['title'][:70]}")
+    return "\n".join(lines)
+
+
+def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
+    """Run --reflect mode: fetch entries, synthesize insight, optionally store."""
+    db = sqlite3.connect(db_path)
+    entries = _fetch_reflect_entries(db, question)
+
+    if not entries:
+        print("No relevant entries found for reflection.")
+        db.close()
+        return
+
+    # Statistical fallback (always works; LLM path is future extension)
+    output = _statistical_reflect(entries, question)
+    print(output)
+
+    # Optionally store as discovery entry
+    if store and entries:
+        import time
+
+        summary = f"Reflection on: {question[:60]}\n" + "\n".join(
+            f"- [{e['category']}] {e['title']}" for e in entries[:5]
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO knowledge_entries "
+            "(category, title, content, tags, confidence, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("discovery", f"Reflect: {question[:60]}", summary, "reflect,discovery", 0.6, time.time(), time.time()),
+        )
+        db.commit()
+    db.close()
+
+
 def main():
     args = sys.argv[1:]
 
@@ -4849,6 +4932,17 @@ def main():
             print("Error: --delta requires a window argument like 1d, 7d, 24h, 2w", file=sys.stderr)
             sys.exit(1)
         _delta_report(DB_PATH, _delta_window)
+        return
+
+    # Handle --reflect <question> mode (issue #803)
+    if "--reflect" in args:
+        _rf_idx = args.index("--reflect")
+        _rf_question = args[_rf_idx + 1] if _rf_idx + 1 < len(args) and not args[_rf_idx + 1].startswith("--") else ""
+        if not _rf_question:
+            print("Error: --reflect requires a question string", file=sys.stderr)
+            return
+        _rf_store = "--no-store" not in args
+        _run_reflect(str(DB_PATH), _rf_question, store=_rf_store)
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)
