@@ -16349,6 +16349,260 @@ except Exception as _e869:
     for _label869 in ["1a", "1b", "1c", "2", "3", "4a", "4b", "4c", "5a", "5b", "5c", "6"]:
         test(f"I869-{_label869}: sk export JSONL", False, str(_e869))
 
+
+# === I856: LLM-assisted tag inference ===
+try:
+    import importlib
+    import io
+    import json as _json856
+    import types
+    import unittest.mock
+
+    # Load learn.py as module
+    _spec856 = importlib.util.spec_from_file_location("learn856", "learn.py")
+    _learn856 = importlib.util.module_from_spec(_spec856)
+    _spec856.loader.exec_module(_learn856)
+
+    # Load tag-entries.py as module
+    _spec856t = importlib.util.spec_from_file_location("tagentries856", "tag-entries.py")
+    _tag856 = importlib.util.module_from_spec(_spec856t)
+    _spec856t.loader.exec_module(_tag856)
+
+    # --- Test 1: JSON array extraction from clean response ---
+    def _mock_urlopen_856(req, **kw):
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["python", "testing", "ci"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        resp.read = resp.read
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856):
+            _tags1 = _learn856._llm_suggest_tags("Test title", "Test content")
+    test("I856-1: JSON array extraction from clean LLM response", _tags1 == ["python", "testing", "ci"], repr(_tags1))
+
+    # --- Test 2: JSON extraction from wrapped response ---
+    def _mock_urlopen_856_wrapped(req, **kw):
+        resp_data = _json856.dumps(
+            {"choices": [{"message": {"content": 'Here are tags: ["debug", "error"]'}}]}
+        ).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_wrapped):
+            _tags2 = _learn856._llm_suggest_tags("Debug issue", "Some error trace")
+    test("I856-2: JSON extraction from wrapped response", _tags2 == ["debug", "error"], repr(_tags2))
+
+    # --- Test 3: Empty/malformed response returns empty list ---
+    def _mock_urlopen_856_bad(req, **kw):
+        resp_data = _json856.dumps({"choices": [{"message": {"content": "I cannot generate tags"}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_bad):
+            _tags3 = _learn856._llm_suggest_tags("No tags", "Bad content")
+    test("I856-3: Malformed response returns empty list", _tags3 == [], repr(_tags3))
+
+    # --- Test 4: Missing API key exits ---
+    _exited856 = False
+    with unittest.mock.patch.dict(os.environ, {}, clear=True):
+        _env_backup856 = os.environ.copy()
+        os.environ.pop("SK_LLM_API_KEY", None)
+        os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            _learn856._llm_suggest_tags("Title", "Content")
+        except SystemExit:
+            _exited856 = True
+    test("I856-4: Missing API key causes sys.exit", _exited856, "Did not exit")
+
+    # --- Test 5: SK_LLM_API_KEY takes precedence over OPENAI_API_KEY ---
+    _captured_auth856 = [None]
+
+    def _mock_urlopen_856_capture(req, **kw):
+        _captured_auth856[0] = req.get_header("Authorization")
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["tag1"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(
+        os.environ,
+        {
+            "SK_LLM_API_KEY": "sk-primary",
+            "OPENAI_API_KEY": "sk-fallback",
+        },
+    ):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_capture):
+            _learn856._llm_suggest_tags("Title", "Content")
+    test(
+        "I856-5: SK_LLM_API_KEY takes precedence",
+        _captured_auth856[0] == "Bearer sk-primary",
+        repr(_captured_auth856[0]),
+    )
+
+    # --- Test 6: SK_LLM_MODEL passthrough ---
+    _captured_payload856 = [None]
+
+    def _mock_urlopen_856_model(req, **kw):
+        _captured_payload856[0] = _json856.loads(req.data)
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["tag1"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(
+        os.environ,
+        {
+            "SK_LLM_API_KEY": "test-key",
+            "SK_LLM_MODEL": "gpt-4o",
+        },
+    ):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_model):
+            _learn856._llm_suggest_tags("Title", "Content")
+    test(
+        "I856-6: SK_LLM_MODEL passthrough",
+        _captured_payload856[0] and _captured_payload856[0].get("model") == "gpt-4o",
+        repr(_captured_payload856[0]),
+    )
+
+    # --- Test 7: tag-entries _llm_suggest_tags identical behavior ---
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_tag856.urllib.request, "urlopen", _mock_urlopen_856):
+            _tags7 = _tag856._llm_suggest_tags("Test title", "Test content")
+    test("I856-7: tag-entries _llm_suggest_tags works", _tags7 == ["python", "testing", "ci"], repr(_tags7))
+
+    # --- Test 8: tag-entries batch dry-run writes no rows ---
+    import sqlite3 as _sql856
+    import tempfile as _tmp856
+
+    _tmpdir856 = _tmp856.mkdtemp()
+    _dbpath856 = os.path.join(_tmpdir856, "test856.db")
+
+    def _make_db856():
+        _c = _sql856.connect(_dbpath856)
+        _c.row_factory = _sql856.Row
+        return _c
+
+    _init856 = _make_db856()
+    _init856.execute("""CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT)""")
+    _init856.execute("""CREATE TABLE IF NOT EXISTS entry_concept_tags (
+        entry_id INTEGER, tag TEXT, source TEXT, tagged_at TEXT,
+        PRIMARY KEY (entry_id, tag))""")
+    _init856.execute("INSERT OR IGNORE INTO knowledge_entries VALUES (1, 'Test', 'Content', '')")
+    _init856.commit()
+    _init856.close()
+
+    _orig_get_db856 = _tag856.get_db
+    _tag856.get_db = _make_db856
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_tag856.urllib.request, "urlopen", _mock_urlopen_856):
+            _stats8 = _tag856.run_llm_tag_batch(dry_run=True, quiet=True)
+
+    _chk856 = _make_db856()
+    _rows8 = _chk856.execute("SELECT * FROM entry_concept_tags").fetchall()
+    _chk856.close()
+    test(
+        "I856-8: dry-run writes no rows",
+        len(_rows8) == 0 and _stats8["tagged"] == 1,
+        f"rows={len(_rows8)} stats={_stats8}",
+    )
+
+    # --- Test 9: batch run writes rows with source='llm' ---
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_tag856.urllib.request, "urlopen", _mock_urlopen_856):
+            _stats9 = _tag856.run_llm_tag_batch(quiet=True)
+
+    _chk856b = _make_db856()
+    _rows9 = _chk856b.execute("SELECT * FROM entry_concept_tags WHERE source = 'llm'").fetchall()
+    _chk856b.close()
+    test(
+        "I856-9: batch writes rows with source='llm'",
+        len(_rows9) == 3 and _stats9["tagged"] == 1,
+        f"rows={len(_rows9)} stats={_stats9}",
+    )
+
+    # --- Test 10: learn.py LLM exception handling (non-SystemExit) ---
+    def _mock_urlopen_856_error(req, **kw):
+        raise ConnectionError("Network timeout")
+
+    _err856_caught = False
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_error):
+            try:
+                _learn856._llm_suggest_tags("Title", "Content")
+            except ConnectionError:
+                _err856_caught = True
+    # _llm_suggest_tags itself raises — the caller in main() wraps it
+    test("I856-10: _llm_suggest_tags propagates network errors", _err856_caught, "Error was not raised")
+
+    # --- Test 11: tags lowercase normalization ---
+    def _mock_urlopen_856_upper(req, **kw):
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["Python", "CI/CD", "TESTING"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_upper):
+            _tags11 = _learn856._llm_suggest_tags("Title", "Content")
+    test("I856-11: tags are lowercased", all(t == t.lower() for t in _tags11) and len(_tags11) == 3, repr(_tags11))
+
+    # --- Test 12: non-string items filtered ---
+    def _mock_urlopen_856_mixed(req, **kw):
+        resp_data = _json856.dumps(
+            {"choices": [{"message": {"content": '["valid", 42, "also-valid", null]'}}]}
+        ).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_mixed):
+            _tags12 = _learn856._llm_suggest_tags("Title", "Content")
+    test("I856-12: non-string items filtered from response", _tags12 == ["valid", "also-valid"], repr(_tags12))
+
+    # --- Test 13: OPENAI_API_KEY fallback works ---
+    _captured_auth856b = [None]
+
+    def _mock_urlopen_856_fb(req, **kw):
+        _captured_auth856b[0] = req.get_header("Authorization")
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["tag1"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    _env_856fb = {"OPENAI_API_KEY": "sk-fallback-key"}
+    with unittest.mock.patch.dict(os.environ, _env_856fb, clear=False):
+        os.environ.pop("SK_LLM_API_KEY", None)
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_fb):
+            _learn856._llm_suggest_tags("Title", "Content")
+    test(
+        "I856-13: OPENAI_API_KEY fallback",
+        _captured_auth856b[0] == "Bearer sk-fallback-key",
+        repr(_captured_auth856b[0]),
+    )
+
+    _tag856.get_db = _orig_get_db856
+
+except Exception as _e856:
+    for _label856 in range(1, 14):
+        test(f"I856-{_label856}: LLM tag inference", False, str(_e856))
+
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")

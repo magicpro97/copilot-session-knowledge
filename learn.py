@@ -61,6 +61,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 if os.name == "nt":
@@ -93,6 +94,46 @@ RELATION_TYPES: dict[str, str] = {
     "documents": "documented_by",
     "tests": "tested_by",
 }
+
+
+def _llm_suggest_tags(title: str, content: str) -> list[str]:
+    """Call LLM API to suggest tags. Returns list of lowercase tag strings."""
+    api_key = os.environ.get("SK_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    if not api_key:
+        print(
+            "Error: LLM API key not set. Set SK_LLM_API_KEY or OPENAI_API_KEY.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    model = os.environ.get("SK_LLM_MODEL", "gpt-4o-mini")
+    prompt = (
+        f"Given this knowledge entry title and content, suggest 3-5 relevant tags "
+        f"as a JSON array of lowercase strings. Title: {title}. "
+        f"Content: {content[:500]}. Respond with only a JSON array."
+    )
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 100,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    raw = data["choices"][0]["message"]["content"].strip()
+    m = re.search(r"\[.*?\]", raw, re.DOTALL)
+    if not m:
+        return []
+    tags = json.loads(m.group(0))
+    return [str(t).lower().strip() for t in tags if isinstance(t, str)]
 
 
 def _should_use_writer_broker() -> bool:
@@ -3819,6 +3860,7 @@ def main():
 
     # Auto-PR flags (Issue #612)
     auto_pr = "--auto-pr" in args
+    use_llm = "--llm" in args
     auto_pr_threshold: float | None = None
     if "--confidence-threshold" in args:
         _ct_idx = args.index("--confidence-threshold")
@@ -4097,6 +4139,46 @@ def main():
     if affected_files:
         print(f"  Affecting {len(affected_files)} file(s): {', '.join(affected_files[:3])}")
     print("Done.")
+    if use_llm and entry_id >= 0:
+        try:
+            suggested = _llm_suggest_tags(title, content)
+            if suggested:
+                print(f"  LLM suggested tags: {', '.join(suggested)}")
+                _db = get_db()
+                now = time.strftime("%Y-%m-%dT%H:%M:%S")
+                _db.execute("SAVEPOINT _llm_tag")
+                try:
+                    _db.execute(
+                        "UPDATE knowledge_entries SET tags = ? WHERE id = ?",
+                        (", ".join(suggested), entry_id),
+                    )
+                    has_table = _db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'"
+                    ).fetchone()
+                    if has_table:
+                        _db.execute(
+                            "DELETE FROM entry_concept_tags WHERE entry_id = ? AND source = 'llm'",
+                            (entry_id,),
+                        )
+                        _db.executemany(
+                            """INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at)
+                            VALUES (?, ?, 'llm', ?)
+                            ON CONFLICT(entry_id, tag) DO UPDATE SET
+                                source = 'llm', tagged_at = excluded.tagged_at""",
+                            [(entry_id, tag, now) for tag in suggested],
+                        )
+                    _db.execute("RELEASE _llm_tag")
+                except Exception:
+                    _db.execute("ROLLBACK TO _llm_tag")
+                    _db.execute("RELEASE _llm_tag")
+                    raise
+                _db.commit()
+                _db.close()
+                print(f"  Tags applied to entry #{entry_id}")
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"  [warn] LLM tagging failed, keeping auto tags: {exc}", file=sys.stderr)
     if update_cerebrum and entry_id >= 0:
         rc = _auto_update_cerebrum(cerebrum_output, cerebrum_sections)
         if rc != 0:
