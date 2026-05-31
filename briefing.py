@@ -4875,10 +4875,7 @@ def _fetch_rag_entries(db: sqlite3.Connection, query: str) -> list[dict]:
     for cat in ("mistake", "pattern", "insight", "context"):
         cat_entries = search_knowledge_entries(db, query, cat, limit=5)
         entries.extend(cat_entries)
-    entries = [
-        e for e in entries
-        if not _briefing_entry_is_unsafe(e) and e.get("id") not in superseded_ids
-    ]
+    entries = [e for e in entries if not _briefing_entry_is_unsafe(e) and e.get("id") not in superseded_ids]
     return entries
 
 
