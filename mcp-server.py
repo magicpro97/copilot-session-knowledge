@@ -267,6 +267,24 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "rate_entry",
+        "description": "Rate a knowledge entry as helpful or misleading to improve future briefings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "integer", "description": "ID of the knowledge entry to rate"},
+                "verdict": {
+                    "type": "string",
+                    "enum": ["good", "bad", "neutral"],
+                    "description": "helpful=good, misleading=bad, neutral=neutral",
+                },
+                "note": {"type": "string", "description": "Optional note (max 500 chars)", "maxLength": 500},
+            },
+            "required": ["entry_id", "verdict"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -813,6 +831,51 @@ def _run_code_search(arguments: dict) -> dict:
     }
 
 
+def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Write a feedback row for a knowledge entry (good/bad/neutral)."""
+    _check_auth(arguments)
+    entry_id = arguments.get("entry_id")
+    verdict = arguments.get("verdict", "neutral")
+    note = str(arguments.get("note") or "")[:500]
+
+    if not isinstance(entry_id, int) or verdict not in ("good", "bad", "neutral"):
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "entry_id (int) and verdict (good|bad|neutral) required")
+
+    verdict_map = {"good": 1, "neutral": 0, "bad": -1}
+    score = verdict_map[verdict]
+
+    if not _DB_PATH.exists():
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Knowledge DB not found: {_DB_PATH}")
+
+    try:
+        db = sqlite3.connect(str(_DB_PATH))
+    except sqlite3.OperationalError as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB open error: {exc}") from exc
+
+    try:
+        row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            body = {"error": f"Entry #{entry_id} not found"}
+            return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+        import time as _time
+
+        created_at = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime())
+        db.execute(
+            "INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at, note)"
+            " VALUES (?, ?, 'knowledge', ?, ?, ?)",
+            ("*", str(entry_id), score, created_at, note or None),
+        )
+        db.commit()
+    except sqlite3.OperationalError as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB write error: {exc}") from exc
+    finally:
+        db.close()
+
+    body = {"status": "ok", "entry_id": entry_id, "title": row[1], "verdict": verdict}
+    return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -836,6 +899,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_session_list(arguments)
     if name == "code_search":
         return _run_code_search(arguments)
+    if name == "rate_entry":
+        return _run_rate_entry(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

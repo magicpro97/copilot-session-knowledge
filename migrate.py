@@ -1839,6 +1839,13 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_tool_spans_tool ON tool_spans (tool_name)",
             ],
         ),
+        (
+            42,
+            "search_feedback_note",
+            [
+                "ALTER TABLE search_feedback ADD COLUMN note TEXT",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
