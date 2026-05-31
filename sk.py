@@ -183,6 +183,11 @@ _DIRECT: dict[str, CommandMeta] = {
     ),
     "curate": CommandMeta("curate.py", "Automated stale/duplicate knowledge entry curation", ("knowledge", "curation")),
     "tui": CommandMeta("tui.py", "Interactive terminal knowledge browser (curses)", ("browse", "ui")),
+    "export": CommandMeta(
+        "knowledge-health.py",
+        "Export knowledge entries as JSONL, JSON, CSV, or Markdown backup",
+        ("export", "knowledge", "backup"),
+    ),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -1112,6 +1117,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run("doctor.py", rest)
     if cmd == "init":
         return _run("setup-project.py", ["--init-mode"] + rest)
+    if cmd == "export":
+        return _run("knowledge-health.py", ["--export"] + rest, cmd=cmd)
     if cmd == "completion":
         return _run_completion(rest)
     if cmd in _DIRECT:
