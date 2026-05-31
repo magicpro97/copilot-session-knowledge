@@ -28,6 +28,7 @@ class SyntaxGateRule(Rule):
     name = "syntax-gate"
     events = ["preToolUse"]
     tools = ["edit", "create"]
+    file_patterns = ["**/*.py", "*.py"]
 
     def evaluate(self, event, data):
         tool_name = data.get("toolName", "")

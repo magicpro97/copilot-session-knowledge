@@ -12,6 +12,11 @@ class Rule:
     events = []  # e.g., ["preToolUse"]
     tools = []  # e.g., ["edit", "create", "bash"]. Empty = all tools
 
+    # Optional context filters (all empty = no filtering, rule always runs)
+    file_patterns = []  # e.g., ["**/*.py"] — filter by extracted file path (pathlib.PurePath.match)
+    require_wing = ""  # e.g., "backend" — skip rule when SK_WING env var doesn't match
+    require_room = ""  # e.g., "api"     — skip rule when SK_ROOM env var doesn't match
+
     def evaluate(self, event, data):
         """Evaluate this rule. Returns dict with decision or None to pass."""
         return None

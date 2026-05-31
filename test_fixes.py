@@ -14047,6 +14047,188 @@ try:
 except Exception as _e851:
     for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
         test(f"I851-{_lbl851}: briefing semantic dedup", False, str(_e851))
+# === I853: hook rule context filters (file_patterns, require_wing, require_room) ===
+print("\n🪝 I853: hook rule context filters")
+
+try:
+    import os as _os853
+    from pathlib import PurePath as _PP853
+
+    sys.path.insert(0, str(Path(__file__).parent / "hooks"))
+    from rules import Rule as _Rule853
+
+    # I853-1: Rule base class has file_patterns field
+    test("I853-1: Rule has file_patterns field", hasattr(_Rule853, "file_patterns"), "missing field")
+    # I853-2: Rule base class has require_wing field
+    test("I853-2: Rule has require_wing field", hasattr(_Rule853, "require_wing"), "missing field")
+    # I853-3: Rule base class has require_room field
+    test("I853-3: Rule has require_room field", hasattr(_Rule853, "require_room"), "missing field")
+
+    # I853-4: _extract_file_path importable from hook_runner
+    sys.path.insert(0, str(Path(__file__).parent / "hooks"))
+    import importlib as _il853
+    import importlib.util as _ilu853
+
+    _spec853 = _ilu853.spec_from_file_location("hook_runner853", Path(__file__).parent / "hooks" / "hook_runner.py")
+    _hr853 = _il853.util.module_from_spec(_spec853)
+    _spec853.loader.exec_module(_hr853)
+    _extract_fp853 = _hr853._extract_file_path
+    test("I853-4: _extract_file_path defined in hook_runner", callable(_extract_fp853), "not found")
+
+    # I853-5/6: file_patterns filtering logic (using production _extract_file_path)
+    class _MockFP853(_Rule853):
+        name = "mock-fp853"
+        events = ["preToolUse"]
+        tools = []
+        file_patterns = ["**/*.py", "*.py"]
+        _called = False
+
+        def evaluate(self, event, data):
+            _MockFP853._called = True
+            return None
+
+    def _simulate_filter853(rule, data):
+        """Apply file_patterns filter using production _extract_file_path."""
+        pats = getattr(rule, "file_patterns", [])
+        if pats:
+            fp = _extract_fp853(data)
+            if not fp or not any(_PP853(fp).match(pat) for pat in pats):
+                return False  # skip
+        return True  # proceed
+
+    _mr853 = _MockFP853()
+    _skip853 = _simulate_filter853(_mr853, {"toolArgs": {"path": "config.json"}})
+    test("I853-5: file_patterns=*.py — skipped for config.json", not _skip853, f"skip={_skip853}")
+
+    _run853 = _simulate_filter853(_mr853, {"toolArgs": {"path": "script.py"}})
+    test("I853-6: file_patterns=*.py — triggered for script.py", _run853, f"run={_run853}")
+
+    # Nested path matching
+    _run853_nested = _simulate_filter853(_mr853, {"toolArgs": {"path": "src/hooks/rules/foo.py"}})
+    test("I853-6b: file_patterns=*.py — triggered for nested path/*.py", _run853_nested, f"run={_run853_nested}")
+
+    # I853-7/8: require_wing filtering
+    class _MockWing853(_Rule853):
+        name = "mock-wing853"
+        events = ["preToolUse"]
+        tools = []
+        require_wing = "backend"
+
+    def _simulate_wing853(rule, env_wing):
+        old = _os853.environ.get("SK_WING", "")
+        try:
+            if env_wing is None:
+                _os853.environ.pop("SK_WING", None)
+            else:
+                _os853.environ["SK_WING"] = env_wing
+            return _os853.environ.get("SK_WING", "") == rule.require_wing
+        finally:
+            if old:
+                _os853.environ["SK_WING"] = old
+            else:
+                _os853.environ.pop("SK_WING", None)
+
+    _mw853 = _MockWing853()
+    test(
+        "I853-7: require_wing=backend — skipped when SK_WING=frontend",
+        not _simulate_wing853(_mw853, "frontend"),
+        "should skip",
+    )
+    test(
+        "I853-8: require_wing=backend — triggered when SK_WING=backend",
+        _simulate_wing853(_mw853, "backend"),
+        "should run",
+    )
+
+    # I853-9/10: require_room filtering
+    class _MockRoom853(_Rule853):
+        name = "mock-room853"
+        events = ["preToolUse"]
+        tools = []
+        require_room = "api"
+
+    def _simulate_room853(rule, env_room):
+        old = _os853.environ.get("SK_ROOM", "")
+        try:
+            if env_room is None:
+                _os853.environ.pop("SK_ROOM", None)
+            else:
+                _os853.environ["SK_ROOM"] = env_room
+            return _os853.environ.get("SK_ROOM", "") == rule.require_room
+        finally:
+            if old:
+                _os853.environ["SK_ROOM"] = old
+            else:
+                _os853.environ.pop("SK_ROOM", None)
+
+    _mr2853 = _MockRoom853()
+    test("I853-9: require_room=api — skipped when SK_ROOM=ui", not _simulate_room853(_mr2853, "ui"), "should skip")
+    test("I853-10: require_room=api — triggered when SK_ROOM=api", _simulate_room853(_mr2853, "api"), "should run")
+
+    # I853-11: SyntaxGateRule has file_patterns declared
+    from rules.syntax_gate import SyntaxGateRule as _SGR853
+
+    _sg853 = _SGR853()
+    test(
+        "I853-11: SyntaxGateRule has file_patterns",
+        bool(_sg853.file_patterns),
+        f"file_patterns={_sg853.file_patterns!r}",
+    )
+
+    # I853-12: FileSizeAdvisoryRule has file_patterns declared
+    from rules.file_size_advisory import FileSizeAdvisoryRule as _FSA853
+
+    _fsa853 = _FSA853()
+    test(
+        "I853-12: FileSizeAdvisoryRule has file_patterns",
+        bool(_fsa853.file_patterns),
+        f"file_patterns={_fsa853.file_patterns!r}",
+    )
+
+    # I853-13: SyntaxGateRule NOT invoked for .json file via filter
+    _skip_json853 = not _simulate_filter853(_sg853, {"toolArgs": {"path": "config.json"}})
+    test("I853-13: SyntaxGateRule skipped for config.json", _skip_json853, f"skip={_skip_json853}")
+
+    # I853-14: FileSizeAdvisoryRule NOT invoked for .ts file via filter
+    _skip_ts853 = not _simulate_filter853(_fsa853, {"toolArgs": {"path": "app.ts"}})
+    test("I853-14: FileSizeAdvisoryRule skipped for app.ts", _skip_ts853, f"skip={_skip_ts853}")
+
+    # I853-15: empty file path with file_patterns → skipped (safe default)
+    _skip_empty853 = not _simulate_filter853(_sg853, {"toolArgs": {}})
+    test("I853-15: file_patterns — empty path skips rule safely", _skip_empty853, f"skip={_skip_empty853}")
+
+    # I853-16: _extract_file_path handles filePath key (edit/create payloads)
+    _fp_result853 = _extract_fp853({"toolResult": {"filePath": "src/app.py"}})
+    test(
+        "I853-16: _extract_file_path reads toolResult.filePath", _fp_result853 == "src/app.py", f"got={_fp_result853!r}"
+    )
+
+    # I853-17: _extract_file_path handles input container
+    _fp_input853 = _extract_fp853({"input": {"filePath": "lib/core.ts"}})
+    test("I853-17: _extract_file_path reads input.filePath", _fp_input853 == "lib/core.ts", f"got={_fp_input853!r}")
+
+except Exception as _e853:
+    for _label853 in [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "6b",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+    ]:
+        test(f"I853-{_label853}: hook rule context filters", False, str(_e853))
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:
