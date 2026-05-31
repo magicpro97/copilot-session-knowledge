@@ -11594,15 +11594,29 @@ test("I818-1d: _prefetch_cache_path in briefing.py", "_prefetch_cache_path" in _
 test("I818-1e: _get_current_sha8 in briefing.py", "_get_current_sha8" in _bsrc818, "function missing")
 test("I818-1f: _PREFETCH_TTL_SECONDS in briefing.py", "_PREFETCH_TTL_SECONDS" in _bsrc818, "constant missing")
 test("I818-1g: [cached] annotation in briefing.py", "[cached]" in _bsrc818, "annotation missing")
-test("I818-1h: post-checkout in install.py hook_names", '"post-checkout"' in _isrc818, "post-checkout not added")
-test("I818-1i: hooks/post-checkout file exists", (REPO / "hooks" / "post-checkout").is_file(), "file missing")
+test("I818-1h: _prefetch_args_hash in briefing.py", "_prefetch_args_hash" in _bsrc818, "hash helper missing")
+test("I818-1i: post-checkout in install.py hook_names", '"post-checkout"' in _isrc818, "post-checkout not added")
+test("I818-1j: hooks/post-checkout file exists", (REPO / "hooks" / "post-checkout").is_file(), "file missing")
 
 # I818-2: post-checkout hook correctness
 _pc818_src = (REPO / "hooks" / "post-checkout").read_text(encoding="utf-8")
-test("I818-2a: post-checkout skips file checkouts (flag != 1)", "_checkout_flag" in _pc818_src and '"1"' in _pc818_src, "flag check missing")
+test(
+    "I818-2a: post-checkout skips file checkouts (flag != 1)",
+    "_checkout_flag" in _pc818_src and '"1"' in _pc818_src,
+    "flag check missing",
+)
 test("I818-2b: post-checkout uses start_new_session", "start_new_session" in _pc818_src, "async launch missing")
 test("I818-2c: post-checkout passes --prefetch flag", '"--prefetch"' in _pc818_src, "missing --prefetch arg")
-test("I818-2d: post-checkout fail-open (try/except around Popen)", "try:" in _pc818_src and "pass" in _pc818_src, "fail-open missing")
+test(
+    "I818-2d: post-checkout uses sk launcher",
+    '"sk.py"' in _pc818_src and '"briefing"' in _pc818_src,
+    "sk launcher missing",
+)
+test(
+    "I818-2e: post-checkout fail-open (try/except around Popen)",
+    "try:" in _pc818_src and "pass" in _pc818_src,
+    "fail-open missing",
+)
 
 # I818-3: cache roundtrip (unit-level, using a temp HOME)
 try:
@@ -11630,17 +11644,22 @@ try:
         _bmod818.SESSION_STATE = _fake_ss818
 
         # Write cache
-        _bmod818._write_prefetch_cache("abc12345", "test query", "test briefing output")
-        _cache_file818 = _fake_ss818 / "briefing-prefetch-abc12345.json"
+        _args_hash818 = _bmod818._prefetch_args_hash(["--auto"])
+        _bmod818._write_prefetch_cache("abc12345", "test query", "test briefing output", args_hash=_args_hash818)
+        _cache_file818 = _fake_ss818 / f"briefing-prefetch-abc12345-{_args_hash818}.json"
         test("I818-3a: cache file created", _cache_file818.exists(), "file not created")
 
         # Read cache — should return the output
-        _result818 = _bmod818._read_prefetch_cache("abc12345")
+        _result818 = _bmod818._read_prefetch_cache("abc12345", args_hash=_args_hash818)
         test("I818-3b: cache read returns output", _result818 == "test briefing output", repr(_result818))
 
-        # Read with wrong sha — should return None
-        _miss818 = _bmod818._read_prefetch_cache("ffffffff")
+        # Read with wrong sha or args — should return None
+        _miss818 = _bmod818._read_prefetch_cache("ffffffff", args_hash=_args_hash818)
         test("I818-3c: cache miss returns None for unknown sha", _miss818 is None, repr(_miss818))
+        _arg_miss818 = _bmod818._read_prefetch_cache(
+            "abc12345", args_hash=_bmod818._prefetch_args_hash(["--auto", "--json"])
+        )
+        test("I818-3c2: cache miss returns None for arg mismatch", _arg_miss818 is None, repr(_arg_miss818))
 
         # Simulate expired cache
         import json as _json818
@@ -11648,7 +11667,7 @@ try:
         _payload818 = _json818.loads(_cache_file818.read_text())
         _payload818["generated_at"] = _time818.time() - (_bmod818._PREFETCH_TTL_SECONDS + 10)
         _cache_file818.write_text(_json818.dumps(_payload818))
-        _expired818 = _bmod818._read_prefetch_cache("abc12345")
+        _expired818 = _bmod818._read_prefetch_cache("abc12345", args_hash=_args_hash818)
         test("I818-3d: expired cache returns None", _expired818 is None, repr(_expired818))
 
         # Test _prefetch_cache_path returns None for empty sha
@@ -11662,7 +11681,7 @@ try:
             _os818.environ["SK_DB_PATH"] = _orig_env_db
 
 except Exception as _e818:
-    for _lbl818 in ["3a", "3b", "3c", "3d", "3e"]:
+    for _lbl818 in ["3a", "3b", "3c", "3c2", "3d", "3e"]:
         test(f"I818-{_lbl818}: cache roundtrip", False, str(_e818))
 
 # I818-4: CLI --prefetch flag returns without error (smoke test, no git repo needed)
@@ -11673,7 +11692,11 @@ try:
     with _tf818b.TemporaryDirectory() as _td818b:
         _fake_home818b = Path(_td818b) / "home"
         (_fake_home818b / ".copilot" / "session-state").mkdir(parents=True)
-        _env818 = {**os.environ, "HOME": str(_fake_home818b), "SK_DB_PATH": str(_fake_home818b / ".copilot" / "session-state" / "knowledge.db")}
+        _env818 = {
+            **os.environ,
+            "HOME": str(_fake_home818b),
+            "SK_DB_PATH": str(_fake_home818b / ".copilot" / "session-state" / "knowledge.db"),
+        }
         _r818 = _sp818.run(
             [sys.executable, str(REPO / "briefing.py"), "--prefetch"],
             capture_output=True,

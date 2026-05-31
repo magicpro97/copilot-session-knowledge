@@ -140,16 +140,49 @@ def _get_current_sha8() -> str:
     return ""
 
 
-def _prefetch_cache_path(sha8: str) -> "Path | None":
-    """Return the prefetch cache file path for a given sha8, or None if sha8 is empty."""
+def _prefetch_args_hash(args: list[str]) -> str:
+    """Return a stable short hash for the exact invocation a cache entry targets."""
+    normalized: list[str] = []
+    value_flags = {
+        "--format",
+        "--limit",
+        "--min-confidence",
+        "--budget",
+        "--mode",
+        "--available-tokens",
+        "--agent-tag",
+        "--msg-tag",
+        "--since",
+        "--days",
+        "--code-tokens",
+    }
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--prefetch":
+            i += 1
+            continue
+        normalized.append(arg)
+        if arg in value_flags and i + 1 < len(args):
+            normalized.append(args[i + 1])
+            i += 2
+            continue
+        i += 1
+    data = "\0".join(normalized).encode("utf-8")
+    return hashlib.md5(data).hexdigest()[:8]
+
+
+def _prefetch_cache_path(sha8: str, args_hash: str = "") -> "Path | None":
+    """Return the prefetch cache file path for a given sha8/arg hash, or None if sha8 is empty."""
     if not sha8:
         return None
-    return SESSION_STATE / f"briefing-prefetch-{sha8}.json"
+    suffix = f"-{args_hash}" if args_hash else ""
+    return SESSION_STATE / f"briefing-prefetch-{sha8}{suffix}.json"
 
 
-def _write_prefetch_cache(sha8: str, query: str, output: str) -> None:
-    """Write briefing output to the prefetch cache for sha8 (fail-silent)."""
-    cache_path = _prefetch_cache_path(sha8)
+def _write_prefetch_cache(sha8: str, query: str, output: str, args_hash: str = "") -> None:
+    """Write briefing output to the prefetch cache for sha8/arg hash (fail-silent)."""
+    cache_path = _prefetch_cache_path(sha8, args_hash=args_hash)
     if cache_path is None:
         return
     try:
@@ -158,6 +191,7 @@ def _write_prefetch_cache(sha8: str, query: str, output: str) -> None:
         SESSION_STATE.mkdir(parents=True, exist_ok=True)
         payload = {
             "sha8": sha8,
+            "args_hash": args_hash,
             "generated_at": time.time(),
             "query": query,
             "output": output,
@@ -167,15 +201,17 @@ def _write_prefetch_cache(sha8: str, query: str, output: str) -> None:
         pass
 
 
-def _read_prefetch_cache(sha8: str) -> "str | None":
-    """Return cached briefing output for sha8 if still fresh (<4 h), else None."""
-    cache_path = _prefetch_cache_path(sha8)
+def _read_prefetch_cache(sha8: str, args_hash: str = "") -> "str | None":
+    """Return cached briefing output for sha8/arg hash if still fresh (<4 h), else None."""
+    cache_path = _prefetch_cache_path(sha8, args_hash=args_hash)
     if cache_path is None or not cache_path.exists():
         return None
     try:
         import time
 
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if args_hash and payload.get("args_hash", "") != args_hash:
+            return None
         age = time.time() - float(payload.get("generated_at", 0))
         if age > _PREFETCH_TTL_SECONDS:
             return None
@@ -5065,6 +5101,7 @@ def main():
         if not DB_PATH.exists():
             print("[prefetch] Knowledge DB not found — skipping prefetch.", file=sys.stderr)
             return
+        _pf_args_hash = _prefetch_args_hash(["--auto"])
         _pf_query = auto_detect_context()
         print(f"[prefetch] Warming cache for sha={_pf_sha8} query={_pf_query!r}", file=sys.stderr)
         try:
@@ -5077,8 +5114,8 @@ def main():
         except Exception as _pf_exc:
             print(f"[prefetch] briefing generation failed: {_pf_exc}", file=sys.stderr)
             return
-        _write_prefetch_cache(_pf_sha8, _pf_query, _pf_output)
-        print(f"[prefetch] Cache written → {_prefetch_cache_path(_pf_sha8)}", file=sys.stderr)
+        _write_prefetch_cache(_pf_sha8, _pf_query, _pf_output, args_hash=_pf_args_hash)
+        print(f"[prefetch] Cache written → {_prefetch_cache_path(_pf_sha8, args_hash=_pf_args_hash)}", file=sys.stderr)
         return
 
     # Handle --history [--days N] mode (issue #720)
@@ -5382,15 +5419,18 @@ def main():
         already_served = _load_briefed_ids(_no_repeat_session_id)
 
     if auto_mode:
-        query = auto_detect_context()
-        print(f"[briefing] auto-detected: {query}", file=sys.stderr)
-        # Check prefetch cache before running a full briefing (issue #818)
         _cache_sha8 = _get_current_sha8()
-        _cached_output = _read_prefetch_cache(_cache_sha8) if _cache_sha8 else None
+        _cache_args_hash = _prefetch_args_hash(args)
+        _cache_allowed = not (no_repeat and _no_repeat_session_id)
+        _cached_output = (
+            _read_prefetch_cache(_cache_sha8, args_hash=_cache_args_hash) if _cache_allowed and _cache_sha8 else None
+        )
         if _cached_output is not None:
             print(f"[briefing] serving prefetch cache (sha={_cache_sha8}) [cached]", file=sys.stderr)
-            print(f"[cached]\n{_cached_output}")
+            print(_cached_output)
             return
+        query = auto_detect_context()
+        print(f"[briefing] auto-detected: {query}", file=sys.stderr)
     else:
         # Filter out values that follow flags (including --budget, --available-tokens) by argument
         # position, so query terms matching those values are preserved.

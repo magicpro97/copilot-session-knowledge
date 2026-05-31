@@ -5,7 +5,7 @@ Git calls this hook as: post-checkout <prev-sha> <new-sha> <flag>
   flag=1 → branch checkout (fire prefetch)
   flag=0 → file checkout (skip)
 
-The hook fires briefing.py --prefetch in the background (non-blocking) so the
+The hook fires `sk briefing --prefetch` in the background (non-blocking) so the
 next `sk briefing --auto` call can be served from cache instantly.
 """
 
@@ -28,27 +28,27 @@ if _checkout_flag != "1":
     sys.exit(0)
 
 _TOOLS_DIR = Path.home() / ".copilot" / "tools"
-_BRIEFING = _TOOLS_DIR / "briefing.py"
+_SK = _TOOLS_DIR / "sk.py"
 
-if not _BRIEFING.is_file():
+if not _SK.is_file():
     # Tools not installed — silently skip
     sys.exit(0)
 
-# Fire-and-forget: launch briefing.py --prefetch detached from this process.
+# Fire-and-forget: launch sk briefing --prefetch detached from this process.
 # On POSIX, nohup + redirect stderr to /dev/null keeps the hook fast.
 # On Windows, use DETACHED_PROCESS creation flag.
 try:
     if os.name == "nt":
         DETACHED_PROCESS = 0x00000008
         subprocess.Popen(
-            [sys.executable, str(_BRIEFING), "--prefetch"],
+            [sys.executable, str(_SK), "briefing", "--prefetch"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=DETACHED_PROCESS,
         )
     else:
         subprocess.Popen(
-            [sys.executable, str(_BRIEFING), "--prefetch"],
+            [sys.executable, str(_SK), "briefing", "--prefetch"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
