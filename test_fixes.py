@@ -11176,6 +11176,228 @@ except Exception as _e723:
         "23",
     ]:
         test(f"I723-{_sfx}: retro grouped view", False, str(_e723))
+# I756: MCP resources/list + resources/read round-trip coverage
+
+
+def _mcp756_roundtrip(_home756: Path, method: str, params: dict):
+    _env756 = os.environ.copy()
+    _env756["HOME"] = str(_home756)
+    _env756["USERPROFILE"] = str(_home756)
+    _proc756 = subprocess.Popen(
+        [sys.executable, str(REPO / "mcp-server.py")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_env756,
+        cwd=str(REPO),
+    )
+    _request_bytes756 = bytearray()
+    for _msg756 in (
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
+        {"jsonrpc": "2.0", "id": 3, "method": "shutdown"},
+    ):
+        _payload756 = json.dumps(_msg756).encode("utf-8")
+        _request_bytes756.extend(f"Content-Length: {len(_payload756)}\r\n\r\n".encode("ascii") + _payload756)
+    try:
+        _stdout756, _stderr756 = _proc756.communicate(bytes(_request_bytes756), timeout=15)
+    finally:
+        if _proc756.poll() is None:
+            _proc756.kill()
+            _proc756.wait(timeout=5)
+
+    _responses756 = []
+    _remaining756 = _stdout756
+    while _remaining756:
+        if b"Content-Length:" not in _remaining756:
+            break
+        _hdr_end756 = _remaining756.find(b"\r\n\r\n")
+        if _hdr_end756 == -1:
+            break
+        _header756 = _remaining756[:_hdr_end756].decode("ascii", errors="replace")
+        _length756 = int(
+            [_line.split(":", 1)[1].strip() for _line in _header756.split("\r\n") if "content-length" in _line.lower()][
+                0
+            ]
+        )
+        _body_start756 = _hdr_end756 + 4
+        _body756 = _remaining756[_body_start756 : _body_start756 + _length756]
+        _remaining756 = _remaining756[_body_start756 + _length756 :]
+        try:
+            _responses756.append(json.loads(_body756))
+        except Exception:
+            pass
+
+    _matches756 = [r for r in _responses756 if r.get("id") == 2]
+    if not _matches756:
+        raise RuntimeError(_stderr756.decode("utf-8", errors="replace") or "no MCP response")
+    return _matches756[0]
+
+
+def _run_i756_resource_tests():
+    import shutil as _sh756
+
+    _root756 = Path(tempfile.mkdtemp(prefix="i756-", dir=str(REPO)))
+    try:
+        _home756 = _root756 / "home"
+        _state756 = _home756 / ".copilot" / "session-state"
+        _state756.mkdir(parents=True, exist_ok=True)
+        _db756 = sqlite3.connect(_state756 / "knowledge.db")
+        _db756.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT '',
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                summary TEXT DEFAULT '',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT ''
+            );
+            """
+        )
+        _db756.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (27, "mcp-resources"))
+        _db756.execute(
+            "INSERT INTO sessions (id, path, summary, indexed_at) VALUES (?, ?, ?, ?)",
+            ("sess-756", "/repo", "Seeded MCP session", "2025-02-02T10:00:00Z"),
+        )
+        _db756.execute(
+            "INSERT INTO knowledge_entries (id, session_id, category, title, content, tags, wing, room, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "sess-756",
+                "pattern",
+                "Resource entry alpha",
+                "Alpha content",
+                "alpha,one",
+                "backend",
+                "mcp",
+                "2025-02-01T00:00:00Z",
+                "2025-02-03T00:00:00Z",
+            ),
+        )
+        _db756.execute(
+            "INSERT INTO knowledge_entries (id, session_id, category, title, content, tags, wing, room, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                2,
+                "sess-756",
+                "mistake",
+                "Resource entry beta",
+                "Beta content",
+                "beta,two",
+                "backend",
+                "mcp",
+                "2025-02-02T00:00:00Z",
+                "2025-02-04T00:00:00Z",
+            ),
+        )
+        _db756.commit()
+        _db756.close()
+
+        _res_list756 = _mcp756_roundtrip(_home756, "resources/list", {})
+        _uris756 = [r.get("uri") for r in _res_list756.get("result", {}).get("resources", [])]
+        test("I756-1a: resources/list includes sk://status", "sk://status" in _uris756, str(_uris756))
+        test("I756-1b: resources/list includes sk://sessions/recent", "sk://sessions/recent" in _uris756, str(_uris756))
+        test("I756-1c: resources/list includes sk://knowledge/list", "sk://knowledge/list" in _uris756, str(_uris756))
+        test("I756-1d: resources/list includes seeded knowledge URI", "sk://knowledge/2" in _uris756, str(_uris756))
+
+        _res_status756 = _mcp756_roundtrip(_home756, "resources/read", {"uri": "sk://status"})
+        _status756 = json.loads(_res_status756.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test(
+            "I756-2a: resources/read sk://status returns schema version",
+            _status756.get("schema_version") == 27,
+            str(_status756),
+        )
+        test(
+            "I756-2b: resources/read sk://status returns knowledge count",
+            _status756.get("knowledge_entries") == 2,
+            str(_status756),
+        )
+        test(
+            "I756-2c: resources/read sk://status returns db path",
+            str(_status756.get("db_path", "")).endswith("knowledge.db"),
+            str(_status756),
+        )
+
+        _res_kl756 = _mcp756_roundtrip(_home756, "resources/read", {"uri": "sk://knowledge/list"})
+        _entries756 = json.loads(_res_kl756.get("result", {}).get("contents", [{}])[0].get("text", "[]"))
+        _first756 = _entries756[0] if _entries756 else {}
+        test("I756-3a: knowledge/list returns seeded entries", len(_entries756) == 2, str(_entries756))
+        test("I756-3b: knowledge/list maps category to type", _first756.get("type") == "mistake", str(_first756))
+        test("I756-3c: knowledge/list orders by last_seen", _first756.get("id") == 2, str(_entries756))
+
+        _res_ke756 = _mcp756_roundtrip(_home756, "resources/read", {"uri": "sk://knowledge/1"})
+        _text756 = _res_ke756.get("result", {}).get("contents", [{}])[0].get("text", "")
+        test("I756-4a: knowledge entry read shows type", "Type: pattern" in _text756, _text756)
+        test("I756-4b: knowledge entry read shows created", "Created: 2025-02-01T00:00:00Z" in _text756, _text756)
+        test("I756-4c: knowledge entry read shows content", "Alpha content" in _text756, _text756)
+
+        _res_bad756 = _mcp756_roundtrip(_home756, "resources/read", {"uri": "sk://knowledge/not-a-number"})
+        _bad756 = _res_bad756.get("error", {})
+        test("I756-5a: invalid entry id returns invalid params", _bad756.get("code") == -32602, str(_bad756))
+        test(
+            "I756-5b: invalid entry id explains numeric requirement",
+            "must be numeric" in str(_bad756.get("message", "")),
+            str(_bad756),
+        )
+    finally:
+        _sh756.rmtree(_root756, ignore_errors=True)
+
+
+try:
+    _run_i756_resource_tests()
+except Exception as _e756:
+    for _suffix756 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "3a", "3b", "3c", "4a", "4b", "4c", "5a", "5b"]:
+        test(f"I756-{_suffix756}: MCP resources", False, str(_e756))
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:
