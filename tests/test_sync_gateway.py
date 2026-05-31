@@ -114,8 +114,8 @@ def run_all_tests() -> int:
         test("T1: /healthz -> 200", status == 200, str(data))
         test("T1: status=ok", isinstance(data, dict) and data.get("status") == "ok", str(data))
         test(
-            "T1: honest reference/mock service label",
-            isinstance(data, dict) and data.get("service") == "sync-reference-mock-gateway",
+            "T1: service label",
+            isinstance(data, dict) and data.get("service") == "sync-gateway",
             str(data),
         )
 
@@ -275,6 +275,89 @@ def run_all_tests() -> int:
             "txn-010" not in ids_after_insert_failure,
             str(data),
         )
+
+        print("\n-- T10: namespace isolation — two namespaces cannot see each other")
+        ns_a_txn = _build_txn("ns-txn-a1", "replica-a", 1)
+        status, data = _request(
+            host, port, "POST", "/sync/push",
+            {"replica_id": "replica-a", "namespace": "repo-alpha", "txns": [ns_a_txn]},
+        )
+        test("T10a: push to repo-alpha -> 200", status == 200, str(data))
+        test("T10b: namespace echoed", data.get("namespace") == "repo-alpha", str(data))
+
+        ns_b_txn = _build_txn("ns-txn-b1", "replica-b", 2)
+        status, data = _request(
+            host, port, "POST", "/sync/push",
+            {"replica_id": "replica-b", "namespace": "repo-beta", "txns": [ns_b_txn]},
+        )
+        test("T10c: push to repo-beta -> 200", status == 200, str(data))
+
+        q_a = urllib.parse.urlencode({"replica_id": "replica-a", "namespace": "repo-alpha", "limit": "100"})
+        status, data = _request(host, port, "GET", f"/sync/pull?{q_a}")
+        pull_a_ids = [t.get("txn_id") for t in data.get("txns", [])]
+        test("T10d: pull repo-alpha sees only its txn", "ns-txn-a1" in pull_a_ids, str(pull_a_ids))
+        test("T10e: pull repo-alpha does NOT see repo-beta", "ns-txn-b1" not in pull_a_ids, str(pull_a_ids))
+
+        q_b = urllib.parse.urlencode({"replica_id": "replica-b", "namespace": "repo-beta", "limit": "100"})
+        status, data = _request(host, port, "GET", f"/sync/pull?{q_b}")
+        pull_b_ids = [t.get("txn_id") for t in data.get("txns", [])]
+        test("T10f: pull repo-beta sees only its txn", "ns-txn-b1" in pull_b_ids, str(pull_b_ids))
+        test("T10g: pull repo-beta does NOT see repo-alpha", "ns-txn-a1" not in pull_b_ids, str(pull_b_ids))
+
+        print("\n-- T11: visibility filtering — private entries excluded from pull")
+        private_txn = {
+            "txn_id": "vis-txn-priv",
+            "replica_id": "replica-a",
+            "created_at": "2026-05-01T00:00:00Z",
+            "committed_at": "2026-05-01T00:00:01Z",
+            "status": "committed",
+            "ops": [
+                {
+                    "table_name": "knowledge_entries",
+                    "op_type": "upsert",
+                    "row_stable_id": "row-private-1",
+                    "row_payload": {"stable_id": "row-private-1", "title": "secret", "visibility": "private"},
+                    "op_index": 0,
+                    "created_at": "2026-05-01T00:00:00Z",
+                },
+                {
+                    "table_name": "knowledge_entries",
+                    "op_type": "upsert",
+                    "row_stable_id": "row-public-1",
+                    "row_payload": {"stable_id": "row-public-1", "title": "shareable", "visibility": "public"},
+                    "op_index": 1,
+                    "created_at": "2026-05-01T00:00:00Z",
+                },
+            ],
+        }
+        status, data = _request(
+            host, port, "POST", "/sync/push",
+            {"replica_id": "replica-a", "namespace": "vis-ns", "txns": [private_txn]},
+        )
+        test("T11a: push with mixed visibility -> 200", status == 200, str(data))
+
+        q_vis = urllib.parse.urlencode({"replica_id": "replica-b", "namespace": "vis-ns", "limit": "100"})
+        status, data = _request(host, port, "GET", f"/sync/pull?{q_vis}")
+        pulled_txns = data.get("txns", [])
+        test("T11b: txn returned in pull", len(pulled_txns) == 1, str(pulled_txns))
+        pulled_ops = pulled_txns[0].get("ops", []) if pulled_txns else []
+        pulled_stable_ids = [op.get("row_stable_id") for op in pulled_ops]
+        test("T11c: public entry included in pull", "row-public-1" in pulled_stable_ids, str(pulled_stable_ids))
+        test("T11d: private entry excluded from pull", "row-private-1" not in pulled_stable_ids, str(pulled_stable_ids))
+
+        print("\n-- T12: default namespace backward compatibility")
+        default_txn = _build_txn("default-ns-txn", "replica-a", 0)
+        status, data = _request(
+            host, port, "POST", "/sync/push",
+            {"replica_id": "replica-a", "txns": [default_txn]},
+        )
+        test("T12a: push without namespace -> 200", status == 200, str(data))
+        test("T12b: namespace defaults to 'default'", data.get("namespace") == "default", str(data))
+
+        q_default = urllib.parse.urlencode({"replica_id": "replica-a", "limit": "200"})
+        status, data = _request(host, port, "GET", f"/sync/pull?{q_default}")
+        default_ids = [t.get("txn_id") for t in data.get("txns", [])]
+        test("T12c: default ns pull includes default txns", "default-ns-txn" in default_ids, str(default_ids))
 
     finally:
         server.shutdown()

@@ -248,6 +248,9 @@ def collect_status(db_path: Path = DB_PATH, check_health: bool = True) -> dict:
         "last_pushed_txn_id": "",
         "last_pulled_txn_id": "",
         "cursor_txn_id": "",
+        "namespace": "",
+        "private_entries": 0,
+        "public_entries": 0,
         "gateway_health": {
             "available": False,
             "status": "skipped" if connection_string and not check_health else "unconfigured",
@@ -287,6 +290,29 @@ def collect_status(db_path: Path = DB_PATH, check_health: bool = True) -> dict:
 
         if has_sync_ops:
             out["sync_ops"] = db.execute("SELECT COUNT(*) FROM sync_ops").fetchone()[0]
+
+        # Federation stats: namespace from sync config, visibility from knowledge_entries
+        try:
+            cfg_raw = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else "{}"
+            cfg_obj = json.loads(cfg_raw) if cfg_raw else {}
+            out["namespace"] = str(cfg_obj.get("namespace", "default"))
+        except (json.JSONDecodeError, OSError):
+            out["namespace"] = "default"
+
+        has_ke = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entries'"
+        ).fetchone()
+        if has_ke:
+            try:
+                out["private_entries"] = db.execute(
+                    "SELECT COUNT(*) FROM knowledge_entries WHERE visibility = 'private'"
+                ).fetchone()[0]
+                out["public_entries"] = db.execute(
+                    "SELECT COUNT(*) FROM knowledge_entries WHERE visibility = 'public' OR visibility IS NULL"
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                # Column may not exist yet (pre-migration-46)
+                pass
 
         if has_failures:
             out["failures"] = db.execute("SELECT COUNT(*) FROM sync_failures").fetchone()[0]
@@ -332,6 +358,7 @@ def format_status(status: dict) -> str:
         f"  Configured:         {'yes' if status['configured'] else 'no'}",
         f"  Connection string:  {status['connection_string'] or '(not set)'}",
         f"  Gateway target:     {status.get('gateway_target', 'unconfigured')}",
+        f"  Namespace:          {status.get('namespace', 'default')}",
         "  Client contract:    HTTP(S) gateway URL (local-first)",
         "  Direct DB sync:     no",
         f"  DB exists:          {'yes' if status['db_exists'] else 'no'}",
@@ -343,6 +370,10 @@ def format_status(status: dict) -> str:
         f"  Failed txns:        {status['failed_txns']}",
         f"  Captured ops:       {status['sync_ops']}",
         f"  Failure rows:       {status['failures']}",
+        "",
+        "Knowledge entries",
+        f"  Public entries:     {status.get('public_entries', 0)}",
+        f"  Private entries:    {status.get('private_entries', 0)}",
         "",
         "Pointers",
         f"  Last pushed txn:    {status['last_pushed_txn_id'] or '(none)'}",
