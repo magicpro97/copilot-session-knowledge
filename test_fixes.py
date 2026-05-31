@@ -11554,7 +11554,9 @@ try:
         )
         _db.execute(f"CREATE TABLE knowledge_entries ({_cols})")
 
-        from datetime import datetime as _dt854, timezone as _tz854, timedelta as _td854
+        from datetime import datetime as _dt854
+        from datetime import timedelta as _td854
+        from datetime import timezone as _tz854
 
         _now = _dt854.now(_tz854.utc)
 
