@@ -25,6 +25,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -1122,3 +1123,57 @@ class TestQueryMemoryTool(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRateEntryExecution(unittest.TestCase):
+    """Test _run_rate_entry writes feedback and requires auth."""
+
+    def setUp(self):
+        self.db_path = Path(tempfile.mkdtemp()) / "test.db"
+        db = sqlite3.connect(str(self.db_path))
+        db.execute(
+            "CREATE TABLE knowledge_entries (id INTEGER PRIMARY KEY, title TEXT, content TEXT, "
+            "category TEXT, confidence REAL, session_id TEXT, occurrence_count INTEGER, "
+            "first_seen TEXT, last_seen TEXT)"
+        )
+        db.execute(
+            "INSERT INTO knowledge_entries (id, title, content, category, confidence, session_id) VALUES (1, 'Test', 'body', 'pattern', 0.8, 's1')"
+        )
+        db.execute(
+            "CREATE TABLE search_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, "
+            "result_id TEXT, result_kind TEXT, verdict INTEGER, created_at TEXT, note TEXT)"
+        )
+        db.commit()
+        db.close()
+
+    def test_rate_entry_writes_feedback(self):
+        import importlib
+        import sys
+
+        # Patch _DB_PATH
+        spec = importlib.util.spec_from_file_location("mcp_server", "mcp-server.py")
+        mod = importlib.util.module_from_spec(spec)
+        mod._DB_PATH = self.db_path
+        # Mock _check_auth to pass
+        mod._check_auth = lambda args: None
+        spec.loader.exec_module(mod)
+        mod._DB_PATH = self.db_path
+        mod._check_auth = lambda args: None
+
+        result = mod._run_rate_entry({"entry_id": 1, "verdict": "good"})
+        body = json.loads(result["content"][0]["text"])
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["entry_id"], 1)
+        self.assertEqual(body["verdict"], "good")
+
+        # Verify feedback row uses "*" as query for universal matching
+        db = sqlite3.connect(str(self.db_path))
+        row = db.execute("SELECT query, result_id, verdict FROM search_feedback").fetchone()
+        db.close()
+        self.assertEqual(row[0], "*")
+        self.assertEqual(row[1], "1")
+        self.assertEqual(row[2], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

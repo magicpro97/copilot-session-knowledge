@@ -833,6 +833,7 @@ def _run_code_search(arguments: dict) -> dict:
 
 def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
     """Write a feedback row for a knowledge entry (good/bad/neutral)."""
+    _check_auth(arguments)
     entry_id = arguments.get("entry_id")
     verdict = arguments.get("verdict", "neutral")
     note = str(arguments.get("note") or "")[:500]
@@ -863,7 +864,7 @@ def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
         db.execute(
             "INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at, note)"
             " VALUES (?, ?, 'knowledge', ?, ?, ?)",
-            (f"mcp:rate_entry:{entry_id}", str(entry_id), score, created_at, note or None),
+            ("*", str(entry_id), score, created_at, note or None),
         )
         db.commit()
     except sqlite3.OperationalError as exc:

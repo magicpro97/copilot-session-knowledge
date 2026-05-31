@@ -1588,7 +1588,8 @@ def _apply_feedback_bias_to_knowledge(
     verdicts_by_id: dict[str, list[int]] = {}
     if normalized_query:
         for r in rows:
-            if _normalize_feedback_query(r["query"] or "") != normalized_query:
+            row_q = _normalize_feedback_query(r["query"] or "")
+            if row_q != normalized_query and row_q != "*":
                 continue
             rid = str(r["result_id"] or "")
             verdicts_by_id.setdefault(rid, []).append(int(r["verdict"]))
