@@ -157,13 +157,13 @@ class TestSkDirectCommands(unittest.TestCase):
         with patch.object(sk, "_run", return_value=0) as mock_run:
             rc = sk.main(["doctor"])
         self.assertEqual(rc, 0)
-        mock_run.assert_called_once_with("install.py", ["--doctor"])
+        mock_run.assert_called_once_with("doctor.py", [])
 
     def test_doctor_manifest(self):
         with patch.object(sk, "_run", return_value=0) as mock_run:
-            rc = sk.main(["doctor", "--manifest"])
+            rc = sk.main(["doctor", "--json"])
         self.assertEqual(rc, 0)
-        mock_run.assert_called_once_with("install.py", ["--doctor", "--manifest"])
+        mock_run.assert_called_once_with("doctor.py", ["--json"])
 
     def test_watch(self):
         self._assert_routes("watch", "watch-sessions.py")

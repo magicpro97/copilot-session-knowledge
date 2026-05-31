@@ -24,8 +24,7 @@ Usage:
     sk benchmark [<args>...]      Run benchmark.py
     sk retro    [<args>...]       Run retro.py
     sk heal     [<args>...]       Run copilot-cli-healer.py
-    sk doctor   [<args>...]       Run install.py --doctor
-    sk code-search [<args>...]    Search source code (ripgrep + FTS5 index)
+    sk doctor   [<args>...]       Run doctor.py health checks
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
@@ -126,9 +125,6 @@ _DIRECT: dict[str, CommandMeta] = {
     ),
     "doctor": CommandMeta(
         "doctor.py", "Run automated config health checks with severity levels", ("install", "doctor")
-    ),
-    "code-search": CommandMeta(
-        "code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")
     ),
     "watch": CommandMeta("watch-sessions.py", "Watch and auto-index new CLI sessions", ("watch", "index")),
     "export-buglog": CommandMeta("buglog-export.py", "Export bug log entries", ("export", "buglog")),
