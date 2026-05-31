@@ -978,3 +978,220 @@ impl HookRule for NewFileAdvisoryRule {
         )))
     }
 }
+
+// ---------------------------------------------------------------------------
+// LoopDetectorRule
+// ---------------------------------------------------------------------------
+
+/// Detect and block repeated identical tool calls within a session.
+///
+/// Ports `hooks/rules/loop_detector.py::LoopDetectorRule` (issue #663, #868).
+///
+/// Detection strategy
+/// ------------------
+/// * Fires on `preToolUse` for **all** tools.
+/// * Computes a SHA-256 signature of `{"tool": tool_name, "args": cleaned_args}`
+///   with transient metadata keys stripped (same keys as the Python version).
+/// * Tracks consecutive identical-signature calls via a per-session JSON state
+///   file `~/.copilot/markers/loop-state-{session_id}.json`.
+/// * Skips detection when `toolInput`/`toolArgs` is absent/empty (fail-open;
+///   prevents false positives when the hook payload omits tool arguments).
+///
+/// Thresholds (configurable via env vars)
+/// ---------------------------------------
+/// * **Soft** (default 3, `LOOP_SOFT_THRESHOLD`): `info()` warning — non-blocking,
+///   fires once per streak.
+/// * **Hard** (default 5, `LOOP_HARD_THRESHOLD`): `deny()` — blocks the tool call.
+///
+/// Fail-open: any I/O or parse error returns `None` (never blocks).
+pub struct LoopDetectorRule {
+    pub soft_threshold: usize,
+    pub hard_threshold: usize,
+}
+
+impl Default for LoopDetectorRule {
+    fn default() -> Self {
+        Self {
+            soft_threshold: 3,
+            hard_threshold: 5,
+        }
+    }
+}
+
+/// Metadata keys stripped before hashing — transient per-invocation fields.
+/// Mirrors `_STRIP_KEYS` in `loop_detector.py`.
+const STRIP_KEYS: &[&str] = &[
+    "_session_id",
+    "_timestamp",
+    "_request_id",
+    "_trace_id",
+    "sessionId",
+    "timestamp",
+];
+
+/// Recursively sort all JSON object keys for deterministic serialisation.
+/// Matches Python's `json.dumps(sort_keys=True)` which sorts at every depth.
+fn sort_value_recursive(v: &Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let sorted: serde_json::Map<String, Value> = keys
+                .into_iter()
+                .map(|k| (k.clone(), sort_value_recursive(&map[k])))
+                .collect();
+            Value::Object(sorted)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(sort_value_recursive).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Compute SHA-256 hex digest of `{"tool": tool_name, "args": cleaned_args}`.
+pub(crate) fn loop_compute_signature(
+    tool_name: &str,
+    tool_args: &serde_json::Map<String, Value>,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    // Strip transient metadata keys.
+    let cleaned: serde_json::Map<String, Value> = tool_args
+        .iter()
+        .filter(|(k, _)| !STRIP_KEYS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Recursively sort keys (matches Python json.dumps(sort_keys=True)).
+    let sorted = sort_value_recursive(&Value::Object(cleaned));
+
+    let payload = serde_json::json!({"tool": tool_name, "args": sorted});
+    let raw = payload.to_string();
+    let hash = Sha256::digest(raw.as_bytes());
+    format!("{hash:x}")
+}
+
+/// Read the integer threshold from an env var, falling back to `default`.
+fn loop_threshold(env_var: &str, default: usize) -> usize {
+    std::env::var(env_var)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+/// Resolve the per-session loop state file path.
+/// Reuses `session_state::{get_session_id, sanitize_session_id}` for
+/// consistent session-ID detection and filename sanitisation.
+pub(crate) fn loop_state_path(data: &Value) -> PathBuf {
+    let session_id = crate::hooks::session_state::get_session_id(data);
+    let sid = crate::hooks::session_state::sanitize_session_id(&session_id);
+    markers_dir().join(format!("loop-state-{sid}.json"))
+}
+
+/// Per-session loop detector state stored in the JSON state file.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct LoopState {
+    #[serde(default)]
+    last_sig: String,
+    #[serde(default)]
+    streak: usize,
+    #[serde(default)]
+    soft_warned: bool,
+}
+
+/// Load loop state from the JSON file; return default on any error (fail-open).
+fn load_loop_state(path: &Path) -> LoopState {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return LoopState::default(),
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+/// Save loop state to the JSON file; best-effort atomic write, never panics.
+fn save_loop_state(path: &Path, state: &LoopState) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let json = match serde_json::to_string(state) {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+    // Atomic write: write to a PID-unique temp file, then rename.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    if fs::write(&tmp, json.as_bytes()).is_ok() {
+        let _ = fs::rename(&tmp, path);
+    }
+}
+
+impl HookRule for LoopDetectorRule {
+    fn name(&self) -> &'static str {
+        "loop-detector"
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        &["preToolUse"]
+    }
+
+    fn tools(&self) -> &'static [&'static str] {
+        &[] // All tools
+    }
+
+    fn evaluate(&self, event: &str, data: &Value) -> Option<Value> {
+        if event != "preToolUse" {
+            return None;
+        }
+        // Fail-open: any error → None.
+        self.run(data)
+    }
+}
+
+impl LoopDetectorRule {
+    fn run(&self, data: &Value) -> Option<Value> {
+        let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Accept toolInput (Copilot) or toolArgs (legacy).
+        let tool_args_val = data.get("toolInput").or_else(|| data.get("toolArgs"));
+        let tool_args = tool_args_val.and_then(|v| v.as_object())?;
+
+        // Skip when args are empty — cannot distinguish calls.
+        if tool_args.is_empty() {
+            return None;
+        }
+
+        let soft = loop_threshold("LOOP_SOFT_THRESHOLD", self.soft_threshold);
+        let hard = loop_threshold("LOOP_HARD_THRESHOLD", self.hard_threshold);
+
+        let sig = loop_compute_signature(tool_name, tool_args);
+        let state_path = loop_state_path(data);
+        let mut state = load_loop_state(&state_path);
+
+        if sig == state.last_sig {
+            state.streak += 1;
+        } else {
+            state.last_sig = sig;
+            state.streak = 1;
+            state.soft_warned = false;
+        }
+
+        let streak = state.streak;
+        let result = if streak >= hard {
+            Some(deny(&format!(
+                "Loop detected: tool '{tool_name}' called {streak} times \
+                 with identical arguments (hard threshold {hard}). \
+                 Try a different approach."
+            )))
+        } else if streak >= soft && !state.soft_warned {
+            state.soft_warned = true;
+            Some(info(&format!(
+                "  Warning: tool '{tool_name}' called {streak} \
+                 times with identical arguments. Consider varying your \
+                 approach before the hard limit ({hard})."
+            )))
+        } else {
+            None
+        };
+
+        save_loop_state(&state_path, &state);
+        result
+    }
+}

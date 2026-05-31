@@ -1212,3 +1212,204 @@ fn all_rules_includes_file_size_advisory() {
         "all_rules must include file-size-advisory"
     );
 }
+
+// --- LoopDetectorRule ---
+
+/// Build event data with a unique session state path so tests don't share state.
+fn loop_event(tool: &str, args: serde_json::Value, session_id: &str) -> serde_json::Value {
+    json!({
+        "toolName": tool,
+        "toolInput": args,
+        "sessionId": session_id,
+    })
+}
+
+#[test]
+fn loop_detector_passes_below_soft_threshold() {
+    let rule = LoopDetectorRule {
+        soft_threshold: 3,
+        hard_threshold: 5,
+    };
+    let sid = format!(
+        "test-loop-below-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
+    let data = loop_event("bash", json!({"command": "ls"}), &sid);
+
+    // First and second calls: below soft threshold → None.
+    let r1 = rule.evaluate("preToolUse", &data);
+    let r2 = rule.evaluate("preToolUse", &data);
+    assert!(r1.is_none(), "call 1 should pass: {r1:?}");
+    assert!(r2.is_none(), "call 2 should pass: {r2:?}");
+
+    // Cleanup temp state.
+    let _ = std::fs::remove_file(loop_state_path(&data));
+}
+
+#[test]
+fn loop_detector_info_at_soft_threshold() {
+    let rule = LoopDetectorRule {
+        soft_threshold: 3,
+        hard_threshold: 5,
+    };
+    let sid = format!(
+        "test-loop-soft-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
+    let data = loop_event("bash", json!({"command": "ls -la"}), &sid);
+
+    // Advance to streak = 3.
+    let _ = rule.evaluate("preToolUse", &data); // 1
+    let _ = rule.evaluate("preToolUse", &data); // 2
+    let r3 = rule.evaluate("preToolUse", &data); // 3 = soft
+
+    let r3 = r3.expect("soft threshold should produce info");
+    // info() returns {"message": "..."}
+    let msg = r3.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(msg.contains("bash"), "message should name the tool: {msg}");
+    assert!(msg.contains("3"), "message should mention streak: {msg}");
+
+    // 4th call: soft already warned — should not re-warn.
+    let r4 = rule.evaluate("preToolUse", &data);
+    assert!(r4.is_none(), "4th call below hard should pass: {r4:?}");
+
+    let _ = std::fs::remove_file(loop_state_path(&data));
+}
+
+#[test]
+fn loop_detector_deny_at_hard_threshold() {
+    let rule = LoopDetectorRule {
+        soft_threshold: 3,
+        hard_threshold: 5,
+    };
+    let sid = format!(
+        "test-loop-hard-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
+    let data = loop_event("read", json!({"path": "/etc/hosts"}), &sid);
+
+    // Advance to hard threshold.
+    for _ in 0..4 {
+        let _ = rule.evaluate("preToolUse", &data);
+    }
+    let r5 = rule.evaluate("preToolUse", &data); // streak = 5 = hard
+
+    let r5 = r5.expect("hard threshold should produce deny");
+    assert_eq!(
+        r5.get("permissionDecision")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        "deny",
+        "expected deny at hard threshold: {r5}"
+    );
+    let reason = r5
+        .get("permissionDecisionReason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        reason.contains("Loop detected"),
+        "reason should mention loop: {reason}"
+    );
+    assert!(
+        reason.contains("read"),
+        "reason should name the tool: {reason}"
+    );
+
+    let _ = std::fs::remove_file(loop_state_path(&data));
+}
+
+#[test]
+fn loop_detector_resets_on_different_args() {
+    let rule = LoopDetectorRule {
+        soft_threshold: 3,
+        hard_threshold: 5,
+    };
+    let sid = format!(
+        "test-loop-reset-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
+
+    // Advance streak to 2 with one set of args.
+    let data_a = loop_event("bash", json!({"command": "echo a"}), &sid);
+    let _ = rule.evaluate("preToolUse", &data_a);
+    let _ = rule.evaluate("preToolUse", &data_a);
+
+    // Different args → streak resets → first call should pass.
+    let data_b = loop_event("bash", json!({"command": "echo b"}), &sid);
+    let r = rule.evaluate("preToolUse", &data_b);
+    assert!(r.is_none(), "different args should reset streak: {r:?}");
+
+    let _ = std::fs::remove_file(loop_state_path(&data_a));
+}
+
+#[test]
+fn loop_detector_skips_empty_args() {
+    let rule = LoopDetectorRule {
+        soft_threshold: 3,
+        hard_threshold: 5,
+    };
+    let sid = format!(
+        "test-loop-empty-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
+    let data = json!({
+        "toolName": "bash",
+        "toolInput": {},
+        "sessionId": sid,
+    });
+    // Empty args → fail-open.
+    for _ in 0..10 {
+        assert!(rule.evaluate("preToolUse", &data).is_none());
+    }
+}
+
+#[test]
+fn loop_detector_strips_metadata_keys() {
+    // Same logical call but _timestamp differs — should still match signature.
+    let args_a = json!({"command": "ls", "_timestamp": "2024-01-01T00:00:00Z"});
+    let args_b = json!({"command": "ls", "_timestamp": "2024-01-02T00:00:00Z"});
+
+    let map_a = args_a.as_object().unwrap();
+    let map_b = args_b.as_object().unwrap();
+    let sig_a = loop_compute_signature("bash", map_a);
+    let sig_b = loop_compute_signature("bash", map_b);
+    assert_eq!(
+        sig_a, sig_b,
+        "signatures should match after stripping metadata"
+    );
+}
+
+#[test]
+fn loop_detector_ignores_wrong_event() {
+    let rule = LoopDetectorRule {
+        soft_threshold: 3,
+        hard_threshold: 5,
+    };
+    let data = json!({"toolName": "bash", "toolInput": {"command": "ls"}});
+    assert!(rule.evaluate("postToolUse", &data).is_none());
+    assert!(rule.evaluate("sessionEnd", &data).is_none());
+}
+
+#[test]
+fn all_rules_includes_loop_detector() {
+    let rules = all_rules();
+    assert!(
+        rules.iter().any(|r| r.name() == "loop-detector"),
+        "all_rules must include loop-detector"
+    );
+}

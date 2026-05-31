@@ -137,6 +137,7 @@ pub fn all_rules() -> Vec<Box<dyn HookRule>> {
         Box::new(EnforceLearnRule),
         Box::new(TentacleEnforceRule),
         Box::new(SubagentGitGuardRule),
+        Box::new(LoopDetectorRule::default()),
         Box::new(SyntaxGateRule),
         Box::new(BlockEditDistRule),
         Box::new(PnpmLockfileGuardRule),
