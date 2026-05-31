@@ -15,8 +15,9 @@ This runner handles: sessionStart, sessionEnd, preToolUse, postToolUse,
 agentStop, subagentStop, errorOccurred, userPromptSubmitted
 
 Environment variables:
-  HOOK_DRY_RUN=1       — Log denials but allow through (testing mode)
-  HOOK_LOG_LEVEL=DEBUG — Enable verbose audit logging
+  HOOK_DRY_RUN=1            — Log denials but allow through (testing mode)
+  HOOK_LOG_LEVEL=DEBUG      — Enable verbose audit logging
+  SK_HOOK_DEBOUNCE_SECS=N   — Debounce window in seconds for preToolUse hooks (default: 5)
 """
 
 import json
@@ -38,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 SYNC_NUDGE_MARKER = MARKERS_DIR / "sync-nudge.json"
 SYNC_FLUSH_MARKER = MARKERS_DIR / "sync-flush.json"
+DEBOUNCE_DIR = Path.home() / ".copilot" / "markers" / "hook-debounce"
 
 
 def _audit_log(event, tool, rule_name, decision, detail=""):
@@ -130,6 +132,31 @@ def _check_and_set_dedup(event: str, payload_hash: str = "") -> bool:
     return False
 
 
+def _should_debounce(hook_name: str, secs: int) -> bool:
+    """Return True if hook fired within the last `secs` seconds (issue #832).
+
+    Fail-open: any I/O or parse error → returns False (process normally).
+    """
+    marker = DEBOUNCE_DIR / f"{hook_name}.json"
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        if time.time() - data.get("last_fired", 0) < secs:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _record_fired(hook_name: str) -> None:
+    """Write a debounce timestamp for the given hook name (best-effort)."""
+    marker = DEBOUNCE_DIR / f"{hook_name}.json"
+    try:
+        DEBOUNCE_DIR.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"last_fired": time.time()}), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def main():
     event = sys.argv[1] if len(sys.argv) > 1 else ""
     if not event:
@@ -171,6 +198,12 @@ def main():
     verbose = os.environ.get("HOOK_LOG_LEVEL", "") == "DEBUG"
     tool_name = data.get("toolName", "")
 
+    # Debounce window for preToolUse hooks (issue #832)
+    try:
+        _debounce_secs = int(os.environ.get("SK_HOOK_DEBOUNCE_SECS", "5"))
+    except (ValueError, TypeError):
+        _debounce_secs = 5
+
     # Import rules for this event
     try:
         from rules import get_rules_for_event
@@ -187,6 +220,14 @@ def main():
         # Tool matching (empty tools list = match all)
         if rule.tools and tool_name not in rule.tools:
             continue
+
+        # Debounce: skip preToolUse hooks that fired within the window (issue #832)
+        if event == "preToolUse" and _debounce_secs > 0:
+            if _should_debounce(rule.name, _debounce_secs):
+                if verbose:
+                    print(f"  [debounce] skipping {rule.name}", file=sys.stderr)
+                continue
+            _record_fired(rule.name)
 
         try:
             result = rule.evaluate(event, data)
