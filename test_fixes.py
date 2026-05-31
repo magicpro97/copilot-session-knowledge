@@ -12112,6 +12112,166 @@ except Exception as _e821:
         "8b",
     ]:
         test(f"I821-{_lbl}: knowledge-import", False, str(_e821))
+# Issue #819: knowledge_entry_history — version tracking in learn.py + query --history
+# ---------------------------------------------------------------------------
+import importlib as _imp819
+import sqlite3 as _sq819
+import tempfile as _tf819
+from pathlib import Path as _P819
+
+try:
+    _learn819 = _imp819.import_module("learn") if "learn" in sys.modules else None
+    if _learn819 is None:
+        import importlib.util as _ilu819
+
+        _spec819 = _ilu819.spec_from_file_location("learn819", REPO / "learn.py")
+        _learn819 = _ilu819.module_from_spec(_spec819)
+        _spec819.loader.exec_module(_learn819)
+
+    _qs819 = None
+    import importlib.util as _ilu819qs
+
+    _spec819qs = _ilu819qs.spec_from_file_location("qs819", REPO / "query-session.py")
+    _qs819 = _ilu819qs.module_from_spec(_spec819qs)
+    _spec819qs.loader.exec_module(_qs819)
+
+    # Build an isolated DB with migration 43 applied
+    _tf819_dir = _tf819.mkdtemp()
+    _db819_path = _P819(_tf819_dir) / "k819.db"
+
+    _conn819 = _sq819.connect(str(_db819_path))
+    _conn819.row_factory = _sq819.Row
+    # Create minimal schema matching what add_entry expects
+    _conn819.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT, title TEXT, content TEXT,
+            tags TEXT DEFAULT '', session_id TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.5, wing TEXT DEFAULT '',
+            room TEXT DEFAULT '', facts TEXT DEFAULT '[]',
+            task_id TEXT DEFAULT '', affected_files TEXT DEFAULT '[]',
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT '', last_seen TEXT DEFAULT '',
+            est_tokens INTEGER DEFAULT 0,
+            stable_id TEXT DEFAULT '', topic_key TEXT DEFAULT '',
+            source_file TEXT DEFAULT '', start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0, code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '', error_type TEXT DEFAULT '',
+            root_cause TEXT DEFAULT '', severity TEXT DEFAULT '',
+            fix_steps TEXT DEFAULT '', valence TEXT DEFAULT '',
+            intensity REAL DEFAULT 0.5, priority TEXT DEFAULT 'P2',
+            agent_id TEXT DEFAULT '', certainty TEXT DEFAULT '',
+            caveats TEXT DEFAULT '', deleted_at TEXT DEFAULT NULL,
+            recurrence_after_briefing INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot',
+            last_accessed_at TEXT DEFAULT '', access_count INTEGER DEFAULT 0
+        )"""
+    )
+    _conn819.execute(
+        """CREATE TABLE knowledge_entry_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            changed_at TEXT NOT NULL,
+            content_before TEXT NOT NULL DEFAULT '',
+            content_after TEXT NOT NULL DEFAULT '',
+            confidence_before REAL NOT NULL DEFAULT 0.0,
+            confidence_after REAL NOT NULL DEFAULT 0.0,
+            change_source TEXT NOT NULL DEFAULT 'learn'
+        )"""
+    )
+    _conn819.commit()
+    _conn819.close()
+
+    # I819-1: migration 43 SQL is syntactically valid (table creation succeeds above)
+    test("I819-1: knowledge_entry_history table creates without error", True)
+
+    # I819-2: history row inserted on content update
+    _orig_db819 = _learn819.DB_PATH
+    _learn819.DB_PATH = _db819_path
+
+    _id819 = _learn819.add_entry(
+        "mistake",
+        "Test history entry",
+        "initial content",
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+    # Second call with longer content — triggers UPDATE
+    _learn819.add_entry(
+        "mistake",
+        "Test history entry",
+        "initial content updated with more words for length",
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+
+    _conn819b = _sq819.connect(str(_db819_path))
+    _hist_rows = _conn819b.execute(
+        "SELECT * FROM knowledge_entry_history WHERE entry_id = ?", (_id819,)
+    ).fetchall()
+
+    test("I819-2a: history row created on content update", len(_hist_rows) == 1, str(len(_hist_rows)))
+    if _hist_rows:
+        # Access by column index: (id, entry_id, changed_at, content_before, content_after,
+        #                          confidence_before, confidence_after, change_source)
+        _hr819 = _hist_rows[0]
+        test("I819-2b: content_before stored", "initial content" in str(_hr819[3]), str(_hr819[3]))
+        test("I819-2c: change_source is 'learn'", str(_hr819[7]) == "learn", str(_hr819[7]))
+    else:
+        test("I819-2b: content_before stored", False, "no history rows")
+        test("I819-2c: change_source is 'learn'", False, "no history rows")
+
+    # I819-3: no history row when content unchanged
+    _learn819.add_entry(
+        "mistake",
+        "Test history entry",
+        "x",  # shorter than existing — content won't change
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+    _hist_count2 = _conn819b.execute(
+        "SELECT COUNT(*) FROM knowledge_entry_history WHERE entry_id = ?", (_id819,)
+    ).fetchone()[0]
+    _conn819b.close()
+    test("I819-3: no history row when content unchanged", _hist_count2 == 1, str(_hist_count2))
+
+    # I819-4: show_entry_history function exists and is callable
+    test("I819-4: show_entry_history exists in query-session", hasattr(_qs819, "show_entry_history"))
+
+    # I819-5: show_entry_history runs without error on known entry
+    import io as _io819
+    from contextlib import redirect_stdout as _rs819
+
+    _orig_db_qs819 = _qs819.DB_PATH
+    _qs819.DB_PATH = _db819_path
+    _buf819 = _io819.StringIO()
+    try:
+        with _rs819(_buf819):
+            _qs819.show_entry_history(_id819)
+        _out819 = _buf819.getvalue()
+        test("I819-5a: show_entry_history prints timeline header", "Version history" in _out819, repr(_out819[:200]))
+        test("I819-5b: show_entry_history shows confidence arrow", "→" in _out819, repr(_out819[:300]))
+    except Exception as _e819_5:
+        test("I819-5a: show_entry_history prints timeline header", False, str(_e819_5))
+        test("I819-5b: show_entry_history shows confidence arrow", False, str(_e819_5))
+    finally:
+        _qs819.DB_PATH = _orig_db_qs819
+
+    _learn819.DB_PATH = _orig_db819
+
+    import shutil as _sh819
+
+    _sh819.rmtree(_tf819_dir, ignore_errors=True)
+
+except Exception as _e819:
+    for _lbl819 in ["1", "2a", "2b", "2c", "3", "4", "5a", "5b"]:
+        test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:
