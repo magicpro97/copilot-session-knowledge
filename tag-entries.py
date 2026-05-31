@@ -18,11 +18,13 @@ Usage:
     python tag-entries.py --cross-session --dry-run    # Preview without writing
 """
 
+import json
 import os
 import re
 import sqlite3
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 if os.name == "nt":
@@ -279,6 +281,123 @@ def _seed_sync_policy(db: sqlite3.Connection):
         db.commit()
     except Exception:
         pass
+
+
+def _llm_suggest_tags(title: str, content: str) -> list[str]:
+    """Call LLM API to suggest tags. Returns list of lowercase tag strings."""
+    api_key = os.environ.get("SK_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    if not api_key:
+        print(
+            "Error: LLM API key not set. Set SK_LLM_API_KEY or OPENAI_API_KEY.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    model = os.environ.get("SK_LLM_MODEL", "gpt-4o-mini")
+    prompt = (
+        f"Given this knowledge entry title and content, suggest 3-5 relevant tags "
+        f"as a JSON array of lowercase strings. Title: {title}. "
+        f"Content: {content[:500]}. Respond with only a JSON array."
+    )
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 100,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    raw = data["choices"][0]["message"]["content"].strip()
+    m = re.search(r"\[.*?\]", raw, re.DOTALL)
+    if not m:
+        return []
+    tags = json.loads(m.group(0))
+    return [str(t).lower().strip() for t in tags if isinstance(t, str)]
+
+
+def run_llm_tag_batch(
+    retag_all: bool = False,
+    dry_run: bool = False,
+    limit: int = 0,
+    quiet: bool = False,
+) -> dict:
+    """Run LLM-assisted batch tagging."""
+    db = get_db()
+    try:
+        if not _ensure_concept_tags_table(db):
+            return {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0, "available": False}
+        _seed_sync_policy(db)
+        if retag_all:
+            if limit > 0:
+                rows = db.execute(
+                    "SELECT id, title, content FROM knowledge_entries ORDER BY id LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = db.execute("SELECT id, title, content FROM knowledge_entries ORDER BY id").fetchall()
+        else:
+            base_q = """SELECT ke.id, ke.title, ke.content FROM knowledge_entries ke
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM entry_concept_tags ect
+                    WHERE ect.entry_id = ke.id AND ect.source = 'llm'
+                ) ORDER BY ke.id"""
+            if limit > 0:
+                rows = db.execute(base_q + " LIMIT ?", (limit,)).fetchall()
+            else:
+                rows = db.execute(base_q).fetchall()
+        stats = {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0, "available": True}
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for row in rows:
+            entry_id = row["id"]
+            title = row["title"] or ""
+            content = row["content"] or ""
+            stats["processed"] += 1
+            try:
+                tags = _llm_suggest_tags(title, content)
+                if not tags:
+                    stats["skipped"] += 1
+                    continue
+                if not dry_run:
+                    db.execute("SAVEPOINT _llm_tag")
+                    try:
+                        db.execute(
+                            "DELETE FROM entry_concept_tags WHERE entry_id = ? AND source = 'llm'",
+                            (entry_id,),
+                        )
+                        db.executemany(
+                            """INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at)
+                            VALUES (?, ?, 'llm', ?)
+                            ON CONFLICT(entry_id, tag) DO UPDATE SET
+                                source = 'llm', tagged_at = excluded.tagged_at""",
+                            [(entry_id, tag, now) for tag in tags],
+                        )
+                        db.execute("RELEASE _llm_tag")
+                    except Exception:
+                        db.execute("ROLLBACK TO _llm_tag")
+                        db.execute("RELEASE _llm_tag")
+                        raise
+                stats["tagged"] += 1
+                if not quiet:
+                    mode = "[dry-run] " if dry_run else ""
+                    print(f"  {mode}#{entry_id}: {', '.join(tags)}")
+            except SystemExit:
+                raise
+            except Exception as e:
+                stats["errors"] += 1
+                print(f"  [error] entry #{entry_id}: {e}", file=sys.stderr)
+        if not dry_run:
+            db.commit()
+        return stats
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +684,7 @@ def main(argv: list | None = None) -> int:
         default=3,
         help="Minimum distinct sessions for high-recurrence tagging (default: 3)",
     )
+    parser.add_argument("--llm", action="store_true", help="Use LLM API to suggest tags (opt-in)")
 
     args = parser.parse_args(argv)
 
@@ -604,6 +724,27 @@ def main(argv: list | None = None) -> int:
         )
         return 0
 
+    if args.llm:
+        mode = "LLM re-tagging all" if args.retag_all else "LLM tagging untagged"
+        if args.dry_run:
+            mode = f"[dry-run] {mode}"
+        limit_note = f" (limit {args.limit})" if args.limit > 0 else ""
+        print(f"LLM concept tag batch — {mode} entries{limit_note}...")
+        stats = run_llm_tag_batch(
+            retag_all=args.retag_all,
+            dry_run=args.dry_run,
+            limit=args.limit,
+            quiet=args.quiet,
+        )
+        if not stats.get("available"):
+            print("  Failed to initialize entry_concept_tags table.", file=sys.stderr)
+            return 1
+        print(
+            f"\nDone — processed={stats['processed']}  tagged={stats['tagged']}  "
+            f"skipped={stats['skipped']}  errors={stats['errors']}"
+        )
+        return 0
+
     mode = "re-tagging all" if args.retag_all else "tagging untagged"
     if args.dry_run:
         mode = f"[dry-run] {mode}"
@@ -633,3 +774,4 @@ def main(argv: list | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+# TEST MARKER 856
