@@ -118,6 +118,11 @@ TOOLS = [
                     "type": "integer",
                     "description": "Total context window tokens available; used to auto-allocate between response/knowledge/code/constitution slots",
                 },
+                "synthesize": {
+                    "type": "boolean",
+                    "description": "Synthesize entries into RAG prose instead of list",
+                    "default": False,
+                },
             },
             "required": ["task"],
             "additionalProperties": False,
@@ -376,6 +381,7 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
     with_code_context = _optional_bool(arguments, "with_code_context", default=False)
     code_tokens = _optional_int(arguments, "code_tokens", default=1000, minimum=100, maximum=4000)
     available_tokens = _optional_int(arguments, "available_tokens", default=0, minimum=0, maximum=10_000_000)
+    synthesize = _optional_bool(arguments, "synthesize", default=False)
     argv = [task, "--pack", "--mode", mode, "--limit", str(limit)]
     if agent_tag:
         argv += ["--agent-tag", agent_tag]
@@ -385,6 +391,8 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
         argv += ["--with-code-context", "--code-tokens", str(code_tokens)]
     if available_tokens:
         argv += ["--available-tokens", str(available_tokens)]
+    if synthesize:
+        argv += ["--rag"]
     exit_code, stdout_text, stderr_text = _capture_module_main(briefing_mod, argv)
     if exit_code != 0:
         message = stderr_text.strip() or stdout_text.strip() or "briefing failed"

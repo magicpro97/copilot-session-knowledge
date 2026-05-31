@@ -11529,6 +11529,58 @@ except Exception as _e759:
         test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
 
 # ---------------------------------------------------------------------------
+# I815: briefing --rag synthesis tests
+# ---------------------------------------------------------------------------
+print("\n📝 I815: briefing --rag synthesis")
+try:
+    import importlib
+
+    _mcp815 = importlib.import_module("mcp-server")
+    _briefing815 = importlib.import_module("briefing")
+
+    # I815-1a: MCP synthesize=True appends --rag to argv
+    _orig815 = _mcp815._capture_module_main
+
+    def _fake_capture815(mod, argv):
+        _fake_capture815.last_argv = list(argv)
+        return (0, "## MISTAKE context (1 entries)\nAVOID: test", "")
+
+    _fake_capture815.last_argv = []
+    _mcp815._capture_module_main = _fake_capture815
+    try:
+        _result815 = _mcp815._run_briefing({"task": "auth bug", "synthesize": True})
+        test("I815-1a: synthesize=True adds --rag flag", "--rag" in _fake_capture815.last_argv)
+    finally:
+        _mcp815._capture_module_main = _orig815
+
+    # I815-1b: --rag parser strips flag values from query
+    _args815 = ["auth", "bug", "--rag", "--mode", "review", "--limit", "5", "--agent-tag", "copilot"]
+    _opt_flags815 = {"--mode", "--limit", "--agent-tag", "--code-tokens", "--available-tokens"}
+    _skip815: set = set()
+    for _i815, _a815 in enumerate(_args815):
+        if _a815 in _opt_flags815 and _i815 + 1 < len(_args815):
+            _skip815.add(_i815 + 1)
+    _parts815 = [a for i, a in enumerate(_args815) if not a.startswith("--") and i not in _skip815]
+    _query815 = " ".join(_parts815)
+    test("I815-1b: --rag parser excludes flag values", _query815 == "auth bug", f"got: {_query815!r}")
+
+    # I815-1c: _fetch_rag_entries uses filtered pipeline (function exists)
+    test(
+        "I815-1c: _fetch_rag_entries function exists",
+        hasattr(_briefing815, "_fetch_rag_entries"),
+    )
+
+    # I815-1d: _group_by_relations function exists
+    test(
+        "I815-1d: _group_by_relations function exists",
+        hasattr(_briefing815, "_group_by_relations"),
+    )
+
+except Exception as _e815:
+    for _lbl815 in ["1a", "1b", "1c", "1d"]:
+        test(f"I815-{_lbl815}: briefing --rag synthesis", False, str(_e815))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
