@@ -12210,9 +12210,7 @@ try:
     )
 
     _conn819b = _sq819.connect(str(_db819_path))
-    _hist_rows = _conn819b.execute(
-        "SELECT * FROM knowledge_entry_history WHERE entry_id = ?", (_id819,)
-    ).fetchall()
+    _hist_rows = _conn819b.execute("SELECT * FROM knowledge_entry_history WHERE entry_id = ?", (_id819,)).fetchall()
 
     test("I819-2a: history row created on content update", len(_hist_rows) == 1, str(len(_hist_rows)))
     if _hist_rows:
