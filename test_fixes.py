@@ -15995,6 +15995,175 @@ except Exception as _e867:
         test(f"I867-{_label867}: decay-adjusted confidence ranking", False, str(_e867))
 
 # ---------------------------------------------------------------------------
+# I869: sk export — unified knowledge backup with JSONL streaming
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu869
+    import io as _io869
+    import sqlite3 as _sqlite3869
+    import tempfile as _tf869
+
+    _spec869 = _ilu869.spec_from_file_location("kh869", REPO / "knowledge-health.py")
+    _kh869 = _ilu869.module_from_spec(_spec869)
+    _spec869.loader.exec_module(_kh869)
+
+    # Build an isolated in-memory DB with sample knowledge_entries
+    _conn869 = _sqlite3869.connect(":memory:")
+    _conn869.row_factory = _sqlite3869.Row
+    _conn869.execute(
+        """
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            category TEXT DEFAULT 'mistake',
+            title TEXT NOT NULL,
+            content TEXT,
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.5,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT,
+            last_seen TEXT,
+            wing TEXT,
+            room TEXT,
+            affected_files TEXT,
+            facts TEXT,
+            est_tokens INTEGER,
+            task_id TEXT,
+            source_file TEXT,
+            start_line INTEGER,
+            end_line INTEGER
+        )
+        """
+    )
+    _conn869.execute(
+        """
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES (?,?,?,?,?,?,?)
+        """,
+        ("mistake", "Test entry one", "Content one", "python,test", 0.9, "2024-01-01", "2024-06-01"),
+    )
+    _conn869.execute(
+        """
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES (?,?,?,?,?,?,?)
+        """,
+        ("pattern", "Test entry two", "Content two with unicode: ñ", "rust,pattern", 0.7, "2024-02-01", "2024-07-01"),
+    )
+    _conn869.commit()
+
+    _orig_get_db869 = _kh869.get_db
+
+    class _NoCloseConn869:
+        """Proxy that forwards all calls to _conn869 but makes close() a no-op."""
+
+        def __getattr__(self, name):
+            return getattr(_conn869, name)
+
+        def close(self):
+            pass  # prevent teardown between tests
+
+    def _fake_get_db869():
+        return _NoCloseConn869()
+
+    _kh869.get_db = _fake_get_db869
+
+    # --- I869-1: JSONL format produces one JSON object per line ---
+    _stdout869a = _io869.StringIO()
+    _orig_stdout869 = sys.stdout
+    sys.stdout = _stdout869a
+    _orig_argv869 = sys.argv
+    sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl"]
+    _kh869.main()
+    sys.argv = _orig_argv869
+    sys.stdout = _orig_stdout869
+    _jsonl869_lines = [ln for ln in _stdout869a.getvalue().splitlines() if ln.strip()]
+    test("I869-1a: JSONL export produces 2 lines", len(_jsonl869_lines) == 2, repr(_jsonl869_lines))
+    _parsed869 = [json.loads(ln) for ln in _jsonl869_lines]
+    test(
+        "I869-1b: each JSONL line has required keys",
+        all({"id", "category", "title", "content", "tags", "confidence", "first_seen", "last_seen"} <= set(p.keys()) for p in _parsed869),
+        repr(_parsed869),
+    )
+    test(
+        "I869-1c: JSONL entries contain expected titles",
+        any(p["title"] == "Test entry one" for p in _parsed869),
+        repr(_parsed869),
+    )
+
+    # --- I869-2: --stdout flag works the same as default stdout ---
+    _stdout869b = _io869.StringIO()
+    sys.stdout = _stdout869b
+    sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--stdout"]
+    _kh869.main()
+    sys.argv = _orig_argv869
+    sys.stdout = _orig_stdout869
+    _jsonl869b_lines = [ln for ln in _stdout869b.getvalue().splitlines() if ln.strip()]
+    test("I869-2: --stdout flag produces same output as default", len(_jsonl869b_lines) == 2, repr(_jsonl869b_lines))
+
+    # --- I869-3: --all-categories exports all categories (ignores --category) ---
+    _stdout869c = _io869.StringIO()
+    sys.stdout = _stdout869c
+    sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--all-categories"]
+    _kh869.main()
+    sys.argv = _orig_argv869
+    sys.stdout = _orig_stdout869
+    _jsonl869c_lines = [ln for ln in _stdout869c.getvalue().splitlines() if ln.strip()]
+    _cats869 = {json.loads(ln)["category"] for ln in _jsonl869c_lines}
+    test(
+        "I869-3: --all-categories exports both 'mistake' and 'pattern' entries",
+        "mistake" in _cats869 and "pattern" in _cats869,
+        repr(_cats869),
+    )
+
+    # --- I869-4: --format jsonl --output writes a valid JSONL file ---
+    _out869_path = REPO / "_test_i869_export.jsonl"
+    try:
+        _stdout869d = _io869.StringIO()
+        sys.stdout = _stdout869d
+        sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--output", str(_out869_path)]
+        _kh869.main()
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+        _msg869 = _stdout869d.getvalue()
+        test("I869-4a: output message mentions 'Exported'", "Exported" in _msg869, repr(_msg869))
+        test("I869-4b: JSONL output file exists", _out869_path.exists(), str(_out869_path))
+        if _out869_path.exists():
+            _file869_lines = [ln for ln in _out869_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            test(
+                "I869-4c: JSONL file contains 2 valid JSON lines",
+                len(_file869_lines) == 2 and all(json.loads(ln) for ln in _file869_lines),
+                repr(_file869_lines),
+            )
+    finally:
+        sys.argv = _orig_argv869
+        try:
+            _out869_path.unlink()
+        except Exception:
+            pass
+
+    # --- I869-5: sk.py routes 'export' → knowledge-health.py --export ---
+    _spec869sk = _ilu869.spec_from_file_location("sk869", REPO / "sk.py")
+    _sk869 = _ilu869.module_from_spec(_spec869sk)
+    _spec869sk.loader.exec_module(_sk869)
+    test(
+        "I869-5: 'export' is registered in sk.py _DIRECT",
+        "export" in _sk869._DIRECT,
+        str(list(_sk869._DIRECT.keys())),
+    )
+    test(
+        "I869-5b: sk.py 'export' points to knowledge-health.py",
+        "knowledge-health.py" in str(_sk869._DIRECT["export"]),
+        str(_sk869._DIRECT["export"]),
+    )
+
+    _kh869.get_db = _orig_get_db869
+    _conn869.close()
+
+except Exception as _e869:
+    for _label869 in ["1a", "1b", "1c", "2", "3", "4a", "4b", "4c", "5", "5b"]:
+        test(f"I869-{_label869}: sk export JSONL", False, str(_e869))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
