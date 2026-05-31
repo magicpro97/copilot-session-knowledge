@@ -14231,6 +14231,360 @@ except Exception as _e853:
         test(f"I853-{_label853}: hook rule context filters", False, str(_e853))
 
 # ---------------------------------------------------------------------------
+# === I855: MCP Progress Notifications ===
+# ---------------------------------------------------------------------------
+print("\n📡 I855: MCP Progress Notifications")
+
+_mcp855_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
+
+# I855-01: _send_progress function defined
+try:
+    test("I855-01: _send_progress function defined", "def _send_progress(" in _mcp855_src, "_send_progress not found")
+except Exception as _e855_01:
+    test("I855-01: _send_progress defined", False, str(_e855_01))
+
+# I855-02: _send_progress emits notifications/progress method
+try:
+    _prog_fn855 = _mcp855_src.split("def _send_progress(")[1].split("def _write_error(")[0]
+    test(
+        "I855-02: _send_progress emits notifications/progress",
+        "notifications/progress" in _prog_fn855,
+        "_send_progress does not reference notifications/progress",
+    )
+except Exception as _e855_02:
+    test("I855-02: notifications/progress in _send_progress", False, str(_e855_02))
+
+# I855-03: _send_progress notification has no id field
+try:
+    _prog_fn855b = _mcp855_src.split("def _send_progress(")[1].split("def _write_error(")[0]
+    test(
+        "I855-03: _send_progress notification has no id field",
+        '"id"' not in _prog_fn855b and "'id'" not in _prog_fn855b,
+        "notification should not contain 'id' key",
+    )
+except Exception as _e855_03:
+    test("I855-03: no id in notification", False, str(_e855_03))
+
+# I855-04: _run_briefing accepts progress_token parameter
+try:
+    _brief_fn855 = _mcp855_src.split("def _run_briefing(")[1].split("def _run_query_session(")[0]
+    test(
+        "I855-04: _run_briefing accepts progress_token",
+        "progress_token" in _brief_fn855,
+        "progress_token not in _run_briefing signature",
+    )
+except Exception as _e855_04:
+    test("I855-04: _run_briefing progress_token param", False, str(_e855_04))
+
+# I855-05: _run_briefing calls _send_progress at least 3 times
+try:
+    _brief_fn855b = _mcp855_src.split("def _run_briefing(")[1].split("def _run_query_session(")[0]
+    _prog_calls855 = _brief_fn855b.count("_send_progress(")
+    test(
+        "I855-05: _run_briefing calls _send_progress >= 3 times",
+        _prog_calls855 >= 3,
+        f"_send_progress called {_prog_calls855} times in _run_briefing",
+    )
+except Exception as _e855_05:
+    test("I855-05: briefing progress calls", False, str(_e855_05))
+
+# I855-06: _run_batch_learn function defined
+try:
+    test(
+        "I855-06: _run_batch_learn function defined",
+        "def _run_batch_learn(" in _mcp855_src,
+        "_run_batch_learn not found",
+    )
+except Exception as _e855_06:
+    test("I855-06: _run_batch_learn defined", False, str(_e855_06))
+
+# I855-07: batch_learn in TOOLS list
+try:
+    test(
+        "I855-07: batch_learn in TOOLS list",
+        '"name": "batch_learn"' in _mcp855_src or "'name': 'batch_learn'" in _mcp855_src,
+        "batch_learn not found in TOOLS list",
+    )
+except Exception as _e855_07:
+    test("I855-07: batch_learn in TOOLS", False, str(_e855_07))
+
+# I855-08: _handle_tools_call extracts _meta.progressToken
+try:
+    _dispatch_fn855 = _mcp855_src.split("def _handle_tools_call(")[1].split("\ndef _handle_resources_list(")[0]
+    test(
+        "I855-08: _handle_tools_call extracts progressToken from _meta",
+        "progressToken" in _dispatch_fn855 and "_meta" in _dispatch_fn855,
+        "_meta/progressToken not extracted in _handle_tools_call",
+    )
+except Exception as _e855_08:
+    test("I855-08: progressToken extraction", False, str(_e855_08))
+
+# I855-09..14: Integration tests via MCP subprocess
+try:
+    import json as _json855
+    import pathlib as _pl855
+    import sqlite3 as _sq855
+    import subprocess as _sp855
+    import tempfile as _tmp855
+
+    def _mcp855_all_messages(home_dir, method, params):
+        """Run MCP subprocess, return ALL JSON-RPC messages (including notifications)."""
+        proc = _sp855.Popen(
+            [sys.executable, str(REPO / "mcp-server.py")],
+            stdin=_sp855.PIPE,
+            stdout=_sp855.PIPE,
+            stderr=_sp855.PIPE,
+            env={**os.environ, "HOME": str(home_dir), "USERPROFILE": str(home_dir)},
+        )
+        try:
+            init_msg = _json855.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }
+            ).encode()
+            notif = _json855.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+            req = _json855.dumps({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}).encode()
+            shutdown_msg = _json855.dumps({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}).encode()
+            for msg in (init_msg, notif, req, shutdown_msg):
+                proc.stdin.write(f"Content-Length: {len(msg)}\r\n\r\n".encode() + msg)
+            proc.stdin.flush()
+            proc.stdin.close()
+            out = proc.stdout.read()
+            proc.wait(timeout=15)
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        messages = []
+        remaining = out
+        while remaining:
+            if b"Content-Length:" not in remaining:
+                break
+            hdr_end = remaining.find(b"\r\n\r\n")
+            if hdr_end == -1:
+                break
+            hdr = remaining[:hdr_end].decode("ascii", errors="replace")
+            cl_hdrs = [l.split(":", 1)[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()]
+            if not cl_hdrs:
+                break
+            cl = int(cl_hdrs[0])
+            body_start = hdr_end + 4
+            body = remaining[body_start : body_start + cl]
+            remaining = remaining[body_start + cl :]
+            try:
+                messages.append(_json855.loads(body))
+            except Exception:
+                pass
+        return messages
+
+    with _tmp855.TemporaryDirectory(prefix="mcp855-test-") as _tmp855_dir:
+        _home855 = _pl855.Path(_tmp855_dir)
+        _state855 = _home855 / ".copilot" / "session-state"
+        _state855.mkdir(parents=True, exist_ok=True)
+        _db855 = _sq855.connect(_state855 / "knowledge.db")
+        _db855.executescript("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, path TEXT NOT NULL, summary TEXT DEFAULT '',
+                source TEXT DEFAULT 'copilot', indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER, category TEXT NOT NULL, title TEXT NOT NULL,
+                stable_id TEXT, content TEXT NOT NULL DEFAULT '', tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0, occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT, last_seen TEXT, source TEXT DEFAULT 'copilot',
+                topic_key TEXT, revision_count INTEGER DEFAULT 1, content_hash TEXT,
+                wing TEXT DEFAULT '', room TEXT DEFAULT '', facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0, task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]', source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '', start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0, code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '', error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '', severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0, fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '', recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '', intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2', project_id TEXT DEFAULT '',
+                agent_id TEXT DEFAULT ''
+            );
+            CREATE VIRTUAL TABLE knowledge_fts USING fts5(title, section_name, content, doc_type UNINDEXED, session_id UNINDEXED, document_id UNINDEXED);
+            CREATE VIRTUAL TABLE ke_fts USING fts5(title, content);
+            CREATE VIRTUAL TABLE sessions_fts USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, doc_type TEXT NOT NULL, title TEXT NOT NULL, file_path TEXT DEFAULT '', seq INTEGER DEFAULT 1, size_bytes INTEGER DEFAULT 0, source TEXT DEFAULT 'copilot');
+            CREATE TABLE sections (id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, section_name TEXT DEFAULT '', content TEXT DEFAULT '');
+        """)
+        _db855.commit()
+        _db855.close()
+
+        # I855-09: briefing with progressToken emits >= 3 progress notifications
+        try:
+            _msgs855_brief = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {
+                    "name": "briefing",
+                    "_meta": {"progressToken": "tok-brief-855"},
+                    "arguments": {"task": "test progress", "limit": 1},
+                },
+            )
+            _prog855_brief = [
+                m
+                for m in _msgs855_brief
+                if m.get("method") == "notifications/progress"
+                and "id" not in m
+                and m.get("params", {}).get("progressToken") == "tok-brief-855"
+            ]
+            test(
+                "I855-09: briefing with progressToken emits >= 3 progress notifications",
+                len(_prog855_brief) >= 3,
+                f"got {len(_prog855_brief)} progress notifications: {_prog855_brief}",
+            )
+        except Exception as _e855_09:
+            test("I855-09: briefing progress notifications", False, str(_e855_09))
+
+        # I855-10: briefing without progressToken emits zero progress notifications
+        try:
+            _msgs855_notoken = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {"name": "briefing", "arguments": {"task": "test no progress", "limit": 1}},
+            )
+            _prog855_notoken = [m for m in _msgs855_notoken if m.get("method") == "notifications/progress"]
+            test(
+                "I855-10: briefing without progressToken emits zero progress notifications",
+                len(_prog855_notoken) == 0,
+                f"got {len(_prog855_notoken)} unexpected progress notifications",
+            )
+        except Exception as _e855_10:
+            test("I855-10: no progress without token", False, str(_e855_10))
+
+        # I855-11: progress notifications appear before the final result
+        try:
+            _msgs855_order = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {
+                    "name": "briefing",
+                    "_meta": {"progressToken": "tok-order-855"},
+                    "arguments": {"task": "order check", "limit": 1},
+                },
+            )
+            _prog_indices = [i for i, m in enumerate(_msgs855_order) if m.get("method") == "notifications/progress"]
+            _result_indices = [i for i, m in enumerate(_msgs855_order) if m.get("id") == 2]
+            test(
+                "I855-11: progress notifications appear before final result",
+                bool(_prog_indices) and bool(_result_indices) and max(_prog_indices) < _result_indices[0],
+                f"prog at {_prog_indices}, result at {_result_indices}",
+            )
+        except Exception as _e855_11:
+            test("I855-11: progress before result", False, str(_e855_11))
+
+        # I855-12: progress notifications are valid JSON-RPC 2.0 (no id, correct method)
+        try:
+            _msgs855_valid = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {
+                    "name": "briefing",
+                    "_meta": {"progressToken": "tok-valid-855"},
+                    "arguments": {"task": "validity check", "limit": 1},
+                },
+            )
+            _prog855_valid = [m for m in _msgs855_valid if m.get("method") == "notifications/progress"]
+            _all_valid = all(
+                m.get("jsonrpc") == "2.0"
+                and "id" not in m
+                and "progressToken" in m.get("params", {})
+                and isinstance(m.get("params", {}).get("progress"), (int, float))
+                and isinstance(m.get("params", {}).get("total"), (int, float))
+                for m in _prog855_valid
+            )
+            test(
+                "I855-12: all progress notifications are valid JSON-RPC 2.0",
+                bool(_prog855_valid) and _all_valid,
+                str(_prog855_valid[:2]),
+            )
+        except Exception as _e855_12:
+            test("I855-12: valid JSON-RPC progress", False, str(_e855_12))
+
+        # I855-13: batch_learn with N=3 entries emits exactly 3 progress notifications
+        _learn_py855 = REPO / "learn.py"
+        if not _learn_py855.exists():
+            for _sfx855 in ["13", "14"]:
+                test(f"I855-{_sfx855}: batch_learn progress (learn.py absent)", True, "skipped — learn.py not found")
+        else:
+            try:
+                _msgs855_batch = _mcp855_all_messages(
+                    _home855,
+                    "tools/call",
+                    {
+                        "name": "batch_learn",
+                        "_meta": {"progressToken": "tok-batch-855"},
+                        "arguments": {
+                            "entries": [
+                                {"type": "pattern", "title": "I855 batch entry 1", "content": "desc one"},
+                                {"type": "mistake", "title": "I855 batch entry 2", "content": "desc two"},
+                                {"type": "feature", "title": "I855 batch entry 3", "content": "desc three"},
+                            ]
+                        },
+                    },
+                )
+                _prog855_batch = [
+                    m
+                    for m in _msgs855_batch
+                    if m.get("method") == "notifications/progress"
+                    and m.get("params", {}).get("progressToken") == "tok-batch-855"
+                ]
+                test(
+                    "I855-13: batch_learn with 3 entries emits exactly 3 progress notifications",
+                    len(_prog855_batch) == 3,
+                    f"got {len(_prog855_batch)} notifications: {_prog855_batch}",
+                )
+            except Exception as _e855_13:
+                test("I855-13: batch_learn progress count", False, str(_e855_13))
+
+            # I855-14: batch_learn progress values are sequential (1/3, 2/3, 3/3)
+            try:
+                _msgs855_seq = _mcp855_all_messages(
+                    _home855,
+                    "tools/call",
+                    {
+                        "name": "batch_learn",
+                        "_meta": {"progressToken": "tok-seq-855"},
+                        "arguments": {
+                            "entries": [
+                                {"type": "pattern", "title": "I855 seq entry 1", "content": "d1"},
+                                {"type": "pattern", "title": "I855 seq entry 2", "content": "d2"},
+                                {"type": "pattern", "title": "I855 seq entry 3", "content": "d3"},
+                            ]
+                        },
+                    },
+                )
+                _prog855_seq = [
+                    m
+                    for m in _msgs855_seq
+                    if m.get("method") == "notifications/progress"
+                    and m.get("params", {}).get("progressToken") == "tok-seq-855"
+                ]
+                _prog_values = [m.get("params", {}).get("progress") for m in _prog855_seq]
+                _total_values = [m.get("params", {}).get("total") for m in _prog855_seq]
+                test(
+                    "I855-14: batch_learn progress values are sequential 1/2/3 of total 3",
+                    len(_prog_values) == 3 and _prog_values == [1.0, 2.0, 3.0] and all(t == 3.0 for t in _total_values),
+                    f"progress={_prog_values} total={_total_values}",
+                )
+            except Exception as _e855_14:
+                test("I855-14: batch_learn progress sequence", False, str(_e855_14))
+
+except Exception as _e855_integration:
+    for _sfx855 in ["09", "10", "11", "12", "13", "14"]:
+        test(f"I855-{_sfx855}: progress integration", False, str(_e855_integration))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
