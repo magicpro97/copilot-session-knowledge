@@ -124,8 +124,12 @@ _DIRECT: dict[str, CommandMeta] = {
     "heal": CommandMeta(
         "copilot-cli-healer.py", "Diagnose and fix common sk installation issues", ("install", "doctor")
     ),
-    "doctor": CommandMeta("doctor.py", "Run automated config health checks with severity levels", ("install", "doctor")),
-    "code-search": CommandMeta("code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")),
+    "doctor": CommandMeta(
+        "doctor.py", "Run automated config health checks with severity levels", ("install", "doctor")
+    ),
+    "code-search": CommandMeta(
+        "code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")
+    ),
     "watch": CommandMeta("watch-sessions.py", "Watch and auto-index new CLI sessions", ("watch", "index")),
     "export-buglog": CommandMeta("buglog-export.py", "Export bug log entries", ("export", "buglog")),
     "buglog": CommandMeta(

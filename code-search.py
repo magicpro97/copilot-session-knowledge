@@ -33,9 +33,7 @@ if os.name == "nt":
 
 TOOLS_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(
-    os.environ.get(
-        "SK_DB_PATH", str(Path.home() / ".copilot" / "session-state" / "knowledge.db")
-    )
+    os.environ.get("SK_DB_PATH", str(Path.home() / ".copilot" / "session-state" / "knowledge.db"))
 ).expanduser()
 
 EXT_TO_LANG = {
@@ -245,9 +243,7 @@ def _make_project_id(repo_root: Path) -> str:
     return hashlib.sha256(str(repo_root).encode()).hexdigest()[:16]
 
 
-def index_file(
-    conn: sqlite3.Connection, project_id: str, repo_root: str, rel_path: str
-) -> int:
+def index_file(conn: sqlite3.Connection, project_id: str, repo_root: str, rel_path: str) -> int:
     """Index a single file with mtime-based incremental check.
 
     Returns the number of chunks inserted/updated.
@@ -292,9 +288,7 @@ def index_file(
     if old_ids:
         placeholders = ",".join("?" * len(old_ids))
         conn.execute(f"DELETE FROM code_fts WHERE rowid IN ({placeholders})", old_ids)
-        conn.execute(
-            f"DELETE FROM code_index WHERE id IN ({placeholders})", old_ids
-        )
+        conn.execute(f"DELETE FROM code_index WHERE id IN ({placeholders})", old_ids)
 
     inserted = 0
     for chunk in chunks:
@@ -341,11 +335,7 @@ def _find_files(root: Path) -> list[str]:
     root_str = str(root)
     for dirpath, dirnames, filenames in os.walk(root_str):
         # Skip hidden and known-skip directories in-place
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in SKIP_DIRS and not d.startswith(".")
-        ]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for fname in filenames:
             ext = Path(fname).suffix.lower()
             if ext not in EXT_TO_LANG:
@@ -411,9 +401,7 @@ def _git_ls_files(root: Path) -> list[str]:
             return []
         lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
         # Filter to known extensions
-        return [
-            l for l in lines if Path(l).suffix.lower() in EXT_TO_LANG
-        ]
+        return [l for l in lines if Path(l).suffix.lower() in EXT_TO_LANG]
     except (OSError, subprocess.TimeoutExpired):
         return []
 
@@ -512,9 +500,7 @@ def search_fts(
         ).fetchall()
     except sqlite3.OperationalError:
         like = f"%{query.lower()}%"
-        where_like = (
-            ("WHERE " + " AND ".join(conditions) + " AND ") if conditions else "WHERE "
-        )
+        where_like = ("WHERE " + " AND ".join(conditions) + " AND ") if conditions else "WHERE "
         rows = conn.execute(
             f"""SELECT file_path, project_id, language,
                    start_line, end_line, symbol_name,
@@ -541,9 +527,7 @@ def search(
 
     conn = _open_db()
     try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'"
-        ).fetchone()
+        has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has_table:
             return []
         results = search_fts(conn, query, lang, project_id, limit)
@@ -566,9 +550,7 @@ def show_status() -> None:
 
     conn = _open_db()
     try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'"
-        ).fetchone()
+        has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has_table:
             print("code_index table not found. Run: sk code-search --index <path>")
             return
@@ -580,9 +562,7 @@ def show_status() -> None:
         langs = conn.execute(
             "SELECT language, COUNT(*) as cnt FROM code_index GROUP BY language ORDER BY cnt DESC LIMIT 10"
         ).fetchall()
-        files = conn.execute(
-            "SELECT COUNT(DISTINCT file_path) FROM code_index"
-        ).fetchone()[0]
+        files = conn.execute("SELECT COUNT(DISTINCT file_path) FROM code_index").fetchone()[0]
     finally:
         conn.close()
 
@@ -609,17 +589,13 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument("query", nargs="?", help="Search query")
-    parser.add_argument(
-        "--lang", "--language", dest="lang", help="Filter by language"
-    )
+    parser.add_argument("--lang", "--language", dest="lang", help="Filter by language")
     parser.add_argument("--project", dest="project_id", help="Filter by project ID")
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--json", dest="as_json", action="store_true")
     parser.add_argument("--index", metavar="PATH", help="Index a directory")
     parser.add_argument("--status", action="store_true", help="Show index stats")
-    parser.add_argument(
-        "--context", type=int, default=3, help="Context lines around match"
-    )
+    parser.add_argument("--context", type=int, default=3, help="Context lines around match")
 
     args = parser.parse_args()
 

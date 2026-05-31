@@ -696,9 +696,7 @@ def _run_code_search(arguments: dict) -> dict:
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB open error: {exc}") from exc
 
     try:
-        has_table = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'"
-        ).fetchone()
+        has_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has_table:
             body = {
                 "results": [],
