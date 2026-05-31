@@ -17,6 +17,7 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -113,10 +114,12 @@ IGNORE_DIRS = {
 }
 
 MAX_SNIPPET_LINES = 50
+MAX_SNIPPET_CHARS = 2000
 MAX_FILE_SIZE = 512 * 1024  # 512 KB
 
 
 def _get_db() -> sqlite3.Connection:
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(_DB_PATH)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
@@ -125,20 +128,21 @@ def _get_db() -> sqlite3.Connection:
 
 
 def _check_tables(db: sqlite3.Connection) -> None:
-    has_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
-    if not has_table:
-        print(
-            "code_index table not found. Run 'sk index migrate' first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    for tbl in ("code_index", "code_fts"):
+        has_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [tbl]).fetchone()
+        if not has_table:
+            print(
+                f"{tbl} table not found. Run 'sk index migrate' first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 
 def _ensure_project(db: sqlite3.Connection, root: Path) -> str:
     """Register project in project_registry if table exists, return project_id."""
     has_registry = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_registry'").fetchone()
     root_str = str(root)
-    project_id = re.sub(r"[^a-zA-Z0-9_-]", "_", root_str)[-64:]
+    project_id = hashlib.sha256(root_str.encode()).hexdigest()[:16]
     if has_registry:
         existing = db.execute(
             "SELECT project_id FROM project_registry WHERE repo_root=?",
@@ -157,7 +161,7 @@ def _ensure_project(db: sqlite3.Connection, root: Path) -> str:
 def _iter_files(root: Path, lang_filter: set[str] | None) -> list[Path]:
     results: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         for fname in filenames:
             fp = Path(dirpath) / fname
             lang = EXT_TO_LANG.get(fp.suffix.lower())
@@ -216,9 +220,11 @@ def _index_file(
     project_id: str,
     rebuild: bool,
 ) -> int:
-    """Index one file. Returns number of symbols written."""
+    """Index one file. Returns number of symbols written, or -1 if unchanged."""
     try:
-        mtime = fp.stat().st_mtime
+        stat = fp.stat()
+        mtime = stat.st_mtime
+        fsize = stat.st_size
     except OSError:
         return 0
 
@@ -231,9 +237,19 @@ def _index_file(
             [fp_str, project_id],
         ).fetchone()
         if cached and abs(cached["file_mtime"] - mtime) < 0.01:
-            return 0  # unchanged
+            return -1  # unchanged
 
-    if fp.stat().st_size > MAX_FILE_SIZE:
+    # Clear old entries before any early returns so stale data doesn't linger
+    db.execute(
+        "DELETE FROM code_fts WHERE rowid IN (SELECT id FROM code_index WHERE file_path=? AND project_id=?)",
+        [fp_str, project_id],
+    )
+    db.execute(
+        "DELETE FROM code_index WHERE file_path=? AND project_id=?",
+        [fp_str, project_id],
+    )
+
+    if fsize > MAX_FILE_SIZE:
         return 0
 
     try:
@@ -244,18 +260,8 @@ def _index_file(
     lines = content.splitlines()
     symbols = _extract_symbols(lines, lang)
 
-    # Clear old entries for this file
-    db.execute(
-        "DELETE FROM code_fts WHERE rowid IN (SELECT id FROM code_index WHERE file_path=? AND project_id=?)",
-        [fp_str, project_id],
-    )
-    db.execute(
-        "DELETE FROM code_index WHERE file_path=? AND project_id=?",
-        [fp_str, project_id],
-    )
-
     for name, kind, start_line, end_line in symbols:
-        snippet = "\n".join(lines[start_line - 1 : end_line])
+        snippet = "\n".join(lines[start_line - 1 : end_line])[:MAX_SNIPPET_CHARS]
         db.execute(
             "INSERT OR REPLACE INTO code_index"
             "(project_id, file_path, language, symbol_kind, symbol_name,"
@@ -280,6 +286,9 @@ def cmd_index(args: argparse.Namespace) -> None:
     if not root.exists():
         print(f"Path not found: {root}", file=sys.stderr)
         sys.exit(1)
+    if not root.is_dir():
+        print(f"Not a directory: {root}", file=sys.stderr)
+        sys.exit(1)
 
     lang_filter: set[str] | None = None
     if args.languages:
@@ -293,15 +302,16 @@ def cmd_index(args: argparse.Namespace) -> None:
     t0 = time.monotonic()
     total_files = 0
     total_symbols = 0
-    skipped = 0
+    unchanged = 0
 
     for fp in files:
         count = _index_file(db, fp, project_id, rebuild=args.rebuild)
-        if count == 0 and not args.rebuild:
-            skipped += 1
-        else:
+        if count == -1:
+            unchanged += 1
+        elif count > 0:
             total_files += 1
             total_symbols += count
+        # count == 0 means file was processed but yielded no symbols (or skipped)
 
     db.commit()
     db.close()
@@ -314,14 +324,14 @@ def cmd_index(args: argparse.Namespace) -> None:
                     "project_id": project_id,
                     "root": str(root),
                     "files_indexed": total_files,
-                    "files_skipped": skipped,
+                    "files_unchanged": unchanged,
                     "symbols_extracted": total_symbols,
                     "elapsed_s": round(elapsed, 3),
                 }
             )
         )
     else:
-        print(f"Indexed {total_files} files ({skipped} unchanged), {total_symbols} symbols in {elapsed:.2f}s")
+        print(f"Indexed {total_files} files ({unchanged} unchanged), {total_symbols} symbols in {elapsed:.2f}s")
         print(f"Project: {project_id}")
 
 
@@ -335,18 +345,30 @@ def cmd_status(args: argparse.Namespace) -> None:
     ).fetchall()
 
     total = db.execute("SELECT COUNT(*) FROM code_index").fetchone()[0]
+    total_files = db.execute("SELECT COUNT(DISTINCT file_path) FROM code_index").fetchone()[0]
+    last_row = db.execute("SELECT MAX(indexed_at) as last_indexed FROM code_index").fetchone()
+    last_indexed = last_row["last_indexed"] if last_row else None
     db.close()
 
     if args.json:
         data = [dict(r) for r in rows]
-        print(json.dumps({"total_symbols": total, "by_project_language": data}))
+        print(
+            json.dumps(
+                {
+                    "total_symbols": total,
+                    "total_files": total_files,
+                    "last_indexed": last_indexed,
+                    "by_project_language": data,
+                }
+            )
+        )
         return
 
     if not rows:
         print("No symbols indexed yet. Run: sk code-index <path>")
         return
 
-    print(f"Total symbols: {total}")
+    print(f"Total symbols: {total}  |  Files: {total_files}  |  Last indexed: {last_indexed or 'never'}")
     print(f"{'Project':<40} {'Language':<14} {'Symbols':>8} {'Files':>6}")
     print("-" * 72)
     for r in rows:
