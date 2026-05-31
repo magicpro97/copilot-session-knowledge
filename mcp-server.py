@@ -106,7 +106,7 @@ TOOLS = [
                 },
                 "with_code_context": {
                     "type": "boolean",
-                    "description": "Include relevant code spans from indexed codebase (requires sk code-index first).",
+                    "description": "Include relevant code spans from the indexed codebase (via `sk code-search`).",
                 },
                 "code_tokens": {
                     "type": "integer",
@@ -291,6 +291,17 @@ def _optional_int(arguments: dict[str, Any], key: str, *, default: int, minimum:
     return value
 
 
+def _optional_bool(arguments: dict[str, Any], key: str, *, default: bool) -> bool:
+    value = arguments.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+    raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"'{key}' must be a boolean")
+
+
 def _capture_module_main(module, argv: list[str]) -> tuple[int, str, str]:
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
@@ -321,7 +332,7 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
     limit = _optional_int(arguments, "limit", default=3, minimum=1, maximum=20)
     agent_tag = _optional_string(arguments, "agent_tag")
     msg_tag = _optional_string(arguments, "msg_tag")
-    with_code_context = arguments.get("with_code_context", False)
+    with_code_context = _optional_bool(arguments, "with_code_context", default=False)
     code_tokens = _optional_int(arguments, "code_tokens", default=1000, minimum=100, maximum=4000)
     argv = [task, "--pack", "--mode", mode, "--limit", str(limit)]
     if agent_tag:

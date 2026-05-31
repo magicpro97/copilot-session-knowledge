@@ -4530,11 +4530,43 @@ def main():
             },
         )
 
-    if with_code_context and query and fmt not in ("json", "pack"):
+    if with_code_context and query and fmt != "json":
         snippets = _query_code_context(DB_PATH, query, token_budget=code_tokens)
-        code_section = _format_code_context(snippets)
-        if code_section:
-            output = output + code_section
+        if snippets:
+            if fmt == "pack":
+                try:
+                    pack_payload = json.loads(output)
+                except json.JSONDecodeError:
+                    pack_payload = None
+                if isinstance(pack_payload, dict):
+                    selected_snippets = []
+                    for snippet in snippets:
+                        candidate_snippets = selected_snippets + [snippet]
+                        candidate_output = json.dumps(
+                            {**pack_payload, "code_context": candidate_snippets},
+                            indent=2,
+                            ensure_ascii=False,
+                        )
+                        if budget and len(candidate_output) > budget:
+                            break
+                        selected_snippets = candidate_snippets
+                    if selected_snippets:
+                        output = json.dumps(
+                            {**pack_payload, "code_context": selected_snippets},
+                            indent=2,
+                            ensure_ascii=False,
+                        )
+            else:
+                code_section = _format_code_context(snippets)
+                if code_section:
+                    if budget:
+                        remaining = max(0, budget - len(output))
+                        if remaining <= 100:
+                            code_section = ""
+                        elif len(code_section) > remaining:
+                            code_section = code_section[:remaining].rsplit("\n", 1)[0]
+                    if code_section:
+                        output = output + code_section
 
     print(output)
 

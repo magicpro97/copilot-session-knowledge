@@ -13,6 +13,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -2818,6 +2819,314 @@ with tempfile.TemporaryDirectory(prefix="mcp-server-test-") as _mcp_tmp:
                 except subprocess.TimeoutExpired:
                     _mcp_proc.kill()
                     _mcp_proc.wait(timeout=5)
+
+def test_i754_briefing_with_code_context_emits_snippets():
+    base_dir = REPO / "_test_i754_briefing_code_context"
+    shutil.rmtree(base_dir, ignore_errors=True)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        home = _seed_briefing_test_home(base_dir)
+        db_path = home / ".copilot" / "session-state" / "knowledge.db"
+        db = sqlite3.connect(str(db_path))
+        db.executescript(
+            """
+            CREATE TABLE code_index (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT,
+                language TEXT,
+                start_line INTEGER,
+                symbol_name TEXT,
+                content_snippet TEXT
+            );
+            CREATE VIRTUAL TABLE code_fts USING fts5(content_snippet, symbol_name);
+            """
+        )
+        snippet = "def validate_jwt(token):\n    return token.startswith('jwt:')\n"
+        row_id = db.execute(
+            "INSERT INTO code_index(file_path, language, start_line, symbol_name, content_snippet) VALUES (?, ?, ?, ?, ?)",
+            ("src/auth.py", "python", 10, "validate_jwt", snippet),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO code_fts(rowid, content_snippet, symbol_name) VALUES (?, ?, ?)",
+            (row_id, snippet, "validate_jwt"),
+        )
+        db.commit()
+        db.close()
+
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = _run_utf8_text(
+            [
+                sys.executable,
+                str(REPO / "briefing.py"),
+                "validate_jwt",
+                "--pack",
+                "--with-code-context",
+                "--code-tokens",
+                "120",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        payload = json.loads(proc.stdout or "{}")
+        code_context = payload.get("code_context", [])
+        test("I754-1a: briefing with code context exits 0", proc.returncode == 0, proc.stderr.strip())
+        test("I754-1b: briefing pack output includes code_context", len(code_context) == 1, json.dumps(payload)[:200])
+        if code_context:
+            test(
+                "I754-1c: code context includes indexed snippet",
+                code_context[0].get("symbol_name") == "validate_jwt" and "jwt:" in code_context[0].get("content", ""),
+                json.dumps(code_context[0], ensure_ascii=False),
+            )
+    except Exception as exc:
+        for suffix in ("1a", "1b", "1c"):
+            test(f"I754-{suffix}: briefing code context", False, str(exc))
+    finally:
+        shutil.rmtree(base_dir, ignore_errors=True)
+
+
+def test_i754_briefing_with_code_context_noop_without_index():
+    base_dir = REPO / "_test_i754_briefing_no_index"
+    shutil.rmtree(base_dir, ignore_errors=True)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        home = _seed_briefing_test_home(base_dir)
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = _run_utf8_text(
+            [sys.executable, str(REPO / "briefing.py"), "validate_jwt", "--pack", "--with-code-context"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        payload = json.loads(proc.stdout or "{}")
+        test("I754-2a: briefing without code index exits 0", proc.returncode == 0, proc.stderr.strip())
+        test(
+            "I754-2b: briefing without code index leaves pack unchanged",
+            "code_context" not in payload,
+            json.dumps(payload, ensure_ascii=False)[:200],
+        )
+    except Exception as exc:
+        for suffix in ("2a", "2b"):
+            test(f"I754-{suffix}: briefing without index", False, str(exc))
+    finally:
+        shutil.rmtree(base_dir, ignore_errors=True)
+
+
+def test_i754_briefing_code_context_budget_respected():
+    base_dir = REPO / "_test_i754_briefing_budget"
+    shutil.rmtree(base_dir, ignore_errors=True)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        home = _seed_briefing_test_home(base_dir)
+        db_path = home / ".copilot" / "session-state" / "knowledge.db"
+        db = sqlite3.connect(str(db_path))
+        db.executescript(
+            """
+            CREATE TABLE code_index (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT,
+                language TEXT,
+                start_line INTEGER,
+                symbol_name TEXT,
+                content_snippet TEXT
+            );
+            CREATE VIRTUAL TABLE code_fts USING fts5(content_snippet, symbol_name);
+            """
+        )
+        snippets = [
+            ("src/auth.py", "validate_jwt", "def validate_jwt(token):\n" + "    return token == 'jwt'\n" * 12),
+            ("src/session.py", "refresh_jwt", "def refresh_jwt(token):\n" + "    return token + '-refresh'\n" * 12),
+        ]
+        for file_path, symbol_name, content in snippets:
+            row_id = db.execute(
+                "INSERT INTO code_index(file_path, language, start_line, symbol_name, content_snippet) VALUES (?, ?, ?, ?, ?)",
+                (file_path, "python", 10, symbol_name, content),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO code_fts(rowid, content_snippet, symbol_name) VALUES (?, ?, ?)",
+                (row_id, content, symbol_name),
+            )
+        db.commit()
+        db.close()
+
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = _run_utf8_text(
+            [
+                sys.executable,
+                str(REPO / "briefing.py"),
+                "jwt",
+                "--pack",
+                "--limit",
+                "1",
+                "--budget",
+                "700",
+                "--with-code-context",
+                "--code-tokens",
+                "100",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        payload = json.loads(proc.stdout or "{}")
+        code_context = payload.get("code_context", [])
+        code_chars = sum(len(item.get("content", "")) for item in code_context)
+        test("I754-3a: briefing budgeted code context exits 0", proc.returncode == 0, proc.stderr.strip())
+        test("I754-3b: code context stays within code_tokens budget", code_chars <= 400, str(code_chars))
+        test("I754-3c: code context stays within briefing budget", len(proc.stdout) <= 700, str(len(proc.stdout)))
+    except Exception as exc:
+        for suffix in ("3a", "3b", "3c"):
+            test(f"I754-{suffix}: briefing budget", False, str(exc))
+    finally:
+        shutil.rmtree(base_dir, ignore_errors=True)
+
+
+def test_i754_mcp_briefing_code_context_validation_and_serving():
+    base_dir = REPO / "_test_i754_mcp_briefing"
+    shutil.rmtree(base_dir, ignore_errors=True)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    proc = None
+    try:
+        home = _seed_briefing_test_home(base_dir)
+        db_path = home / ".copilot" / "session-state" / "knowledge.db"
+        db = sqlite3.connect(str(db_path))
+        db.executescript(
+            """
+            CREATE TABLE code_index (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT,
+                language TEXT,
+                start_line INTEGER,
+                symbol_name TEXT,
+                content_snippet TEXT
+            );
+            CREATE VIRTUAL TABLE code_fts USING fts5(content_snippet, symbol_name);
+            """
+        )
+        snippet = "def validate_jwt(token):\n    return token.startswith('jwt:')\n"
+        row_id = db.execute(
+            "INSERT INTO code_index(file_path, language, start_line, symbol_name, content_snippet) VALUES (?, ?, ?, ?, ?)",
+            ("src/auth.py", "python", 10, "validate_jwt", snippet),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO code_fts(rowid, content_snippet, symbol_name) VALUES (?, ?, ?)",
+            (row_id, snippet, "validate_jwt"),
+        )
+        db.commit()
+        db.close()
+
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = subprocess.Popen(
+            [sys.executable, str(REPO / "mcp-server.py")],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+
+        _mcp_write(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 101,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test"}},
+            },
+        )
+        _mcp_read(proc)
+        _mcp_write(proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+        _mcp_write(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 102,
+                "method": "tools/call",
+                "params": {
+                    "name": "briefing",
+                    "arguments": {"task": "validate_jwt", "with_code_context": True, "code_tokens": 120},
+                },
+            },
+        )
+        with_context = _mcp_read(proc)
+        structured = with_context.get("result", {}).get("structuredContent", {})
+        test(
+            "I754-4a: MCP briefing serves code context",
+            len(structured.get("code_context", [])) == 1,
+            json.dumps(with_context, ensure_ascii=False)[:200],
+        )
+
+        _mcp_write(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 103,
+                "method": "tools/call",
+                "params": {
+                    "name": "briefing",
+                    "arguments": {"task": "validate_jwt", "with_code_context": "false", "code_tokens": 120},
+                },
+            },
+        )
+        with_false = _mcp_read(proc)
+        false_structured = with_false.get("result", {}).get("structuredContent", {})
+        test(
+            "I754-4b: MCP briefing coerces string false",
+            "code_context" not in false_structured,
+            json.dumps(with_false, ensure_ascii=False)[:200],
+        )
+
+        _mcp_write(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 104,
+                "method": "tools/call",
+                "params": {
+                    "name": "briefing",
+                    "arguments": {"task": "validate_jwt", "with_code_context": "bogus"},
+                },
+            },
+        )
+        invalid_bool = _mcp_read(proc)
+        test(
+            "I754-4c: MCP briefing rejects invalid boolean strings",
+            invalid_bool.get("error", {}).get("code") == -32602,
+            json.dumps(invalid_bool, ensure_ascii=False),
+        )
+
+        _mcp_write(proc, {"jsonrpc": "2.0", "id": 105, "method": "shutdown", "params": {}})
+        _mcp_read(proc)
+        _mcp_write(proc, {"jsonrpc": "2.0", "method": "exit", "params": {}})
+        proc.wait(timeout=5)
+        proc = None
+    except Exception as exc:
+        for suffix in ("4a", "4b", "4c"):
+            test(f"I754-{suffix}: MCP briefing code context", False, str(exc))
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        shutil.rmtree(base_dir, ignore_errors=True)
+
+
+test_i754_briefing_with_code_context_emits_snippets()
+test_i754_briefing_with_code_context_noop_without_index()
+test_i754_briefing_code_context_budget_respected()
+test_i754_mcp_briefing_code_context_validation_and_serving()
+
 
 # ─── Priority Classification (#121) ─────────────────────────────────────
 
