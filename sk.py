@@ -97,6 +97,7 @@ _PROJECT_DB_SCRIPTS = {
     "extract-knowledge.py",
     "index-status.py",
     "knowledge-health.py",
+    "knowledge-import.py",
     "learn.py",
     "migrate.py",
     "query-session.py",

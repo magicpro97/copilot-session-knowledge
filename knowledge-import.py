@@ -66,6 +66,7 @@ IMPORT_SESSION_ID = "knowledge-import"
 # Pure-stdlib TF-IDF similarity
 # ---------------------------------------------------------------------------
 
+
 def _tokenize(text: str) -> list[str]:
     """Lowercase word tokens, length ≥ 2."""
     return re.findall(r"\b[a-z]{2,}\b", text.lower())
@@ -126,6 +127,7 @@ def _best_tfidf_sim(query_text: str, corpus_vecs: list[dict], idf: dict) -> floa
 # Embedding-based similarity (uses stored BLOB vectors)
 # ---------------------------------------------------------------------------
 
+
 def _unpack_vector(blob: bytes) -> list[float]:
     n = len(blob) // 4
     return list(struct.unpack(f"<{n}f", blob))
@@ -145,9 +147,7 @@ def _cosine_dense(a: list[float], b: list[float]) -> float:
 def _load_embeddings(db: sqlite3.Connection) -> dict[int, list[float]]:
     """Return {knowledge_entry_id: vector} for all stored embeddings."""
     try:
-        rows = db.execute(
-            "SELECT source_id, vector FROM embeddings WHERE source_type = 'knowledge_entries'"
-        ).fetchall()
+        rows = db.execute("SELECT source_id, vector FROM embeddings WHERE source_type = 'knowledge_entries'").fetchall()
         return {row[0]: _unpack_vector(row[1]) for row in rows if row[1]}
     except sqlite3.OperationalError:
         return {}
@@ -163,9 +163,10 @@ def _best_dense_sim(vec: list[float], corpus_vecs: list[list[float]]) -> float:
 # Database helpers
 # ---------------------------------------------------------------------------
 
+
 def _open_source_db(path: Path) -> sqlite3.Connection:
     """Open source DB read-only."""
-    uri = f"file:{path}?mode=ro"
+    uri = f"{path.as_uri()}?mode=ro"
     try:
         con = sqlite3.connect(uri, uri=True, check_same_thread=False)
     except sqlite3.OperationalError as exc:
@@ -183,9 +184,7 @@ def _open_local_db(path: Path) -> sqlite3.Connection:
 
 
 def _has_table(db: sqlite3.Connection, name: str) -> bool:
-    return db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
 
 def _local_entry_exists(local_db: sqlite3.Connection, category: str, title: str) -> bool:
@@ -219,7 +218,8 @@ def _load_source_entries(
     where = " AND ".join(clauses)
     query = f"SELECT * FROM knowledge_entries WHERE {where} ORDER BY confidence DESC, last_seen DESC"
     if limit > 0:
-        query += f" LIMIT {limit}"
+        query += " LIMIT ?"
+        params.append(limit)
 
     rows = src_db.execute(query, params).fetchall()
     entries = [dict(row) for row in rows]
@@ -299,9 +299,17 @@ def _insert_entry(
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """,
                 (
-                    category, title, sid, content, tags, confidence, session_id,
-                    now, now,
-                    entry.get("wing") or "", entry.get("room") or "",
+                    category,
+                    title,
+                    sid,
+                    content,
+                    tags,
+                    confidence,
+                    session_id,
+                    now,
+                    now,
+                    entry.get("wing") or "",
+                    entry.get("room") or "",
                     entry.get("priority") or "P2",
                 ),
             )
@@ -314,9 +322,17 @@ def _insert_entry(
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                 """,
                 (
-                    category, title, sid, content, tags, confidence, session_id,
-                    now, now,
-                    entry.get("wing") or "", entry.get("room") or "",
+                    category,
+                    title,
+                    sid,
+                    content,
+                    tags,
+                    confidence,
+                    session_id,
+                    now,
+                    now,
+                    entry.get("wing") or "",
+                    entry.get("room") or "",
                 ),
             )
     else:
@@ -328,9 +344,16 @@ def _insert_entry(
             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
-                category, title, content, tags, confidence, session_id,
-                now, now,
-                entry.get("wing") or "", entry.get("room") or "",
+                category,
+                title,
+                content,
+                tags,
+                confidence,
+                session_id,
+                now,
+                now,
+                entry.get("wing") or "",
+                entry.get("room") or "",
             ),
         )
 
@@ -338,6 +361,7 @@ def _insert_entry(
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
+
 
 def _build_similarity_index(
     local_db: sqlite3.Connection,
@@ -450,8 +474,12 @@ def _run(args: argparse.Namespace) -> int:
 
     try:
         mode, corpus_data, idf = _build_similarity_index(local_db)
-        local_count = len(_load_local_texts(local_db)) if local_exists else 0
-        bypass_sim = local_count < 3  # not enough context for meaningful similarity
+        local_texts = _load_local_texts(local_db) if local_exists else []
+        if mode == "embedding" and not src_embs and local_texts:
+            corpus_data, idf = _build_tfidf_index(local_texts)
+            mode = "tfidf"
+        local_count = len(local_texts)
+        bypass_sim = local_count < 3  # not enough context for meaningful low-sim filtering
 
         extra_tag = _source_tag(source_path)
         now = datetime.now(timezone.utc).isoformat()
@@ -483,17 +511,16 @@ def _run(args: argparse.Namespace) -> int:
 
             best_sim = _compute_best_sim(entry, mode, corpus_data, idf, src_embs)
 
-            if not bypass_sim:
-                if best_sim > NEAR_DUP_THRESHOLD:
-                    stats["skipped_near_dup"] += 1
-                    if dry_run:
-                        entries_out.append(_dry_run_row(entry, best_sim, "skip", "near_dup"))
-                    continue
-                if best_sim < sim_threshold:
-                    stats["skipped_low_sim"] += 1
-                    if dry_run:
-                        entries_out.append(_dry_run_row(entry, best_sim, "skip", "low_sim"))
-                    continue
+            if best_sim > NEAR_DUP_THRESHOLD:
+                stats["skipped_near_dup"] += 1
+                if dry_run:
+                    entries_out.append(_dry_run_row(entry, best_sim, "skip", "near_dup"))
+                continue
+            if not bypass_sim and best_sim < sim_threshold:
+                stats["skipped_low_sim"] += 1
+                if dry_run:
+                    entries_out.append(_dry_run_row(entry, best_sim, "skip", "low_sim"))
+                continue
 
             stats["accepted"] += 1
             if dry_run:
@@ -559,6 +586,7 @@ def _print_result(json_output: bool, result: dict) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="knowledge-import",
@@ -582,7 +610,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0.75,
         metavar="FLOAT",
         help="Minimum cosine similarity to any local entry (default: 0.75). "
-             "Entries above 0.9 are treated as near-duplicates and skipped.",
+        "Entries above 0.9 are treated as near-duplicates and skipped.",
     )
     p.add_argument(
         "--categories",
@@ -605,9 +633,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--limit",
         type=int,
-        default=0,
+        default=50,
         metavar="N",
-        help="Maximum number of source entries to consider (0 = no limit).",
+        help="Maximum number of source entries to consider (default: 50, 0 = no limit).",
     )
     p.add_argument(
         "--json",
