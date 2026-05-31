@@ -11528,6 +11528,33 @@ except Exception as _e759:
     ]:
         test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
 
+# --- I817 sk curate tests ---
+_curate_src = (REPO / "curate.py").read_text(encoding="utf-8")
+
+test(
+    "I817-1a: curate DB_PATH respects SK_DB_PATH",
+    "SK_DB_PATH" in _curate_src,
+    "curate.py must use SK_DB_PATH env var",
+)
+
+test(
+    "I817-1b: curate resolve does not accept merge",
+    "merge" not in _curate_src.split("choices=")[1].split("]")[0] if "choices=" in _curate_src else False,
+    "merge action should not be accepted until implemented",
+)
+
+test(
+    "I817-1c: curate list only shows pending_review",
+    "curation_state = 'pending_review'" in _curate_src,
+    "list command should filter to pending_review only",
+)
+
+test(
+    "I817-1d: curate scan joins entry_recall_stats for recall_count",
+    "entry_recall_stats" in _curate_src,
+    "stale detection must join entry_recall_stats, not use knowledge_entries.recall_count",
+)
+
 # ---------------------------------------------------------------------------
 # I815: briefing --rag synthesis tests
 # ---------------------------------------------------------------------------

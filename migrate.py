@@ -1867,6 +1867,13 @@ if __name__ == "__main__":
                 "ALTER TABLE search_feedback ADD COLUMN note TEXT",
             ],
         ),
+        (
+            43,
+            "curation_state",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN curation_state TEXT DEFAULT NULL",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

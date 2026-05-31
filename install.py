@@ -248,6 +248,7 @@ TOOL_FILES = [
     "entity-extract.py",
     "trace.py",
     "knowledge-broadcast.py",
+    "curate.py",
 ]
 
 SUPPORT_FILES = [
