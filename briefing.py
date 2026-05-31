@@ -1777,6 +1777,15 @@ def _ke_has_is_resolved(db: sqlite3.Connection) -> bool:
         return False
 
 
+def _ke_has_stability_factor(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the stability_factor column (v37 migration applied)."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "stability_factor" in cols
+    except Exception:
+        return False
+
+
 def _ke_has_recurrence(db: sqlite3.Connection) -> bool:
     """Return True if knowledge_entries has the recurrence_after_briefing column."""
     try:
@@ -1811,11 +1820,16 @@ def _intensity_order_expr(alias: str = "ke", has_priority: bool = False) -> str:
     return f"COALESCE({alias}.intensity, 0.5) DESC, {alias}.confidence DESC, rank"
 
 
-def _recency_decay(last_seen_str: str | None, half_life_days: float = 30.0) -> float:
-    """Exponential decay weight for an entry's age.
+def _recency_decay(
+    last_seen_str: str | None,
+    half_life_days: float = 30.0,
+    stability_factor: float = 1.0,
+) -> float:
+    """Exponential decay weight for an entry's age, scaled by FSRS stability factor.
 
     Returns a value in (0, 1]: 1.0 for a just-created entry, approaching 0 for
-    a very old one.  An entry exactly ``half_life_days`` old scores 0.5.
+    a very old one.  An entry exactly ``half_life_days * stability_factor`` old
+    scores 0.5 — higher stability means slower decay (issue #797).
     Returns 1.0 (fail-open) when the timestamp is absent or unparseable.
     """
     if not last_seen_str or half_life_days <= 0:
@@ -1825,7 +1839,8 @@ def _recency_decay(last_seen_str: str | None, half_life_days: float = 30.0) -> f
         ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
         now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         age_days = max(0.0, (now_utc - ts).total_seconds() / 86400.0)
-        return 0.5 ** (age_days / half_life_days)
+        effective_half_life = half_life_days * max(0.1, stability_factor or 1.0)
+        return 0.5 ** (age_days / effective_half_life)
     except Exception:
         return 1.0
 
@@ -1963,7 +1978,8 @@ def _recency_composite_score(entry: dict, half_life_days: float) -> float:
         # no-intensity rows to the same constant.
         confidence_raw = entry.get("confidence")
         intensity = float(confidence_raw) if confidence_raw is not None else 0.5
-    decay = _recency_decay(entry.get("last_seen"), half_life_days)
+    stability = float(entry.get("stability_factor") or 1.0)
+    decay = _recency_decay(entry.get("last_seen"), half_life_days, stability_factor=stability)
     access_decay = _decay_weight(entry.get("last_accessed_at", ""))
     return priority_base + intensity * decay * access_decay
 
@@ -2047,9 +2063,11 @@ def search_knowledge_entries(
     has_recurrence = _ke_has_recurrence(db)
     has_is_resolved = _ke_has_is_resolved(db)
     has_last_accessed = _ke_has_last_accessed(db)
+    has_stability = _ke_has_stability_factor(db)
     order_by = _intensity_order_expr("ke", has_priority) if has_intensity else "ke.confidence DESC, rank"
     # Extra columns fetched so Python-level recency composite scoring has priority + intensity + age.
     _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
+    _stability_col = ", COALESCE(ke.stability_factor, 1.0) as stability_factor" if has_stability else ""
     _priority_col = ", COALESCE(ke.priority, 'P2') as priority" if has_priority else ""
     _recurrence_col = (
         ", COALESCE(ke.recurrence_after_briefing, 0) AS recurrence_after_briefing" if has_recurrence else ""
@@ -2080,7 +2098,7 @@ def search_knowledge_entries(
                    d.doc_type as source_doc_type,
                    d.title as source_doc_title,
                    d.file_path as source_doc_file_path,
-                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             LEFT JOIN documents d ON ke.document_id = d.id
@@ -2089,7 +2107,7 @@ def search_knowledge_entries(
             AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
             ORDER BY {order_by}
             LIMIT ?
-        """,
+            """,
             (fts_query, category, effective_confidence, *_date_params, limit),
         ).fetchall()
         results.extend([dict(r) for r in rows])
@@ -2098,7 +2116,7 @@ def search_knowledge_entries(
             rows = db.execute(
                 f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
-                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
@@ -2127,7 +2145,7 @@ def search_knowledge_entries(
                        d.doc_type as source_doc_type,
                        d.title as source_doc_title,
                        d.file_path as source_doc_file_path,
-                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 LEFT JOIN documents d ON ke.document_id = d.id
@@ -2136,7 +2154,7 @@ def search_knowledge_entries(
                 AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
                 ORDER BY {order_by}
                 LIMIT ?
-            """,
+                """,
                 (base_query, category, min_confidence, *_date_params, limit),
             ).fetchall()
             results.extend([dict(r) for r in rows])
@@ -2145,7 +2163,7 @@ def search_knowledge_entries(
                 rows = db.execute(
                     f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
-                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
                     FROM ke_fts fts
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
