@@ -240,6 +240,7 @@ TOOL_FILES = [
     "doctor.py",
     "code-search.py",
     "code-index.py",
+    "cost-analytics.py",
 ]
 
 SUPPORT_FILES = [
