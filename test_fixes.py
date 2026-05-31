@@ -14518,6 +14518,129 @@ except Exception as _e853:
     ]:
         test(f"I853-{_label853}: hook rule context filters", False, str(_e853))
 
+# === I866: sk://sessions/diff MCP resource ===
+print("\n🔀 I866: sk://sessions/diff MCP resource")
+
+
+def _run_i866_sessions_diff_tests():
+    import shutil as _sh866
+
+    _root866 = Path(tempfile.mkdtemp(prefix="i866-", dir=str(REPO)))
+    try:
+        _home866 = _root866 / "home"
+        _state866 = _home866 / ".copilot" / "session-state"
+        _state866.mkdir(parents=True, exist_ok=True)
+        _db866 = sqlite3.connect(_state866 / "knowledge.db")
+        _db866.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT '',
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                summary TEXT DEFAULT '',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT ''
+            );
+            """
+        )
+        _db866.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (27, "mcp-diff"))
+        # session A: entries alpha + beta
+        for _sid, _title, _content, _cat in [
+            ("sess-a", "Alpha entry", "Alpha content v1", "pattern"),
+            ("sess-a", "Beta entry", "Beta content", "mistake"),
+            # session B: beta (changed) + gamma (new)
+            ("sess-b", "Beta entry", "Beta content CHANGED", "mistake"),
+            ("sess-b", "Gamma entry", "Gamma content", "pattern"),
+        ]:
+            _db866.execute(
+                "INSERT INTO knowledge_entries (session_id, category, title, content, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+                (_sid, _cat, _title, _content, "2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z"),
+            )
+        _db866.commit()
+        _db866.close()
+
+        # Test 1: resources/list includes sk://sessions/diff
+        _res_list866 = _mcp756_roundtrip(_home866, "resources/list", {})
+        _uris866 = [r.get("uri") for r in _res_list866.get("result", {}).get("resources", [])]
+        test("I866-1: resources/list includes sk://sessions/diff", "sk://sessions/diff" in _uris866, str(_uris866))
+
+        # Test 2: sessions/diff returns correct structure
+        _diff_uri866 = "sk://sessions/diff?a=sess-a&b=sess-b"
+        _res_diff866 = _mcp756_roundtrip(_home866, "resources/read", {"uri": _diff_uri866})
+        _diff866 = json.loads(_res_diff866.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I866-2a: diff returns session_a", _diff866.get("session_a") == "sess-a", str(_diff866))
+        test("I866-2b: diff returns session_b", _diff866.get("session_b") == "sess-b", str(_diff866))
+        test("I866-2c: diff added contains Gamma entry", "Gamma entry" in _diff866.get("added", []), str(_diff866))
+        test("I866-2d: diff removed contains Alpha entry", "Alpha entry" in _diff866.get("removed", []), str(_diff866))
+        test("I866-2e: diff changed contains Beta entry", "Beta entry" in _diff866.get("changed", []), str(_diff866))
+        test("I866-2f: diff added_count is 1", _diff866.get("added_count") == 1, str(_diff866))
+        test("I866-2g: diff removed_count is 1", _diff866.get("removed_count") == 1, str(_diff866))
+        test("I866-2h: diff changed_count is 1", _diff866.get("changed_count") == 1, str(_diff866))
+
+        # Test 3: missing a or b param returns invalid params error
+        _res_bad866 = _mcp756_roundtrip(_home866, "resources/read", {"uri": "sk://sessions/diff?a=sess-a"})
+        _bad866 = _res_bad866.get("error", {})
+        test("I866-3: missing b param returns -32602", _bad866.get("code") == -32602, str(_bad866))
+
+        # Test 4: both sessions same → empty diff
+        _res_same866 = _mcp756_roundtrip(_home866, "resources/read", {"uri": "sk://sessions/diff?a=sess-a&b=sess-a"})
+        _same866 = json.loads(_res_same866.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I866-4a: same session diff — added is empty", _same866.get("added") == [], str(_same866))
+        test("I866-4b: same session diff — removed is empty", _same866.get("removed") == [], str(_same866))
+        test("I866-4c: same session diff — changed is empty", _same866.get("changed") == [], str(_same866))
+    finally:
+        _sh866.rmtree(_root866, ignore_errors=True)
+
+
+try:
+    _run_i866_sessions_diff_tests()
+except Exception as _e866:
+    for _suffix866 in ["1", "2a", "2b", "2c", "2d", "2e", "2f", "2g", "2h", "3", "4a", "4b", "4c"]:
+        test(f"I866-{_suffix866}: sk://sessions/diff MCP resource", False, str(_e866))
 # ---------------------------------------------------------------------------
 # === I855: MCP Progress Notifications ===
 # ---------------------------------------------------------------------------
