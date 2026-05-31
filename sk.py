@@ -161,9 +161,9 @@ _DIRECT: dict[str, CommandMeta] = {
         "improvement-signals.py", "Surface improvement signal patterns", ("session", "analytics")
     ),
     "taxonomy": CommandMeta("taxonomy.py", "Taxonomy management", ("admin",)),
-    "status": CommandMeta("statusline.py", "Show session token usage and AI cost summary", ("session", "cost")),
+    "status": CommandMeta(None, "Show knowledge DB status (entries, watch, sync)", ("session", "status")),
     "statusline": CommandMeta(
-        "statusline.py", "Alias: session token usage footer", ("session", "cost"), aliases=("status",)
+        None, "Compact one-liner for shell prompts (⚡ entries · time ago)", ("session", "status"), aliases=("status",)
     ),
     "mcp": CommandMeta(None, "Start MCP stdio server (native binary, MCP 2024-11-05)", ("mcp", "server")),
     "code-search": CommandMeta(
