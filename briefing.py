@@ -32,6 +32,7 @@ Usage:
     python briefing.py "task" --pinned 5                   # Also show top-5 P0 pinned entries
     python briefing.py "task" --no-repeat                  # Skip entries already served this session
     python briefing.py "task" --no-repeat=off              # Disable session-scoped deduplication
+    python briefing.py "task" --no-dedup                   # Disable semantic near-duplicate collapse (issue #851)
     python briefing.py "task" --available-tokens 5000 --pressure-compact  # Auto-compact if < 20% context left
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
@@ -470,6 +471,60 @@ def _save_briefed_ids(session_id: str, ids: set[int]) -> None:
 
 def _estimate_tokens(output_chars: int) -> int:
     return int(math.ceil(output_chars / 4)) if output_chars > 0 else 0
+
+
+def _dedup_entries(entries: list, threshold: float = 0.85) -> list:
+    """Remove near-duplicate entries using TF-IDF cosine similarity.
+
+    Keeps the highest-confidence entry from each cluster.  Pure stdlib —
+    no scikit-learn required.  Applied in compact mode to collapse entries
+    that cover the same topic with different phrasing (issue #851).
+    """
+    if len(entries) <= 1:
+        return entries
+
+    from collections import Counter
+
+    def _tfidf(texts: list[str]) -> list[dict]:
+        tokenized = [set(t.lower().split()) for t in texts]
+        N = len(texts)
+        df: Counter = Counter(w for doc in tokenized for w in doc)
+        idf = {w: math.log(N / (1 + df[w])) for w in df}
+        vecs = []
+        for doc in tokenized:
+            tf: Counter = Counter(doc)
+            total = len(doc) or 1
+            vec = {w: (tf[w] / total) * idf[w] for w in doc}
+            norm = math.sqrt(sum(v * v for v in vec.values())) or 1.0
+            vecs.append({w: v / norm for w, v in vec.items()})
+        return vecs
+
+    texts = [f"{e.get('title', '')} {e.get('content', '')[:200]}" for e in entries]
+    vecs = _tfidf(texts)
+
+    def _cosine(a: dict, b: dict) -> float:
+        return sum(a.get(w, 0.0) * b.get(w, 0.0) for w in a)
+
+    kept: list = []
+    used: set = set()
+    for i in range(len(entries)):
+        if i in used:
+            continue
+        cluster = [i]
+        for j in range(i + 1, len(entries)):
+            if j not in used and _cosine(vecs[i], vecs[j]) >= threshold:
+                cluster.append(j)
+                used.add(j)
+        best = max(cluster, key=lambda k: entries[k].get("confidence", 0))
+        if len(cluster) > 1:
+            # Annotate the kept entry so renderers can show the merge notice
+            kept_entry = dict(entries[best])
+            merged_ids = [str(entries[k].get("id", "?")) for k in cluster if k != best]
+            kept_entry["_merged_ids"] = merged_ids
+            kept.append(kept_entry)
+        else:
+            kept.append(entries[best])
+    return kept
 
 
 def _check_pressure_compact(available_tokens: int, threshold: float = 0.20) -> bool:
@@ -2716,6 +2771,7 @@ def generate_briefing(
     include_resolved: bool = False,
     pinned_n: int = 0,
     exclude_ids: "set[int] | None" = None,
+    no_dedup: bool = False,
 ):
     """Generate a structured briefing from the knowledge base.
 
@@ -2726,6 +2782,9 @@ def generate_briefing(
 
     ``pinned_n``: when > 0, always prepend the top-N P0 priority entries to the
     briefing output regardless of the query (issue #708 --pinned flag).
+
+    ``no_dedup``: when True, skip the semantic near-duplicate collapse pass
+    (issue #851).  Dedup is applied by default in compact mode only.
     """
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
@@ -2822,7 +2881,21 @@ def generate_briefing(
                 safe_entries.append(e)
         briefing_data[cat] = safe_entries
 
-    # Past related work
+    # Issue #851: semantic near-duplicate collapse — compact mode only, not full/wakeup.
+    # Applied after the per-category safety filter so dedup never bypasses suppression.
+    # Emits a briefing_merge_event for telemetry when entries are actually collapsed.
+    if not no_dedup and fmt == "compact":
+        total_before = sum(len(v) for v in briefing_data.values())
+        for cat in list(briefing_data.keys()):
+            briefing_data[cat] = _dedup_entries(briefing_data[cat])
+        total_after = sum(len(v) for v in briefing_data.values())
+        merged_count = total_before - total_after
+        if merged_count > 0:
+            _emit_knowledge_event_fail_open(
+                "briefing_merge_event",
+                {"merged_count": merged_count, "query": query[:120], "fmt": fmt},
+            )
+
     past_work = search_past_work(db, rewritten_query, limit)
 
     # Blast radius analysis
@@ -5166,6 +5239,9 @@ def main():
     if no_repeat and _no_repeat_session_id:
         already_served = _load_briefed_ids(_no_repeat_session_id)
 
+    # --no-dedup: disable semantic near-duplicate collapse (issue #851).
+    no_dedup = "--no-dedup" in args
+
     if auto_mode:
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
@@ -5271,6 +5347,7 @@ def main():
             include_resolved="--include-resolved" in args,
             pinned_n=pinned_n,
             exclude_ids=already_served if (no_repeat and _no_repeat_session_id) else None,
+            no_dedup=no_dedup,
         )
 
     if budget > 0 and len(output) > budget:
@@ -5309,6 +5386,7 @@ def main():
                     include_resolved="--include-resolved" in args,
                     pinned_n=pinned_n,
                     exclude_ids=already_served if (no_repeat and _no_repeat_session_id) else None,
+                    no_dedup=no_dedup,
                 )
             if len(output) <= budget:
                 break
