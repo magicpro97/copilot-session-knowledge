@@ -15,6 +15,7 @@ import plistlib
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -11745,6 +11746,372 @@ try:
 except Exception as _e818b:
     for _lbl818b in ["4a", "4b"]:
         test(f"I818-{_lbl818b}: --prefetch CLI smoke", False, str(_e818b))
+
+# ---------------------------------------------------------------------------
+# === I821: knowledge-import cross-project import ===
+# ---------------------------------------------------------------------------
+
+try:
+    import importlib.util as _ilu821
+    import tempfile as _tempfile821
+
+    _ki821_spec = _ilu821.spec_from_file_location("knowledge_import", REPO / "knowledge-import.py")
+    _ki821 = _ilu821.module_from_spec(_ki821_spec)
+    _ki821_spec.loader.exec_module(_ki821)
+
+    def _make_db821(path, entries=None):
+        """Create a minimal knowledge.db with knowledge_entries table."""
+        con = sqlite3.connect(str(path))
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL,
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                priority TEXT DEFAULT 'P2',
+                UNIQUE(category, title, session_id)
+            )
+        """)
+        if entries:
+            for e in entries:
+                con.execute(
+                    "INSERT INTO knowledge_entries (session_id, category, title, content, tags, confidence) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        e.get("session_id", "test"),
+                        e["category"],
+                        e["title"],
+                        e["content"],
+                        e.get("tags", ""),
+                        e.get("confidence", 1.0),
+                    ),
+                )
+        con.commit()
+        con.close()
+
+    # Build source and local DBs in temp directory within the current dir
+    _tmp821 = Path(_tempfile821.mkdtemp(dir=str(REPO)))
+    try:
+        _src821 = _tmp821 / "source.db"
+        _local821 = _tmp821 / "local.db"
+
+        _src_entries = [
+            {
+                "category": "mistake",
+                "title": "Always use parameterized SQL",
+                "content": "Never interpolate user input into SQL queries; use ? placeholders.",
+                "confidence": 0.9,
+            },
+            {
+                "category": "pattern",
+                "title": "Use atomic locks for process files",
+                "content": "Use O_CREAT|O_EXCL to avoid TOCTOU races in process lock files.",
+                "confidence": 0.85,
+            },
+            {
+                "category": "discovery",
+                "title": "Low confidence note",
+                "content": "Some note with low confidence.",
+                "confidence": 0.3,
+            },
+            {
+                "category": "mistake",
+                "title": "Dup entry",
+                "content": "This entry already exists locally.",
+                "confidence": 0.8,
+                "tags": "shared",
+            },
+        ]
+        _make_db821(_src821, _src_entries)
+        _make_db821(
+            _local821,
+            [
+                {"category": "mistake", "title": "Dup entry", "content": "Already exists.", "confidence": 1.0},
+            ],
+        )
+
+        # --- Test 1: load_source_entries basic ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded = _ki821._load_source_entries(_con_src, categories=None, min_confidence=0.0, tag_filter=[], limit=0)
+        _con_src.close()
+        test("I821-1a: load_source_entries returns all entries", len(_loaded) == 4, str(len(_loaded)))
+
+        # --- Test 2: load_source_entries with min_confidence filter ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded_filtered = _ki821._load_source_entries(
+            _con_src, categories=None, min_confidence=0.5, tag_filter=[], limit=0
+        )
+        _con_src.close()
+        test("I821-1b: min_confidence filter works", len(_loaded_filtered) == 3, str(len(_loaded_filtered)))
+
+        # --- Test 3: load_source_entries with category filter ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded_cat = _ki821._load_source_entries(
+            _con_src, categories=["mistake"], min_confidence=0.0, tag_filter=[], limit=0
+        )
+        _con_src.close()
+        test("I821-1c: category filter works", len(_loaded_cat) == 2, str(len(_loaded_cat)))
+
+        # --- Test 4: tag filter ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded_tag = _ki821._load_source_entries(
+            _con_src, categories=None, min_confidence=0.0, tag_filter=["shared"], limit=0
+        )
+        _con_src.close()
+        test("I821-1d: tag filter works", len(_loaded_tag) == 1, str(len(_loaded_tag)))
+
+        # --- Test 5: dedup check ---
+        _con_local = sqlite3.connect(str(_local821))
+        _con_local.row_factory = sqlite3.Row
+        _dup = _ki821._local_entry_exists(_con_local, "mistake", "Dup entry")
+        _no_dup = _ki821._local_entry_exists(_con_local, "mistake", "Always use parameterized SQL")
+        _con_local.close()
+        test("I821-2a: _local_entry_exists detects dup", _dup, "should be True")
+        test("I821-2b: _local_entry_exists no false positive", not _no_dup, "should be False")
+
+        # --- Test 6: TF-IDF index + similarity ---
+        _texts = [
+            "Use parameterized SQL to avoid SQL injection vulnerabilities",
+            "Always write unit tests for new functions",
+        ]
+        _vecs, _idf = _ki821._build_tfidf_index(_texts)
+        _sim = _ki821._best_tfidf_sim("parameterized SQL placeholders injection", _vecs, _idf)
+        _sim_low = _ki821._best_tfidf_sim("completely unrelated cooking recipe cake", _vecs, _idf)
+        test("I821-3a: TF-IDF finds relevant match", _sim > 0.1, f"sim={_sim:.4f}")
+        test(
+            "I821-3b: TF-IDF gives lower sim for unrelated text",
+            _sim_low < _sim,
+            f"sim_low={_sim_low:.4f} sim={_sim:.4f}",
+        )
+
+        # --- Test 7: cosine similarity ---
+        _a = {"sql": 0.7, "param": 0.5, "inject": 0.3}
+        _b = {"sql": 0.6, "param": 0.4}
+        _c = {"cooking": 0.9, "cake": 0.8}
+        _sim_ab = _ki821._cosine_sparse(_a, _b)
+        _sim_ac = _ki821._cosine_sparse(_a, _c)
+        test("I821-3c: cosine_sparse related > 0", _sim_ab > 0, f"sim_ab={_sim_ab:.4f}")
+        test("I821-3d: cosine_sparse unrelated = 0", _sim_ac == 0.0, f"sim_ac={_sim_ac:.4f}")
+
+        # --- Test 8: source_tag is stable ---
+        _tag1 = _ki821._source_tag(Path("/some/project/knowledge.db"))
+        _tag2 = _ki821._source_tag(Path("/some/project/knowledge.db"))
+        test("I821-4a: _source_tag is deterministic", _tag1 == _tag2, f"{_tag1}")
+        test("I821-4b: _source_tag contains imported_from:", _tag1.startswith("imported_from:"), _tag1)
+
+        # --- Test 9: dry-run via subprocess ---
+        import subprocess as _sp821
+
+        _r_dry = _sp821.run(
+            [sys.executable, str(REPO / "knowledge-import.py"), "--from", str(_src821), "--dry-run", "--json"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_local821)},
+        )
+        _out_dry = _r_dry.stdout.strip()
+        test("I821-5a: --dry-run --json exits 0", _r_dry.returncode == 0, _r_dry.stderr[:200])
+        try:
+            _dry_data = json.loads(_out_dry)
+            test("I821-5b: dry-run JSON has entries key", "entries" in _dry_data, str(_dry_data.keys()))
+            test("I821-5c: dry-run does not import (imported=0)", _dry_data.get("imported", 0) == 0, str(_dry_data))
+            # Dup entry should be skipped
+            test("I821-5d: dry-run skips dup entry", _dry_data.get("skipped_dup", 0) >= 1, str(_dry_data))
+        except json.JSONDecodeError as _e:
+            test("I821-5b: dry-run JSON parses", False, _out_dry[:200])
+            test("I821-5c: dry-run does not import", False, "json parse failed")
+            test("I821-5d: dry-run skips dup", False, "json parse failed")
+
+        # --- Test 10: actual import via subprocess ---
+        _import_local = _tmp821 / "import_local.db"
+        _make_db821(
+            _import_local,
+            [
+                {"category": "mistake", "title": "Dup entry", "content": "Already exists.", "confidence": 1.0},
+            ],
+        )
+        _r_import = _sp821.run(
+            [sys.executable, str(REPO / "knowledge-import.py"), "--from", str(_src821), "--json"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_import_local)},
+        )
+        test("I821-6a: actual import exits 0", _r_import.returncode == 0, _r_import.stderr[:200])
+        try:
+            _imp_data = json.loads(_r_import.stdout.strip())
+            # With local DB having only 1 entry, bypass_sim applies — all non-dup entries imported
+            _imp_count = _imp_data.get("imported", -1)
+            test("I821-6b: actual import writes entries", _imp_count > 0, str(_imp_data))
+            # Verify entry is actually in DB
+            _verify_con = sqlite3.connect(str(_import_local))
+            _rows = _verify_con.execute("SELECT title FROM knowledge_entries").fetchall()
+            _verify_con.close()
+            _titles = [r[0] for r in _rows]
+            test("I821-6c: imported entries present in local DB", len(_titles) > 1, str(_titles))
+            # Check imported_from tag on one of the new entries
+            _verify_con2 = sqlite3.connect(str(_import_local))
+            _tag_rows = _verify_con2.execute(
+                "SELECT tags FROM knowledge_entries WHERE title != 'Dup entry' LIMIT 1"
+            ).fetchone()
+            _verify_con2.close()
+            test(
+                "I821-6d: imported entry has imported_from tag",
+                _tag_rows and "imported_from:" in (_tag_rows[0] or ""),
+                str(_tag_rows),
+            )
+        except (json.JSONDecodeError, Exception) as _e:
+            for _lbl in ["6b", "6c", "6d"]:
+                test(f"I821-{_lbl}: actual import", False, str(_e))
+
+        # --- Test 10b: embedding-mode fallback and near-dup gating ---
+        _local_embed = _tmp821 / "embed_local.db"
+        _make_db821(
+            _local_embed,
+            [
+                {
+                    "category": "pattern",
+                    "title": "Local pattern 1",
+                    "content": "Content for local pattern 1",
+                    "confidence": 1.0,
+                },
+                {
+                    "category": "pattern",
+                    "title": "Local pattern 2",
+                    "content": "Content for local pattern 2",
+                    "confidence": 1.0,
+                },
+                {
+                    "category": "pattern",
+                    "title": "Local pattern 3",
+                    "content": "Content for local pattern 3",
+                    "confidence": 1.0,
+                },
+            ],
+        )
+        _embed_con = sqlite3.connect(str(_local_embed))
+        _embed_con.execute("CREATE TABLE embeddings (source_id INTEGER, source_type TEXT, vector BLOB)")
+        for _embed_id in range(1, 4):
+            _embed_con.execute(
+                "INSERT INTO embeddings (source_id, source_type, vector) VALUES (?, 'knowledge_entries', ?)",
+                (_embed_id, struct.pack("<3f", 1.0, float(_embed_id), 0.5)),
+            )
+        _embed_con.commit()
+        _embed_con.close()
+
+        _src_embed = _tmp821 / "embed_source.db"
+        _make_db821(
+            _src_embed,
+            [
+                {
+                    "category": "pattern",
+                    "title": "Imported pattern",
+                    "content": "Content for local pattern 1",
+                    "confidence": 0.95,
+                },
+            ],
+        )
+        _r_embed = _sp821.run(
+            [sys.executable, str(REPO / "knowledge-import.py"), "--from", str(_src_embed), "--dry-run", "--json"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_local_embed)},
+        )
+        test("I821-6e: embedding fallback dry-run exits 0", _r_embed.returncode == 0, _r_embed.stderr[:200])
+        try:
+            _embed_data = json.loads(_r_embed.stdout.strip())
+            _embed_entry = (_embed_data.get("entries") or [{}])[0]
+            test(
+                "I821-6f: embedding fallback preserves near-dup gating",
+                _embed_data.get("skipped_near_dup", 0) >= 1
+                and _embed_data.get("skipped_low_sim", 0) == 0
+                and _embed_entry.get("reason") == "near_dup",
+                str(_embed_data),
+            )
+        except (json.JSONDecodeError, Exception) as _e:
+            for _lbl in ["6e", "6f"]:
+                test(f"I821-{_lbl}: embedding fallback", False, str(_e))
+
+        # --- Test 11: --min-confidence filter in import ---
+        _r_minconf = _sp821.run(
+            [
+                sys.executable,
+                str(REPO / "knowledge-import.py"),
+                "--from",
+                str(_src821),
+                "--min-confidence",
+                "0.9",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_local821)},
+        )
+        try:
+            _mc_data = json.loads(_r_minconf.stdout.strip())
+            test(
+                "I821-7a: --min-confidence filters source entries", _mc_data.get("source_total", 99) <= 2, str(_mc_data)
+            )
+        except (json.JSONDecodeError, Exception) as _e:
+            test("I821-7a: --min-confidence filter", False, str(_e))
+
+        # --- Test 12: sk.py routing ---
+        _r_sk = _sp821.run(
+            [sys.executable, str(REPO / "sk.py"), "knowledge", "import", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        test("I821-8a: sk knowledge import --help exits 0", _r_sk.returncode == 0, _r_sk.stderr[:200])
+        test("I821-8b: sk knowledge import --help mentions --from", "--from" in _r_sk.stdout, _r_sk.stdout[:300])
+
+    finally:
+        import shutil as _shutil821
+
+        try:
+            _shutil821.rmtree(str(_tmp821), ignore_errors=True)
+        except Exception:
+            pass
+
+except Exception as _e821:
+    for _lbl in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "4a",
+        "4b",
+        "5a",
+        "5b",
+        "5c",
+        "5d",
+        "6a",
+        "6b",
+        "6c",
+        "6d",
+        "6e",
+        "6f",
+        "7a",
+        "8a",
+        "8b",
+    ]:
+        test(f"I821-{_lbl}: knowledge-import", False, str(_e821))
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:
