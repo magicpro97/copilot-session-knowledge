@@ -1,0 +1,20 @@
+{
+  "sessions": [
+    {
+      "id": "ws-session-001",
+      "created_at": "2024-01-15T10:30:00Z",
+      "messages": [
+        {"role": "user", "content": "I have a bug in my code"},
+        {"role": "assistant", "content": "I found a mistake in the authentication logic. The error was that tokens weren't being validated correctly. Fixed by adding proper JWT verification."}
+      ]
+    },
+    {
+      "id": "ws-session-002",
+      "created_at": "2024-01-16T09:00:00Z",
+      "messages": [
+        {"role": "user", "content": "Best approach for caching?"},
+        {"role": "assistant", "content": "A good pattern for caching is to use a write-through cache. I recommend Redis for distributed scenarios. This approach gives you consistency."}
+      ]
+    }
+  ]
+}

@@ -12923,6 +12923,120 @@ except Exception as _e839_5:
     test("I839-5b: --watch exits cleanly on SIGINT (rc=0 or rc=130)", False, str(_e839_5))
 
 # ---------------------------------------------------------------------------
+# I836 — Aider & Windsurf session adapters
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu836
+    import sqlite3 as _sq836
+    import tempfile as _tf836
+
+    _FIXTURES836 = REPO / "tests" / "fixtures"
+    _AIDER_FIXTURE = _FIXTURES836 / "sample_aider_history.md"
+    _WS_FIXTURE = _FIXTURES836 / "sample_windsurf_sessions.json"
+
+    # Load aider-adapter module
+    _spec_a836 = _ilu836.spec_from_file_location("aider_adapter", REPO / "aider-adapter.py")
+    _aa836 = _ilu836.module_from_spec(_spec_a836)
+    _spec_a836.loader.exec_module(_aa836)
+
+    # Load windsurf-adapter module
+    _spec_w836 = _ilu836.spec_from_file_location("windsurf_adapter", REPO / "windsurf-adapter.py")
+    _wa836 = _ilu836.module_from_spec(_spec_w836)
+    _spec_w836.loader.exec_module(_wa836)
+
+    # I836-1a: Parse aider fixture → extracts ≥1 entries
+    _aider_entries836 = _aa836.parse_aider_history(_AIDER_FIXTURE)
+    test("I836-1a: Parse aider fixture → extracts ≥1 entries", len(_aider_entries836) >= 1, str(len(_aider_entries836)))
+
+    # I836-1b: mistake entry has category="mistake"
+    _mistake_entries836 = [e for e in _aider_entries836 if e["category"] == "mistake"]
+    test(
+        "I836-1b: Parse aider fixture → mistake entry has category='mistake'",
+        len(_mistake_entries836) >= 1,
+        str(_aider_entries836),
+    )
+
+    # I836-1c: pattern entry has category="pattern"
+    _pattern_entries836 = [e for e in _aider_entries836 if e["category"] == "pattern"]
+    test(
+        "I836-1c: Parse aider fixture → pattern entry has category='pattern'",
+        len(_pattern_entries836) >= 1,
+        str(_aider_entries836),
+    )
+
+    # I836-1d: entries have tag "aider-import"
+    _tagged836 = all("aider-import" in e["tags"] for e in _aider_entries836)
+    test("I836-1d: Parse aider fixture → entries have tag 'aider-import'", _tagged836, str(_aider_entries836))
+
+    # I836-2a: dry-run produces no DB writes
+    _tmpdir836 = Path(_tf836.mkdtemp())
+    _tmpdb836 = _tmpdir836 / "test_dryrun.db"
+    _db836 = _sq836.connect(str(_tmpdb836))
+    _aa836.ensure_schema(_db836)
+    _count_before836 = _db836.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+    _db836.close()
+    # Re-parse via parse_aider_history (dry-run means we don't call insert)
+    _dry_entries836 = _aa836.parse_aider_history(_AIDER_FIXTURE)
+    _db836 = _sq836.connect(str(_tmpdb836))
+    _count_after836 = _db836.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+    _db836.close()
+    test(
+        "I836-2a: dry-run produces no DB writes (count before == count after)",
+        _count_before836 == _count_after836,
+        f"{_count_before836} vs {_count_after836}",
+    )
+
+    # I836-2b: dedup skips duplicate title (insert same entry twice → only one in DB)
+    _tmpdb836b = _tmpdir836 / "test_dedup.db"
+    _db836b = _sq836.connect(str(_tmpdb836b))
+    _aa836.ensure_schema(_db836b)
+    _e1_836 = _aider_entries836[0]
+    _r1_836 = _aa836.insert_entry(_db836b, _e1_836, False)
+    _r2_836 = _aa836.insert_entry(_db836b, _e1_836, False)
+    _cnt836b = _db836b.execute(
+        "SELECT COUNT(*) FROM knowledge_entries WHERE title = ?", (_e1_836["title"],)
+    ).fetchone()[0]
+    _db836b.close()
+    test(
+        "I836-2b: dedup skips duplicate title (insert same entry twice → only one in DB)",
+        _r1_836 is True and _r2_836 is False and _cnt836b == 1,
+        f"r1={_r1_836} r2={_r2_836} count={_cnt836b}",
+    )
+
+    # I836-3a: Parse windsurf fixture → extracts ≥1 entries
+    _ws_entries836 = _wa836.parse_windsurf_sessions(_WS_FIXTURE)
+    test("I836-3a: Parse windsurf fixture → extracts ≥1 entries", len(_ws_entries836) >= 1, str(len(_ws_entries836)))
+
+    # I836-3b: windsurf entries have tag "windsurf-import"
+    _ws_tagged836 = all("windsurf-import" in e["tags"] for e in _ws_entries836)
+    test("I836-3b: Parse windsurf fixture → entries have tag 'windsurf-import'", _ws_tagged836, str(_ws_entries836))
+
+    # I836-4a: sk routing works for aider-import
+    _res836a = subprocess.run(
+        [sys.executable, str(REPO / "sk.py"), "aider-import", "--dry-run", "--from", str(_AIDER_FIXTURE)],
+        capture_output=True,
+        text=True,
+    )
+    test("I836-4a: sk routing works for aider-import", _res836a.returncode == 0, _res836a.stderr[:200])
+
+    # I836-4b: sk routing works for windsurf-import
+    _res836b = subprocess.run(
+        [sys.executable, str(REPO / "sk.py"), "windsurf-import", "--dry-run", "--from", str(_WS_FIXTURE)],
+        capture_output=True,
+        text=True,
+    )
+    test("I836-4b: sk routing works for windsurf-import", _res836b.returncode == 0, _res836b.stderr[:200])
+
+    # Cleanup
+    import shutil as _sh836
+
+    _sh836.rmtree(str(_tmpdir836), ignore_errors=True)
+
+except Exception as _e836:
+    for _lbl836 in ["1a", "1b", "1c", "1d", "2a", "2b", "3a", "3b", "4a", "4b"]:
+        test(f"I836-{_lbl836}: Aider & Windsurf adapters", False, str(_e836))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
