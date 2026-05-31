@@ -243,6 +243,7 @@ TOOL_FILES = [
     "cost-analytics.py",
     "session-compare.py",
     "session-compact.py",
+    "repo-map.py",
 ]
 
 SUPPORT_FILES = [
