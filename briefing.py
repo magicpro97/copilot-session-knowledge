@@ -4140,6 +4140,118 @@ def _format_code_context(snippets: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _parse_window(window: str) -> int:
+    """Parse duration string like 1d, 7d, 24h, 2w into seconds."""
+    import re
+
+    m = re.fullmatch(r"(\d+)([dhwm])", window.strip().lower())
+    if not m:
+        raise ValueError(f"Invalid window: {window!r}. Use format like 1d, 7d, 24h, 2w")
+    n, unit = int(m.group(1)), m.group(2)
+    multipliers = {"h": 3600, "d": 86400, "w": 604800, "m": 2592000}
+    return n * multipliers[unit]
+
+
+def _get_delta_entries(db: "sqlite3.Connection", window_secs: int) -> dict:
+    """Get entries new/updated in the given time window."""
+    import time
+
+    cutoff = time.time() - window_secs
+
+    new = db.execute(
+        "SELECT id, category, title, content, tags, confidence, first_seen FROM knowledge_entries "
+        "WHERE first_seen >= ? ORDER BY first_seen DESC LIMIT 20",
+        (cutoff,),
+    ).fetchall()
+
+    updated = db.execute(
+        "SELECT id, category, title, content, tags, confidence, first_seen, last_seen FROM knowledge_entries "
+        "WHERE last_seen >= ? AND first_seen < ? ORDER BY last_seen DESC LIMIT 20",
+        (cutoff, cutoff),
+    ).fetchall()
+
+    return {"new": new, "updated": updated, "window_secs": window_secs}
+
+
+def _format_delta(delta_data: dict) -> str:
+    """Format delta report showing new/updated entries in the time window."""
+    window_secs = delta_data["window_secs"]
+    new_entries = delta_data["new"]
+    updated_entries = delta_data["updated"]
+
+    # Human-readable window label
+    if window_secs % 2592000 == 0:
+        label = f"{window_secs // 2592000}m"
+    elif window_secs % 604800 == 0:
+        label = f"{window_secs // 604800}w"
+    elif window_secs % 86400 == 0:
+        label = f"{window_secs // 86400}d"
+    else:
+        label = f"{window_secs // 3600}h"
+
+    lines = [f"## Delta Report (last {label})", ""]
+
+    def _entry_line(row) -> str:
+        row_dict = dict(row) if hasattr(row, "keys") else row
+        if isinstance(row_dict, dict):
+            eid = row_dict.get("id", "?")
+            cat = row_dict.get("category", "entry")
+            title = row_dict.get("title", "")
+        else:
+            # sqlite3.Row accessed by index: id=0, category=1, title=2
+            eid, cat, title = row[0], row[1], row[2]
+        title_truncated = (title[:77] + "...") if len(title) > 80 else title
+        return f"[{cat}] #{eid} — {title_truncated}"
+
+    lines.append(f"### New entries ({len(new_entries)})")
+    if new_entries:
+        for row in new_entries:
+            lines.append(_entry_line(row))
+    else:
+        lines.append("(none)")
+    lines.append("")
+
+    lines.append(f"### Updated entries ({len(updated_entries)})")
+    if updated_entries:
+        for row in updated_entries:
+            lines.append(_entry_line(row))
+    else:
+        lines.append("(none)")
+
+    if not new_entries and not updated_entries:
+        lines.append("")
+        lines.append("(No entries found in window)")
+
+    return "\n".join(lines)
+
+
+def _delta_report(db_path: "Path", window: str) -> None:
+    """Print a delta report of new/updated entries within the given time window."""
+    try:
+        window_secs = _parse_window(window)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not db_path.exists():
+        print("No knowledge database found.")
+        return
+
+    try:
+        db = sqlite3.connect(str(db_path))
+        db.row_factory = sqlite3.Row
+    except Exception as exc:
+        print(f"Cannot open database: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        delta_data = _get_delta_entries(db, window_secs)
+    finally:
+        db.close()
+
+    print(_format_delta(delta_data))
+
+
 def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
     """Analyze recall quality from recall_events and search_feedback."""
     if not db_path.exists():
@@ -4450,6 +4562,18 @@ def main():
         _rq_days = max(1, _rq_days)
         _rq_json = "--json" in args
         _recall_quality_report(DB_PATH, _rq_days, _rq_json)
+        return
+
+    # Handle --delta <window> mode (issue #785)
+    if "--delta" in args:
+        _delta_idx = args.index("--delta")
+        _delta_window = (
+            args[_delta_idx + 1] if _delta_idx + 1 < len(args) and not args[_delta_idx + 1].startswith("--") else ""
+        )
+        if not _delta_window:
+            print("Error: --delta requires a window argument like 1d, 7d, 24h, 2w", file=sys.stderr)
+            sys.exit(1)
+        _delta_report(DB_PATH, _delta_window)
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)
