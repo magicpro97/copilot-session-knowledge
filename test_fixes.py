@@ -10663,6 +10663,210 @@ except Exception as _e731:
     ]:
         test(f"I731-{_sfx}: harness init", False, str(_e731))
 
+# === I723: sk retro --by-wing/--by-tag/--by-room grouped domain view ===
+
+print("\n🔍 I723: retro grouped domain view tests")
+
+try:
+    import importlib.util as _ilu723
+    import sqlite3 as _sq723
+    import tempfile as _tf723
+
+    _retro_spec = _ilu723.spec_from_file_location("retro723", str(REPO / "retro.py"))
+    _retro_mod = _ilu723.module_from_spec(_retro_spec)
+    _retro_spec.loader.exec_module(_retro_mod)
+
+    # I723-1: --by-wing flag is accepted by _parse_args
+    _a723 = _retro_mod._parse_args(["--by-wing"])
+    test("I723-1: --by-wing flag accepted", _a723["by_wing"] is True, str(_a723))
+
+    # I723-2: --by-tag flag is accepted with value
+    _a723b = _retro_mod._parse_args(["--by-tag", "python"])
+    test("I723-2: --by-tag flag accepted", _a723b["by_tag"] == "python", str(_a723b))
+
+    # I723-3: --by-room flag is accepted with value
+    _a723c = _retro_mod._parse_args(["--by-room", "auth"])
+    test("I723-3: --by-room flag accepted", _a723c["by_room"] == "auth", str(_a723c))
+
+    # I723-4: --by-wing defaults to False when not provided
+    _a723d = _retro_mod._parse_args([])
+    test("I723-4: --by-wing defaults False", _a723d["by_wing"] is False, str(_a723d))
+
+    # I723-5: --by-tag defaults to None
+    test("I723-5: --by-tag defaults None", _a723d["by_tag"] is None, str(_a723d))
+
+    # I723-6: --by-room defaults to None
+    test("I723-6: --by-room defaults None", _a723d["by_room"] is None, str(_a723d))
+
+    # helpers: create an in-memory test DB with knowledge_entries
+    def _mk_db723(entries):
+        """Create a temp DB with given entries list of (title, wing, room, tags, last_seen)."""
+        _td = _tf723.mkdtemp()
+        _dbpath = _td + "/knowledge.db"
+        _c = _sq723.connect(_dbpath)
+        _c.execute(
+            """CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY, session_id TEXT DEFAULT '',
+                category TEXT DEFAULT 'pattern', title TEXT,
+                content TEXT DEFAULT '', tags TEXT DEFAULT '',
+                wing TEXT DEFAULT '', room TEXT DEFAULT '',
+                last_seen TEXT DEFAULT '', first_seen TEXT DEFAULT ''
+            )"""
+        )
+        for row in entries:
+            _c.execute("INSERT INTO knowledge_entries (title, wing, room, tags, last_seen) VALUES (?,?,?,?,?)", row)
+        _c.commit()
+        _c.close()
+        return _dbpath
+
+    import datetime as _dt723
+
+    _now723 = _dt723.datetime.utcnow()
+    _recent723 = (_now723 - _dt723.timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    _old723 = (_now723 - _dt723.timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    _db723 = _mk_db723(
+        [
+            ("Fix FTS5 sanitization", "Backend", "search", "python,sql", _recent723),
+            ("SQL parameterized pattern", "Backend", "db", "python,sql", _old723),
+            ("React state pattern", "Frontend", "ui", "react,js", _recent723),
+            ("CSS grid layout", "Frontend", "ui", "css", _old723),
+        ]
+    )
+
+    # I723-7: collect_grouped_signals returns 2 groups for the test DB
+    _grps723 = _retro_mod.collect_grouped_signals(db_path=_db723)
+    test("I723-7: grouped by wing returns 2 groups", len(_grps723) == 2, str([g["name"] for g in _grps723]))
+
+    # I723-8: group names are Backend and Frontend
+    _names723 = {g["name"] for g in _grps723}
+    test("I723-8: group names correct", _names723 == {"Backend", "Frontend"}, str(_names723))
+
+    # I723-9: each group has count=2
+    _cnt723 = {g["name"]: g["count"] for g in _grps723}
+    test("I723-9: each wing has count=2", _cnt723.get("Backend") == 2 and _cnt723.get("Frontend") == 2, str(_cnt723))
+
+    # I723-10: freshness_pct for Backend — 1/2 entries fresh → 50%
+    _be723 = next(g for g in _grps723 if g["name"] == "Backend")
+    test("I723-10: Backend freshness_pct=50", _be723["freshness_pct"] == 50, str(_be723))
+
+    # I723-11: by_tag filter for 'python' returns only Backend entries
+    _grps723_tag = _retro_mod.collect_grouped_signals(db_path=_db723, by_tag="python")
+    _tag_names = {g["name"] for g in _grps723_tag}
+    test("I723-11: by_tag=python filters to Backend only", _tag_names == {"Backend"}, str(_tag_names))
+
+    # I723-12: by_room filter for 'ui' returns only Frontend entries
+    _grps723_room = _retro_mod.collect_grouped_signals(db_path=_db723, by_room="ui")
+    _room_names = {g["name"] for g in _grps723_room}
+    test("I723-12: by_room=ui filters to Frontend only", _room_names == {"Frontend"}, str(_room_names))
+
+    # I723-13: combined by_tag + by_room
+    _grps723_both = _retro_mod.collect_grouped_signals(db_path=_db723, by_tag="css", by_room="ui")
+    _both_names = {g["name"] for g in _grps723_both}
+    test("I723-13: by_tag=css + by_room=ui returns Frontend", _both_names == {"Frontend"}, str(_both_names))
+
+    # I723-14: empty DB returns empty list
+    _db723_empty = _mk_db723([])
+    _grps723_empty = _retro_mod.collect_grouped_signals(db_path=_db723_empty)
+    test("I723-14: empty DB returns []", _grps723_empty == [], str(_grps723_empty))
+
+    # I723-15: format_grouped_output contains wing name
+    _fmt723 = _retro_mod.format_grouped_output(_grps723, sum(g["count"] for g in _grps723))
+    test("I723-15: format output contains '== By Wing =='", "== By Wing ==" in _fmt723, _fmt723[:100])
+
+    # I723-16: format_grouped_output contains Backend
+    test("I723-16: format output contains [Backend]", "[Backend]" in _fmt723, _fmt723[:200])
+
+    # I723-17: --by-wing --json CLI output has 'groups' key
+    _r723j = subprocess.run(
+        [sys.executable, str(REPO / "retro.py"), "--by-wing", "--json", "--no-cache"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test("I723-17: --by-wing --json exits 0", _r723j.returncode == 0, _r723j.stderr[:200])
+    try:
+        _j723 = json.loads(_r723j.stdout)
+        test("I723-17b: JSON has 'groups' key", "groups" in _j723, str(list(_j723.keys())))
+        test("I723-17c: JSON has 'total' key", "total" in _j723, str(list(_j723.keys())))
+    except Exception as _ej723:
+        test("I723-17b: JSON has 'groups' key", False, str(_ej723))
+        test("I723-17c: JSON has 'total' key", False, str(_ej723))
+
+    # I723-18: --by-wing text CLI exits 0
+    _r723t = subprocess.run(
+        [sys.executable, str(REPO / "retro.py"), "--by-wing", "--no-cache"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test("I723-18: --by-wing text exits 0", _r723t.returncode == 0, _r723t.stderr[:200])
+
+    # I723-19: missing DB path returns empty list gracefully
+    _grps723_missing = _retro_mod.collect_grouped_signals(db_path="/nonexistent/path/knowledge.db")
+    test("I723-19: missing DB path returns []", _grps723_missing == [], str(_grps723_missing))
+
+    # I723-20: group recent/oldest fields are populated
+    test("I723-20: Backend recent field populated", bool(_be723.get("recent")), str(_be723))
+
+    # I723-21: --by-tag CLI exits 0
+    _r723tag = subprocess.run(
+        [sys.executable, str(REPO / "retro.py"), "--by-tag", "python", "--no-cache"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test("I723-21: --by-tag CLI exits 0", _r723tag.returncode == 0, _r723tag.stderr[:200])
+
+    # I723-22: --by-room CLI exits 0
+    _r723room = subprocess.run(
+        [sys.executable, str(REPO / "retro.py"), "--by-room", "auth", "--no-cache"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+    )
+    test("I723-22: --by-room CLI exits 0", _r723room.returncode == 0, _r723room.stderr[:200])
+
+    # I723-23: entries with no wing grouped under '(none)'
+    _db723_none = _mk_db723(
+        [
+            ("Unnamed entry", "", "", "misc", _recent723),
+        ]
+    )
+    _grps723_none = _retro_mod.collect_grouped_signals(db_path=_db723_none)
+    _none_names = {g["name"] for g in _grps723_none}
+    test("I723-23: empty wing grouped as '(none)'", "(none)" in _none_names, str(_none_names))
+
+except Exception as _e723:
+    for _sfx in [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "17b",
+        "17c",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+    ]:
+        test(f"I723-{_sfx}: retro grouped view", False, str(_e723))
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
