@@ -18,6 +18,7 @@ Usage:
     python query-session.py --decisions                        # Show tech decisions
     python query-session.py --detail <id>                      # Full detail of entry
     python query-session.py --context <id>                     # Entry + related context
+    python query-session.py --history <id>                     # Show version history timeline for an entry
     python query-session.py --related <id>                     # Show knowledge graph relations
     python query-session.py --graph "spring boot"              # Mini knowledge graph for topic
     python query-session.py --relate "entity"                   # Query entity relations (new graph)
@@ -1684,7 +1685,8 @@ def show_entry_history(entry_id: int):
     ).fetchone()
 
     print(f"\n{BOLD}Version history for #{entry_id}: {entry['title']}{RESET}")
-    print(f"{DIM}Category: {entry['category']} | Current confidence: {entry['confidence']:.2f}{RESET}")
+    _conf = entry["confidence"] if entry["confidence"] is not None else 1.0
+    print(f"{DIM}Category: {entry['category']} | Current confidence: {_conf:.2f}{RESET}")
 
     if not has_history_table:
         print(f"{DIM}(knowledge_entry_history table not found — run migrate.py to enable history){RESET}")
@@ -1713,14 +1715,14 @@ def show_entry_history(entry_id: int):
     for i, row in enumerate(rows, 1):
         date = row["changed_at"][:10]
         time_part = row["changed_at"][11:16] if len(row["changed_at"]) >= 16 else ""
-        conf_before = row["confidence_before"]
-        conf_after = row["confidence_after"]
+        conf_before = row["confidence_before"] if row["confidence_before"] is not None else 1.0
+        conf_after = row["confidence_after"] if row["confidence_after"] is not None else 1.0
         before_len = len(row["content_before"])
         after_len = len(row["content_after"])
         delta = after_len - before_len
         delta_str = f"+{delta}" if delta >= 0 else str(delta)
         print(
-            f"  [{date} {time_part}] confidence={conf_before:.2f}→{conf_after:.2f} | "
+            f"  v{i} [{date} {time_part}] confidence={conf_before:.2f}→{conf_after:.2f} | "
             f"{delta_str} chars | source={row['change_source']}"
         )
 
