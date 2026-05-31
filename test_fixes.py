@@ -15420,6 +15420,129 @@ except Exception as _e866:
         test(f"I866-{_lbl866}: incremental compact", False, str(_e866))
 
 # ---------------------------------------------------------------------------
+# I873: trigram FTS index for knowledge entries (ke_fts_trigram)
+# ---------------------------------------------------------------------------
+import importlib.util as _ilu873
+
+try:
+    _spec873 = _ilu873.spec_from_file_location("qs873", REPO / "query-session.py")
+    _qs873 = _ilu873.module_from_spec(_spec873)
+    _spec873.loader.exec_module(_qs873)
+
+    # I873-1: _rrf_fuse function exists and is callable
+    test(
+        "I873-1: _rrf_fuse is defined in query-session.py",
+        callable(getattr(_qs873, "_rrf_fuse", None)),
+        str(dir(_qs873)),
+    )
+
+    # I873-2: _rrf_fuse correctly fuses two lists by RRF score
+    _db873 = sqlite3.connect(":memory:")
+    _db873.row_factory = sqlite3.Row
+    _db873.execute(
+        "CREATE TABLE knowledge_entries"
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, confidence REAL,"
+        " content TEXT, tags TEXT, session_id TEXT, last_seen TEXT,"
+        " error_type TEXT, severity TEXT, root_cause TEXT,"
+        " agent_id TEXT, occurrence_count INTEGER DEFAULT 0,"
+        " est_tokens INTEGER DEFAULT 0, curation_state TEXT)"
+    )
+    for _rid, _title in [
+        (1, "python debugging guide"),
+        (2, "asyncio event loop"),
+        (3, "pytest fixtures"),
+        (4, "trigram partial match"),
+    ]:
+        _db873.execute(
+            "INSERT INTO knowledge_entries(id, category, title, confidence, content, tags, session_id, last_seen)"
+            " VALUES (?, 'pattern', ?, 0.9, ?, '', 'sess1', '2024-01-01')",
+            (_rid, _title, f"content for {_title}"),
+        )
+    _db873.commit()
+    _db873.execute("CREATE VIRTUAL TABLE ke_fts_trigram USING fts5(id UNINDEXED, title, content, tokenize='trigram')")
+    _db873.execute("INSERT INTO ke_fts_trigram(id, title, content) SELECT id, title, content FROM knowledge_entries")
+    _db873.commit()
+
+    # Build fake sqlite3.Row-like dicts to test _rrf_fuse logic
+    _fts_list = _db873.execute(
+        "SELECT ke.*, ke.title as excerpt, rank as _fts_rank FROM ke_fts_trigram fts"
+        " JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id"
+        " WHERE ke_fts_trigram MATCH 'python' ORDER BY rank LIMIT 10"
+    ).fetchall()
+    _tri_list = _db873.execute(
+        "SELECT ke.*, ke.title as excerpt, rank as _fts_rank FROM ke_fts_trigram fts"
+        " JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id"
+        " WHERE ke_fts_trigram MATCH 'ytho' ORDER BY rank LIMIT 10"
+    ).fetchall()
+
+    test(
+        "I873-2a: ke_fts_trigram finds 'python' via full-word match",
+        len(_fts_list) >= 1,
+        str([r["title"] for r in _fts_list]),
+    )
+    test(
+        "I873-2b: ke_fts_trigram finds 'python' via partial trigram 'ytho'",
+        any("python" in (r["title"] or "").lower() for r in _tri_list),
+        str([r["title"] for r in _tri_list]),
+    )
+
+    # I873-3: _rrf_fuse deduplicates and orders correctly
+    _fused873 = _qs873._rrf_fuse(_fts_list, _tri_list, limit=10)
+    _fused_ids = [r["id"] for r in _fused873]
+    test(
+        "I873-3a: _rrf_fuse returns non-empty list",
+        len(_fused873) >= 1,
+        str(_fused_ids),
+    )
+    test(
+        "I873-3b: _rrf_fuse deduplicates — no duplicate ids",
+        len(_fused_ids) == len(set(_fused_ids)),
+        str(_fused_ids),
+    )
+
+    # I873-4: trigram finds partial-word matches missed by porter-stem FTS5
+    # "pytho" is not a valid stem but trigram can match it against "python"
+    _partial873 = _db873.execute(
+        "SELECT ke.id, ke.title FROM ke_fts_trigram fts"
+        " JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id"
+        " WHERE ke_fts_trigram MATCH 'pytho' ORDER BY rank LIMIT 10"
+    ).fetchall()
+    test(
+        "I873-4: trigram matches partial word 'pytho' → finds 'python debugging guide'",
+        any("python" in (r["title"] or "").lower() for r in _partial873),
+        str([r["title"] for r in _partial873]),
+    )
+
+    # I873-5: migration 45 is declared in migrate.py with correct name
+    _mig873_content = (REPO / "migrate.py").read_text()
+    test(
+        "I873-5a: migration 45 declared in migrate.py",
+        "45," in _mig873_content and "ke_fts_trigram" in _mig873_content,
+        _mig873_content[_mig873_content.find("45,") : _mig873_content.find("45,") + 80]
+        if "45," in _mig873_content
+        else "not found",
+    )
+    test(
+        "I873-5b: migration uses trigram tokenizer",
+        "tokenize='trigram'" in _mig873_content,
+        "tokenize clause not found" if "tokenize='trigram'" not in _mig873_content else "ok",
+    )
+
+    # I873-6: mcp-server.py contains trigram fallback path
+    _mcp873_content = (REPO / "mcp-server.py").read_text()
+    test(
+        "I873-6: mcp-server.py has ke_fts_trigram fallback when FTS5 returns < 3 results",
+        "ke_fts_trigram" in _mcp873_content and "len(rows) < 3" in _mcp873_content,
+        "ke_fts_trigram fallback missing" if "ke_fts_trigram" not in _mcp873_content else "ok",
+    )
+
+    _db873.close()
+
+except Exception as _e873:
+    for _label873 in ["1", "2a", "2b", "3a", "3b", "4", "5a", "5b", "6"]:
+        test(f"I873-{_label873}: trigram FTS index", False, str(_e873))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

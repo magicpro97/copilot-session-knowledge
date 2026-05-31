@@ -1980,6 +1980,28 @@ def show_graph(topic: str, predicate: str | None = None):
     db.close()
 
 
+def _rrf_fuse(fts_rows: list, tri_rows: list, limit: int = 10) -> list:
+    """Reciprocal Rank Fusion of FTS5 + trigram result lists (#873).
+
+    Each list is assumed sorted best-first (position 0 = most relevant).
+    RRF score: sum(1 / (K + rank_position)) across lists the entry appears in.
+    Entries absent from a list get position = len(list) + K (near-zero contribution).
+    Prefers the FTS5 row when both lists contain the same entry id (better excerpt).
+    """
+    K = 60
+    fts_pos = {r["id"]: i for i, r in enumerate(fts_rows)}
+    tri_pos = {r["id"]: i for i, r in enumerate(tri_rows)}
+    # Build id→row map; FTS5 rows overwrite trigram rows (prefer FTS5 snippet excerpt)
+    rows_by_id: dict = {r["id"]: r for r in tri_rows}
+    rows_by_id.update({r["id"]: r for r in fts_rows})
+    all_ids = list(rows_by_id)
+    scores = {
+        rid: 1.0 / (K + fts_pos.get(rid, len(fts_rows) + K)) + 1.0 / (K + tri_pos.get(rid, len(tri_rows) + K))
+        for rid in all_ids
+    }
+    return [rows_by_id[rid] for rid in sorted(all_ids, key=lambda r: -scores[r])[:limit]]
+
+
 def _fuzzy_title_search(
     conn,
     query: str,
@@ -2102,6 +2124,32 @@ def search_knowledge(
             ).fetchall()
         except sqlite3.OperationalError:
             rows = []
+
+    # Trigram RRF fusion (#873): partial-word matches via ke_fts_trigram
+    # Run alongside porter-stem FTS5; fuse results so partial-word hits surface.
+    _fts_specials = set('"*(){}:^-')
+    _tri_clean = "".join(c if c not in _fts_specials else " " for c in query_for_retrieval.replace("'", " "))
+    _tri_terms = [t for t in _tri_clean.split() if t.upper() not in ("OR", "AND", "NOT", "NEAR")]
+    _tri_query = '"' + " ".join(_tri_terms) + '"' if _tri_terms else ""
+    if _tri_query:
+        try:
+            _tri_rows = db.execute(
+                f"""
+                SELECT ke.*,
+                       SUBSTR(ke.content, MAX(1, INSTR(LOWER(ke.content), LOWER(?)) - 40), 128) as excerpt,
+                       rank as _fts_rank
+                FROM ke_fts_trigram fts
+                JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id
+                WHERE ke_fts_trigram MATCH ?{et_clause}{date_clause}
+                ORDER BY rank
+                LIMIT ?
+            """,
+                [_tri_query.strip('"'), _tri_query, *et_params, *date_params, limit],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            _tri_rows = []
+        if _tri_rows:
+            rows = _rrf_fuse(rows, _tri_rows, limit=limit)
 
     # Fallback: substring LIKE search when FTS returns nothing
     _fuzzy_result = False

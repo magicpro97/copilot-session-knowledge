@@ -1900,6 +1900,24 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_keh_changed_at ON knowledge_entry_history (changed_at)",
             ],
         ),
+        (
+            45,
+            "ke_fts_trigram",
+            [
+                "CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts_trigram USING fts5(id UNINDEXED, title, content, tokenize='trigram')",
+                "INSERT INTO ke_fts_trigram(id, title, content) SELECT id, title, content FROM knowledge_entries",
+                """CREATE TRIGGER IF NOT EXISTS ke_fts_trigram_ai AFTER INSERT ON knowledge_entries BEGIN
+                    INSERT INTO ke_fts_trigram(id, title, content) VALUES (NEW.id, NEW.title, NEW.content);
+                END""",
+                """CREATE TRIGGER IF NOT EXISTS ke_fts_trigram_ad AFTER DELETE ON knowledge_entries BEGIN
+                    DELETE FROM ke_fts_trigram WHERE id = CAST(OLD.id AS TEXT);
+                END""",
+                """CREATE TRIGGER IF NOT EXISTS ke_fts_trigram_au AFTER UPDATE ON knowledge_entries BEGIN
+                    DELETE FROM ke_fts_trigram WHERE id = CAST(OLD.id AS TEXT);
+                    INSERT INTO ke_fts_trigram(id, title, content) VALUES (NEW.id, NEW.title, NEW.content);
+                END""",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
