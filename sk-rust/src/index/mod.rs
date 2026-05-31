@@ -17,3 +17,5 @@ pub mod extract_schema;
 
 #[cfg(feature = "native-extract")]
 pub mod extract;
+
+pub mod code_indexer;

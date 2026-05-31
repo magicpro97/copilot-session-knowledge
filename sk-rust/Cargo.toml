@@ -21,6 +21,14 @@ native-hooks   = []
 # Python `extract-knowledge.py` remains for manual/fallback use but is no
 #   longer auto-spawned on the successful native watch path.
 native-extract = []
+# Issue #744: Native Rust tree-sitter code indexer.
+# Disabled by default; activate with --features tree-sitter-indexer.
+tree-sitter-indexer = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-rust",
+]
 # Issue #447 (server core) + #449 (DB layer): Axum HTTP server and r2d2 pool.
 # Not enabled by default; activate with --features browse-server.
 browse-server  = [
@@ -76,6 +84,12 @@ sha1    = "0.10"
 notify  = { version = "6",    optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"], optional = true }
 tokio   = { version = "1",    features = ["rt-multi-thread", "macros"], optional = true }
+
+# Optional — tree-sitter-indexer feature (issue #744).
+tree-sitter            = { version = "0.22", optional = true }
+tree-sitter-python     = { version = "0.21", optional = true }
+tree-sitter-javascript = { version = "0.21", optional = true }
+tree-sitter-rust       = { version = "0.21", optional = true }
 
 # Optional — browse-server feature (issues #447 + #449).
 # tower is provided transitively by axum 0.7.9 (which requires tower 0.5);

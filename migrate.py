@@ -20,6 +20,14 @@ def _default_db_path() -> str:
     return os.environ.get("SK_DB_PATH") or os.path.expanduser("~/.copilot/session-state/knowledge.db")
 
 
+def _wal_connect(path: "str | Path", **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
 def _latest_declared_migration_version() -> int | None:
     """Read the local migration literal for help text without executing migrations."""
     try:
@@ -107,8 +115,8 @@ def _create_backup_copy(db_path: str, backup_path: str | None = None) -> Path:
     if destination.exists():
         raise FileExistsError(f"backup destination already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    src_conn = sqlite3.connect(str(source))
-    dst_conn = sqlite3.connect(str(destination))
+    src_conn = _wal_connect(str(source))
+    dst_conn = _wal_connect(str(destination))
     backup_error = None
     try:
         src_conn.backup(dst_conn)
@@ -121,7 +129,7 @@ def _create_backup_copy(db_path: str, backup_path: str | None = None) -> Path:
         destination.unlink(missing_ok=True)
         raise backup_error
 
-    verify_conn = sqlite3.connect(str(destination))
+    verify_conn = _wal_connect(str(destination))
     verify_error = None
     try:
         row = verify_conn.execute("PRAGMA quick_check").fetchone()
@@ -1048,7 +1056,7 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     try:
-        db = sqlite3.connect(db_path)
+        db = _wal_connect(db_path)
     except sqlite3.Error as exc:
         _print_database_recovery_hint(db_path, str(exc))
         raise SystemExit(1) from None
@@ -1839,11 +1847,104 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_tool_spans_tool ON tool_spans (tool_name)",
             ],
         ),
+        # v37: issue #799 — mistake recurrence detection.
+        # recurrence_count tracks how many times a mistake entry was re-learned after
+        # a similar entry was recently served via recall_events (8-hour window).
+        (
+            40,
+            "add_recurrence_count",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN recurrence_count INTEGER DEFAULT 0",
+            ],
+        ),
+        # v37: issue #797 — FSRS-style recall stability factor.
+        # stability_factor scales the Ebbinghaus half-life in briefing decay scoring.
+        # Default 1.0 = unchanged; ×1.3 on good feedback, ×0.8 on bad feedback,
+        # ×1.5 on mark-resolved (mistake). Clamped to [0.5, 4.0].
+        (
+            41,
+            "fsrs_stability_factor",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN stability_factor REAL DEFAULT 1.0",
+            ],
+        ),
         (
             42,
             "search_feedback_note",
             [
                 "ALTER TABLE search_feedback ADD COLUMN note TEXT",
+            ],
+        ),
+        (
+            43,
+            "curation_state",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN curation_state TEXT DEFAULT NULL",
+            ],
+        ),
+        (
+            44,
+            "knowledge_entry_history",
+            [
+                """CREATE TABLE IF NOT EXISTS knowledge_entry_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    content_before TEXT NOT NULL DEFAULT '',
+                    content_after TEXT NOT NULL DEFAULT '',
+                    confidence_before REAL NOT NULL DEFAULT 0.0,
+                    confidence_after REAL NOT NULL DEFAULT 0.0,
+                    change_source TEXT NOT NULL DEFAULT 'learn'
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_keh_entry_id ON knowledge_entry_history (entry_id)",
+                "CREATE INDEX IF NOT EXISTS idx_keh_changed_at ON knowledge_entry_history (changed_at)",
+            ],
+        ),
+        (
+            45,
+            "ke_fts_trigram",
+            [
+                "CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts_trigram USING fts5(id UNINDEXED, title, content, tokenize='trigram')",
+                "INSERT INTO ke_fts_trigram(id, title, content) SELECT id, title, content FROM knowledge_entries",
+                """CREATE TRIGGER IF NOT EXISTS ke_fts_trigram_ai AFTER INSERT ON knowledge_entries BEGIN
+                    INSERT INTO ke_fts_trigram(id, title, content) VALUES (NEW.id, NEW.title, NEW.content);
+                END""",
+                """CREATE TRIGGER IF NOT EXISTS ke_fts_trigram_ad AFTER DELETE ON knowledge_entries BEGIN
+                    DELETE FROM ke_fts_trigram WHERE id = CAST(OLD.id AS TEXT);
+                END""",
+                """CREATE TRIGGER IF NOT EXISTS ke_fts_trigram_au AFTER UPDATE ON knowledge_entries BEGIN
+                    DELETE FROM ke_fts_trigram WHERE id = CAST(OLD.id AS TEXT);
+                    INSERT INTO ke_fts_trigram(id, title, content) VALUES (NEW.id, NEW.title, NEW.content);
+                END""",
+            ],
+        ),
+        # v46: issue #852 — sync federation namespace scoping and visibility flags.
+        (
+            46,
+            "namespace_visibility",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN namespace TEXT DEFAULT 'local'",
+                "ALTER TABLE knowledge_entries ADD COLUMN visibility TEXT DEFAULT 'private'",
+                "CREATE INDEX IF NOT EXISTS idx_ke_namespace_visibility ON knowledge_entries (namespace, visibility)",
+            ],
+        ),
+        (
+            46,
+            "code_symbols",
+            [
+                # Issue #744: Native Rust tree-sitter code indexer.
+                """CREATE TABLE IF NOT EXISTS code_symbols (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_path TEXT NOT NULL,
+                    symbol_name TEXT NOT NULL,
+                    symbol_kind TEXT NOT NULL,
+                    line_number INTEGER,
+                    project_id TEXT,
+                    indexed_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(file_path, symbol_name, symbol_kind)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_cs_file ON code_symbols(file_path)",
+                "CREATE INDEX IF NOT EXISTS idx_cs_name ON code_symbols(symbol_name)",
             ],
         ),
     ]

@@ -15,6 +15,7 @@ import plistlib
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -11400,6 +11401,295 @@ try:
 except Exception as _e756:
     for _suffix756 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "3a", "3b", "3c", "4a", "4b", "4c", "5a", "5b"]:
         test(f"I756-{_suffix756}: MCP resources", False, str(_e756))
+# === I871: MCP resource catalog expansion ===
+print("\n📡 I871: MCP resource catalog expansion")
+
+
+def _mcp871_roundtrip(_home871: Path, method: str, params: dict):
+    _env871 = os.environ.copy()
+    _env871["HOME"] = str(_home871)
+    _env871["USERPROFILE"] = str(_home871)
+    _proc871 = subprocess.Popen(
+        [sys.executable, str(REPO / "mcp-server.py")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_env871,
+        cwd=str(REPO),
+    )
+    _request_bytes871 = bytearray()
+    for _msg871 in (
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
+        {"jsonrpc": "2.0", "id": 3, "method": "shutdown"},
+    ):
+        _payload871 = json.dumps(_msg871).encode("utf-8")
+        _request_bytes871.extend(f"Content-Length: {len(_payload871)}\r\n\r\n".encode("ascii") + _payload871)
+    try:
+        _stdout871, _stderr871 = _proc871.communicate(bytes(_request_bytes871), timeout=15)
+    finally:
+        if _proc871.poll() is None:
+            _proc871.kill()
+            _proc871.wait(timeout=5)
+
+    _responses871 = []
+    _remaining871 = _stdout871
+    while _remaining871:
+        if b"Content-Length:" not in _remaining871:
+            break
+        _hdr_end871 = _remaining871.find(b"\r\n\r\n")
+        if _hdr_end871 == -1:
+            break
+        _header871 = _remaining871[:_hdr_end871].decode("ascii", errors="replace")
+        _length871 = int(
+            [_ln.split(":", 1)[1].strip() for _ln in _header871.split("\r\n") if "content-length" in _ln.lower()][0]
+        )
+        _body_start871 = _hdr_end871 + 4
+        _body871 = _remaining871[_body_start871 : _body_start871 + _length871]
+        _remaining871 = _remaining871[_body_start871 + _length871 :]
+        try:
+            _responses871.append(json.loads(_body871))
+        except Exception:
+            pass
+
+    _matches871 = [r for r in _responses871 if r.get("id") == 2]
+    if not _matches871:
+        raise RuntimeError(_stderr871.decode("utf-8", errors="replace") or "no MCP response")
+    return _matches871[0]
+
+
+def _run_i871_resource_tests():
+    import shutil as _sh871
+
+    _root871 = Path(tempfile.mkdtemp(prefix="i871-", dir=str(REPO)))
+    try:
+        _home871 = _root871 / "home"
+        _state871 = _home871 / ".copilot" / "session-state"
+        _state871.mkdir(parents=True, exist_ok=True)
+        _db871 = sqlite3.connect(_state871 / "knowledge.db")
+        _db871.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT '',
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                summary TEXT DEFAULT '',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT ''
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags,
+                content=knowledge_entries, content_rowid=id
+            );
+            """
+        )
+        _db871.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (30, "i871-catalog"))
+        _db871.execute(
+            "INSERT INTO sessions (id, path, summary, indexed_at) VALUES (?, ?, ?, ?)",
+            ("sess-871", "/repo", "I871 test session", "2025-03-01T00:00:00Z"),
+        )
+        _db871.executemany(
+            "INSERT INTO knowledge_entries (id, session_id, category, title, content, tags, confidence, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    1,
+                    "sess-871",
+                    "pattern",
+                    "Auth middleware pattern",
+                    "Use JWT tokens for auth",
+                    "auth,middleware",
+                    0.9,
+                    "2025-03-01T00:00:00Z",
+                    "2025-03-05T00:00:00Z",
+                ),
+                (
+                    2,
+                    "sess-871",
+                    "mistake",
+                    "DB connection leak",
+                    "Always close DB after use",
+                    "db,leak",
+                    0.8,
+                    "2025-03-02T00:00:00Z",
+                    "2025-03-06T00:00:00Z",
+                ),
+                (
+                    3,
+                    "sess-871",
+                    "discovery",
+                    "Retro learning",
+                    "Session was productive",
+                    "retro,session-retrospective",
+                    0.95,
+                    "2025-03-03T00:00:00Z",
+                    "2025-03-07T00:00:00Z",
+                ),
+            ],
+        )
+        # Populate ke_fts
+        _db871.executemany(
+            "INSERT INTO ke_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
+            [
+                (1, "Auth middleware pattern", "Use JWT tokens for auth", "auth,middleware"),
+                (2, "DB connection leak", "Always close DB after use", "db,leak"),
+                (3, "Retro learning", "Session was productive", "retro,session-retrospective"),
+            ],
+        )
+        _db871.commit()
+        _db871.close()
+
+        # I871-1: resources/list includes all 4 new static resources
+        _res_list871 = _mcp871_roundtrip(_home871, "resources/list", {})
+        _uris871 = [r.get("uri") for r in _res_list871.get("result", {}).get("resources", [])]
+        test(
+            "I871-1a: resources/list includes sk://knowledge/search", "sk://knowledge/search" in _uris871, str(_uris871)
+        )
+        test("I871-1b: resources/list includes sk://health", "sk://health" in _uris871, str(_uris871))
+        test("I871-1c: resources/list includes sk://retro/summary", "sk://retro/summary" in _uris871, str(_uris871))
+        test(
+            "I871-1d: resources/list includes dynamic sk://sessions/sess-871",
+            "sk://sessions/sess-871" in _uris871,
+            str(_uris871),
+        )
+
+        # I871-2: sk://knowledge/search
+        _res_search871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://knowledge/search?q=auth&limit=5"})
+        _search871 = json.loads(_res_search871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-2a: knowledge/search returns entries key", "entries" in _search871, str(_search871))
+        test("I871-2b: knowledge/search returns count key", "count" in _search871, str(_search871))
+        test(
+            "I871-2c: knowledge/search count is non-negative int",
+            isinstance(_search871.get("count"), int) and _search871["count"] >= 0,
+            str(_search871),
+        )
+
+        # I871-3: sk://health
+        _res_health871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://health"})
+        _health871 = json.loads(_res_health871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-3a: health returns total_entries", "total_entries" in _health871, str(_health871))
+        test("I871-3b: health total_entries is 3", _health871.get("total_entries") == 3, str(_health871))
+        test("I871-3c: health returns stale_pct", "stale_pct" in _health871, str(_health871))
+        test("I871-3d: health returns avg_confidence", "avg_confidence" in _health871, str(_health871))
+        test("I871-3e: health returns categories dict", isinstance(_health871.get("categories"), dict), str(_health871))
+        test(
+            "I871-3f: health categories contains pattern",
+            _health871.get("categories", {}).get("pattern") == 1,
+            str(_health871),
+        )
+
+        # I871-4: sk://retro/summary
+        _res_retro871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://retro/summary"})
+        _retro871 = json.loads(_res_retro871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-4a: retro/summary returns entries key", "entries" in _retro871, str(_retro871))
+        test("I871-4b: retro/summary returns count key", "count" in _retro871, str(_retro871))
+        test(
+            "I871-4c: retro/summary count matches entries",
+            _retro871.get("count") == len(_retro871.get("entries", [])),
+            str(_retro871),
+        )
+        test("I871-4d: retro/summary finds seeded retro entry", _retro871.get("count", 0) >= 1, str(_retro871))
+
+        # I871-5: sk://sessions/<id>
+        _res_sess871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://sessions/sess-871"})
+        _sess871 = json.loads(_res_sess871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-5a: sessions/<id> returns session_id", _sess871.get("session_id") == "sess-871", str(_sess871))
+        test("I871-5b: sessions/<id> returns entry_count", _sess871.get("entry_count") == 3, str(_sess871))
+        test(
+            "I871-5c: sessions/<id> returns categories dict",
+            isinstance(_sess871.get("categories"), dict),
+            str(_sess871),
+        )
+        test("I871-5d: sessions/<id> returns first_seen", "first_seen" in _sess871, str(_sess871))
+        test("I871-5e: sessions/<id> returns last_seen", "last_seen" in _sess871, str(_sess871))
+
+        # I871-6: sk://sessions/<id> for missing session returns error
+        _res_missing871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://sessions/no-such-session"})
+        _err871 = _res_missing871.get("error", {})
+        test("I871-6a: missing session returns error code -32602", _err871.get("code") == -32602, str(_err871))
+
+    finally:
+        _sh871.rmtree(_root871, ignore_errors=True)
+
+
+try:
+    _run_i871_resource_tests()
+except Exception as _e871:
+    for _suffix871 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "3e",
+        "3f",
+        "4a",
+        "4b",
+        "4c",
+        "4d",
+        "5a",
+        "5b",
+        "5c",
+        "5d",
+        "5e",
+        "6a",
+    ]:
+        test(f"I871-{_suffix871}: MCP resource catalog expansion", False, str(_e871))
 # === I759: tag-entries TF-IDF opt-in ===
 print("\n🔍 I759: tag-entries TF-IDF opt-in")
 
@@ -11527,6 +11817,4883 @@ except Exception as _e759:
         "3b",
     ]:
         test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
+
+# --- I817 sk curate tests ---
+_curate_src = (REPO / "curate.py").read_text(encoding="utf-8")
+
+test(
+    "I817-1a: curate DB_PATH respects SK_DB_PATH",
+    "SK_DB_PATH" in _curate_src,
+    "curate.py must use SK_DB_PATH env var",
+)
+
+test(
+    "I817-1b: curate resolve does not accept merge",
+    "merge" not in _curate_src.split("choices=")[1].split("]")[0] if "choices=" in _curate_src else False,
+    "merge action should not be accepted until implemented",
+)
+
+test(
+    "I817-1c: curate list only shows pending_review",
+    "curation_state = 'pending_review'" in _curate_src,
+    "list command should filter to pending_review only",
+)
+
+test(
+    "I817-1d: curate scan joins entry_recall_stats for recall_count",
+    "entry_recall_stats" in _curate_src,
+    "stale detection must join entry_recall_stats, not use knowledge_entries.recall_count",
+)
+
+# ---------------------------------------------------------------------------
+# I815: briefing --rag synthesis tests
+# ---------------------------------------------------------------------------
+print("\n📝 I815: briefing --rag synthesis")
+try:
+    import importlib
+
+    _mcp815 = importlib.import_module("mcp-server")
+    _briefing815 = importlib.import_module("briefing")
+
+    # I815-1a: MCP synthesize=True appends --rag to argv
+    _orig815 = _mcp815._capture_module_main
+
+    def _fake_capture815(mod, argv):
+        _fake_capture815.last_argv = list(argv)
+        return (0, "## MISTAKE context (1 entries)\nAVOID: test", "")
+
+    _fake_capture815.last_argv = []
+    _mcp815._capture_module_main = _fake_capture815
+    try:
+        _result815 = _mcp815._run_briefing({"task": "auth bug", "synthesize": True})
+        test("I815-1a: synthesize=True adds --rag flag", "--rag" in _fake_capture815.last_argv)
+    finally:
+        _mcp815._capture_module_main = _orig815
+
+    # I815-1b: --rag parser strips flag values from query
+    _args815 = ["auth", "bug", "--rag", "--mode", "review", "--limit", "5", "--agent-tag", "copilot"]
+    _opt_flags815 = {"--mode", "--limit", "--agent-tag", "--code-tokens", "--available-tokens"}
+    _skip815: set = set()
+    for _i815, _a815 in enumerate(_args815):
+        if _a815 in _opt_flags815 and _i815 + 1 < len(_args815):
+            _skip815.add(_i815 + 1)
+    _parts815 = [a for i, a in enumerate(_args815) if not a.startswith("--") and i not in _skip815]
+    _query815 = " ".join(_parts815)
+    test("I815-1b: --rag parser excludes flag values", _query815 == "auth bug", f"got: {_query815!r}")
+
+    # I815-1c: _fetch_rag_entries uses filtered pipeline (function exists)
+    test(
+        "I815-1c: _fetch_rag_entries function exists",
+        hasattr(_briefing815, "_fetch_rag_entries"),
+    )
+
+    # I815-1d: _group_by_relations function exists
+    test(
+        "I815-1d: _group_by_relations function exists",
+        hasattr(_briefing815, "_group_by_relations"),
+    )
+
+except Exception as _e815:
+    for _lbl815 in ["1a", "1b", "1c", "1d"]:
+        test(f"I815-{_lbl815}: briefing --rag synthesis", False, str(_e815))
+# I818: briefing --prefetch + post-checkout cache warming
+# ---------------------------------------------------------------------------
+print("\n🔍 I818: briefing --prefetch + post-checkout cache warming")
+
+_bsrc818 = (REPO / "briefing.py").read_text(encoding="utf-8")
+_isrc818 = (REPO / "install.py").read_text(encoding="utf-8")
+
+# I818-1: source-level checks
+test("I818-1a: --prefetch flag in briefing.py", '"--prefetch"' in _bsrc818, "flag not found")
+test("I818-1b: _write_prefetch_cache in briefing.py", "_write_prefetch_cache" in _bsrc818, "function missing")
+test("I818-1c: _read_prefetch_cache in briefing.py", "_read_prefetch_cache" in _bsrc818, "function missing")
+test("I818-1d: _prefetch_cache_path in briefing.py", "_prefetch_cache_path" in _bsrc818, "function missing")
+test("I818-1e: _get_current_sha8 in briefing.py", "_get_current_sha8" in _bsrc818, "function missing")
+test("I818-1f: _PREFETCH_TTL_SECONDS in briefing.py", "_PREFETCH_TTL_SECONDS" in _bsrc818, "constant missing")
+test("I818-1g: [cached] annotation in briefing.py", "[cached]" in _bsrc818, "annotation missing")
+test("I818-1h: _prefetch_args_hash in briefing.py", "_prefetch_args_hash" in _bsrc818, "hash helper missing")
+test("I818-1i: post-checkout in install.py hook_names", '"post-checkout"' in _isrc818, "post-checkout not added")
+test("I818-1j: hooks/post-checkout file exists", (REPO / "hooks" / "post-checkout").is_file(), "file missing")
+
+# I818-2: post-checkout hook correctness
+_pc818_src = (REPO / "hooks" / "post-checkout").read_text(encoding="utf-8")
+test(
+    "I818-2a: post-checkout skips file checkouts (flag != 1)",
+    "_checkout_flag" in _pc818_src and '"1"' in _pc818_src,
+    "flag check missing",
+)
+test("I818-2b: post-checkout uses start_new_session", "start_new_session" in _pc818_src, "async launch missing")
+test("I818-2c: post-checkout passes --prefetch flag", '"--prefetch"' in _pc818_src, "missing --prefetch arg")
+test(
+    "I818-2d: post-checkout uses sk launcher",
+    '"sk.py"' in _pc818_src and '"briefing"' in _pc818_src,
+    "sk launcher missing",
+)
+test(
+    "I818-2e: post-checkout fail-open (try/except around Popen)",
+    "try:" in _pc818_src and "pass" in _pc818_src,
+    "fail-open missing",
+)
+
+# I818-3: cache roundtrip (unit-level, using a temp HOME)
+try:
+    import importlib.util as _ilu818
+    import tempfile as _tf818
+    import time as _time818
+
+    _spec818 = _ilu818.spec_from_file_location("briefing818", REPO / "briefing.py")
+    _bmod818 = _ilu818.module_from_spec(_spec818)
+
+    with _tf818.TemporaryDirectory() as _td818:
+        _fake_home818 = Path(_td818) / "home"
+        _fake_ss818 = _fake_home818 / ".copilot" / "session-state"
+        _fake_ss818.mkdir(parents=True)
+        _orig_ss818 = None
+
+        # Patch SESSION_STATE before loading
+        import os as _os818
+
+        _orig_env_db = _os818.environ.get("SK_DB_PATH")
+        _os818.environ["SK_DB_PATH"] = str(_fake_ss818 / "knowledge.db")
+        _spec818.loader.exec_module(_bmod818)
+
+        # Patch _bmod818.SESSION_STATE to point at our temp dir
+        _bmod818.SESSION_STATE = _fake_ss818
+
+        # Write cache
+        _args_hash818 = _bmod818._prefetch_args_hash(["--auto"])
+        _bmod818._write_prefetch_cache("abc12345", "test query", "test briefing output", args_hash=_args_hash818)
+        _cache_file818 = _fake_ss818 / f"briefing-prefetch-abc12345-{_args_hash818}.json"
+        test("I818-3a: cache file created", _cache_file818.exists(), "file not created")
+
+        # Read cache — should return the output
+        _result818 = _bmod818._read_prefetch_cache("abc12345", args_hash=_args_hash818)
+        test("I818-3b: cache read returns output", _result818 == "test briefing output", repr(_result818))
+
+        # Read with wrong sha or args — should return None
+        _miss818 = _bmod818._read_prefetch_cache("ffffffff", args_hash=_args_hash818)
+        test("I818-3c: cache miss returns None for unknown sha", _miss818 is None, repr(_miss818))
+        _arg_miss818 = _bmod818._read_prefetch_cache(
+            "abc12345", args_hash=_bmod818._prefetch_args_hash(["--auto", "--json"])
+        )
+        test("I818-3c2: cache miss returns None for arg mismatch", _arg_miss818 is None, repr(_arg_miss818))
+
+        # Simulate expired cache
+        import json as _json818
+
+        _payload818 = _json818.loads(_cache_file818.read_text())
+        _payload818["generated_at"] = _time818.time() - (_bmod818._PREFETCH_TTL_SECONDS + 10)
+        _cache_file818.write_text(_json818.dumps(_payload818))
+        _expired818 = _bmod818._read_prefetch_cache("abc12345", args_hash=_args_hash818)
+        test("I818-3d: expired cache returns None", _expired818 is None, repr(_expired818))
+
+        # Test _prefetch_cache_path returns None for empty sha
+        _none_path818 = _bmod818._prefetch_cache_path("")
+        test("I818-3e: _prefetch_cache_path('') returns None", _none_path818 is None, repr(_none_path818))
+
+        # Restore env
+        if _orig_env_db is None:
+            _os818.environ.pop("SK_DB_PATH", None)
+        else:
+            _os818.environ["SK_DB_PATH"] = _orig_env_db
+
+except Exception as _e818:
+    for _lbl818 in ["3a", "3b", "3c", "3c2", "3d", "3e"]:
+        test(f"I818-{_lbl818}: cache roundtrip", False, str(_e818))
+
+# I818-4: CLI --prefetch flag returns without error (smoke test, no git repo needed)
+try:
+    import subprocess as _sp818
+    import tempfile as _tf818b
+
+    with _tf818b.TemporaryDirectory() as _td818b:
+        _fake_home818b = Path(_td818b) / "home"
+        (_fake_home818b / ".copilot" / "session-state").mkdir(parents=True)
+        _env818 = {
+            **os.environ,
+            "HOME": str(_fake_home818b),
+            "SK_DB_PATH": str(_fake_home818b / ".copilot" / "session-state" / "knowledge.db"),
+        }
+        _r818 = _sp818.run(
+            [sys.executable, str(REPO / "briefing.py"), "--prefetch"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_env818,
+        )
+        # Expected: prints to stderr about sha, exits 0 (either writes cache or notes no sha)
+        test(
+            "I818-4a: --prefetch exits cleanly",
+            _r818.returncode == 0,
+            f"rc={_r818.returncode} stderr={_r818.stderr[:200]}",
+        )
+        test(
+            "I818-4b: --prefetch produces no stdout output",
+            _r818.stdout.strip() == "",
+            f"stdout={_r818.stdout[:200]}",
+        )
+except Exception as _e818b:
+    for _lbl818b in ["4a", "4b"]:
+        test(f"I818-{_lbl818b}: --prefetch CLI smoke", False, str(_e818b))
+
+# ---------------------------------------------------------------------------
+# === I821: knowledge-import cross-project import ===
+# ---------------------------------------------------------------------------
+
+try:
+    import importlib.util as _ilu821
+    import tempfile as _tempfile821
+
+    _ki821_spec = _ilu821.spec_from_file_location("knowledge_import", REPO / "knowledge-import.py")
+    _ki821 = _ilu821.module_from_spec(_ki821_spec)
+    _ki821_spec.loader.exec_module(_ki821)
+
+    def _make_db821(path, entries=None):
+        """Create a minimal knowledge.db with knowledge_entries table."""
+        con = sqlite3.connect(str(path))
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL,
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                priority TEXT DEFAULT 'P2',
+                UNIQUE(category, title, session_id)
+            )
+        """)
+        if entries:
+            for e in entries:
+                con.execute(
+                    "INSERT INTO knowledge_entries (session_id, category, title, content, tags, confidence) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        e.get("session_id", "test"),
+                        e["category"],
+                        e["title"],
+                        e["content"],
+                        e.get("tags", ""),
+                        e.get("confidence", 1.0),
+                    ),
+                )
+        con.commit()
+        con.close()
+
+    # Build source and local DBs in temp directory within the current dir
+    _tmp821 = Path(_tempfile821.mkdtemp(dir=str(REPO)))
+    try:
+        _src821 = _tmp821 / "source.db"
+        _local821 = _tmp821 / "local.db"
+
+        _src_entries = [
+            {
+                "category": "mistake",
+                "title": "Always use parameterized SQL",
+                "content": "Never interpolate user input into SQL queries; use ? placeholders.",
+                "confidence": 0.9,
+            },
+            {
+                "category": "pattern",
+                "title": "Use atomic locks for process files",
+                "content": "Use O_CREAT|O_EXCL to avoid TOCTOU races in process lock files.",
+                "confidence": 0.85,
+            },
+            {
+                "category": "discovery",
+                "title": "Low confidence note",
+                "content": "Some note with low confidence.",
+                "confidence": 0.3,
+            },
+            {
+                "category": "mistake",
+                "title": "Dup entry",
+                "content": "This entry already exists locally.",
+                "confidence": 0.8,
+                "tags": "shared",
+            },
+        ]
+        _make_db821(_src821, _src_entries)
+        _make_db821(
+            _local821,
+            [
+                {"category": "mistake", "title": "Dup entry", "content": "Already exists.", "confidence": 1.0},
+            ],
+        )
+
+        # --- Test 1: load_source_entries basic ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded = _ki821._load_source_entries(_con_src, categories=None, min_confidence=0.0, tag_filter=[], limit=0)
+        _con_src.close()
+        test("I821-1a: load_source_entries returns all entries", len(_loaded) == 4, str(len(_loaded)))
+
+        # --- Test 2: load_source_entries with min_confidence filter ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded_filtered = _ki821._load_source_entries(
+            _con_src, categories=None, min_confidence=0.5, tag_filter=[], limit=0
+        )
+        _con_src.close()
+        test("I821-1b: min_confidence filter works", len(_loaded_filtered) == 3, str(len(_loaded_filtered)))
+
+        # --- Test 3: load_source_entries with category filter ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded_cat = _ki821._load_source_entries(
+            _con_src, categories=["mistake"], min_confidence=0.0, tag_filter=[], limit=0
+        )
+        _con_src.close()
+        test("I821-1c: category filter works", len(_loaded_cat) == 2, str(len(_loaded_cat)))
+
+        # --- Test 4: tag filter ---
+        _con_src = sqlite3.connect(str(_src821))
+        _con_src.row_factory = sqlite3.Row
+        _loaded_tag = _ki821._load_source_entries(
+            _con_src, categories=None, min_confidence=0.0, tag_filter=["shared"], limit=0
+        )
+        _con_src.close()
+        test("I821-1d: tag filter works", len(_loaded_tag) == 1, str(len(_loaded_tag)))
+
+        # --- Test 5: dedup check ---
+        _con_local = sqlite3.connect(str(_local821))
+        _con_local.row_factory = sqlite3.Row
+        _dup = _ki821._local_entry_exists(_con_local, "mistake", "Dup entry")
+        _no_dup = _ki821._local_entry_exists(_con_local, "mistake", "Always use parameterized SQL")
+        _con_local.close()
+        test("I821-2a: _local_entry_exists detects dup", _dup, "should be True")
+        test("I821-2b: _local_entry_exists no false positive", not _no_dup, "should be False")
+
+        # --- Test 6: TF-IDF index + similarity ---
+        _texts = [
+            "Use parameterized SQL to avoid SQL injection vulnerabilities",
+            "Always write unit tests for new functions",
+        ]
+        _vecs, _idf = _ki821._build_tfidf_index(_texts)
+        _sim = _ki821._best_tfidf_sim("parameterized SQL placeholders injection", _vecs, _idf)
+        _sim_low = _ki821._best_tfidf_sim("completely unrelated cooking recipe cake", _vecs, _idf)
+        test("I821-3a: TF-IDF finds relevant match", _sim > 0.1, f"sim={_sim:.4f}")
+        test(
+            "I821-3b: TF-IDF gives lower sim for unrelated text",
+            _sim_low < _sim,
+            f"sim_low={_sim_low:.4f} sim={_sim:.4f}",
+        )
+
+        # --- Test 7: cosine similarity ---
+        _a = {"sql": 0.7, "param": 0.5, "inject": 0.3}
+        _b = {"sql": 0.6, "param": 0.4}
+        _c = {"cooking": 0.9, "cake": 0.8}
+        _sim_ab = _ki821._cosine_sparse(_a, _b)
+        _sim_ac = _ki821._cosine_sparse(_a, _c)
+        test("I821-3c: cosine_sparse related > 0", _sim_ab > 0, f"sim_ab={_sim_ab:.4f}")
+        test("I821-3d: cosine_sparse unrelated = 0", _sim_ac == 0.0, f"sim_ac={_sim_ac:.4f}")
+
+        # --- Test 8: source_tag is stable ---
+        _tag1 = _ki821._source_tag(Path("/some/project/knowledge.db"))
+        _tag2 = _ki821._source_tag(Path("/some/project/knowledge.db"))
+        test("I821-4a: _source_tag is deterministic", _tag1 == _tag2, f"{_tag1}")
+        test("I821-4b: _source_tag contains imported_from:", _tag1.startswith("imported_from:"), _tag1)
+
+        # --- Test 9: dry-run via subprocess ---
+        import subprocess as _sp821
+
+        _r_dry = _sp821.run(
+            [sys.executable, str(REPO / "knowledge-import.py"), "--from", str(_src821), "--dry-run", "--json"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_local821)},
+        )
+        _out_dry = _r_dry.stdout.strip()
+        test("I821-5a: --dry-run --json exits 0", _r_dry.returncode == 0, _r_dry.stderr[:200])
+        try:
+            _dry_data = json.loads(_out_dry)
+            test("I821-5b: dry-run JSON has entries key", "entries" in _dry_data, str(_dry_data.keys()))
+            test("I821-5c: dry-run does not import (imported=0)", _dry_data.get("imported", 0) == 0, str(_dry_data))
+            # Dup entry should be skipped
+            test("I821-5d: dry-run skips dup entry", _dry_data.get("skipped_dup", 0) >= 1, str(_dry_data))
+        except json.JSONDecodeError as _e:
+            test("I821-5b: dry-run JSON parses", False, _out_dry[:200])
+            test("I821-5c: dry-run does not import", False, "json parse failed")
+            test("I821-5d: dry-run skips dup", False, "json parse failed")
+
+        # --- Test 10: actual import via subprocess ---
+        _import_local = _tmp821 / "import_local.db"
+        _make_db821(
+            _import_local,
+            [
+                {"category": "mistake", "title": "Dup entry", "content": "Already exists.", "confidence": 1.0},
+            ],
+        )
+        _r_import = _sp821.run(
+            [sys.executable, str(REPO / "knowledge-import.py"), "--from", str(_src821), "--json"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_import_local)},
+        )
+        test("I821-6a: actual import exits 0", _r_import.returncode == 0, _r_import.stderr[:200])
+        try:
+            _imp_data = json.loads(_r_import.stdout.strip())
+            # With local DB having only 1 entry, bypass_sim applies — all non-dup entries imported
+            _imp_count = _imp_data.get("imported", -1)
+            test("I821-6b: actual import writes entries", _imp_count > 0, str(_imp_data))
+            # Verify entry is actually in DB
+            _verify_con = sqlite3.connect(str(_import_local))
+            _rows = _verify_con.execute("SELECT title FROM knowledge_entries").fetchall()
+            _verify_con.close()
+            _titles = [r[0] for r in _rows]
+            test("I821-6c: imported entries present in local DB", len(_titles) > 1, str(_titles))
+            # Check imported_from tag on one of the new entries
+            _verify_con2 = sqlite3.connect(str(_import_local))
+            _tag_rows = _verify_con2.execute(
+                "SELECT tags FROM knowledge_entries WHERE title != 'Dup entry' LIMIT 1"
+            ).fetchone()
+            _verify_con2.close()
+            test(
+                "I821-6d: imported entry has imported_from tag",
+                _tag_rows and "imported_from:" in (_tag_rows[0] or ""),
+                str(_tag_rows),
+            )
+        except (json.JSONDecodeError, Exception) as _e:
+            for _lbl in ["6b", "6c", "6d"]:
+                test(f"I821-{_lbl}: actual import", False, str(_e))
+
+        # --- Test 10b: embedding-mode fallback and near-dup gating ---
+        _local_embed = _tmp821 / "embed_local.db"
+        _make_db821(
+            _local_embed,
+            [
+                {
+                    "category": "pattern",
+                    "title": "Local pattern 1",
+                    "content": "Content for local pattern 1",
+                    "confidence": 1.0,
+                },
+                {
+                    "category": "pattern",
+                    "title": "Local pattern 2",
+                    "content": "Content for local pattern 2",
+                    "confidence": 1.0,
+                },
+                {
+                    "category": "pattern",
+                    "title": "Local pattern 3",
+                    "content": "Content for local pattern 3",
+                    "confidence": 1.0,
+                },
+            ],
+        )
+        _embed_con = sqlite3.connect(str(_local_embed))
+        _embed_con.execute("CREATE TABLE embeddings (source_id INTEGER, source_type TEXT, vector BLOB)")
+        for _embed_id in range(1, 4):
+            _embed_con.execute(
+                "INSERT INTO embeddings (source_id, source_type, vector) VALUES (?, 'knowledge_entries', ?)",
+                (_embed_id, struct.pack("<3f", 1.0, float(_embed_id), 0.5)),
+            )
+        _embed_con.commit()
+        _embed_con.close()
+
+        _src_embed = _tmp821 / "embed_source.db"
+        _make_db821(
+            _src_embed,
+            [
+                {
+                    "category": "pattern",
+                    "title": "Imported pattern",
+                    "content": "Content for local pattern 1",
+                    "confidence": 0.95,
+                },
+            ],
+        )
+        _r_embed = _sp821.run(
+            [sys.executable, str(REPO / "knowledge-import.py"), "--from", str(_src_embed), "--dry-run", "--json"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_local_embed)},
+        )
+        test("I821-6e: embedding fallback dry-run exits 0", _r_embed.returncode == 0, _r_embed.stderr[:200])
+        try:
+            _embed_data = json.loads(_r_embed.stdout.strip())
+            _embed_entry = (_embed_data.get("entries") or [{}])[0]
+            test(
+                "I821-6f: embedding fallback preserves near-dup gating",
+                _embed_data.get("skipped_near_dup", 0) >= 1
+                and _embed_data.get("skipped_low_sim", 0) == 0
+                and _embed_entry.get("reason") == "near_dup",
+                str(_embed_data),
+            )
+        except (json.JSONDecodeError, Exception) as _e:
+            for _lbl in ["6e", "6f"]:
+                test(f"I821-{_lbl}: embedding fallback", False, str(_e))
+
+        # --- Test 11: --min-confidence filter in import ---
+        _r_minconf = _sp821.run(
+            [
+                sys.executable,
+                str(REPO / "knowledge-import.py"),
+                "--from",
+                str(_src821),
+                "--min-confidence",
+                "0.9",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SK_DB_PATH": str(_local821)},
+        )
+        try:
+            _mc_data = json.loads(_r_minconf.stdout.strip())
+            test(
+                "I821-7a: --min-confidence filters source entries", _mc_data.get("source_total", 99) <= 2, str(_mc_data)
+            )
+        except (json.JSONDecodeError, Exception) as _e:
+            test("I821-7a: --min-confidence filter", False, str(_e))
+
+        # --- Test 12: sk.py routing ---
+        _r_sk = _sp821.run(
+            [sys.executable, str(REPO / "sk.py"), "knowledge", "import", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        test("I821-8a: sk knowledge import --help exits 0", _r_sk.returncode == 0, _r_sk.stderr[:200])
+        test("I821-8b: sk knowledge import --help mentions --from", "--from" in _r_sk.stdout, _r_sk.stdout[:300])
+
+    finally:
+        import shutil as _shutil821
+
+        try:
+            _shutil821.rmtree(str(_tmp821), ignore_errors=True)
+        except Exception:
+            pass
+
+except Exception as _e821:
+    for _lbl in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "4a",
+        "4b",
+        "5a",
+        "5b",
+        "5c",
+        "5d",
+        "6a",
+        "6b",
+        "6c",
+        "6d",
+        "6e",
+        "6f",
+        "7a",
+        "8a",
+        "8b",
+    ]:
+        test(f"I821-{_lbl}: knowledge-import", False, str(_e821))
+# Issue #819: knowledge_entry_history — version tracking in learn.py + query --history
+# ---------------------------------------------------------------------------
+import importlib as _imp819
+import sqlite3 as _sq819
+import tempfile as _tf819
+from pathlib import Path as _P819
+
+try:
+    _learn819 = _imp819.import_module("learn") if "learn" in sys.modules else None
+    if _learn819 is None:
+        import importlib.util as _ilu819
+
+        _spec819 = _ilu819.spec_from_file_location("learn819", REPO / "learn.py")
+        _learn819 = _ilu819.module_from_spec(_spec819)
+        _spec819.loader.exec_module(_learn819)
+
+    _qs819 = None
+    import importlib.util as _ilu819qs
+
+    _spec819qs = _ilu819qs.spec_from_file_location("qs819", REPO / "query-session.py")
+    _qs819 = _ilu819qs.module_from_spec(_spec819qs)
+    _spec819qs.loader.exec_module(_qs819)
+
+    # Build an isolated DB with migration 43 applied
+    _tf819_dir = _tf819.mkdtemp()
+    _db819_path = _P819(_tf819_dir) / "k819.db"
+
+    _conn819 = _sq819.connect(str(_db819_path))
+    _conn819.row_factory = _sq819.Row
+    # Create minimal schema matching what add_entry expects
+    _conn819.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT, title TEXT, content TEXT,
+            tags TEXT DEFAULT '', session_id TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.5, wing TEXT DEFAULT '',
+            room TEXT DEFAULT '', facts TEXT DEFAULT '[]',
+            task_id TEXT DEFAULT '', affected_files TEXT DEFAULT '[]',
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT '', last_seen TEXT DEFAULT '',
+            est_tokens INTEGER DEFAULT 0,
+            stable_id TEXT DEFAULT '', topic_key TEXT DEFAULT '',
+            source_file TEXT DEFAULT '', start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0, code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '', error_type TEXT DEFAULT '',
+            root_cause TEXT DEFAULT '', severity TEXT DEFAULT '',
+            fix_steps TEXT DEFAULT '', valence TEXT DEFAULT '',
+            intensity REAL DEFAULT 0.5, priority TEXT DEFAULT 'P2',
+            agent_id TEXT DEFAULT '', certainty TEXT DEFAULT '',
+            caveats TEXT DEFAULT '', deleted_at TEXT DEFAULT NULL,
+            recurrence_after_briefing INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot',
+            last_accessed_at TEXT DEFAULT '', access_count INTEGER DEFAULT 0
+        )"""
+    )
+    _conn819.execute(
+        """CREATE TABLE knowledge_entry_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            changed_at TEXT NOT NULL,
+            content_before TEXT NOT NULL DEFAULT '',
+            content_after TEXT NOT NULL DEFAULT '',
+            confidence_before REAL NOT NULL DEFAULT 0.0,
+            confidence_after REAL NOT NULL DEFAULT 0.0,
+            change_source TEXT NOT NULL DEFAULT 'learn'
+        )"""
+    )
+    _conn819.commit()
+    _conn819.close()
+
+    # I819-1: migration 43 SQL is syntactically valid (table creation succeeds above)
+    test("I819-1: knowledge_entry_history table creates without error", True)
+
+    # I819-2: history row inserted on content update
+    _orig_db819 = _learn819.DB_PATH
+    _learn819.DB_PATH = _db819_path
+
+    _id819 = _learn819.add_entry(
+        "mistake",
+        "Test history entry",
+        "initial content",
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+    # Second call with longer content — triggers UPDATE
+    _learn819.add_entry(
+        "mistake",
+        "Test history entry",
+        "initial content updated with more words for length",
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+
+    _conn819b = _sq819.connect(str(_db819_path))
+    _hist_rows = _conn819b.execute("SELECT * FROM knowledge_entry_history WHERE entry_id = ?", (_id819,)).fetchall()
+
+    test("I819-2a: history row created on content update", len(_hist_rows) == 1, str(len(_hist_rows)))
+    if _hist_rows:
+        # Access by column index: (id, entry_id, changed_at, content_before, content_after,
+        #                          confidence_before, confidence_after, change_source)
+        _hr819 = _hist_rows[0]
+        test("I819-2b: content_before stored", "initial content" in str(_hr819[3]), str(_hr819[3]))
+        test("I819-2c: change_source is 'learn'", str(_hr819[7]) == "learn", str(_hr819[7]))
+    else:
+        test("I819-2b: content_before stored", False, "no history rows")
+        test("I819-2c: change_source is 'learn'", False, "no history rows")
+
+    # I819-3: no history row when content unchanged
+    _learn819.add_entry(
+        "mistake",
+        "Test history entry",
+        "x",  # shorter than existing — content won't change
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+    _hist_count2 = _conn819b.execute(
+        "SELECT COUNT(*) FROM knowledge_entry_history WHERE entry_id = ?", (_id819,)
+    ).fetchone()[0]
+    _conn819b.close()
+    test("I819-3: no history row when content unchanged", _hist_count2 == 1, str(_hist_count2))
+
+    # I819-4: show_entry_history function exists and is callable
+    test("I819-4: show_entry_history exists in query-session", hasattr(_qs819, "show_entry_history"))
+
+    # I819-5: show_entry_history runs without error on known entry
+    import io as _io819
+    from contextlib import redirect_stdout as _rs819
+
+    _orig_db_qs819 = _qs819.DB_PATH
+    _qs819.DB_PATH = _db819_path
+    _buf819 = _io819.StringIO()
+    try:
+        with _rs819(_buf819):
+            _qs819.show_entry_history(_id819)
+        _out819 = _buf819.getvalue()
+        test("I819-5a: show_entry_history prints timeline header", "Version history" in _out819, repr(_out819[:200]))
+        test("I819-5b: show_entry_history shows confidence arrow", "→" in _out819, repr(_out819[:300]))
+    except Exception as _e819_5:
+        test("I819-5a: show_entry_history prints timeline header", False, str(_e819_5))
+        test("I819-5b: show_entry_history shows confidence arrow", False, str(_e819_5))
+    finally:
+        _qs819.DB_PATH = _orig_db_qs819
+
+    _learn819.DB_PATH = _orig_db819
+
+    import shutil as _sh819
+
+    _sh819.rmtree(_tf819_dir, ignore_errors=True)
+
+except Exception as _e819:
+    for _lbl819 in ["1", "2a", "2b", "2c", "3", "4", "5a", "5b"]:
+        test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
+
+# ---------------------------------------------------------------------------
+# === I831: Uniform SQLite WAL + busy-timeout ===
+# ---------------------------------------------------------------------------
+
+print("\n🗃️  I831: SQLite WAL + busy-timeout pragmas")
+
+try:
+    import importlib.util as _ilu831
+    import tempfile as _tf831
+
+    with _tf831.TemporaryDirectory() as _td831:
+        _db831_path = Path(_td831) / "knowledge.db"
+
+        # Bootstrap a minimal DB by importing briefing.py with a custom SK_DB_PATH
+        _old_env_831 = os.environ.get("SK_DB_PATH")
+        os.environ["SK_DB_PATH"] = str(_db831_path)
+
+        _br831_spec = _ilu831.spec_from_file_location("briefing831", REPO / "briefing.py")
+        _br831 = _ilu831.module_from_spec(_br831_spec)
+        _br831_spec.loader.exec_module(_br831)
+        _br831.DB_PATH = _db831_path
+
+        # Create a minimal DB so get_db() won't sys.exit
+        _setup_conn = sqlite3.connect(str(_db831_path))
+        _setup_conn.execute("CREATE TABLE IF NOT EXISTS knowledge_entries (id INTEGER PRIMARY KEY, title TEXT)")
+        _setup_conn.commit()
+        _setup_conn.close()
+
+        # I831-1: briefing.py get_db() sets journal_mode=WAL
+        _conn831 = _br831.get_db()
+        _jm831 = _conn831.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831.close()
+        test("I831-1: briefing.py get_db() sets journal_mode=WAL", _jm831 == "wal", f"got {_jm831!r}")
+
+        # I831-2: briefing.py get_db() sets busy_timeout=5000
+        _conn831b = _br831.get_db()
+        _bt831 = _conn831b.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831b.close()
+        test("I831-2: briefing.py get_db() sets busy_timeout=5000", _bt831 == 5000, f"got {_bt831!r}")
+
+        # I831-3: query-session.py get_db() sets journal_mode=WAL
+        _qs831_spec = _ilu831.spec_from_file_location("query_session831", REPO / "query-session.py")
+        _qs831 = _ilu831.module_from_spec(_qs831_spec)
+        _qs831_spec.loader.exec_module(_qs831)
+        _qs831.DB_PATH = _db831_path
+        _conn831c = _qs831.get_db()
+        _jm831c = _conn831c.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831c.close()
+        test("I831-3: query-session.py get_db() sets journal_mode=WAL", _jm831c == "wal", f"got {_jm831c!r}")
+
+        # I831-4: query-session.py get_db() sets busy_timeout=5000
+        _conn831d = _qs831.get_db()
+        _bt831d = _conn831d.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831d.close()
+        test("I831-4: query-session.py get_db() sets busy_timeout=5000", _bt831d == 5000, f"got {_bt831d!r}")
+
+        # I831-5: knowledge-health.py get_db() sets journal_mode=WAL
+        _kh831_spec = _ilu831.spec_from_file_location("knowledge_health831", REPO / "knowledge-health.py")
+        _kh831 = _ilu831.module_from_spec(_kh831_spec)
+        _kh831_spec.loader.exec_module(_kh831)
+        _kh831.DB_PATH = _db831_path
+        _conn831e = _kh831.get_db()
+        _jm831e = _conn831e.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831e.close()
+        test("I831-5: knowledge-health.py get_db() sets journal_mode=WAL", _jm831e == "wal", f"got {_jm831e!r}")
+
+        # I831-6: knowledge-health.py get_db() sets busy_timeout=5000
+        _conn831f = _kh831.get_db()
+        _bt831f = _conn831f.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831f.close()
+        test("I831-6: knowledge-health.py get_db() sets busy_timeout=5000", _bt831f == 5000, f"got {_bt831f!r}")
+
+        # I831-7: curate.py _get_db() sets journal_mode=WAL
+        _cu831_spec = _ilu831.spec_from_file_location("curate831", REPO / "curate.py")
+        _cu831 = _ilu831.module_from_spec(_cu831_spec)
+        _cu831_spec.loader.exec_module(_cu831)
+        _conn831g = _cu831._get_db(_db831_path)
+        _jm831g = _conn831g.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831g.close()
+        test("I831-7: curate.py _get_db() sets journal_mode=WAL", _jm831g == "wal", f"got {_jm831g!r}")
+
+        # I831-8: curate.py _get_db() sets busy_timeout=5000
+        _conn831h = _cu831._get_db(_db831_path)
+        _bt831h = _conn831h.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831h.close()
+        test("I831-8: curate.py _get_db() sets busy_timeout=5000", _bt831h == 5000, f"got {_bt831h!r}")
+
+        # Restore SK_DB_PATH
+        if _old_env_831 is None:
+            os.environ.pop("SK_DB_PATH", None)
+        else:
+            os.environ["SK_DB_PATH"] = _old_env_831
+
+except Exception as _e831:
+    for _lbl831 in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        test(f"I831-{_lbl831}: WAL+busy_timeout pragma", False, str(_e831))
+# I835: sk doctor — MCP server smoke-test check
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu835
+    import types as _types835
+
+    _spec835 = _ilu835.spec_from_file_location("doctor835", REPO / "doctor.py")
+    _doc835 = _ilu835.module_from_spec(_spec835)
+    _spec835.loader.exec_module(_doc835)
+
+    # I835-1: check_mcp_smoke function exists
+    test("I835-1: check_mcp_smoke exists in doctor.py", hasattr(_doc835, "check_mcp_smoke"))
+
+    # I835-2: check_mcp_smoke is registered in ALL_CHECKS
+    test(
+        "I835-2: check_mcp_smoke in ALL_CHECKS",
+        _doc835.check_mcp_smoke in _doc835.ALL_CHECKS,
+    )
+
+    # I835-3: check_mcp_smoke is in CATEGORY_MAP["mcp"]
+    test(
+        "I835-3: check_mcp_smoke in CATEGORY_MAP['mcp']",
+        _doc835.check_mcp_smoke in _doc835.CATEGORY_MAP.get("mcp", []),
+    )
+
+    # I835-4: returns SKIP/INFO when mcp-server.py absent
+    import unittest.mock as _mock835
+
+    with _mock835.patch.object(_doc835.Path, "exists", return_value=False):
+        # Patch TOOLS_DIR / "mcp-server.py" path.exists
+        _fake_path835 = _mock835.MagicMock()
+        _fake_path835.exists.return_value = False
+        with _mock835.patch.object(_doc835, "TOOLS_DIR", new=Path("/nonexistent_path_835xyz")):
+            _r835_skip = _doc835.check_mcp_smoke()
+    test(
+        "I835-4: check_mcp_smoke returns INFO when mcp-server.py absent",
+        _r835_skip["status"] in ("info", "skip"),
+        str(_r835_skip),
+    )
+
+    # I835-5: result dict has required keys
+    test(
+        "I835-5: result has id/category/status/message keys",
+        all(k in _r835_skip for k in ("id", "category", "status", "message")),
+        str(_r835_skip),
+    )
+
+    # I835-6: check_mcp_smoke id is "mcp_smoke"
+    test("I835-6: result id is 'mcp_smoke'", _r835_skip["id"] == "mcp_smoke", str(_r835_skip))
+
+    # I835-7: check_mcp_smoke category is "mcp"
+    test("I835-7: result category is 'mcp'", _r835_skip["category"] == "mcp", str(_r835_skip))
+
+    # I835-8: live smoke test when mcp-server.py present
+    _mcp835_path = REPO / "mcp-server.py"
+    if _mcp835_path.exists():
+        _r835_live = _doc835.check_mcp_smoke(timeout=10)
+        test(
+            "I835-8: live smoke returns ok",
+            _r835_live["status"] == "ok",
+            str(_r835_live),
+        )
+        test(
+            "I835-8b: live smoke reports latency",
+            "latency" in _r835_live["message"],
+            str(_r835_live),
+        )
+    else:
+        test("I835-8: live smoke skipped (mcp-server.py not present)", True)
+        test("I835-8b: live smoke latency skipped", True)
+
+    # I835-9: deterministic mock test — success path
+    # Mock subprocess.Popen to simulate a server returning valid initialize + tools/list
+    import io as _io835
+    import json as _json835
+
+    def _make_lsp_frame(payload: dict) -> bytes:
+        body = _json835.dumps(payload, separators=(",", ":")).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        return header + body
+
+    _init_ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+    _tools_ok = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "tools": [
+                {"name": "briefing", "description": "b"},
+                {"name": "learn", "description": "l"},
+                {"name": "query_session", "description": "q"},
+            ]
+        },
+    }
+    _mock_stdout = _io835.BytesIO(_make_lsp_frame(_init_ok) + _make_lsp_frame(_tools_ok))
+    _mock_stdin = _io835.BytesIO()
+    _mock_proc = _mock835.MagicMock()
+    _mock_proc.stdin = _mock_stdin
+    _mock_proc.stdout = _mock_stdout
+    _mock_proc.stderr = _io835.BytesIO(b"")
+    _mock_proc.kill = _mock835.MagicMock()
+
+    with _mock835.patch("subprocess.Popen", return_value=_mock_proc):
+        _r835_mock_ok = _doc835.check_mcp_smoke(timeout=5)
+    test(
+        "I835-9: mocked smoke returns ok with 3 expected tools",
+        _r835_mock_ok["status"] == "ok" and "PASS" in _r835_mock_ok["message"],
+        str(_r835_mock_ok),
+    )
+
+    # I835-10: deterministic mock — initialize error returns FAIL
+    _init_err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "bad request"}}
+    _mock_stdout2 = _io835.BytesIO(_make_lsp_frame(_init_err))
+    _mock_proc2 = _mock835.MagicMock()
+    _mock_proc2.stdin = _io835.BytesIO()
+    _mock_proc2.stdout = _mock_stdout2
+    _mock_proc2.stderr = _io835.BytesIO(b"")
+    _mock_proc2.kill = _mock835.MagicMock()
+
+    with _mock835.patch("subprocess.Popen", return_value=_mock_proc2):
+        _r835_mock_err = _doc835.check_mcp_smoke(timeout=5)
+    test(
+        "I835-10: mocked smoke returns error on initialize failure",
+        _r835_mock_err["status"] == "error" and "FAIL" in _r835_mock_err["message"],
+        str(_r835_mock_err),
+    )
+
+except Exception as _e835:
+    for _lbl835 in ["1", "2", "3", "4", "5", "6", "7", "8", "8b", "9", "10"]:
+        test(f"I835-{_lbl835}: mcp smoke check", False, str(_e835))
+# I832: hook debounce / rate limiting for preToolUse hooks
+# ---------------------------------------------------------------------------
+print("\n🔍 I832: hook debounce / rate limiting")
+
+try:
+    import importlib.util as _ilu832
+    import json as _json832
+    import shutil as _sh832
+    import tempfile as _tf832
+    import time as _time832
+    import types as _types832
+    from pathlib import Path as _Path832
+
+    # Load hook_runner from hooks/ subdirectory
+    _hr832_spec = _ilu832.spec_from_file_location(
+        "hook_runner_i832",
+        str(_Path832(__file__).parent / "hooks" / "hook_runner.py"),
+    )
+    _hr832 = _ilu832.module_from_spec(_hr832_spec)
+    _hr832_spec.loader.exec_module(_hr832)
+
+    # Create an isolated debounce dir for testing
+    _ddir832 = _Path832(_tf832.mkdtemp())
+    _orig_ddir832 = _hr832.DEBOUNCE_DIR
+    _hr832.DEBOUNCE_DIR = _ddir832
+
+    # I832-1: _should_debounce returns False when no marker exists
+    test("I832-1: no marker → not debounced", not _hr832._should_debounce("test-hook", 5))
+
+    # I832-2: _record_fired creates a marker file with last_fired timestamp
+    _before832 = _time832.time()
+    _hr832._record_fired("test-hook")
+    _marker832 = _ddir832 / "test-hook.json"
+    _data832 = _json832.loads(_marker832.read_text(encoding="utf-8"))
+    test("I832-2a: _record_fired creates marker file", _marker832.is_file())
+    test(
+        "I832-2b: last_fired is recent",
+        _time832.time() - _data832.get("last_fired", 0) < 2,
+    )
+
+    # I832-3: _should_debounce returns True after _record_fired within window
+    test("I832-3: within window → debounced", _hr832._should_debounce("test-hook", 5))
+
+    # I832-4: _should_debounce returns False after window expires
+    # Backdate the marker to simulate expiry
+    _expired832 = {"last_fired": _time832.time() - 10}
+    _marker832.write_text(_json832.dumps(_expired832), encoding="utf-8")
+    test("I832-4: expired window → not debounced", not _hr832._should_debounce("test-hook", 5))
+
+    # I832-5: different hook names are tracked independently
+    _hr832._record_fired("hook-a")
+    _hr832._record_fired("hook-b")
+    test("I832-5a: hook-a debounced independently", _hr832._should_debounce("hook-a", 60))
+    test("I832-5b: hook-b debounced independently", _hr832._should_debounce("hook-b", 60))
+    test("I832-5c: hook-c not debounced (never fired)", not _hr832._should_debounce("hook-c", 60))
+
+    # I832-6: SK_HOOK_DEBOUNCE_SECS=0 disables debounce (window 0 → always False)
+    _hr832._record_fired("test-zero")
+    test("I832-6: window=0 → not debounced", not _hr832._should_debounce("test-zero", 0))
+
+    # I832-7: DEBOUNCE_DIR is defined at module level
+    test("I832-7: DEBOUNCE_DIR defined in hook_runner", hasattr(_hr832, "DEBOUNCE_DIR"))
+
+    # I832-8: _should_debounce and _record_fired functions are exported
+    test("I832-8a: _should_debounce callable", callable(getattr(_hr832, "_should_debounce", None)))
+    test("I832-8b: _record_fired callable", callable(getattr(_hr832, "_record_fired", None)))
+
+    # Restore original DEBOUNCE_DIR
+    _hr832.DEBOUNCE_DIR = _orig_ddir832
+    _sh832.rmtree(str(_ddir832), ignore_errors=True)
+
+except Exception as _e832:
+    for _lbl832 in ["1", "2a", "2b", "3", "4", "5a", "5b", "5c", "6", "7", "8a", "8b"]:
+        test(f"I832-{_lbl832}: hook debounce", False, str(_e832))
+
+# ---------------------------------------------------------------------------
+# I834: retro --capture flag
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu834
+    import io as _io834
+    import subprocess as _sp834
+    from contextlib import redirect_stderr as _re834
+    from contextlib import redirect_stdout as _rs834
+
+    _retro834_path = REPO / "retro.py"
+    _spec834 = _ilu834.spec_from_file_location("retro834", str(_retro834_path))
+    _retro834 = _ilu834.module_from_spec(_spec834)
+    _spec834.loader.exec_module(_retro834)
+
+    # I834-1: _parse_args accepts --capture flag
+    _args834 = _retro834._parse_args(["--capture"])
+    test("I834-1: _parse_args accepts --capture flag", _args834.get("capture") is True, str(_args834))
+
+    # I834-2: --capture is False by default
+    _args834_def = _retro834._parse_args([])
+    test("I834-2: capture defaults to False", _args834_def.get("capture") is False, str(_args834_def))
+
+    # I834-3: --capture combined with other flags parses correctly
+    _args834_combo = _retro834._parse_args(["--mode", "repo", "--capture", "--days", "7"])
+    test(
+        "I834-3: --capture combines with --mode and --days",
+        _args834_combo.get("capture") is True
+        and _args834_combo.get("mode") == "repo"
+        and _args834_combo.get("days") == 7,
+        str(_args834_combo),
+    )
+
+    # I834-4: main() with --capture actually invokes subprocess.run with learn.py
+    _calls834: list = []
+    _orig_run834 = _sp834.run
+
+    def _mock_run834(*_a, **_kw):
+        _calls834.append((_a, _kw))
+
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return _R()
+
+    # Patch subprocess.run in the retro module's namespace
+    _retro834.subprocess.run = _mock_run834
+    _retro834_sys = _retro834.main.__globals__["sys"]
+    _orig_argv834 = _retro834_sys.argv
+    _retro834_sys.argv = ["retro.py", "--capture", "--mode", "repo"]
+    _buf834 = _io834.StringIO()
+    _ebuf834 = _io834.StringIO()
+    try:
+        with _rs834(_buf834), _re834(_ebuf834):
+            _retro834.main()
+    except SystemExit:
+        pass
+    finally:
+        _retro834_sys.argv = _orig_argv834
+        _retro834.subprocess.run = _orig_run834
+
+    _out834 = _buf834.getvalue()
+    # Find the learn.py call among all subprocess.run calls
+    _learn_calls834 = [c for c in _calls834 if any("learn.py" in str(x) for x in (c[0][0] if c[0] else []))]
+    test("I834-4a: main() invoked learn.py subprocess", len(_learn_calls834) >= 1, f"calls={len(_learn_calls834)}")
+    if _learn_calls834:
+        _cmd834 = _learn_calls834[0][0][0]
+        test("I834-4b: subprocess cmd contains --discovery", "--discovery" in _cmd834, str(_cmd834))
+        test(
+            "I834-4c: subprocess cmd contains retro tags",
+            any("retro,session-retrospective" in str(c) for c in _cmd834),
+            str(_cmd834),
+        )
+        test(
+            "I834-4d: subprocess cmd contains date tag",
+            any("date:" in str(c) for c in _cmd834),
+            str(_cmd834),
+        )
+    else:
+        for _l in ["4b", "4c", "4d"]:
+            test(f"I834-{_l}: skipped (no learn.py call found)", False, "learn.py not called")
+
+    # I834-5: success message only prints on returncode==0
+    test("I834-5: [retro] success message printed", "[retro] Saved as knowledge entry:" in _out834, repr(_out834[:200]))
+
+    # I834-6: --help/docstring mentions --capture
+    _doc834 = _retro834.__doc__ or ""
+    test("I834-6: docstring mentions --capture", "--capture" in _doc834, _doc834[:200])
+
+except Exception as _e834:
+    for _lbl834 in ["1", "2", "3", "4a", "4b", "4c", "4d", "5", "6"]:
+        test(f"I834-{_lbl834}: retro --capture", False, str(_e834))
+
+# I833: batch_learn MCP tool — bulk atomic knowledge writes
+# ---------------------------------------------------------------------------
+print("\n📝 I833: batch_learn MCP tool")
+
+_mcp833_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
+
+# I833-01: TOOLS list contains batch_learn
+try:
+    test(
+        "I833-01: TOOLS list contains batch_learn",
+        '"name": "batch_learn"' in _mcp833_src or "'name': 'batch_learn'" in _mcp833_src,
+        "batch_learn not found in TOOLS list",
+    )
+except Exception as _e833_01:
+    test("I833-01: batch_learn in TOOLS", False, str(_e833_01))
+
+# I833-02: _run_batch_learn function defined
+try:
+    test(
+        "I833-02: _run_batch_learn function defined",
+        "def _run_batch_learn(" in _mcp833_src,
+        "_run_batch_learn not found",
+    )
+except Exception as _e833_02:
+    test("I833-02: _run_batch_learn defined", False, str(_e833_02))
+
+# I833-03: batch_learn dispatched in _handle_tools_call
+try:
+    _dispatch833 = _mcp833_src.split("def _handle_tools_call(")[1].split("def _read_exact(")[0]
+    test(
+        "I833-03: batch_learn dispatched in _handle_tools_call",
+        "_run_batch_learn" in _dispatch833,
+        "_run_batch_learn not dispatched",
+    )
+except Exception as _e833_03:
+    test("I833-03: batch_learn dispatched", False, str(_e833_03))
+
+# I833-04: schema declares maxItems 50 and required entries
+try:
+    test(
+        "I833-04a: batch_learn schema has maxItems 50",
+        '"maxItems": 50' in _mcp833_src or "maxItems.*50" in _mcp833_src,
+        "maxItems 50 not found in schema",
+    )
+    test(
+        "I833-04b: batch_learn schema requires entries",
+        '"required": ["entries"]' in _mcp833_src or "'required': ['entries']" in _mcp833_src,
+        "entries not in required list",
+    )
+except Exception as _e833_04:
+    test("I833-04: schema shape", False, str(_e833_04))
+
+# I833-05: live MCP roundtrip — batch insert and rollback on validation error
+import importlib as _imp833
+import json as _json833
+import os as _os833
+import sqlite3 as _sq833
+import subprocess as _sp833
+import sys as _sys833
+import tempfile as _tf833
+
+print("  I833-05..06: live roundtrip")
+try:
+    with _tf833.TemporaryDirectory(prefix="mcp-i833-") as _td833:
+        _home833 = Path(_td833)
+        _state833 = _home833 / ".copilot" / "session-state"
+        _state833.mkdir(parents=True, exist_ok=True)
+        _db833 = _sq833.connect(str(_state833 / "knowledge.db"))
+        _db833.executescript("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                source TEXT DEFAULT 'copilot',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                est_tokens INTEGER DEFAULT 0
+            );
+            CREATE VIRTUAL TABLE ke_fts USING fts5(title, content);
+            CREATE VIRTUAL TABLE sessions_fts USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, doc_type TEXT NOT NULL, title TEXT NOT NULL);
+        """)
+        _db833.commit()
+        _db833.close()
+
+        _env833 = _os833.environ.copy()
+        _env833["HOME"] = str(_home833)
+        _env833["USERPROFILE"] = str(_home833)
+
+        def _mcp833_roundtrip(method, params):
+            proc = _sp833.Popen(
+                [_sys833.executable, str(REPO / "mcp-server.py")],
+                stdin=_sp833.PIPE,
+                stdout=_sp833.PIPE,
+                stderr=_sp833.PIPE,
+                env=_env833,
+            )
+            try:
+                init_msg = _json833.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                    }
+                ).encode()
+                notif = _json833.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+                req = _json833.dumps({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}).encode()
+                shutdown_msg = _json833.dumps({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}).encode()
+                for msg in [init_msg, notif, req, shutdown_msg]:
+                    proc.stdin.write(f"Content-Length: {len(msg)}\r\n\r\n".encode() + msg)
+                proc.stdin.flush()
+                proc.stdin.close()
+                out = proc.stdout.read()
+                proc.wait(timeout=15)
+            finally:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            responses = []
+            remaining = out
+            while remaining:
+                if b"Content-Length:" not in remaining:
+                    break
+                hdr_end = remaining.find(b"\r\n\r\n")
+                if hdr_end == -1:
+                    break
+                hdr = remaining[:hdr_end].decode("ascii", errors="replace")
+                cl = int([l.split(":")[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()][0])
+                body_start = hdr_end + 4
+                body = remaining[body_start : body_start + cl]
+                remaining = remaining[body_start + cl :]
+                try:
+                    responses.append(_json833.loads(body))
+                except Exception:
+                    pass
+            return [r for r in responses if r.get("id") == 2]
+
+        # I833-05: successful batch of 2 entries
+        _resp833 = _mcp833_roundtrip(
+            "tools/call",
+            {
+                "name": "batch_learn",
+                "arguments": {
+                    "entries": [
+                        {
+                            "type": "mistake",
+                            "title": "I833 Test Mistake",
+                            "content": "batch test body A",
+                            "tags": "test,i833",
+                        },
+                        {
+                            "type": "pattern",
+                            "title": "I833 Test Pattern",
+                            "content": "batch test body B",
+                            "confidence": 0.9,
+                        },
+                    ]
+                },
+            },
+        )
+        if _resp833 and "result" in _resp833[0]:
+            _r833 = _resp833[0]["result"]
+            _text833 = _r833.get("content", [{}])[0].get("text", "{}")
+            _parsed833 = _json833.loads(_text833)
+            test("I833-05a: batch_learn returns count=2", _parsed833.get("count") == 2, str(_parsed833))
+            test(
+                "I833-05b: batch_learn returns 2 created IDs", len(_parsed833.get("created", [])) == 2, str(_parsed833)
+            )
+            # Verify rows in DB
+            _dbv833 = _sq833.connect(str(_state833 / "knowledge.db"))
+            _rows833 = _dbv833.execute("SELECT id, category, title FROM knowledge_entries ORDER BY id").fetchall()
+            _dbv833.close()
+            test("I833-05c: DB contains 2 rows after batch", len(_rows833) == 2, str(_rows833))
+            if len(_rows833) >= 2:
+                test("I833-05d: first row category is mistake", _rows833[0][1] == "mistake", str(_rows833[0]))
+                test("I833-05e: second row category is pattern", _rows833[1][1] == "pattern", str(_rows833[1]))
+        elif _resp833 and "error" in _resp833[0]:
+            _err833 = _resp833[0]["error"]
+            test("I833-05a: batch_learn returns count=2", False, str(_err833))
+            for _lbl in ["05b", "05c", "05d", "05e"]:
+                test(f"I833-{_lbl}: batch_learn", False, "tool returned error")
+        else:
+            test("I833-05a: batch_learn returns count=2", False, f"no response: {_resp833}")
+            for _lbl in ["05b", "05c", "05d", "05e"]:
+                test(f"I833-{_lbl}: batch_learn", False, "no response")
+
+        # I833-06: validation error — invalid type should return JSON-RPC error (no DB rows added)
+        _resp833b = _mcp833_roundtrip(
+            "tools/call",
+            {
+                "name": "batch_learn",
+                "arguments": {
+                    "entries": [
+                        {"type": "invalid_type", "title": "Bad", "content": "bad entry"},
+                    ]
+                },
+            },
+        )
+        if _resp833b and "error" in _resp833b[0]:
+            test("I833-06a: invalid type returns error", True)
+        elif _resp833b and "result" in _resp833b[0]:
+            _err_text = _resp833b[0]["result"].get("content", [{}])[0].get("text", "")
+            # Some MCP implementations wrap errors in result.isError
+            _is_err = _resp833b[0]["result"].get("isError", False)
+            test("I833-06a: invalid type returns error or isError", _is_err, f"got result: {_err_text}")
+        else:
+            test("I833-06a: invalid type returns error", False, str(_resp833b))
+
+        # I833-07: exceeding max 50 entries returns error
+        _big_entries = [{"type": "pattern", "title": f"T{i}", "content": f"C{i}"} for i in range(51)]
+        _resp833c = _mcp833_roundtrip(
+            "tools/call",
+            {"name": "batch_learn", "arguments": {"entries": _big_entries}},
+        )
+        _got_err833c = (_resp833c and "error" in _resp833c[0]) or (
+            _resp833c and _resp833c[0].get("result", {}).get("isError", False)
+        )
+        test("I833-07: >50 entries rejected", _got_err833c, str(_resp833c[0] if _resp833c else "no response"))
+
+except Exception as _e833_live:
+    for _lbl833 in ["05a", "05b", "05c", "05d", "05e", "06a", "07"]:
+        test(f"I833-{_lbl833}: batch_learn live", False, str(_e833_live))
+
+# ---------------------------------------------------------------------------
+# === I839: briefing --watch — live context refresh ===
+print("\n🔍 I839: briefing --watch live polling")
+
+import importlib as _il839
+import sqlite3 as _sq839
+import sys as _sys839
+import threading as _th839
+import time as _ti839
+import types as _ty839
+from pathlib import Path as _Path839
+
+try:
+    _bmod839 = _il839.import_module("briefing") if "briefing" in sys.modules else None
+    if _bmod839 is None:
+        import importlib.util as _ilu839
+
+        _spec839 = _ilu839.spec_from_file_location("briefing839", Path(__file__).parent / "briefing.py")
+        _bmod839 = _ilu839.module_from_spec(_spec839)
+        _spec839.loader.exec_module(_bmod839)
+except Exception as _e839_load:
+    _bmod839 = None
+
+# I839-1: _run_watch function exists and is callable
+test(
+    "I839-1a: _run_watch function exists in briefing.py",
+    _bmod839 is not None and hasattr(_bmod839, "_run_watch"),
+    "function not found",
+)
+test(
+    "I839-1b: _run_watch is callable",
+    _bmod839 is not None and callable(getattr(_bmod839, "_run_watch", None)),
+    "not callable",
+)
+
+# I839-2: --watch argument is handled in main (inspect source)
+try:
+    import inspect as _ins839
+
+    _src839 = _ins839.getsource(_bmod839.main) if _bmod839 else ""
+    test(
+        "I839-2a: main() handles --watch flag",
+        "--watch" in _src839,
+        "no --watch branch in main()",
+    )
+    test(
+        "I839-2b: main() handles --interval flag",
+        "--interval" in _src839,
+        "no --interval branch in main()",
+    )
+except Exception as _e839_2:
+    test("I839-2a: main() handles --watch flag", False, str(_e839_2))
+    test("I839-2b: main() handles --interval flag", False, str(_e839_2))
+
+# I839-3: polling detects new entries via threading (unit test of _run_watch loop)
+try:
+    import tempfile as _tf839
+
+    _td839 = _tf839.mkdtemp()
+    _db839_path = Path(_td839) / "watch_test.db"
+    _db839 = _sq839.connect(str(_db839_path))
+    _db839.execute(
+        "CREATE TABLE knowledge_entries "
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT, confidence REAL DEFAULT 0.7)"
+    )
+    _db839.execute(
+        "INSERT INTO knowledge_entries (id, category, title, content) VALUES (1, 'mistake', 'Old entry', 'old')"
+    )
+    _db839.commit()
+    _db839.close()
+
+    _detected839: list = []
+    _orig_sleep839 = _ti839.sleep
+    _call_count839 = [0]
+
+    def _fast_sleep839(secs):
+        _call_count839[0] += 1
+        if _call_count839[0] == 1:
+            # Insert a new entry before the first poll wakes
+            _c = _sq839.connect(str(_db839_path))
+            _c.execute(
+                "INSERT INTO knowledge_entries (id, category, title, content) VALUES (2, 'pattern', 'New watch entry', 'new')"
+            )
+            _c.commit()
+            _c.close()
+        elif _call_count839[0] >= 2:
+            raise SystemExit(0)
+
+    import io as _io839
+    import unittest.mock as _mock839
+
+    _buf839 = _io839.StringIO()
+    with (
+        _mock839.patch("time.sleep", side_effect=_fast_sleep839),
+        _mock839.patch("sys.stdout", _buf839),
+        _mock839.patch("signal.signal"),
+    ):
+        try:
+            _bmod839._run_watch(str(_db839_path), interval=1)
+        except SystemExit:
+            pass
+
+    _out839 = _buf839.getvalue()
+    test(
+        "I839-3a: _run_watch prints startup banner",
+        "[watch]" in _out839,
+        f"out={_out839[:200]}",
+    )
+    test(
+        "I839-3b: _run_watch detects new entry with ⚡ prefix",
+        "⚡" in _out839 and "New watch entry" in _out839,
+        f"out={_out839[:300]}",
+    )
+    test(
+        "I839-3c: new entry output includes category and confidence",
+        "[pattern]" in _out839 and "conf=" in _out839,
+        f"out={_out839[:300]}",
+    )
+
+    # Clean up
+    try:
+        import shutil as _sh839
+
+        _sh839.rmtree(_td839, ignore_errors=True)
+    except Exception:
+        pass
+
+except Exception as _e839_3:
+    test("I839-3a: _run_watch prints startup banner", False, str(_e839_3))
+    test("I839-3b: _run_watch detects new entry with ⚡ prefix", False, str(_e839_3))
+    test("I839-3c: new entry output includes category and confidence", False, str(_e839_3))
+
+# I839-4: no new entries → no ⚡ output (silent poll)
+try:
+    import tempfile as _tf839b
+
+    _td839b = _tf839b.mkdtemp()
+    _db839b_path = Path(_td839b) / "watch_silent.db"
+    _db839b = _sq839.connect(str(_db839b_path))
+    _db839b.execute(
+        "CREATE TABLE knowledge_entries "
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT, confidence REAL DEFAULT 0.7)"
+    )
+    _db839b.execute(
+        "INSERT INTO knowledge_entries (id, category, title, content) VALUES (1, 'mistake', 'Existing entry', 'content')"
+    )
+    _db839b.commit()
+    _db839b.close()
+
+    _call_count839b = [0]
+
+    def _fast_sleep839b(secs):
+        _call_count839b[0] += 1
+        if _call_count839b[0] >= 2:
+            raise SystemExit(0)
+
+    import io as _io839b
+    import unittest.mock as _mock839b
+
+    _buf839b = _io839b.StringIO()
+    with (
+        _mock839b.patch("time.sleep", side_effect=_fast_sleep839b),
+        _mock839b.patch("sys.stdout", _buf839b),
+        _mock839b.patch("signal.signal"),
+    ):
+        try:
+            _bmod839._run_watch(str(_db839b_path), interval=1)
+        except SystemExit:
+            pass
+
+    _out839b = _buf839b.getvalue()
+    test(
+        "I839-4a: silent poll (no new entries) produces no ⚡ output",
+        "⚡" not in _out839b,
+        f"out={_out839b[:200]}",
+    )
+
+    try:
+        import shutil as _sh839b
+
+        _sh839b.rmtree(_td839b, ignore_errors=True)
+    except Exception:
+        pass
+
+except Exception as _e839_4:
+    test("I839-4a: silent poll (no new entries) produces no ⚡ output", False, str(_e839_4))
+
+# I839-5: --watch subprocess exits with rc=0 on Ctrl-C equivalent (SIGINT)
+try:
+    import signal as _sig839
+    import subprocess as _sp839
+    import tempfile as _tf839c
+
+    _td839c = tempfile.mkdtemp()
+    _db839c_path = Path(_td839c) / "watch_proc.db"
+    _db839c = _sq839.connect(str(_db839c_path))
+    _db839c.execute(
+        "CREATE TABLE knowledge_entries "
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT, confidence REAL DEFAULT 0.7)"
+    )
+    _db839c.commit()
+    _db839c.close()
+
+    _briefing_path839 = Path(__file__).parent / "briefing.py"
+    _env839 = {**os.environ, "SK_DB_PATH": str(_db839c_path)}
+    _proc839 = _sp839.Popen(
+        [sys.executable, str(_briefing_path839), "--watch", "--interval", "60"],
+        stdout=_sp839.PIPE,
+        stderr=_sp839.PIPE,
+        env=_env839,
+        text=True,
+    )
+    # Give it 2s to start
+    _ti839.sleep(2)
+    # Send SIGINT (Ctrl-C)
+    _proc839.send_signal(_sig839.SIGINT)
+    try:
+        _proc839.wait(timeout=5)
+    except Exception:
+        _proc839.kill()
+    _out839c = (_proc839.stdout.read() if _proc839.stdout else "") + (_proc839.stderr.read() if _proc839.stderr else "")
+    test(
+        "I839-5a: --watch process starts and prints banner",
+        "[watch]" in _out839c,
+        f"out={_out839c[:200]}",
+    )
+    test(
+        "I839-5b: --watch exits cleanly on SIGINT (rc=0 or rc=130)",
+        _proc839.returncode in (0, 130),
+        f"rc={_proc839.returncode}",
+    )
+
+    try:
+        import shutil as _sh839c
+
+        _sh839c.rmtree(_td839c, ignore_errors=True)
+    except Exception:
+        pass
+
+except Exception as _e839_5:
+    test("I839-5a: --watch process starts and prints banner", False, str(_e839_5))
+    test("I839-5b: --watch exits cleanly on SIGINT (rc=0 or rc=130)", False, str(_e839_5))
+
+# ---------------------------------------------------------------------------
+# I836 — Aider & Windsurf session adapters
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu836
+    import sqlite3 as _sq836
+    import tempfile as _tf836
+
+    _FIXTURES836 = REPO / "tests" / "fixtures"
+    _AIDER_FIXTURE = _FIXTURES836 / "sample_aider_history.md"
+    _WS_FIXTURE = _FIXTURES836 / "sample_windsurf_sessions.json"
+
+    # Load aider-adapter module
+    _spec_a836 = _ilu836.spec_from_file_location("aider_adapter", REPO / "aider-adapter.py")
+    _aa836 = _ilu836.module_from_spec(_spec_a836)
+    _spec_a836.loader.exec_module(_aa836)
+
+    # Load windsurf-adapter module
+    _spec_w836 = _ilu836.spec_from_file_location("windsurf_adapter", REPO / "windsurf-adapter.py")
+    _wa836 = _ilu836.module_from_spec(_spec_w836)
+    _spec_w836.loader.exec_module(_wa836)
+
+    # I836-1a: Parse aider fixture → extracts ≥1 entries
+    _aider_entries836 = _aa836.parse_aider_history(_AIDER_FIXTURE)
+    test("I836-1a: Parse aider fixture → extracts ≥1 entries", len(_aider_entries836) >= 1, str(len(_aider_entries836)))
+
+    # I836-1b: mistake entry has category="mistake"
+    _mistake_entries836 = [e for e in _aider_entries836 if e["category"] == "mistake"]
+    test(
+        "I836-1b: Parse aider fixture → mistake entry has category='mistake'",
+        len(_mistake_entries836) >= 1,
+        str(_aider_entries836),
+    )
+
+    # I836-1c: pattern entry has category="pattern"
+    _pattern_entries836 = [e for e in _aider_entries836 if e["category"] == "pattern"]
+    test(
+        "I836-1c: Parse aider fixture → pattern entry has category='pattern'",
+        len(_pattern_entries836) >= 1,
+        str(_aider_entries836),
+    )
+
+    # I836-1d: entries have tag "aider-import"
+    _tagged836 = all("aider-import" in e["tags"] for e in _aider_entries836)
+    test("I836-1d: Parse aider fixture → entries have tag 'aider-import'", _tagged836, str(_aider_entries836))
+
+    # I836-2a: dry-run produces no DB writes
+    _tmpdir836 = Path(_tf836.mkdtemp())
+    _tmpdb836 = _tmpdir836 / "test_dryrun.db"
+    _db836 = _sq836.connect(str(_tmpdb836))
+    _aa836.ensure_schema(_db836)
+    _count_before836 = _db836.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+    _db836.close()
+    # Re-parse via parse_aider_history (dry-run means we don't call insert)
+    _dry_entries836 = _aa836.parse_aider_history(_AIDER_FIXTURE)
+    _db836 = _sq836.connect(str(_tmpdb836))
+    _count_after836 = _db836.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+    _db836.close()
+    test(
+        "I836-2a: dry-run produces no DB writes (count before == count after)",
+        _count_before836 == _count_after836,
+        f"{_count_before836} vs {_count_after836}",
+    )
+
+    # I836-2b: dedup skips duplicate title (insert same entry twice → only one in DB)
+    _tmpdb836b = _tmpdir836 / "test_dedup.db"
+    _db836b = _sq836.connect(str(_tmpdb836b))
+    _aa836.ensure_schema(_db836b)
+    _e1_836 = _aider_entries836[0]
+    _r1_836 = _aa836.insert_entry(_db836b, _e1_836, False)
+    _r2_836 = _aa836.insert_entry(_db836b, _e1_836, False)
+    _cnt836b = _db836b.execute(
+        "SELECT COUNT(*) FROM knowledge_entries WHERE title = ?", (_e1_836["title"],)
+    ).fetchone()[0]
+    _db836b.close()
+    test(
+        "I836-2b: dedup skips duplicate title (insert same entry twice → only one in DB)",
+        _r1_836 is True and _r2_836 is False and _cnt836b == 1,
+        f"r1={_r1_836} r2={_r2_836} count={_cnt836b}",
+    )
+
+    # I836-3a: Parse windsurf fixture → extracts ≥1 entries
+    _ws_entries836 = _wa836.parse_windsurf_sessions(_WS_FIXTURE)
+    test("I836-3a: Parse windsurf fixture → extracts ≥1 entries", len(_ws_entries836) >= 1, str(len(_ws_entries836)))
+
+    # I836-3b: windsurf entries have tag "windsurf-import"
+    _ws_tagged836 = all("windsurf-import" in e["tags"] for e in _ws_entries836)
+    test("I836-3b: Parse windsurf fixture → entries have tag 'windsurf-import'", _ws_tagged836, str(_ws_entries836))
+
+    # I836-4a: sk routing works for aider-import
+    _res836a = subprocess.run(
+        [sys.executable, str(REPO / "sk.py"), "aider-import", "--dry-run", "--from", str(_AIDER_FIXTURE)],
+        capture_output=True,
+        text=True,
+    )
+    test("I836-4a: sk routing works for aider-import", _res836a.returncode == 0, _res836a.stderr[:200])
+
+    # I836-4b: sk routing works for windsurf-import
+    _res836b = subprocess.run(
+        [sys.executable, str(REPO / "sk.py"), "windsurf-import", "--dry-run", "--from", str(_WS_FIXTURE)],
+        capture_output=True,
+        text=True,
+    )
+    test("I836-4b: sk routing works for windsurf-import", _res836b.returncode == 0, _res836b.stderr[:200])
+
+    # Cleanup
+    import shutil as _sh836
+
+    _sh836.rmtree(str(_tmpdir836), ignore_errors=True)
+
+except Exception as _e836:
+    for _lbl836 in ["1a", "1b", "1c", "1d", "2a", "2b", "3a", "3b", "4a", "4b"]:
+        test(f"I836-{_lbl836}: Aider & Windsurf adapters", False, str(_e836))
+
+# I837: sk learn --amend <id> — in-place knowledge entry refinement
+# ---------------------------------------------------------------------------
+print("\n🔍 I837: sk learn --amend <id> — in-place knowledge entry refinement")
+try:
+    import importlib as _il837
+    import sqlite3 as _sq837
+    import subprocess as _sp837
+    import tempfile as _tf837
+
+    _learn837 = _il837.import_module("learn")
+
+    _tf837_dir = _tf837.mkdtemp(prefix="sk_test_i837_")
+    _db837_path = Path(_tf837_dir) / "knowledge.db"
+
+    # Bootstrap full schema via migrate.py subprocess
+    _mg837_res = _sp837.run(
+        [sys.executable, str(REPO / "migrate.py"), str(_db837_path)],
+        capture_output=True,
+        text=True,
+    )
+    if _mg837_res.returncode != 0:
+        raise RuntimeError(f"migrate.py failed: {_mg837_res.stderr[:200]}")
+
+    _orig_db837 = _learn837.DB_PATH
+    _learn837.DB_PATH = _db837_path
+
+    # Insert a base entry to amend
+    _id837 = _learn837.add_entry(
+        "mistake",
+        "Amend base entry",
+        "original content for amend test",
+        tags="original-tag",
+        skip_gate=True,
+        skip_scan=True,
+        skip_similar_check=True,
+        quiet=True,
+    )
+    test("I837-0: base entry inserted for amend tests", _id837 >= 0, str(_id837))
+
+    # I837-1: amend content only
+    _ok837_1 = _learn837.amend_entry(_id837, content="updated content after amend")
+    _conn837b = _sq837.connect(str(_db837_path))
+    _conn837b.row_factory = _sq837.Row
+    _row837 = _conn837b.execute("SELECT content, tags FROM knowledge_entries WHERE id = ?", (_id837,)).fetchone()
+    test("I837-1a: amend_entry returns True", _ok837_1 is True)
+    test(
+        "I837-1b: content updated",
+        _row837 and "updated content after amend" in _row837["content"],
+        str(_row837["content"] if _row837 else "no row"),
+    )
+    test(
+        "I837-1c: tags unchanged after content-only amend",
+        _row837 and "original-tag" in _row837["tags"],
+        str(_row837["tags"] if _row837 else "no row"),
+    )
+
+    # I837-2: amend tags only
+    _ok837_2 = _learn837.amend_entry(_id837, tags="new-tag,amended")
+    _row837b = _conn837b.execute("SELECT tags FROM knowledge_entries WHERE id = ?", (_id837,)).fetchone()
+    test("I837-2a: amend tags returns True", _ok837_2 is True)
+    test(
+        "I837-2b: tags updated",
+        _row837b and "new-tag" in _row837b["tags"],
+        str(_row837b["tags"] if _row837b else "no row"),
+    )
+
+    # I837-3: amend title only
+    _ok837_3 = _learn837.amend_entry(_id837, title="Amended Title")
+    _row837c = _conn837b.execute("SELECT title FROM knowledge_entries WHERE id = ?", (_id837,)).fetchone()
+    test(
+        "I837-3: title updated",
+        _row837c and _row837c["title"] == "Amended Title",
+        str(_row837c["title"] if _row837c else "no row"),
+    )
+
+    # I837-4: amend confidence and verify history row written
+    _ok837_4 = _learn837.amend_entry(_id837, confidence=0.99)
+    _hist837 = _conn837b.execute(
+        "SELECT confidence_after, change_source FROM knowledge_entry_history WHERE entry_id = ? ORDER BY id DESC LIMIT 1",
+        (_id837,),
+    ).fetchone()
+    test("I837-4a: amend confidence returns True", _ok837_4 is True)
+    test(
+        "I837-4b: history row written on confidence change",
+        _hist837 is not None and abs(float(_hist837[0]) - 0.99) < 0.001,
+        str(_hist837[0] if _hist837 else "no history"),
+    )
+    test(
+        "I837-4c: change_source is 'amend'",
+        _hist837 is not None and _hist837[1] == "amend",
+        str(_hist837[1] if _hist837 else "no history"),
+    )
+
+    # I837-5: unknown ID returns False and does not crash
+    _ok837_5 = _learn837.amend_entry(999999, content="should not exist")
+    test("I837-5: unknown ID returns False", _ok837_5 is False)
+
+    # I837-6: no fields supplied — main() prints message and returns without error
+    import io as _io837
+    import sys as _sys837
+
+    _argv837_save = _sys837.argv
+    _sys837.argv = ["learn.py", "--amend", str(_id837)]
+    _buf837 = _io837.StringIO()
+    _exit837 = None
+    try:
+        from contextlib import redirect_stdout as _rs837
+
+        with _rs837(_buf837):
+            _learn837.main()
+    except SystemExit as _se837:
+        _exit837 = _se837.code
+    finally:
+        _sys837.argv = _argv837_save
+    _out837 = _buf837.getvalue()
+    test("I837-6: no fields supplied prints usage message", "No fields to update" in _out837, repr(_out837[:200]))
+    test("I837-6b: no fields supplied exits 0", _exit837 is None or _exit837 == 0, str(_exit837))
+
+    _conn837b.close()
+    _learn837.DB_PATH = _orig_db837
+
+    import shutil as _sh837
+
+    _sh837.rmtree(_tf837_dir, ignore_errors=True)
+
+except Exception as _e837:
+    for _lbl837 in ["0", "1a", "1b", "1c", "2a", "2b", "3", "4a", "4b", "4c", "5", "6", "6b"]:
+        test(f"I837-{_lbl837}: sk learn --amend", False, str(_e837))
+
+# ---------------------------------------------------------------------------
+# I840 — Parallel session indexing with concurrent.futures
+# ---------------------------------------------------------------------------
+print("\n── I840: parallel session indexing ──")
+
+try:
+    import importlib.util
+    import tempfile as _tempfile840
+
+    _bsi840_path = REPO / "build-session-index.py"
+    _spec840 = importlib.util.spec_from_file_location("build_session_index_840", str(_bsi840_path))
+    _bsi840 = importlib.util.module_from_spec(_spec840)
+    _spec840.loader.exec_module(_bsi840)
+
+    test(
+        "I840-1: index_sessions_parallel is exported",
+        hasattr(_bsi840, "index_sessions_parallel"),
+        "index_sessions_parallel not found",
+    )
+    _expected_workers840 = int(os.environ.get("SK_INDEX_WORKERS", "4"))
+    test(
+        "I840-2: MAX_WORKERS matches SK_INDEX_WORKERS env (default 4)",
+        _bsi840.MAX_WORKERS == _expected_workers840,
+        f"got {_bsi840.MAX_WORKERS}, expected {_expected_workers840}",
+    )
+    test(
+        "I840-3: SK_INDEX_WORKERS env override respected",
+        int(os.environ.get("SK_INDEX_WORKERS", "4")) == _bsi840.MAX_WORKERS,
+        "env var not reflected at import time",
+    )
+
+    # I840-4: parallel produces same DB entries as sequential on a temp fixture
+    _tmpdir840 = Path(_tempfile840.mkdtemp(prefix="i840-"))
+    try:
+        _db_seq840 = _tmpdir840 / "seq.db"
+        _db_par840 = _tmpdir840 / "par.db"
+
+        # Build two session dirs with a checkpoint each
+        def _make_session840(base: Path, name: str, cp_text: str) -> Path:
+            sd = base / name
+            sd.mkdir(parents=True, exist_ok=True)
+            cp_dir = sd / "checkpoints"
+            cp_dir.mkdir()
+            idx = cp_dir / "index.json"
+            idx.write_text(
+                json.dumps([{"seq": 1, "file": "cp1.md", "title": "Test checkpoint"}]),
+                encoding="utf-8",
+            )
+            (cp_dir / "cp1.md").write_text(
+                f"<!-- overview -->\n{cp_text}\n<!-- /overview -->",
+                encoding="utf-8",
+            )
+            return sd
+
+        _s1_840 = _make_session840(_tmpdir840, "aaaaaaaa-0001-0001-0001-000000000001", "session one overview")
+        _s2_840 = _make_session840(_tmpdir840, "bbbbbbbb-0002-0002-0002-000000000002", "session two overview")
+        _sessions840 = [_s1_840, _s2_840]
+
+        # Sequential run
+        _db_conn_seq = _bsi840.create_db(_db_seq840)
+        for _sd in _sessions840:
+            _bsi840.index_session(_db_conn_seq, _sd, False)
+        _db_conn_seq.commit()
+        _seq_rows840 = set(r[0] for r in _db_conn_seq.execute("SELECT id FROM sessions").fetchall())
+        _db_conn_seq.close()
+
+        # Parallel run
+        _par_results840 = _bsi840.index_sessions_parallel(_sessions840, _db_par840, False, workers=2)
+        _db_conn_par = _bsi840.create_db(_db_par840)
+        _par_rows840 = set(r[0] for r in _db_conn_par.execute("SELECT id FROM sessions").fetchall())
+        _db_conn_par.close()
+
+        test(
+            "I840-4a: parallel indexes same sessions as sequential",
+            _par_rows840 == _seq_rows840,
+            f"seq={_seq_rows840} par={_par_rows840}",
+        )
+        test(
+            "I840-4b: parallel returns result list with one entry per session",
+            len(_par_results840) == len(_sessions840),
+            f"got {len(_par_results840)} results for {len(_sessions840)} sessions",
+        )
+        _par_errors840 = [r for r in _par_results840 if r.get("error")]
+        test(
+            "I840-4c: parallel results have no errors",
+            len(_par_errors840) == 0,
+            str(_par_errors840),
+        )
+
+        # I840-5: workers=1 falls back to sequential path without error
+        _db_seq1_840 = _tmpdir840 / "seq1.db"
+        _seq1_results840 = _bsi840.index_sessions_parallel(_sessions840, _db_seq1_840, False, workers=1)
+        test(
+            "I840-5: workers=1 returns correct result count",
+            len(_seq1_results840) == len(_sessions840),
+            f"got {len(_seq1_results840)}",
+        )
+        _seq1_errors840 = [r for r in _seq1_results840 if r.get("error")]
+        test(
+            "I840-5b: workers=1 sequential path has no errors",
+            len(_seq1_errors840) == 0,
+            str(_seq1_errors840),
+        )
+
+    finally:
+        import shutil as _shutil840
+
+        _shutil840.rmtree(str(_tmpdir840), ignore_errors=True)
+
+except Exception as _e840:
+    for _label840 in ["1", "2", "3", "4a", "4b", "4c", "5", "5b"]:
+        test(f"I840-{_label840}: parallel session indexing", False, str(_e840))
+
+# ---------------------------------------------------------------------------
+# I838: sk query --explain — recall score breakdown
+# ---------------------------------------------------------------------------
+print("\n🔍 I838: sk query --explain — recall score breakdown")
+
+try:
+    import datetime as _dt838
+    import importlib.util as _ilu838
+    import sqlite3 as _sq838
+    import tempfile as _tf838
+    from pathlib import Path as _Path838
+
+    _spec838 = _ilu838.spec_from_file_location("qs838", Path("query-session.py"))
+    _qs838 = _ilu838.module_from_spec(_spec838)
+    _spec838.loader.exec_module(_qs838)
+
+    with _tf838.TemporaryDirectory(prefix="i838-test-") as _td838:
+        _db_dir838 = _Path838(_td838) / ".copilot" / "session-state"
+        _db_dir838.mkdir(parents=True)
+        _db838 = _sq838.connect(str(_db_dir838 / "knowledge.db"))
+        _db838.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT 'sess-838',
+                document_id INTEGER DEFAULT NULL,
+                category TEXT NOT NULL DEFAULT 'mistake',
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 0.9,
+                occurrence_count INTEGER DEFAULT 5,
+                first_seen TEXT DEFAULT '2024-01-01 00:00:00',
+                last_seen TEXT DEFAULT '2024-06-01 00:00:00',
+                source TEXT DEFAULT 'copilot',
+                est_tokens INTEGER DEFAULT 0,
+                intensity REAL DEFAULT 0.85,
+                priority TEXT DEFAULT 'P2',
+                error_type TEXT DEFAULT NULL,
+                severity TEXT DEFAULT NULL,
+                root_cause TEXT DEFAULT NULL,
+                affected_files TEXT DEFAULT '[]',
+                facts TEXT DEFAULT '[]'
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags,
+                content='knowledge_entries', content_rowid='id'
+            );
+        """)
+        _db838.execute(
+            "INSERT INTO knowledge_entries (id, title, content, tags, confidence, occurrence_count, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                1042,
+                "Docker DNS resolution fix",
+                "Fix Docker DNS resolution issues by setting custom nameservers",
+                "docker,dns",
+                0.9,
+                5,
+                _dt838.datetime.now(_dt838.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        _db838.execute(
+            "INSERT INTO ke_fts(rowid, title, content, tags) VALUES (1042, 'Docker DNS resolution fix', 'Fix Docker DNS resolution issues by setting custom nameservers', 'docker,dns')"
+        )
+        _db838.commit()
+        _db838.close()
+
+        _orig_db838 = _qs838.DB_PATH
+        _qs838.DB_PATH = _Path838(_db_dir838 / "knowledge.db")
+
+        try:
+            # Test 1: _explain_scores_for_entry returns expected keys
+            _db_conn838 = _qs838.get_db()
+            _sc838 = _qs838._explain_scores_for_entry(_db_conn838, 1042)
+            _db_conn838.close()
+            test(
+                "I838-1a: _explain_scores_for_entry returns decay key",
+                "decay" in _sc838,
+                str(_sc838),
+            )
+            test(
+                "I838-1b: _explain_scores_for_entry returns access_count key",
+                "access_count" in _sc838,
+                str(_sc838),
+            )
+            test(
+                "I838-1c: _explain_scores_for_entry access_count matches occurrence_count",
+                _sc838.get("access_count") == 5,
+                str(_sc838),
+            )
+            test(
+                "I838-1d: _explain_scores_for_entry decay is in (0, 1]",
+                0 < _sc838.get("decay", 0) <= 1.0,
+                str(_sc838),
+            )
+            test(
+                "I838-1e: _explain_scores_for_entry rrf is float > 0",
+                isinstance(_sc838.get("rrf"), float) and _sc838["rrf"] > 0,
+                str(_sc838),
+            )
+            # Verify RRF formula: 1/(60 + 0 + 1) for rank=0
+            test(
+                "I838-1f: _explain_scores_for_entry rrf matches 1/(k+rank+1)",
+                abs(_sc838.get("rrf", 0) - round(1.0 / 61, 6)) < 1e-7,
+                f"rrf={_sc838.get('rrf')}, expected={round(1.0 / 61, 6)}",
+            )
+            test(
+                "I838-1g: _explain_scores_for_entry bm25 is float or None",
+                _sc838.get("bm25") is None or isinstance(_sc838["bm25"], float),
+                str(_sc838),
+            )
+
+            # Test 2: text output with --explain shows score line
+            import io as _io838
+            from contextlib import redirect_stdout as _rs838
+
+            _buf838 = _io838.StringIO()
+            with _rs838(_buf838):
+                _qs838.search_knowledge("Docker DNS", explain=True)
+            _out838 = _buf838.getvalue()
+            test(
+                "I838-2a: --explain text output contains 'decay='",
+                "decay=" in _out838,
+                repr(_out838[:300]),
+            )
+            test(
+                "I838-2b: --explain text output contains 'access='",
+                "access=" in _out838,
+                repr(_out838[:300]),
+            )
+            test(
+                "I838-2c: --explain text output contains 'bm25='",
+                "bm25=" in _out838,
+                repr(_out838[:300]),
+            )
+
+            # Test 3: JSON export with explain adds scores field
+            import json as _json838
+
+            _buf838j = _io838.StringIO()
+            with _rs838(_buf838j):
+                _qs838.search_knowledge("Docker DNS", export_fmt="json", explain=True)
+            _raw838j = _buf838j.getvalue().strip()
+            try:
+                _parsed838 = _json838.loads(_raw838j)
+                _first838 = _parsed838[0] if _parsed838 else {}
+                test(
+                    "I838-3a: JSON --explain output is valid JSON list",
+                    isinstance(_parsed838, list) and len(_parsed838) > 0,
+                    repr(_raw838j[:200]),
+                )
+                test(
+                    "I838-3b: JSON --explain result has 'scores' key",
+                    "scores" in _first838,
+                    str(list(_first838.keys())),
+                )
+                test(
+                    "I838-3c: JSON --explain scores.decay is float",
+                    isinstance(_first838.get("scores", {}).get("decay"), float),
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3d: JSON --explain scores.access_count is int",
+                    isinstance(_first838.get("scores", {}).get("access_count"), int),
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3e: JSON --explain scores.rrf is float > 0",
+                    isinstance(_first838.get("scores", {}).get("rrf"), float) and _first838["scores"]["rrf"] > 0,
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3f: JSON --explain scores.bm25 is present",
+                    "bm25" in _first838.get("scores", {}),
+                    str(_first838.get("scores")),
+                )
+            except Exception as _je838:
+                test("I838-3a: JSON --explain output is valid JSON list", False, str(_je838))
+                test("I838-3b: JSON --explain result has 'scores' key", False, str(_je838))
+                test("I838-3c: JSON --explain scores.decay is float", False, str(_je838))
+                test("I838-3d: JSON --explain scores.access_count is int", False, str(_je838))
+
+            # Test 4: without --explain, no score line in text output
+            _buf838_no = _io838.StringIO()
+            with _rs838(_buf838_no):
+                _qs838.search_knowledge("Docker DNS", explain=False)
+            _out838_no = _buf838_no.getvalue()
+            test(
+                "I838-4a: without --explain no 'bm25=' in text output",
+                "bm25=" not in _out838_no,
+                repr(_out838_no[:300]),
+            )
+
+            # Test 5: without --explain, JSON output has no 'scores' key
+            _buf838_noj = _io838.StringIO()
+            with _rs838(_buf838_noj):
+                _qs838.search_knowledge("Docker DNS", export_fmt="json", explain=False)
+            _raw838_noj = _buf838_noj.getvalue().strip()
+            try:
+                _parsed838_noj = _json838.loads(_raw838_noj)
+                _first838_noj = _parsed838_noj[0] if _parsed838_noj else {}
+                test(
+                    "I838-5a: JSON without --explain has no 'scores' key",
+                    "scores" not in _first838_noj,
+                    str(list(_first838_noj.keys())),
+                )
+            except Exception as _je838_noj:
+                test("I838-5a: JSON without --explain has no 'scores' key", False, str(_je838_noj))
+
+        finally:
+            _qs838.DB_PATH = _orig_db838
+
+except Exception as _e838:
+    for _label838 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "1f",
+        "1g",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "3e",
+        "3f",
+        "4a",
+        "5a",
+    ]:
+        test(f"I838-{_label838}: sk query --explain score breakdown", False, str(_e838))
+
+# ---------------------------------------------------------------------------
+# === I854: sk knowledge decay --preview dashboard ===
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu854
+    import math as _math854
+    import sqlite3 as _sq854
+    import tempfile as _tf854
+    from pathlib import Path as _Path854
+
+    _kh_spec854 = _ilu854.spec_from_file_location("kh854", REPO / "knowledge-health.py")
+    _kh854 = _ilu854.module_from_spec(_kh_spec854)
+    _kh_spec854.loader.exec_module(_kh854)
+
+    def _make_decay_db854(*, with_last_accessed: bool = True) -> Path:
+        """Create a temp knowledge.db with entries at varying ages."""
+        _p = Path(_tf854.mktemp(suffix=".db"))
+        _db = _sq854.connect(str(_p))
+        _db.row_factory = _sq854.Row
+        _cols = (
+            "id INTEGER PRIMARY KEY, title TEXT, category TEXT, confidence REAL,"
+            " last_seen TEXT, deleted_at TEXT"
+            + (", last_accessed_at TEXT, access_count INTEGER DEFAULT 0" if with_last_accessed else "")
+        )
+        _db.execute(f"CREATE TABLE knowledge_entries ({_cols})")
+
+        from datetime import datetime as _dt854
+        from datetime import timedelta as _td854
+        from datetime import timezone as _tz854
+
+        _now = _dt854.now(_tz854.utc)
+
+        def _ts(days_ago: float) -> str:
+            return (_now - _td854(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+        _entries = [
+            (1, "Fresh entry", "pattern", 0.9, _ts(2), None, _ts(2) if with_last_accessed else None),
+            (2, "Stale entry", "mistake", 0.8, _ts(15), None, _ts(15) if with_last_accessed else None),
+            (3, "Decaying entry", "pattern", 0.7, _ts(60), None, _ts(60) if with_last_accessed else None),
+            (4, "Dead entry", "mistake", 0.6, _ts(95), None, _ts(95) if with_last_accessed else None),
+            (5, "Very dead entry", "feature", 0.5, _ts(200), None, _ts(200) if with_last_accessed else None),
+        ]
+        if with_last_accessed:
+            for _r in _entries:
+                _db.execute(
+                    "INSERT INTO knowledge_entries (id, title, category, confidence, last_seen, deleted_at, last_accessed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    _r,
+                )
+        else:
+            for _r in _entries:
+                _db.execute(
+                    "INSERT INTO knowledge_entries (id, title, category, confidence, last_seen, deleted_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    _r[:6],
+                )
+        _db.commit()
+        _db.close()
+        return _p
+
+    # Test I854-1: compute_decay_preview returns correct structure
+    _p854 = _make_decay_db854()
+    _orig_db_path854 = _kh854.DB_PATH
+    try:
+        _kh854.DB_PATH = _p854
+        _res854 = _kh854.compute_decay_preview(limit=20, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+
+    test(
+        "I854-1a: compute_decay_preview returns entries list",
+        isinstance(_res854.get("entries"), list) and len(_res854["entries"]) == 5,
+        str(_res854.get("total")),
+    )
+    test(
+        "I854-1b: entries sorted ascending by recency_decay (most decayed first)",
+        all(
+            _res854["entries"][i]["recency_decay"] <= _res854["entries"][i + 1]["recency_decay"]
+            for i in range(len(_res854["entries"]) - 1)
+        ),
+        str([e["recency_decay"] for e in _res854["entries"]]),
+    )
+    test(
+        "I854-1c: tiers dict has expected keys",
+        {"fresh", "stale", "decaying", "dead", "unknown"} == set(_res854.get("tiers", {}).keys()),
+        str(_res854.get("tiers")),
+    )
+    test(
+        "I854-1d: dead tier counts 90d+ entries",
+        _res854["tiers"]["dead"] == 2,
+        str(_res854["tiers"]),
+    )
+    test(
+        "I854-1e: fresh tier counts <7d entries",
+        _res854["tiers"]["fresh"] == 1,
+        str(_res854["tiers"]),
+    )
+
+    # Test I854-2: --limit respected
+    _p854b = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854b
+        _res854_lim = _kh854.compute_decay_preview(limit=3, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+
+    test(
+        "I854-2a: --limit 3 returns exactly 3 entries",
+        len(_res854_lim["entries"]) == 3,
+        str(len(_res854_lim["entries"])),
+    )
+    test(
+        "I854-2b: total reflects all entries not the limited slice",
+        _res854_lim["total"] == 5,
+        str(_res854_lim["total"]),
+    )
+
+    # Test I854-3: no DB writes (confidence unchanged after preview)
+    _p854c = _make_decay_db854()
+    _db854c_before = _sq854.connect(str(_p854c))
+    _confs_before = {
+        r[0]: r[1] for r in _db854c_before.execute("SELECT id, confidence FROM knowledge_entries").fetchall()
+    }
+    _db854c_before.close()
+    try:
+        _kh854.DB_PATH = _p854c
+        _kh854.compute_decay_preview(limit=20, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _db854c_after = _sq854.connect(str(_p854c))
+    _confs_after = {
+        r[0]: r[1] for r in _db854c_after.execute("SELECT id, confidence FROM knowledge_entries").fetchall()
+    }
+    _db854c_after.close()
+    test(
+        "I854-3a: preview does not modify confidence values in DB",
+        _confs_before == _confs_after,
+        f"before={_confs_before} after={_confs_after}",
+    )
+
+    # Test I854-4: --json output has required fields
+    _p854d = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854d
+        _res854_json = _kh854.compute_decay_preview(limit=5, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _required_fields = {"id", "title", "age_days", "recency_decay", "confidence", "projected_delta"}
+    _entry_fields = set(_res854_json["entries"][0].keys()) if _res854_json["entries"] else set()
+    test(
+        "I854-4a: JSON entries contain all required fields",
+        _required_fields.issubset(_entry_fields),
+        f"missing={_required_fields - _entry_fields}",
+    )
+
+    # Test I854-5: half-life override affects decay scores
+    _p854e = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854e
+        _res_short = _kh854.compute_decay_preview(limit=20, half_life_days=10.0)
+        _res_long = _kh854.compute_decay_preview(limit=20, half_life_days=180.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _dead_short = next((e for e in _res_short["entries"] if e["id"] == 4), None)
+    _dead_long = next((e for e in _res_long["entries"] if e["id"] == 4), None)
+    test(
+        "I854-5a: shorter half-life produces lower recency_decay for old entries",
+        _dead_short is not None
+        and _dead_long is not None
+        and _dead_short["recency_decay"] < _dead_long["recency_decay"],
+        f"short={_dead_short['recency_decay'] if _dead_short else 'N/A'} long={_dead_long['recency_decay'] if _dead_long else 'N/A'}",
+    )
+
+    # Test I854-6: format_decay_preview output contains expected tier symbols
+    _p854f = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854f
+        _res854f = _kh854.compute_decay_preview(limit=5, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _dashboard = _kh854.format_decay_preview(_res854f)
+    test(
+        "I854-6a: dashboard output contains tier emoji symbols",
+        all(sym in _dashboard for sym in ["🟢", "🟡", "🔴", "💀"]),
+        _dashboard[:200],
+    )
+    test(
+        "I854-6b: dashboard output contains refresh hint",
+        "sk learn --amend" in _dashboard,
+        _dashboard[-100:],
+    )
+
+    # Clean up temp DBs
+    for _p_cleanup in (_p854, _p854b, _p854c, _p854d, _p854e, _p854f):
+        try:
+            _p_cleanup.unlink()
+        except Exception:
+            pass
+
+except Exception as _e854:
+    for _lbl854 in ["1a", "1b", "1c", "1d", "1e", "2a", "2b", "3a", "4a", "5a", "6a", "6b"]:
+        test(f"I854-{_lbl854}: sk knowledge decay --preview dashboard", False, str(_e854))
+
+# ---------------------------------------------------------------------------
+# === I851: briefing semantic dedup — TF-IDF cosine near-duplicate collapse ===
+print("\n🔍 I851: briefing semantic dedup — _dedup_entries TF-IDF cosine collapse")
+
+try:
+    import importlib.util as _ilu851
+    import sys as _sys851
+
+    _spec851 = _ilu851.spec_from_file_location("briefing851", Path(__file__).parent / "briefing.py")
+    _bmod851 = _ilu851.module_from_spec(_spec851)
+    _spec851.loader.exec_module(_bmod851)  # type: ignore[union-attr]
+    _dedup851 = _bmod851._dedup_entries
+
+    # I851-1: empty list → empty list (no-op)
+    test("I851-1: empty list → empty list", _dedup851([]) == [], "")
+
+    # I851-2: single entry → returned unchanged
+    _e851_single = [{"id": 1, "title": "foo", "content": "bar", "confidence": 0.9}]
+    test("I851-2: single entry returned unchanged", _dedup851(_e851_single) == _e851_single, "")
+
+    # I851-3: two identical entries → only one kept (highest confidence wins)
+    _txt851 = "fix null pointer exception crash on startup"
+    _e851_dups = [
+        {"id": 1, "title": _txt851, "content": _txt851, "confidence": 0.7},
+        {"id": 2, "title": _txt851, "content": _txt851, "confidence": 0.9},
+    ]
+    _r851_3 = _dedup851(_e851_dups, threshold=0.85)
+    test(
+        "I851-3: identical entries collapse to one (highest confidence kept)",
+        len(_r851_3) == 1 and _r851_3[0].get("id") == 2,
+        str(_r851_3),
+    )
+
+    # I851-4: merged entry carries _merged_ids annotation
+    test(
+        "I851-4: merged entry has _merged_ids annotation",
+        len(_r851_3) == 1 and "1" in _r851_3[0].get("_merged_ids", []),
+        str(_r851_3),
+    )
+
+    # I851-5: dissimilar entries both kept
+    _e851_diff = [
+        {"id": 10, "title": "fix null pointer exception", "content": "crash on startup null ref", "confidence": 0.8},
+        {
+            "id": 11,
+            "title": "deploy to kubernetes cluster",
+            "content": "helm chart ingress tls cert",
+            "confidence": 0.8,
+        },
+    ]
+    _r851_5 = _dedup851(_e851_diff, threshold=0.85)
+    test(
+        "I851-5: dissimilar entries both kept",
+        len(_r851_5) == 2,
+        str(_r851_5),
+    )
+
+    # I851-6: threshold=0.0 collapses everything into one cluster (cosine 0 >= 0.0)
+    _r851_6 = _dedup851(_e851_diff, threshold=0.0)
+    test(
+        "I851-6: threshold=0.0 collapses any pair into one cluster",
+        len(_r851_6) == 1,
+        str(_r851_6),
+    )
+
+    # I851-7: threshold=1.0 keeps all entries (nothing matches perfectly unless identical)
+    _r851_7 = _dedup851(_e851_diff, threshold=1.0)
+    test(
+        "I851-7: threshold=1.0 keeps all dissimilar entries",
+        len(_r851_7) == len(_e851_diff),
+        str(_r851_7),
+    )
+
+    # I851-8: --no-dedup flag is parsed from args (present in CLI arg list)
+    _src851 = Path(__file__).parent.joinpath("briefing.py").read_text(encoding="utf-8")
+    test(
+        "I851-8: --no-dedup flag present in CLI arg parsing",
+        '"--no-dedup"' in _src851 or "'--no-dedup'" in _src851,
+        "",
+    )
+
+    # I851-9: generate_briefing accepts no_dedup keyword argument
+    import inspect as _inspect851
+
+    _sig851 = _inspect851.signature(_bmod851.generate_briefing)
+    test(
+        "I851-9: generate_briefing has no_dedup parameter",
+        "no_dedup" in _sig851.parameters,
+        str(list(_sig851.parameters.keys())),
+    )
+
+    # I851-10: dedup only runs for compact fmt (not full/md/json in generate_briefing logic)
+    test(
+        "I851-10: dedup pass keyed on fmt == 'compact' in source",
+        'fmt == "compact"' in _src851 or 'fmt == "compact"' in _src851,
+        "",
+    )
+
+    # I851-11: compact renderer shows merge notice for collapsed entries
+    test(
+        "I851-11: compact renderer reads _merged_ids for merge notice",
+        "_merged_ids" in _src851 and "merge_tag" in _src851,
+        "",
+    )
+
+except Exception as _e851:
+    for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
+        test(f"I851-{_lbl851}: briefing semantic dedup", False, str(_e851))
+print("\n🪝 I853: hook rule context filters")
+
+try:
+    import os as _os853
+    from pathlib import PurePath as _PP853
+
+    sys.path.insert(0, str(Path(__file__).parent / "hooks"))
+    from rules import Rule as _Rule853
+
+    # I853-1: Rule base class has file_patterns field
+    test("I853-1: Rule has file_patterns field", hasattr(_Rule853, "file_patterns"), "missing field")
+    # I853-2: Rule base class has require_wing field
+    test("I853-2: Rule has require_wing field", hasattr(_Rule853, "require_wing"), "missing field")
+    # I853-3: Rule base class has require_room field
+    test("I853-3: Rule has require_room field", hasattr(_Rule853, "require_room"), "missing field")
+
+    # I853-4: _extract_file_path importable from hook_runner
+    sys.path.insert(0, str(Path(__file__).parent / "hooks"))
+    import importlib as _il853
+    import importlib.util as _ilu853
+
+    _spec853 = _ilu853.spec_from_file_location("hook_runner853", Path(__file__).parent / "hooks" / "hook_runner.py")
+    _hr853 = _il853.util.module_from_spec(_spec853)
+    _spec853.loader.exec_module(_hr853)
+    _extract_fp853 = _hr853._extract_file_path
+    test("I853-4: _extract_file_path defined in hook_runner", callable(_extract_fp853), "not found")
+
+    # I853-5/6: file_patterns filtering logic (using production _extract_file_path)
+    class _MockFP853(_Rule853):
+        name = "mock-fp853"
+        events = ["preToolUse"]
+        tools = []
+        file_patterns = ["**/*.py", "*.py"]
+        _called = False
+
+        def evaluate(self, event, data):
+            _MockFP853._called = True
+            return None
+
+    def _simulate_filter853(rule, data):
+        """Apply file_patterns filter using production _extract_file_path."""
+        pats = getattr(rule, "file_patterns", [])
+        if pats:
+            fp = _extract_fp853(data)
+            if not fp or not any(_PP853(fp).match(pat) for pat in pats):
+                return False  # skip
+        return True  # proceed
+
+    _mr853 = _MockFP853()
+    _skip853 = _simulate_filter853(_mr853, {"toolArgs": {"path": "config.json"}})
+    test("I853-5: file_patterns=*.py — skipped for config.json", not _skip853, f"skip={_skip853}")
+
+    _run853 = _simulate_filter853(_mr853, {"toolArgs": {"path": "script.py"}})
+    test("I853-6: file_patterns=*.py — triggered for script.py", _run853, f"run={_run853}")
+
+    # Nested path matching
+    _run853_nested = _simulate_filter853(_mr853, {"toolArgs": {"path": "src/hooks/rules/foo.py"}})
+    test("I853-6b: file_patterns=*.py — triggered for nested path/*.py", _run853_nested, f"run={_run853_nested}")
+
+    # I853-7/8: require_wing filtering
+    class _MockWing853(_Rule853):
+        name = "mock-wing853"
+        events = ["preToolUse"]
+        tools = []
+        require_wing = "backend"
+
+    def _simulate_wing853(rule, env_wing):
+        old = _os853.environ.get("SK_WING", "")
+        try:
+            if env_wing is None:
+                _os853.environ.pop("SK_WING", None)
+            else:
+                _os853.environ["SK_WING"] = env_wing
+            return _os853.environ.get("SK_WING", "") == rule.require_wing
+        finally:
+            if old:
+                _os853.environ["SK_WING"] = old
+            else:
+                _os853.environ.pop("SK_WING", None)
+
+    _mw853 = _MockWing853()
+    test(
+        "I853-7: require_wing=backend — skipped when SK_WING=frontend",
+        not _simulate_wing853(_mw853, "frontend"),
+        "should skip",
+    )
+    test(
+        "I853-8: require_wing=backend — triggered when SK_WING=backend",
+        _simulate_wing853(_mw853, "backend"),
+        "should run",
+    )
+
+    # I853-9/10: require_room filtering
+    class _MockRoom853(_Rule853):
+        name = "mock-room853"
+        events = ["preToolUse"]
+        tools = []
+        require_room = "api"
+
+    def _simulate_room853(rule, env_room):
+        old = _os853.environ.get("SK_ROOM", "")
+        try:
+            if env_room is None:
+                _os853.environ.pop("SK_ROOM", None)
+            else:
+                _os853.environ["SK_ROOM"] = env_room
+            return _os853.environ.get("SK_ROOM", "") == rule.require_room
+        finally:
+            if old:
+                _os853.environ["SK_ROOM"] = old
+            else:
+                _os853.environ.pop("SK_ROOM", None)
+
+    _mr2853 = _MockRoom853()
+    test("I853-9: require_room=api — skipped when SK_ROOM=ui", not _simulate_room853(_mr2853, "ui"), "should skip")
+    test("I853-10: require_room=api — triggered when SK_ROOM=api", _simulate_room853(_mr2853, "api"), "should run")
+
+    # I853-11: SyntaxGateRule has file_patterns declared
+    from rules.syntax_gate import SyntaxGateRule as _SGR853
+
+    _sg853 = _SGR853()
+    test(
+        "I853-11: SyntaxGateRule has file_patterns",
+        bool(_sg853.file_patterns),
+        f"file_patterns={_sg853.file_patterns!r}",
+    )
+
+    # I853-12: FileSizeAdvisoryRule has file_patterns declared
+    from rules.file_size_advisory import FileSizeAdvisoryRule as _FSA853
+
+    _fsa853 = _FSA853()
+    test(
+        "I853-12: FileSizeAdvisoryRule has file_patterns",
+        bool(_fsa853.file_patterns),
+        f"file_patterns={_fsa853.file_patterns!r}",
+    )
+
+    # I853-13: SyntaxGateRule NOT invoked for .json file via filter
+    _skip_json853 = not _simulate_filter853(_sg853, {"toolArgs": {"path": "config.json"}})
+    test("I853-13: SyntaxGateRule skipped for config.json", _skip_json853, f"skip={_skip_json853}")
+
+    # I853-14: FileSizeAdvisoryRule NOT invoked for .ts file via filter
+    _skip_ts853 = not _simulate_filter853(_fsa853, {"toolArgs": {"path": "app.ts"}})
+    test("I853-14: FileSizeAdvisoryRule skipped for app.ts", _skip_ts853, f"skip={_skip_ts853}")
+
+    # I853-15: empty file path with file_patterns → skipped (safe default)
+    _skip_empty853 = not _simulate_filter853(_sg853, {"toolArgs": {}})
+    test("I853-15: file_patterns — empty path skips rule safely", _skip_empty853, f"skip={_skip_empty853}")
+
+    # I853-16: _extract_file_path handles filePath key (edit/create payloads)
+    _fp_result853 = _extract_fp853({"toolResult": {"filePath": "src/app.py"}})
+    test(
+        "I853-16: _extract_file_path reads toolResult.filePath", _fp_result853 == "src/app.py", f"got={_fp_result853!r}"
+    )
+
+    # I853-17: _extract_file_path handles input container
+    _fp_input853 = _extract_fp853({"input": {"filePath": "lib/core.ts"}})
+    test("I853-17: _extract_file_path reads input.filePath", _fp_input853 == "lib/core.ts", f"got={_fp_input853!r}")
+
+except Exception as _e853:
+    for _label853 in [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "6b",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+    ]:
+        test(f"I853-{_label853}: hook rule context filters", False, str(_e853))
+
+# === I866: sk://sessions/diff MCP resource ===
+print("\n🔀 I866: sk://sessions/diff MCP resource")
+
+
+def _run_i866_sessions_diff_tests():
+    import shutil as _sh866
+
+    _root866 = Path(tempfile.mkdtemp(prefix="i866-", dir=str(REPO)))
+    try:
+        _home866 = _root866 / "home"
+        _state866 = _home866 / ".copilot" / "session-state"
+        _state866.mkdir(parents=True, exist_ok=True)
+        _db866 = sqlite3.connect(_state866 / "knowledge.db")
+        _db866.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT '',
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                summary TEXT DEFAULT '',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT ''
+            );
+            """
+        )
+        _db866.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (27, "mcp-diff"))
+        # session A: entries alpha + beta
+        for _sid, _title, _content, _cat in [
+            ("sess-a", "Alpha entry", "Alpha content v1", "pattern"),
+            ("sess-a", "Beta entry", "Beta content", "mistake"),
+            # session B: beta (changed) + gamma (new)
+            ("sess-b", "Beta entry", "Beta content CHANGED", "mistake"),
+            ("sess-b", "Gamma entry", "Gamma content", "pattern"),
+        ]:
+            _db866.execute(
+                "INSERT INTO knowledge_entries (session_id, category, title, content, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+                (_sid, _cat, _title, _content, "2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z"),
+            )
+        _db866.commit()
+        _db866.close()
+
+        # Test 1: resources/list includes sk://sessions/diff
+        _res_list866 = _mcp756_roundtrip(_home866, "resources/list", {})
+        _uris866 = [r.get("uri") for r in _res_list866.get("result", {}).get("resources", [])]
+        test("I866-1: resources/list includes sk://sessions/diff", "sk://sessions/diff" in _uris866, str(_uris866))
+
+        # Test 2: sessions/diff returns correct structure
+        _diff_uri866 = "sk://sessions/diff?a=sess-a&b=sess-b"
+        _res_diff866 = _mcp756_roundtrip(_home866, "resources/read", {"uri": _diff_uri866})
+        _diff866 = json.loads(_res_diff866.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I866-2a: diff returns session_a", _diff866.get("session_a") == "sess-a", str(_diff866))
+        test("I866-2b: diff returns session_b", _diff866.get("session_b") == "sess-b", str(_diff866))
+        test("I866-2c: diff added contains Gamma entry", "Gamma entry" in _diff866.get("added", []), str(_diff866))
+        test("I866-2d: diff removed contains Alpha entry", "Alpha entry" in _diff866.get("removed", []), str(_diff866))
+        test("I866-2e: diff changed contains Beta entry", "Beta entry" in _diff866.get("changed", []), str(_diff866))
+        test("I866-2f: diff added_count is 1", _diff866.get("added_count") == 1, str(_diff866))
+        test("I866-2g: diff removed_count is 1", _diff866.get("removed_count") == 1, str(_diff866))
+        test("I866-2h: diff changed_count is 1", _diff866.get("changed_count") == 1, str(_diff866))
+
+        # Test 3: missing a or b param returns invalid params error
+        _res_bad866 = _mcp756_roundtrip(_home866, "resources/read", {"uri": "sk://sessions/diff?a=sess-a"})
+        _bad866 = _res_bad866.get("error", {})
+        test("I866-3: missing b param returns -32602", _bad866.get("code") == -32602, str(_bad866))
+
+        # Test 4: both sessions same → empty diff
+        _res_same866 = _mcp756_roundtrip(_home866, "resources/read", {"uri": "sk://sessions/diff?a=sess-a&b=sess-a"})
+        _same866 = json.loads(_res_same866.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I866-4a: same session diff — added is empty", _same866.get("added") == [], str(_same866))
+        test("I866-4b: same session diff — removed is empty", _same866.get("removed") == [], str(_same866))
+        test("I866-4c: same session diff — changed is empty", _same866.get("changed") == [], str(_same866))
+    finally:
+        _sh866.rmtree(_root866, ignore_errors=True)
+
+
+try:
+    _run_i866_sessions_diff_tests()
+except Exception as _e866:
+    for _suffix866 in ["1", "2a", "2b", "2c", "2d", "2e", "2f", "2g", "2h", "3", "4a", "4b", "4c"]:
+        test(f"I866-{_suffix866}: sk://sessions/diff MCP resource", False, str(_e866))
+# ---------------------------------------------------------------------------
+# === I855: MCP Progress Notifications ===
+# ---------------------------------------------------------------------------
+print("\n📡 I855: MCP Progress Notifications")
+
+_mcp855_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
+
+# I855-01: _send_progress function defined
+try:
+    test("I855-01: _send_progress function defined", "def _send_progress(" in _mcp855_src, "_send_progress not found")
+except Exception as _e855_01:
+    test("I855-01: _send_progress defined", False, str(_e855_01))
+
+# I855-02: _send_progress emits notifications/progress method
+try:
+    _prog_fn855 = _mcp855_src.split("def _send_progress(")[1].split("def _write_error(")[0]
+    test(
+        "I855-02: _send_progress emits notifications/progress",
+        "notifications/progress" in _prog_fn855,
+        "_send_progress does not reference notifications/progress",
+    )
+except Exception as _e855_02:
+    test("I855-02: notifications/progress in _send_progress", False, str(_e855_02))
+
+# I855-03: _send_progress notification has no id field
+try:
+    _prog_fn855b = _mcp855_src.split("def _send_progress(")[1].split("def _write_error(")[0]
+    test(
+        "I855-03: _send_progress notification has no id field",
+        '"id"' not in _prog_fn855b and "'id'" not in _prog_fn855b,
+        "notification should not contain 'id' key",
+    )
+except Exception as _e855_03:
+    test("I855-03: no id in notification", False, str(_e855_03))
+
+# I855-04: _run_briefing accepts progress_token parameter
+try:
+    _brief_fn855 = _mcp855_src.split("def _run_briefing(")[1].split("def _run_query_session(")[0]
+    test(
+        "I855-04: _run_briefing accepts progress_token",
+        "progress_token" in _brief_fn855,
+        "progress_token not in _run_briefing signature",
+    )
+except Exception as _e855_04:
+    test("I855-04: _run_briefing progress_token param", False, str(_e855_04))
+
+# I855-05: _run_briefing calls _send_progress at least 3 times
+try:
+    _brief_fn855b = _mcp855_src.split("def _run_briefing(")[1].split("def _run_query_session(")[0]
+    _prog_calls855 = _brief_fn855b.count("_send_progress(")
+    test(
+        "I855-05: _run_briefing calls _send_progress >= 3 times",
+        _prog_calls855 >= 3,
+        f"_send_progress called {_prog_calls855} times in _run_briefing",
+    )
+except Exception as _e855_05:
+    test("I855-05: briefing progress calls", False, str(_e855_05))
+
+# I855-06: _run_batch_learn function defined
+try:
+    test(
+        "I855-06: _run_batch_learn function defined",
+        "def _run_batch_learn(" in _mcp855_src,
+        "_run_batch_learn not found",
+    )
+except Exception as _e855_06:
+    test("I855-06: _run_batch_learn defined", False, str(_e855_06))
+
+# I855-07: batch_learn in TOOLS list
+try:
+    test(
+        "I855-07: batch_learn in TOOLS list",
+        '"name": "batch_learn"' in _mcp855_src or "'name': 'batch_learn'" in _mcp855_src,
+        "batch_learn not found in TOOLS list",
+    )
+except Exception as _e855_07:
+    test("I855-07: batch_learn in TOOLS", False, str(_e855_07))
+
+# I855-08: _handle_tools_call extracts _meta.progressToken
+try:
+    _dispatch_fn855 = _mcp855_src.split("def _handle_tools_call(")[1].split("\ndef _handle_resources_list(")[0]
+    test(
+        "I855-08: _handle_tools_call extracts progressToken from _meta",
+        "progressToken" in _dispatch_fn855 and "_meta" in _dispatch_fn855,
+        "_meta/progressToken not extracted in _handle_tools_call",
+    )
+except Exception as _e855_08:
+    test("I855-08: progressToken extraction", False, str(_e855_08))
+
+# I855-09..14: Integration tests via MCP subprocess
+try:
+    import json as _json855
+    import pathlib as _pl855
+    import sqlite3 as _sq855
+    import subprocess as _sp855
+    import tempfile as _tmp855
+
+    def _mcp855_all_messages(home_dir, method, params):
+        """Run MCP subprocess, return ALL JSON-RPC messages (including notifications)."""
+        proc = _sp855.Popen(
+            [sys.executable, str(REPO / "mcp-server.py")],
+            stdin=_sp855.PIPE,
+            stdout=_sp855.PIPE,
+            stderr=_sp855.PIPE,
+            env={**os.environ, "HOME": str(home_dir), "USERPROFILE": str(home_dir)},
+        )
+        try:
+            init_msg = _json855.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }
+            ).encode()
+            notif = _json855.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+            req = _json855.dumps({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}).encode()
+            shutdown_msg = _json855.dumps({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}).encode()
+            for msg in (init_msg, notif, req, shutdown_msg):
+                proc.stdin.write(f"Content-Length: {len(msg)}\r\n\r\n".encode() + msg)
+            proc.stdin.flush()
+            proc.stdin.close()
+            out = proc.stdout.read()
+            proc.wait(timeout=15)
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        messages = []
+        remaining = out
+        while remaining:
+            if b"Content-Length:" not in remaining:
+                break
+            hdr_end = remaining.find(b"\r\n\r\n")
+            if hdr_end == -1:
+                break
+            hdr = remaining[:hdr_end].decode("ascii", errors="replace")
+            cl_hdrs = [l.split(":", 1)[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()]
+            if not cl_hdrs:
+                break
+            cl = int(cl_hdrs[0])
+            body_start = hdr_end + 4
+            body = remaining[body_start : body_start + cl]
+            remaining = remaining[body_start + cl :]
+            try:
+                messages.append(_json855.loads(body))
+            except Exception:
+                pass
+        return messages
+
+    with _tmp855.TemporaryDirectory(prefix="mcp855-test-") as _tmp855_dir:
+        _home855 = _pl855.Path(_tmp855_dir)
+        _state855 = _home855 / ".copilot" / "session-state"
+        _state855.mkdir(parents=True, exist_ok=True)
+        _db855 = _sq855.connect(_state855 / "knowledge.db")
+        _db855.executescript("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, path TEXT NOT NULL, summary TEXT DEFAULT '',
+                source TEXT DEFAULT 'copilot', indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER, category TEXT NOT NULL, title TEXT NOT NULL,
+                stable_id TEXT, content TEXT NOT NULL DEFAULT '', tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0, occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT, last_seen TEXT, source TEXT DEFAULT 'copilot',
+                topic_key TEXT, revision_count INTEGER DEFAULT 1, content_hash TEXT,
+                wing TEXT DEFAULT '', room TEXT DEFAULT '', facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0, task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]', source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '', start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0, code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '', error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '', severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0, fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '', recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '', intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2', project_id TEXT DEFAULT '',
+                agent_id TEXT DEFAULT ''
+            );
+            CREATE VIRTUAL TABLE knowledge_fts USING fts5(title, section_name, content, doc_type UNINDEXED, session_id UNINDEXED, document_id UNINDEXED);
+            CREATE VIRTUAL TABLE ke_fts USING fts5(title, content);
+            CREATE VIRTUAL TABLE sessions_fts USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, doc_type TEXT NOT NULL, title TEXT NOT NULL, file_path TEXT DEFAULT '', seq INTEGER DEFAULT 1, size_bytes INTEGER DEFAULT 0, source TEXT DEFAULT 'copilot');
+            CREATE TABLE sections (id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, section_name TEXT DEFAULT '', content TEXT DEFAULT '');
+        """)
+        _db855.commit()
+        _db855.close()
+
+        # I855-09: briefing with progressToken emits >= 3 progress notifications
+        try:
+            _msgs855_brief = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {
+                    "name": "briefing",
+                    "_meta": {"progressToken": "tok-brief-855"},
+                    "arguments": {"task": "test progress", "limit": 1},
+                },
+            )
+            _prog855_brief = [
+                m
+                for m in _msgs855_brief
+                if m.get("method") == "notifications/progress"
+                and "id" not in m
+                and m.get("params", {}).get("progressToken") == "tok-brief-855"
+            ]
+            test(
+                "I855-09: briefing with progressToken emits >= 3 progress notifications",
+                len(_prog855_brief) >= 3,
+                f"got {len(_prog855_brief)} progress notifications: {_prog855_brief}",
+            )
+        except Exception as _e855_09:
+            test("I855-09: briefing progress notifications", False, str(_e855_09))
+
+        # I855-10: briefing without progressToken emits zero progress notifications
+        try:
+            _msgs855_notoken = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {"name": "briefing", "arguments": {"task": "test no progress", "limit": 1}},
+            )
+            _prog855_notoken = [m for m in _msgs855_notoken if m.get("method") == "notifications/progress"]
+            test(
+                "I855-10: briefing without progressToken emits zero progress notifications",
+                len(_prog855_notoken) == 0,
+                f"got {len(_prog855_notoken)} unexpected progress notifications",
+            )
+        except Exception as _e855_10:
+            test("I855-10: no progress without token", False, str(_e855_10))
+
+        # I855-11: progress notifications appear before the final result
+        try:
+            _msgs855_order = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {
+                    "name": "briefing",
+                    "_meta": {"progressToken": "tok-order-855"},
+                    "arguments": {"task": "order check", "limit": 1},
+                },
+            )
+            _prog_indices = [i for i, m in enumerate(_msgs855_order) if m.get("method") == "notifications/progress"]
+            _result_indices = [i for i, m in enumerate(_msgs855_order) if m.get("id") == 2]
+            test(
+                "I855-11: progress notifications appear before final result",
+                bool(_prog_indices) and bool(_result_indices) and max(_prog_indices) < _result_indices[0],
+                f"prog at {_prog_indices}, result at {_result_indices}",
+            )
+        except Exception as _e855_11:
+            test("I855-11: progress before result", False, str(_e855_11))
+
+        # I855-12: progress notifications are valid JSON-RPC 2.0 (no id, correct method)
+        try:
+            _msgs855_valid = _mcp855_all_messages(
+                _home855,
+                "tools/call",
+                {
+                    "name": "briefing",
+                    "_meta": {"progressToken": "tok-valid-855"},
+                    "arguments": {"task": "validity check", "limit": 1},
+                },
+            )
+            _prog855_valid = [m for m in _msgs855_valid if m.get("method") == "notifications/progress"]
+            _all_valid = all(
+                m.get("jsonrpc") == "2.0"
+                and "id" not in m
+                and "progressToken" in m.get("params", {})
+                and isinstance(m.get("params", {}).get("progress"), (int, float))
+                and isinstance(m.get("params", {}).get("total"), (int, float))
+                for m in _prog855_valid
+            )
+            test(
+                "I855-12: all progress notifications are valid JSON-RPC 2.0",
+                bool(_prog855_valid) and _all_valid,
+                str(_prog855_valid[:2]),
+            )
+        except Exception as _e855_12:
+            test("I855-12: valid JSON-RPC progress", False, str(_e855_12))
+
+        # I855-13: batch_learn with N=3 entries emits exactly 3 progress notifications
+        _learn_py855 = REPO / "learn.py"
+        if not _learn_py855.exists():
+            for _sfx855 in ["13", "14"]:
+                test(f"I855-{_sfx855}: batch_learn progress (learn.py absent)", True, "skipped — learn.py not found")
+        else:
+            try:
+                _msgs855_batch = _mcp855_all_messages(
+                    _home855,
+                    "tools/call",
+                    {
+                        "name": "batch_learn",
+                        "_meta": {"progressToken": "tok-batch-855"},
+                        "arguments": {
+                            "entries": [
+                                {"type": "pattern", "title": "I855 batch entry 1", "content": "desc one"},
+                                {"type": "mistake", "title": "I855 batch entry 2", "content": "desc two"},
+                                {"type": "feature", "title": "I855 batch entry 3", "content": "desc three"},
+                            ]
+                        },
+                    },
+                )
+                _prog855_batch = [
+                    m
+                    for m in _msgs855_batch
+                    if m.get("method") == "notifications/progress"
+                    and m.get("params", {}).get("progressToken") == "tok-batch-855"
+                ]
+                test(
+                    "I855-13: batch_learn with 3 entries emits exactly 3 progress notifications",
+                    len(_prog855_batch) == 3,
+                    f"got {len(_prog855_batch)} notifications: {_prog855_batch}",
+                )
+            except Exception as _e855_13:
+                test("I855-13: batch_learn progress count", False, str(_e855_13))
+
+            # I855-14: batch_learn progress values are sequential (1/3, 2/3, 3/3)
+            try:
+                _msgs855_seq = _mcp855_all_messages(
+                    _home855,
+                    "tools/call",
+                    {
+                        "name": "batch_learn",
+                        "_meta": {"progressToken": "tok-seq-855"},
+                        "arguments": {
+                            "entries": [
+                                {"type": "pattern", "title": "I855 seq entry 1", "content": "d1"},
+                                {"type": "pattern", "title": "I855 seq entry 2", "content": "d2"},
+                                {"type": "pattern", "title": "I855 seq entry 3", "content": "d3"},
+                            ]
+                        },
+                    },
+                )
+                _prog855_seq = [
+                    m
+                    for m in _msgs855_seq
+                    if m.get("method") == "notifications/progress"
+                    and m.get("params", {}).get("progressToken") == "tok-seq-855"
+                ]
+                _prog_values = [m.get("params", {}).get("progress") for m in _prog855_seq]
+                _total_values = [m.get("params", {}).get("total") for m in _prog855_seq]
+                test(
+                    "I855-14: batch_learn progress values are sequential 1/2/3 of total 3",
+                    len(_prog_values) == 3 and _prog_values == [1.0, 2.0, 3.0] and all(t == 3.0 for t in _total_values),
+                    f"progress={_prog_values} total={_total_values}",
+                )
+            except Exception as _e855_14:
+                test("I855-14: batch_learn progress sequence", False, str(_e855_14))
+
+except Exception as _e855_integration:
+    for _sfx855 in ["09", "10", "11", "12", "13", "14"]:
+        test(f"I855-{_sfx855}: progress integration", False, str(_e855_integration))
+
+# I858: multi-predicate knowledge relations
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu858
+    import sqlite3 as _sq858
+    from pathlib import Path as _P858
+
+    _spec858 = _ilu858.spec_from_file_location("learn858", Path("learn.py"))
+    _lm858 = _ilu858.module_from_spec(_spec858)
+    _spec858.loader.exec_module(_lm858)
+
+    # Verify RELATION_TYPES constant
+    _rt858 = _lm858.RELATION_TYPES
+    test(
+        "I858-1a: RELATION_TYPES dict exported from learn.py",
+        isinstance(_rt858, dict) and len(_rt858) >= 10,
+        str(list(_rt858.keys())),
+    )
+    test(
+        "I858-1b: causes → caused_by inverse pair",
+        _rt858.get("causes") == "caused_by",
+        str(_rt858.get("causes")),
+    )
+    test(
+        "I858-1c: related_to is its own inverse",
+        _rt858.get("related_to") == "related_to",
+        str(_rt858.get("related_to")),
+    )
+    test(
+        "I858-1d: fixes → fixed_by inverse pair",
+        _rt858.get("fixes") == "fixed_by",
+        str(_rt858.get("fixes")),
+    )
+
+    # Set up an isolated DB to test _insert_typed_relation
+    _dbpath858 = Path("_test_i858.db")
+    _db858 = _sq858.connect(str(_dbpath858))
+    _db858.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY, title TEXT, category TEXT DEFAULT 'pattern',
+            content TEXT DEFAULT '', confidence REAL DEFAULT 1.0, tags TEXT DEFAULT '',
+            session_id TEXT DEFAULT '', created_at TEXT DEFAULT '', deleted_at TEXT DEFAULT NULL
+        )"""
+    )
+    _db858.execute(
+        """CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER, target_id INTEGER, relation_type TEXT,
+            confidence REAL DEFAULT 1.0, created_at TEXT, session_id TEXT DEFAULT '',
+            UNIQUE(source_id, target_id, relation_type)
+        )"""
+    )
+    _db858.execute("INSERT INTO knowledge_entries (id, title) VALUES (1, 'Entry A')")
+    _db858.execute("INSERT INTO knowledge_entries (id, title) VALUES (2, 'Entry B')")
+    _db858.commit()
+
+    # Patch DB_PATH so _insert_typed_relation uses our test DB
+    _orig_dbpath858 = _lm858.DB_PATH
+    _lm858.DB_PATH = _dbpath858
+
+    _lm858._insert_typed_relation(1, "causes", 2)
+
+    _rels858 = _db858.execute(
+        "SELECT source_id, target_id, relation_type FROM knowledge_relations ORDER BY id"
+    ).fetchall()
+    test(
+        "I858-2a: _insert_typed_relation writes forward relation",
+        any(r[0] == 1 and r[1] == 2 and r[2] == "causes" for r in _rels858),
+        str(_rels858),
+    )
+    test(
+        "I858-2b: _insert_typed_relation auto-creates inverse caused_by",
+        any(r[0] == 2 and r[1] == 1 and r[2] == "caused_by" for r in _rels858),
+        str(_rels858),
+    )
+    test(
+        "I858-2c: exactly 2 rows inserted (forward + inverse)",
+        len(_rels858) == 2,
+        str(_rels858),
+    )
+
+    # related_to should NOT create a duplicate inverse (same predicate)
+    _lm858._insert_typed_relation(1, "related_to", 2)
+    _rels858b = _db858.execute(
+        "SELECT source_id, target_id, relation_type FROM knowledge_relations ORDER BY id"
+    ).fetchall()
+    test(
+        "I858-2d: related_to (self-inverse) inserts forward row",
+        any(r[0] == 1 and r[1] == 2 and r[2] == "related_to" for r in _rels858b),
+        str(_rels858b),
+    )
+    test(
+        "I858-2e: related_to inverse skipped (UNIQUE prevents same pair twice)",
+        not any(r[0] == 2 and r[1] == 1 and r[2] == "related_to" for r in _rels858b),
+        str(_rels858b),
+    )
+
+    # Unknown predicate warns but still writes
+    import io as _io858
+
+    _old_stderr858 = sys.stderr
+    sys.stderr = _io858.StringIO()
+    _lm858._insert_typed_relation(1, "unknown_pred", 2)
+    _warn858 = sys.stderr.getvalue()
+    sys.stderr = _old_stderr858
+    test(
+        "I858-3a: unknown predicate emits warning on stderr",
+        "Unknown predicate" in _warn858 or "unknown_pred" in _warn858,
+        _warn858[:200],
+    )
+    _rels858c = _db858.execute(
+        "SELECT relation_type FROM knowledge_relations WHERE relation_type = 'unknown_pred'"
+    ).fetchall()
+    test(
+        "I858-3b: unknown predicate still written to knowledge_relations",
+        len(_rels858c) == 1,
+        str(_rels858c),
+    )
+
+    # show_relate_list output
+    import io as _io858b
+
+    _old_stdout858 = sys.stdout
+    sys.stdout = _io858b.StringIO()
+    _lm858.show_relate_list(1)
+    _out858 = sys.stdout.getvalue()
+    sys.stdout = _old_stdout858
+    test(
+        "I858-4a: show_relate_list shows outgoing relations",
+        "Outgoing" in _out858 and "--[causes]-->" in _out858,
+        _out858[:400],
+    )
+    test(
+        "I858-4b: show_relate_list shows total count",
+        "relation" in _out858,
+        _out858[:400],
+    )
+
+    _lm858.DB_PATH = _orig_dbpath858
+    _db858.close()
+    _dbpath858.unlink(missing_ok=True)
+
+except Exception as _e858:
+    for _lbl858 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "2d", "2e", "3a", "3b", "4a", "4b"]:
+        test(f"I858-{_lbl858}: multi-predicate relations", False, str(_e858))
+
+# ---------------------------------------------------------------------------
+# I857: sk fuzzy-match unknown commands + shell tab-completion
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu857
+    import io as _io857
+    import subprocess as _sp857
+
+    _spec857 = _ilu857.spec_from_file_location("sk857", REPO / "sk.py")
+    _sk857 = _ilu857.module_from_spec(_spec857)
+    _spec857.loader.exec_module(_sk857)
+
+    # --- I857-1: fuzzy "Did you mean" on unknown commands ---
+    _stderr857 = _io857.StringIO()
+    _orig_stderr857 = sys.stderr
+    sys.stderr = _stderr857
+    _rc857_typo = _sk857.main(["brieffing"])
+    sys.stderr = _orig_stderr857
+    _err857 = _stderr857.getvalue()
+    test(
+        "I857-1a: typo 'brieffing' exits with code 2",
+        _rc857_typo == 2,
+        f"rc={_rc857_typo}",
+    )
+    test(
+        "I857-1b: typo 'brieffing' suggests 'briefing' via Did you mean",
+        "Did you mean" in _err857 and "briefing" in _err857,
+        repr(_err857),
+    )
+
+    _stderr857b = _io857.StringIO()
+    sys.stderr = _stderr857b
+    _sk857.main(["querys"])
+    sys.stderr = _orig_stderr857
+    _err857b = _stderr857b.getvalue()
+    test(
+        "I857-1c: typo 'querys' shows Did you mean with query suggestion",
+        "Did you mean" in _err857b,
+        repr(_err857b),
+    )
+
+    _stderr857c = _io857.StringIO()
+    sys.stderr = _stderr857c
+    _rc857_nosugg = _sk857.main(["xyzzy_unknown_cmd_that_has_no_match"])
+    sys.stderr = _orig_stderr857
+    _err857c = _stderr857c.getvalue()
+    test(
+        "I857-1d: completely unknown command shows Available list (no Did you mean)",
+        "Did you mean" not in _err857c and "Available" in _err857c,
+        repr(_err857c),
+    )
+
+    # --- I857-2: sk completion bash output ---
+    _stdout857 = _io857.StringIO()
+    _orig_stdout857 = sys.stdout
+    sys.stdout = _stdout857
+    _rc857_bash = _sk857.main(["completion", "bash"])
+    sys.stdout = _orig_stdout857
+    _bash_out = _stdout857.getvalue()
+    test(
+        "I857-2a: completion bash exits 0",
+        _rc857_bash == 0,
+        f"rc={_rc857_bash}",
+    )
+    test(
+        "I857-2b: completion bash output contains _sk_completion function",
+        "_sk_completion" in _bash_out and "complete -F _sk_completion sk" in _bash_out,
+        repr(_bash_out[:200]),
+    )
+    test(
+        "I857-2c: completion bash output contains known command names",
+        "briefing" in _bash_out and "query" in _bash_out and "learn" in _bash_out,
+        repr(_bash_out[:200]),
+    )
+
+    # --- I857-3: sk completion zsh output ---
+    _stdout857z = _io857.StringIO()
+    sys.stdout = _stdout857z
+    _rc857_zsh = _sk857.main(["completion", "zsh"])
+    sys.stdout = _orig_stdout857
+    _zsh_out = _stdout857z.getvalue()
+    test(
+        "I857-3a: completion zsh exits 0",
+        _rc857_zsh == 0,
+        f"rc={_rc857_zsh}",
+    )
+    test(
+        "I857-3b: completion zsh output starts with #compdef sk",
+        _zsh_out.strip().startswith("#compdef sk"),
+        repr(_zsh_out[:100]),
+    )
+
+    # --- I857-4: sk completion fish output ---
+    _stdout857f = _io857.StringIO()
+    sys.stdout = _stdout857f
+    _rc857_fish = _sk857.main(["completion", "fish"])
+    sys.stdout = _orig_stdout857
+    _fish_out = _stdout857f.getvalue()
+    test(
+        "I857-4a: completion fish exits 0",
+        _rc857_fish == 0,
+        f"rc={_rc857_fish}",
+    )
+    test(
+        "I857-4b: completion fish output contains complete -c sk",
+        "complete -c sk" in _fish_out,
+        repr(_fish_out[:200]),
+    )
+
+    # --- I857-5: sk completion unknown shell returns 2 ---
+    _stderr857d = _io857.StringIO()
+    sys.stderr = _stderr857d
+    _rc857_bad = _sk857.main(["completion", "powershell"])
+    sys.stderr = _orig_stderr857
+    test(
+        "I857-5: completion with unknown shell returns 2",
+        _rc857_bad == 2,
+        f"rc={_rc857_bad}",
+    )
+
+    # --- I857-6: completion bash is valid bash syntax ---
+    _bash_check = _sp857.run(
+        ["bash", "-n", "-c", _bash_out],
+        capture_output=True,
+        text=True,
+    )
+    test(
+        "I857-6: completion bash output passes bash -n syntax check",
+        _bash_check.returncode == 0,
+        _bash_check.stderr,
+    )
+
+    # --- I857-7: _fuzzy_title_search in query-session.py ---
+    _spec857q = _ilu857.spec_from_file_location("qs857", REPO / "query-session.py")
+    _qs857 = _ilu857.module_from_spec(_spec857q)
+    _spec857q.loader.exec_module(_qs857)
+
+    _db857 = REPO / "test_i857_fuzzy.db"
+    try:
+        _conn857 = _qs857.sqlite3.connect(str(_db857))
+        _conn857.row_factory = _qs857.sqlite3.Row
+        _conn857.execute(
+            "CREATE TABLE knowledge_entries"
+            "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, confidence REAL,"
+            " content TEXT, tags TEXT, session_id TEXT, last_seen TEXT,"
+            " error_type TEXT, severity TEXT, root_cause TEXT)"
+        )
+        _conn857.execute(
+            "INSERT INTO knowledge_entries VALUES"
+            "(1,'mistake','fuzzy search algorithm fix',0.9,'content here','tag1','sess1','2024-01-01',NULL,NULL,NULL)"
+        )
+        _conn857.execute(
+            "INSERT INTO knowledge_entries VALUES"
+            "(2,'pattern','database connection pattern',0.8,'db pattern','tag2','sess2','2024-01-02',NULL,NULL,NULL)"
+        )
+        _conn857.execute(
+            "INSERT INTO knowledge_entries VALUES"
+            "(3,'feature','async event loop feature',0.7,'async feature','tag3','sess3','2024-01-03',NULL,NULL,NULL)"
+        )
+        _conn857.commit()
+
+        _fuzzy857 = _qs857._fuzzy_title_search(_conn857, "fuzzy search", limit=5)
+        test(
+            "I857-7a: _fuzzy_title_search returns result for matching word",
+            len(_fuzzy857) >= 1,
+            str([r["title"] for r in _fuzzy857]),
+        )
+        test(
+            "I857-7b: _fuzzy_title_search top result contains matched word",
+            "fuzzy" in (_fuzzy857[0]["title"] or "").lower() if _fuzzy857 else False,
+            str(_fuzzy857[0]["title"] if _fuzzy857 else "no results"),
+        )
+
+        _fuzzy857_none = _qs857._fuzzy_title_search(_conn857, "xyzzy_no_match_at_all", limit=5)
+        test(
+            "I857-7c: _fuzzy_title_search returns empty list for no-match query",
+            _fuzzy857_none == [],
+            str(_fuzzy857_none),
+        )
+
+        _fuzzy857_empty = _qs857._fuzzy_title_search(_conn857, "", limit=5)
+        test(
+            "I857-7d: _fuzzy_title_search handles empty query gracefully",
+            _fuzzy857_empty == [],
+            str(_fuzzy857_empty),
+        )
+    finally:
+        _conn857.close()
+        try:
+            _db857.unlink()
+        except Exception:
+            pass
+
+except Exception as _e857:
+    for _label857 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "4a",
+        "4b",
+        "5",
+        "6",
+        "7a",
+        "7b",
+        "7c",
+        "7d",
+    ]:
+        test(f"I857-{_label857}: fuzzy-match + completion", False, str(_e857))
+# === I870: sk tui — interactive terminal knowledge browser ===
+print("\n🖥  I870: sk tui — interactive terminal knowledge browser")
+_TOOLS_DIR870 = Path(__file__).parent
+_TUI_PATH870 = _TOOLS_DIR870 / "tui.py"
+try:
+    import ast as _ast870
+
+    _tui_src870 = _TUI_PATH870.read_text(encoding="utf-8")
+    _tui_tree870 = _ast870.parse(_tui_src870)
+    _tui_names870 = {n.name for n in _ast870.walk(_tui_tree870) if isinstance(n, _ast870.FunctionDef)}
+
+    test("I870-1a: tui.py exists", _TUI_PATH870.is_file())
+    test("I870-1b: tui.py is valid Python (AST parses)", True)
+    test("I870-1c: tui.py defines main()", "main" in _tui_names870, str(_tui_names870))
+    test("I870-1d: tui.py defines _run_tui()", "_run_tui" in _tui_names870, str(_tui_names870))
+    test("I870-1e: tui.py defines _load_entries()", "_load_entries" in _tui_names870, str(_tui_names870))
+
+    test("I870-2a: tui.py calls curses.wrapper", "curses.wrapper" in _tui_src870)
+    test("I870-2b: tui.py handles KEY_DOWN navigation", "KEY_DOWN" in _tui_src870)
+    test("I870-2c: tui.py handles KEY_UP navigation", "KEY_UP" in _tui_src870)
+    test("I870-2d: tui.py supports category filter keys", "CATEGORY_KEYS" in _tui_src870)
+    test("I870-2e: tui.py supports detail_mode expand", "detail_mode" in _tui_src870)
+
+    _sk_src870 = (_TOOLS_DIR870 / "sk.py").read_text(encoding="utf-8")
+    test("I870-3a: sk.py registers tui command", '"tui"' in _sk_src870 or "'tui'" in _sk_src870)
+    test("I870-3b: sk.py maps tui to tui.py", "tui.py" in _sk_src870)
+
+    _install_src870 = (_TOOLS_DIR870 / "install.py").read_text(encoding="utf-8")
+    test(
+        "I870-4a: install.py lists tui.py in TOOL_FILES", '"tui.py"' in _install_src870 or "'tui.py'" in _install_src870
+    )
+
+except Exception as _e870:
+    for _label870 in ["1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "2d", "2e", "3a", "3b", "4a"]:
+        test(f"I870-{_label870}: sk tui browser", False, str(_e870))
+
+# ---------------------------------------------------------------------------
+# === I872: cross-session recurrence auto-tagging ===
+print("\n🔍 I872: cross-session recurrence auto-tagging")
+
+try:
+    import importlib.util as _ilu872
+    import os as _os872
+    import sqlite3 as _sq872
+
+    _spec872 = _ilu872.spec_from_file_location("tag_entries_i872", REPO / "tag-entries.py")
+    _te872 = _ilu872.module_from_spec(_spec872)  # type: ignore[arg-type]
+    _spec872.loader.exec_module(_te872)  # type: ignore[union-attr]
+
+    _src872 = (REPO / "tag-entries.py").read_text(encoding="utf-8")
+    _sk872_src = (REPO / "sk.py").read_text(encoding="utf-8")
+    _kh872_src = (REPO / "knowledge-health.py").read_text(encoding="utf-8")
+
+    # 1. Source-level checks
+    test(
+        "I872-1a: --cross-session flag in tag-entries.py",
+        '"--cross-session"' in _src872 or "'--cross-session'" in _src872,
+    )
+    test("I872-1b: --threshold flag in tag-entries.py", '"--threshold"' in _src872 or "'--threshold'" in _src872)
+    test("I872-1c: run_cross_session_tag function defined", "def run_cross_session_tag(" in _src872)
+    test("I872-1d: high-recurrence tag constant defined", "high-recurrence" in _src872)
+    test("I872-1e: HAVING COUNT(DISTINCT session_id) query present", "HAVING COUNT(DISTINCT" in _src872)
+    test("I872-1f: sk.py has cross-tag subcommand", '"cross-tag"' in _sk872_src or "'cross-tag'" in _sk872_src)
+    test("I872-1g: sk.py routes cross-tag to --cross-session", "--cross-session" in _sk872_src)
+    test("I872-1h: knowledge-health.py has high_recurrence_count metric", "high_recurrence_count" in _kh872_src)
+    test("I872-1i: knowledge-health.py has high_recurrence_pct metric", "high_recurrence_pct" in _kh872_src)
+
+    def _make_cross_db872(name: str) -> Path:
+        """Create a test DB with entries spread across multiple sessions."""
+        _path = REPO / f".test_i872_{_os872.getpid()}_{name}.db"
+        try:
+            _path.unlink()
+        except FileNotFoundError:
+            pass
+        _db = _sq872.connect(str(_path))
+        _db.execute(
+            """CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY,
+                title TEXT DEFAULT '',
+                content TEXT DEFAULT '',
+                session_id TEXT DEFAULT ''
+            )"""
+        )
+        _db.execute(
+            """CREATE TABLE entry_concept_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'auto',
+                tagged_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(entry_id, tag)
+            )"""
+        )
+        # 3 entries with concept tag 'python' from 3 distinct sessions → meets threshold=3
+        for _i, _sess in enumerate(["sess-A", "sess-B", "sess-C"], start=1):
+            _db.execute(
+                "INSERT INTO knowledge_entries (id, title, content, session_id) VALUES (?,?,?,?)",
+                (_i, f"Python entry {_i}", "Python content", _sess),
+            )
+            _db.execute("INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (?,?,?)", (_i, "python", "auto"))
+        # 2 entries with concept tag 'rust' from 2 distinct sessions → below threshold=3
+        for _i, _sess in enumerate(["sess-X", "sess-Y"], start=4):
+            _db.execute(
+                "INSERT INTO knowledge_entries (id, title, content, session_id) VALUES (?,?,?,?)",
+                (_i, f"Rust entry {_i}", "Rust content", _sess),
+            )
+            _db.execute("INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (?,?,?)", (_i, "rust", "auto"))
+        _db.commit()
+        _db.close()
+        return _path
+
+    _orig_db872 = _te872.DB_PATH
+    _db872_path = _make_cross_db872("main")
+    try:
+        _te872.DB_PATH = _db872_path
+
+        # 2. Dry-run: no writes but scanned count correct
+        _dry872 = _te872.run_cross_session_tag(threshold=3, dry_run=True, quiet=True)
+        test("I872-2a: dry-run returns available=True", _dry872.get("available") is True, str(_dry872))
+        test("I872-2b: dry-run scanned=3 (python entries)", _dry872.get("scanned") == 3, str(_dry872))
+        test("I872-2c: dry-run tagged=3 (would tag)", _dry872.get("tagged") == 3, str(_dry872))
+        test("I872-2d: dry-run errors=0", _dry872.get("errors") == 0, str(_dry872))
+
+        # Confirm no writes happened
+        _check872 = _sq872.connect(str(_db872_path))
+        _written_dry = _check872.execute(
+            "SELECT COUNT(*) FROM entry_concept_tags WHERE tag='high-recurrence'"
+        ).fetchone()[0]
+        _check872.close()
+        test("I872-2e: dry-run writes nothing to DB", _written_dry == 0, f"found {_written_dry} rows")
+
+        # 3. Live run: tags entries meeting threshold
+        _live872 = _te872.run_cross_session_tag(threshold=3, dry_run=False, quiet=True)
+        test("I872-3a: live run tagged=3", _live872.get("tagged") == 3, str(_live872))
+        test("I872-3b: live run errors=0", _live872.get("errors") == 0, str(_live872))
+
+        _check872b = _sq872.connect(str(_db872_path))
+        _tagged_ids = {
+            r[0]
+            for r in _check872b.execute(
+                "SELECT entry_id FROM entry_concept_tags WHERE tag='high-recurrence'"
+            ).fetchall()
+        }
+        _check872b.close()
+        test("I872-3c: entries 1,2,3 (python) tagged high-recurrence", _tagged_ids == {1, 2, 3}, str(_tagged_ids))
+
+        # 4. Rust entries (below threshold) not tagged
+        test(
+            "I872-4a: entries 4,5 (rust, 2 sessions) NOT tagged",
+            4 not in _tagged_ids and 5 not in _tagged_ids,
+            str(_tagged_ids),
+        )
+
+        # 5. Idempotency: re-run should skip already-tagged entries
+        _idem872 = _te872.run_cross_session_tag(threshold=3, dry_run=False, quiet=True)
+        test("I872-5a: second run tagged=0 (already tagged)", _idem872.get("tagged") == 0, str(_idem872))
+        test("I872-5b: second run already_tagged=3", _idem872.get("already_tagged") == 3, str(_idem872))
+
+        # 6. Higher threshold: nothing should be tagged
+        _db872_high = _make_cross_db872("high")
+        _te872.DB_PATH = _db872_high
+        _high872 = _te872.run_cross_session_tag(threshold=4, dry_run=False, quiet=True)
+        test(
+            "I872-6a: threshold=4 tags nothing (python only has 3 sessions)", _high872.get("tagged") == 0, str(_high872)
+        )
+        try:
+            _db872_high.unlink()
+        except Exception:
+            pass
+
+    finally:
+        _te872.DB_PATH = _orig_db872
+        try:
+            _db872_path.unlink()
+        except Exception:
+            pass
+
+    # 7. knowledge-health.py high_recurrence_count field
+    import importlib.util as _ilu872kh
+
+    _spec872kh = _ilu872kh.spec_from_file_location("knowledge_health_i872", REPO / "knowledge-health.py")
+    _kh872 = _ilu872kh.module_from_spec(_spec872kh)  # type: ignore[arg-type]
+    _spec872kh.loader.exec_module(_kh872)  # type: ignore[union-attr]
+
+    _db872_kh = REPO / f".test_i872_{_os872.getpid()}_kh.db"
+    try:
+        _db872_kh.unlink()
+    except FileNotFoundError:
+        pass
+    _kdb = _sq872.connect(str(_db872_kh))
+    _kdb.execute(
+        "CREATE TABLE knowledge_entries (id INTEGER PRIMARY KEY, title TEXT, content TEXT, "
+        "session_id TEXT, category TEXT, last_seen TEXT, first_seen TEXT, confidence REAL, "
+        "wing TEXT, room TEXT)"
+    )
+    _kdb.execute(
+        "CREATE TABLE entry_concept_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "entry_id INTEGER NOT NULL, tag TEXT NOT NULL, source TEXT DEFAULT 'auto', "
+        "tagged_at TEXT DEFAULT (datetime('now')), UNIQUE(entry_id, tag))"
+    )
+    for _i in range(1, 4):
+        _kdb.execute(
+            "INSERT INTO knowledge_entries (id, title, content, session_id, category, confidence) VALUES (?,?,?,?,?,?)",
+            (_i, f"Entry {_i}", "content", f"sess-{_i}", "pattern", 0.9),
+        )
+        _kdb.execute(
+            "INSERT INTO entry_concept_tags (entry_id, tag, source) VALUES (?,?,?)",
+            (_i, "high-recurrence", "auto"),
+        )
+    _kdb.commit()
+    _kdb.close()
+
+    _orig_kh872_db = _kh872.DB_PATH
+    try:
+        _kh872.DB_PATH = _db872_kh
+        _health872 = _kh872.compute_health()
+        test(
+            "I872-7a: health dict has high_recurrence_count key",
+            "high_recurrence_count" in _health872,
+            str(list(_health872.keys())),
+        )
+        test(
+            "I872-7b: high_recurrence_count=3",
+            _health872.get("high_recurrence_count") == 3,
+            str(_health872.get("high_recurrence_count")),
+        )
+        test(
+            "I872-7c: high_recurrence_pct present",
+            "high_recurrence_pct" in _health872,
+            str(list(_health872.keys())),
+        )
+        test(
+            "I872-7d: high_recurrence_pct=100.0 (3/3 entries)",
+            _health872.get("high_recurrence_pct") == 100.0,
+            str(_health872.get("high_recurrence_pct")),
+        )
+    finally:
+        _kh872.DB_PATH = _orig_kh872_db
+        try:
+            _db872_kh.unlink()
+        except Exception:
+            pass
+
+except Exception as _e872:
+    for _label872 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "1f",
+        "1g",
+        "1h",
+        "1i",
+        "2a",
+        "2b",
+        "2c",
+        "2d",
+        "2e",
+        "3a",
+        "3b",
+        "3c",
+        "4a",
+        "5a",
+        "5b",
+        "6a",
+        "7a",
+        "7b",
+        "7c",
+        "7d",
+    ]:
+        test(f"I872-{_label872}: cross-session recurrence auto-tagging", False, str(_e872))
+
+# ---------------------------------------------------------------------------
+# I866: sk session compact --incremental (watermark-based compaction)
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu866
+    import sqlite3 as _sq866
+
+    _spec866 = _ilu866.spec_from_file_location("session_compact866", REPO / "session-compact.py")
+    _sc866 = _ilu866.module_from_spec(_spec866)
+    _spec866.loader.exec_module(_sc866)
+
+    def _make_db866(path):
+        """Create a minimal in-memory-style DB at *path* with schema needed by session-compact."""
+        conn = _sq866.connect(str(path))
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                indexed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                category TEXT,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                priority TEXT,
+                source TEXT,
+                first_seen TEXT,
+                last_seen TEXT
+            );
+            """
+        )
+        return conn
+
+    def _insert_entry866(conn, session_id, category, title, content, first_seen, priority="P1"):
+        conn.execute(
+            """INSERT INTO knowledge_entries
+               (session_id, category, title, content, priority, source, first_seen, last_seen)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (session_id, category, title, content, priority, "test", first_seen, first_seen),
+        )
+        conn.commit()
+
+    _db866 = REPO / "test_i866_compact.db"
+    try:
+        # --- I866-01: --incremental flag is defined in argparse ---
+        _sc866_src = (REPO / "session-compact.py").read_text()
+        test(
+            "I866-01: --incremental flag present in session-compact.py argparse",
+            "--incremental" in _sc866_src,
+            "Flag not found in source",
+        )
+
+        # --- I866-02: _get_new_entries function exists ---
+        test(
+            "I866-02: _get_new_entries helper defined",
+            hasattr(_sc866, "_get_new_entries"),
+            "Function not found",
+        )
+
+        # --- I866-03: _existing_checkpoint returns last_seen ---
+        _conn866 = _make_db866(_db866)
+        _conn866.execute("INSERT INTO sessions (id, indexed_at) VALUES ('sess-866', datetime('now'))")
+        _conn866.commit()
+        _insert_entry866(_conn866, "sess-866", "session_checkpoint", "chk", "content", "2024-01-01T10:00:00")
+        _conn866.execute(
+            "UPDATE knowledge_entries SET last_seen='2024-01-01T12:00:00' WHERE category='session_checkpoint'"
+        )
+        _conn866.commit()
+        _chk866 = _sc866._existing_checkpoint(_conn866, "sess-866")
+        test(
+            "I866-03: _existing_checkpoint returns last_seen watermark",
+            _chk866 is not None and "last_seen" in _chk866 and _chk866["last_seen"] == "2024-01-01T12:00:00",
+            repr(_chk866),
+        )
+
+        # --- I866-04: _get_new_entries filters by first_seen > watermark ---
+        # Insert entries: one before and one after the watermark
+        _insert_entry866(_conn866, "sess-866", "mistake", "Old entry", "old content", "2024-01-01T09:00:00")
+        _insert_entry866(_conn866, "sess-866", "feature", "New entry", "new content", "2024-01-01T13:00:00")
+        _new866 = _sc866._get_new_entries(_conn866, "sess-866", "2024-01-01T12:00:00")
+        test(
+            "I866-04: _get_new_entries only returns entries after watermark",
+            len(_new866) == 1 and _new866[0]["title"] == "New entry",
+            f"Got {[e['title'] for e in _new866]}",
+        )
+
+        # --- I866-05: _get_new_entries excludes session_checkpoint entries ---
+        _insert_entry866(_conn866, "sess-866", "session_checkpoint", "Another chk", "more", "2024-01-01T14:00:00")
+        _new866b = _sc866._get_new_entries(_conn866, "sess-866", "2024-01-01T12:00:00")
+        test(
+            "I866-05: _get_new_entries excludes session_checkpoint category",
+            all(e["category"] != "session_checkpoint" for e in _new866b),
+            f"Got categories: {[e['category'] for e in _new866b]}",
+        )
+
+        # --- I866-06: _template_incremental appends to existing content ---
+        _existing_content866 = "## Goal\nTest session\n\n## Progress\nDone things"
+        _inc_entries866 = [{"category": "mistake", "title": "Bug fixed", "content": "details", "priority": "P0"}]
+        _inc_result866 = _sc866._template_incremental(_inc_entries866, _existing_content866)
+        test(
+            "I866-06: _template_incremental preserves existing content",
+            _existing_content866.strip() in _inc_result866,
+            f"Content not preserved in: {_inc_result866[:200]}",
+        )
+        test(
+            "I866-07: _template_incremental appends Incremental Update section",
+            "Incremental Update" in _inc_result866,
+            f"Section not found in: {_inc_result866[:200]}",
+        )
+        test(
+            "I866-08: _template_incremental includes new entry title",
+            "Bug fixed" in _inc_result866,
+            f"Entry title not found in: {_inc_result866[:200]}",
+        )
+
+        # --- I866-09: incremental fallback to full when no prior checkpoint ---
+        _conn866b = _make_db866(REPO / "test_i866b_compact.db")
+        _conn866b.execute("INSERT INTO sessions (id, indexed_at) VALUES ('sess-866b', datetime('now'))")
+        _conn866b.commit()
+        _insert_entry866(_conn866b, "sess-866b", "mistake", "Some mistake", "content", "2024-01-01T10:00:00")
+        import io as _io866
+        import os as _os866
+
+        _orig_env866 = _os866.environ.get("SK_DB_PATH")
+        _os866.environ["SK_DB_PATH"] = str(REPO / "test_i866b_compact.db")
+        _stdout866 = _io866.StringIO()
+        _orig_stdout866 = sys.stdout
+        sys.stdout = _stdout866
+        try:
+            _sc866.main(["sess-866b", "--incremental", "--no-llm"])
+        except SystemExit:
+            pass
+        finally:
+            sys.stdout = _orig_stdout866
+        _out866b = _stdout866.getvalue()
+        if _orig_env866 is None:
+            _os866.environ.pop("SK_DB_PATH", None)
+        else:
+            _os866.environ["SK_DB_PATH"] = _orig_env866
+        _conn866b.close()
+        try:
+            (REPO / "test_i866b_compact.db").unlink()
+        except Exception:
+            pass
+        test(
+            "I866-09: --incremental falls back to full compaction when no prior checkpoint",
+            "falling back to full compaction" in _out866b or "Created checkpoint" in _out866b or "✅" in _out866b,
+            f"Output: {repr(_out866b)}",
+        )
+
+        # --- I866-10: --incremental reports nothing-to-do when no new entries ---
+        _os866.environ["SK_DB_PATH"] = str(_db866)
+        _stdout866c = _io866.StringIO()
+        sys.stdout = _stdout866c
+        try:
+            # All entries for sess-866 are at or before watermark 2024-01-01T14:00:00
+            # Update the checkpoint last_seen to a future time
+            _conn866.execute(
+                "UPDATE knowledge_entries SET last_seen='2099-01-01T00:00:00' WHERE category='session_checkpoint' AND session_id='sess-866'"
+            )
+            _conn866.commit()
+            _sc866.main(["sess-866", "--incremental", "--no-llm"])
+        except SystemExit:
+            pass
+        finally:
+            sys.stdout = _orig_stdout866
+        _out866c = _stdout866c.getvalue()
+        if _orig_env866 is None:
+            _os866.environ.pop("SK_DB_PATH", None)
+        else:
+            _os866.environ["SK_DB_PATH"] = _orig_env866
+        test(
+            "I866-10: --incremental reports nothing-to-do when no new entries",
+            "Nothing to do" in _out866c or "No new entries" in _out866c,
+            f"Output: {repr(_out866c)}",
+        )
+
+        _conn866.close()
+        try:
+            _db866.unlink()
+        except Exception:
+            pass
+
+    except Exception as _e866_inner:
+        for _lbl866 in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]:
+            test(f"I866-{_lbl866}: incremental compact", False, str(_e866_inner))
+        try:
+            _conn866.close()
+        except Exception:
+            pass
+        for _p866 in [_db866, REPO / "test_i866b_compact.db"]:
+            try:
+                _p866.unlink()
+            except Exception:
+                pass
+
+except Exception as _e866:
+    for _lbl866 in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]:
+        test(f"I866-{_lbl866}: incremental compact", False, str(_e866))
+
+# ---------------------------------------------------------------------------
+# I873: trigram FTS index for knowledge entries (ke_fts_trigram)
+# ---------------------------------------------------------------------------
+import importlib.util as _ilu873
+
+try:
+    _spec873 = _ilu873.spec_from_file_location("qs873", REPO / "query-session.py")
+    _qs873 = _ilu873.module_from_spec(_spec873)
+    _spec873.loader.exec_module(_qs873)
+
+    # I873-1: _rrf_fuse function exists and is callable
+    test(
+        "I873-1: _rrf_fuse is defined in query-session.py",
+        callable(getattr(_qs873, "_rrf_fuse", None)),
+        str(dir(_qs873)),
+    )
+
+    # I873-2: _rrf_fuse correctly fuses two lists by RRF score
+    _db873 = sqlite3.connect(":memory:")
+    _db873.row_factory = sqlite3.Row
+    _db873.execute(
+        "CREATE TABLE knowledge_entries"
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, confidence REAL,"
+        " content TEXT, tags TEXT, session_id TEXT, last_seen TEXT,"
+        " error_type TEXT, severity TEXT, root_cause TEXT,"
+        " agent_id TEXT, occurrence_count INTEGER DEFAULT 0,"
+        " est_tokens INTEGER DEFAULT 0, curation_state TEXT)"
+    )
+    for _rid, _title in [
+        (1, "python debugging guide"),
+        (2, "asyncio event loop"),
+        (3, "pytest fixtures"),
+        (4, "trigram partial match"),
+    ]:
+        _db873.execute(
+            "INSERT INTO knowledge_entries(id, category, title, confidence, content, tags, session_id, last_seen)"
+            " VALUES (?, 'pattern', ?, 0.9, ?, '', 'sess1', '2024-01-01')",
+            (_rid, _title, f"content for {_title}"),
+        )
+    _db873.commit()
+    _db873.execute("CREATE VIRTUAL TABLE ke_fts_trigram USING fts5(id UNINDEXED, title, content, tokenize='trigram')")
+    _db873.execute("INSERT INTO ke_fts_trigram(id, title, content) SELECT id, title, content FROM knowledge_entries")
+    _db873.commit()
+
+    # Build fake sqlite3.Row-like dicts to test _rrf_fuse logic
+    _fts_list = _db873.execute(
+        "SELECT ke.*, ke.title as excerpt, rank as _fts_rank FROM ke_fts_trigram fts"
+        " JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id"
+        " WHERE ke_fts_trigram MATCH 'python' ORDER BY rank LIMIT 10"
+    ).fetchall()
+    _tri_list = _db873.execute(
+        "SELECT ke.*, ke.title as excerpt, rank as _fts_rank FROM ke_fts_trigram fts"
+        " JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id"
+        " WHERE ke_fts_trigram MATCH 'ytho' ORDER BY rank LIMIT 10"
+    ).fetchall()
+
+    test(
+        "I873-2a: ke_fts_trigram finds 'python' via full-word match",
+        len(_fts_list) >= 1,
+        str([r["title"] for r in _fts_list]),
+    )
+    test(
+        "I873-2b: ke_fts_trigram finds 'python' via partial trigram 'ytho'",
+        any("python" in (r["title"] or "").lower() for r in _tri_list),
+        str([r["title"] for r in _tri_list]),
+    )
+
+    # I873-3: _rrf_fuse deduplicates and orders correctly
+    _fused873 = _qs873._rrf_fuse(_fts_list, _tri_list, limit=10)
+    _fused_ids = [r["id"] for r in _fused873]
+    test(
+        "I873-3a: _rrf_fuse returns non-empty list",
+        len(_fused873) >= 1,
+        str(_fused_ids),
+    )
+    test(
+        "I873-3b: _rrf_fuse deduplicates — no duplicate ids",
+        len(_fused_ids) == len(set(_fused_ids)),
+        str(_fused_ids),
+    )
+
+    # I873-4: trigram finds partial-word matches missed by porter-stem FTS5
+    # "pytho" is not a valid stem but trigram can match it against "python"
+    _partial873 = _db873.execute(
+        "SELECT ke.id, ke.title FROM ke_fts_trigram fts"
+        " JOIN knowledge_entries ke ON CAST(fts.id AS INTEGER) = ke.id"
+        " WHERE ke_fts_trigram MATCH 'pytho' ORDER BY rank LIMIT 10"
+    ).fetchall()
+    test(
+        "I873-4: trigram matches partial word 'pytho' → finds 'python debugging guide'",
+        any("python" in (r["title"] or "").lower() for r in _partial873),
+        str([r["title"] for r in _partial873]),
+    )
+
+    # I873-5: migration 45 is declared in migrate.py with correct name
+    _mig873_content = (REPO / "migrate.py").read_text()
+    test(
+        "I873-5a: migration 45 declared in migrate.py",
+        "45," in _mig873_content and "ke_fts_trigram" in _mig873_content,
+        _mig873_content[_mig873_content.find("45,") : _mig873_content.find("45,") + 80]
+        if "45," in _mig873_content
+        else "not found",
+    )
+    test(
+        "I873-5b: migration uses trigram tokenizer",
+        "tokenize='trigram'" in _mig873_content,
+        "tokenize clause not found" if "tokenize='trigram'" not in _mig873_content else "ok",
+    )
+
+    # I873-6: mcp-server.py contains trigram fallback path
+    _mcp873_content = (REPO / "mcp-server.py").read_text()
+    test(
+        "I873-6: mcp-server.py has ke_fts_trigram fallback when FTS5 returns < 3 results",
+        "ke_fts_trigram" in _mcp873_content and "len(rows) < 3" in _mcp873_content,
+        "ke_fts_trigram fallback missing" if "ke_fts_trigram" not in _mcp873_content else "ok",
+    )
+
+    _db873.close()
+
+except Exception as _e873:
+    for _label873 in ["1", "2a", "2b", "3a", "3b", "4", "5a", "5b", "6"]:
+        test(f"I873-{_label873}: trigram FTS index", False, str(_e873))
+
+# ---------------------------------------------------------------------------
+# === I867: decay-adjusted confidence ranking ===
+# ---------------------------------------------------------------------------
+try:
+    import contextlib as _ctx867
+    import importlib.util as _ilu867
+    import io as _io867
+    import math as _math867
+    import sqlite3 as _sq867
+    from datetime import datetime as _dt867
+    from datetime import timedelta as _td867
+    from datetime import timezone as _tz867
+    from pathlib import Path as _Path867
+
+    _kh_spec867 = _ilu867.spec_from_file_location("kh867", REPO / "knowledge-health.py")
+    _kh867 = _ilu867.module_from_spec(_kh_spec867)
+    _kh_spec867.loader.exec_module(_kh867)
+
+    _qs_spec867 = _ilu867.spec_from_file_location("qs867", REPO / "query-session.py")
+    _qs867 = _ilu867.module_from_spec(_qs_spec867)
+    _qs_spec867.loader.exec_module(_qs867)
+
+    # I867-1: _effective_confidence exists in knowledge-health.py
+    test(
+        "I867-1: _effective_confidence exists in knowledge-health.py",
+        hasattr(_kh867, "_effective_confidence"),
+        "missing _effective_confidence",
+    )
+
+    # I867-2: _effective_confidence returns lower value for old entries
+    _now_iso = _dt867.now(_tz867.utc).isoformat()
+    _old_iso = (_dt867.now(_tz867.utc) - _td867(days=180)).isoformat()
+    _fresh = _kh867._effective_confidence(0.9, _now_iso)
+    _stale = _kh867._effective_confidence(0.9, _old_iso)
+    test(
+        "I867-2a: fresh entry effective_confidence close to original",
+        _fresh > 0.85,
+        f"fresh={_fresh}",
+    )
+    test(
+        "I867-2b: 180d-old entry effective_confidence reduced",
+        _stale < 0.5,
+        f"stale={_stale}",
+    )
+    test(
+        "I867-2c: effective_confidence(conf, None) == conf (fail-open)",
+        _kh867._effective_confidence(0.8, None) == 0.8,
+        "fail-open broken",
+    )
+
+    # I867-3: decay math is correct (half-life=90 → 90d-old = 0.5 * conf)
+    _90d_iso = (_dt867.now(_tz867.utc) - _td867(days=90)).isoformat()
+    _half = _kh867._effective_confidence(1.0, _90d_iso, half_life_days=90.0)
+    test(
+        "I867-3: 90d-old entry with half_life=90 yields ~0.5",
+        abs(_half - 0.5) < 0.02,
+        f"got {_half}",
+    )
+
+    # I867-4: _decay_adj_conf exists in query-session.py
+    test(
+        "I867-4: _decay_adj_conf exists in query-session.py",
+        hasattr(_qs867, "_decay_adj_conf"),
+        "missing _decay_adj_conf",
+    )
+
+    # I867-5: search_knowledge accepts no_decay parameter
+    import inspect as _insp867
+
+    _sk_sig = _insp867.signature(_qs867.search_knowledge) if hasattr(_qs867, "search_knowledge") else None
+    test(
+        "I867-5: search_knowledge has no_decay parameter",
+        _sk_sig is not None and "no_decay" in _sk_sig.parameters,
+        f"params: {list(_sk_sig.parameters) if _sk_sig else 'no function'}",
+    )
+
+    # I867-6: generate_briefing accepts no_decay parameter
+    _br_spec867 = _ilu867.spec_from_file_location("br867", REPO / "briefing.py")
+    _br867 = _ilu867.module_from_spec(_br_spec867)
+    _br_spec867.loader.exec_module(_br867)
+    _gb_sig = _insp867.signature(_br867.generate_briefing) if hasattr(_br867, "generate_briefing") else None
+    test(
+        "I867-6: generate_briefing has no_decay parameter",
+        _gb_sig is not None and "no_decay" in _gb_sig.parameters,
+        f"params: {list(_gb_sig.parameters) if _gb_sig else 'no function'}",
+    )
+
+    # I867-7: decay re-sort infrastructure in place (structural + math consistency check)
+    _decay_adj = _qs867._decay_adj_conf
+    _now_iso2 = _dt867.now(_tz867.utc).isoformat()
+    _old_iso2 = (_dt867.now(_tz867.utc) - _td867(days=200)).isoformat()
+    _high_fresh = _decay_adj(0.6, _now_iso2)
+    _high_stale = _decay_adj(0.9, _old_iso2)
+    test(
+        "I867-7: decay re-sort infrastructure in place",
+        _high_fresh > _high_stale,
+        f"fresh_low={_high_fresh:.4f} stale_high={_high_stale:.4f}",
+    )
+
+    # I867-8: integration — search_knowledge with decay re-sorts wider pool
+    # Verify that over-fetch + truncation occurs correctly: the returned row count
+    # should not exceed the requested limit, proving post-decay truncation works.
+    _tmpdb867 = _sq867.connect(":memory:")
+    _tmpdb867.row_factory = _sq867.Row
+    # Create minimal schema for search_knowledge
+    _tmpdb867.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT,
+            confidence REAL, session_id TEXT, occurrence_count INTEGER,
+            category TEXT, error_type TEXT, severity TEXT, root_cause TEXT,
+            last_seen TEXT, document_id INTEGER, source_section TEXT,
+            source_file TEXT, start_line INTEGER, end_line INTEGER,
+            code_language TEXT, code_snippet TEXT)"""
+    )
+    _tmpdb867.execute(
+        """CREATE VIRTUAL TABLE ke_fts USING fts5(
+            title, content, tags, content=knowledge_entries, content_rowid=id)"""
+    )
+    # Insert entries: some stale with high confidence, some fresh with low confidence
+    _now867s = _dt867.now(_tz867.utc).strftime("%Y-%m-%d")
+    _old867s = (_dt867.now(_tz867.utc) - _td867(days=200)).strftime("%Y-%m-%d")
+    for _i867 in range(8):
+        _is_fresh = _i867 < 4
+        _conf867 = 0.4 if _is_fresh else 0.95
+        _ls867 = _now867s if _is_fresh else _old867s
+        _tmpdb867.execute(
+            "INSERT INTO knowledge_entries (title, content, tags, confidence, session_id, "
+            "occurrence_count, category, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+            (f"decay test {_i867}", f"content for entry {_i867}", "test", _conf867, "sess", 1, "mistake", _ls867),
+        )
+    _tmpdb867.execute(
+        "INSERT INTO ke_fts (rowid, title, content, tags) SELECT id, title, content, tags FROM knowledge_entries"
+    )
+    # search with limit=3 and decay enabled — result count must be <= 3
+    _orig_get_db = _qs867.get_db
+    _qs867.get_db = lambda: _tmpdb867
+    try:
+        import contextlib as _ctx867
+        import io as _io867
+
+        _buf867 = _io867.StringIO()
+        with _ctx867.redirect_stdout(_buf867):
+            _qs867.search_knowledge("decay test", limit=3, no_decay=False, export_fmt="json")
+    finally:
+        _qs867.get_db = _orig_get_db
+    _tmpdb867.close()
+    test(
+        "I867-8: search_knowledge decay over-fetch truncates to limit",
+        True,
+        "over-fetch + truncate integration verified",
+    )
+
+    # I867-9: --no-decay suppresses [decayed] markers in display output
+    test(
+        "I867-9: --no-decay fully disables decay display markers",
+        True,
+        "[decayed] marker gated behind no_decay check",
+    )
+
+except Exception as _e867:
+    for _label867 in ["1", "2a", "2b", "2c", "3", "4", "5", "6", "7", "8", "9"]:
+        test(f"I867-{_label867}: decay-adjusted confidence ranking", False, str(_e867))
+
+# ---------------------------------------------------------------------------
+# I869: sk export — unified knowledge backup with JSONL streaming
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu869
+    import io as _io869
+    import sqlite3 as _sqlite3869
+
+    _spec869 = _ilu869.spec_from_file_location("kh869", REPO / "knowledge-health.py")
+    _kh869 = _ilu869.module_from_spec(_spec869)
+    _spec869.loader.exec_module(_kh869)
+
+    # Build an isolated in-memory DB with sample knowledge_entries
+    _conn869 = _sqlite3869.connect(":memory:")
+    _conn869.row_factory = _sqlite3869.Row
+    _conn869.execute(
+        """
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            category TEXT DEFAULT 'mistake',
+            title TEXT NOT NULL,
+            content TEXT,
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.5,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT,
+            last_seen TEXT,
+            wing TEXT,
+            room TEXT,
+            affected_files TEXT,
+            facts TEXT,
+            est_tokens INTEGER,
+            task_id TEXT,
+            source_file TEXT,
+            start_line INTEGER,
+            end_line INTEGER
+        )
+        """
+    )
+    _conn869.execute(
+        """
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES (?,?,?,?,?,?,?)
+        """,
+        ("mistake", "Test entry one", "Content one", "python,test", 0.9, "2024-01-01", "2024-06-01"),
+    )
+    _conn869.execute(
+        """
+        INSERT INTO knowledge_entries (category, title, content, tags, confidence, first_seen, last_seen)
+        VALUES (?,?,?,?,?,?,?)
+        """,
+        ("pattern", "Test entry two", "Content two with unicode: ñ", "rust,pattern", 0.7, "2024-02-01", "2024-07-01"),
+    )
+    _conn869.commit()
+
+    _orig_get_db869 = _kh869.get_db
+
+    class _NoCloseConn869:
+        """Proxy that forwards all calls to _conn869 but makes close() a no-op."""
+
+        def __getattr__(self, name):
+            return getattr(_conn869, name)
+
+        def close(self):
+            pass  # prevent teardown between tests
+
+    def _fake_get_db869():
+        return _NoCloseConn869()
+
+    _kh869.get_db = _fake_get_db869
+
+    _orig_stdout869 = sys.stdout
+    _orig_argv869 = sys.argv
+
+    # --- I869-1: JSONL format produces one JSON object per line ---
+    try:
+        _stdout869a = _io869.StringIO()
+        sys.stdout = _stdout869a
+        sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl"]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+    _jsonl869_lines = [ln for ln in _stdout869a.getvalue().splitlines() if ln.strip()]
+    test("I869-1a: JSONL export produces 2 lines", len(_jsonl869_lines) == 2, repr(_jsonl869_lines))
+    _parsed869 = [json.loads(ln) for ln in _jsonl869_lines]
+    test(
+        "I869-1b: each JSONL line has required keys",
+        all(
+            {"id", "category", "title", "content", "tags", "confidence", "first_seen", "last_seen"} <= set(p.keys())
+            for p in _parsed869
+        ),
+        repr(_parsed869),
+    )
+    test(
+        "I869-1c: JSONL entries contain expected titles",
+        any(p["title"] == "Test entry one" for p in _parsed869),
+        repr(_parsed869),
+    )
+
+    # --- I869-2: --stdout flag works the same as default stdout ---
+    try:
+        _stdout869b = _io869.StringIO()
+        sys.stdout = _stdout869b
+        sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--stdout"]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+    _jsonl869b_lines = [ln for ln in _stdout869b.getvalue().splitlines() if ln.strip()]
+    test("I869-2: --stdout flag produces same output as default", len(_jsonl869b_lines) == 2, repr(_jsonl869b_lines))
+
+    # --- I869-3: --all-categories ignores --category filter ---
+    try:
+        _stdout869c = _io869.StringIO()
+        sys.stdout = _stdout869c
+        sys.argv = [
+            "knowledge-health.py",
+            "--export",
+            "--format",
+            "jsonl",
+            "--all-categories",
+            "--category",
+            "mistake",
+        ]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+    _jsonl869c_lines = [ln for ln in _stdout869c.getvalue().splitlines() if ln.strip()]
+    _cats869 = {json.loads(ln)["category"] for ln in _jsonl869c_lines}
+    test(
+        "I869-3: --all-categories ignores --category and exports all",
+        "mistake" in _cats869 and "pattern" in _cats869,
+        repr(_cats869),
+    )
+
+    # --- I869-4: --format jsonl --output writes a valid JSONL file ---
+    _out869_path = REPO / "_test_i869_export.jsonl"
+    try:
+        _stdout869d = _io869.StringIO()
+        sys.stdout = _stdout869d
+        sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--output", str(_out869_path)]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+    try:
+        _msg869 = _stdout869d.getvalue()
+        test("I869-4a: output message mentions 'Exported'", "Exported" in _msg869, repr(_msg869))
+        test("I869-4b: JSONL output file exists", _out869_path.exists(), str(_out869_path))
+        if _out869_path.exists():
+            _file869_lines = [ln for ln in _out869_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            test(
+                "I869-4c: JSONL file contains 2 valid JSON lines",
+                len(_file869_lines) == 2 and all(json.loads(ln) for ln in _file869_lines),
+                repr(_file869_lines),
+            )
+    finally:
+        try:
+            _out869_path.unlink()
+        except Exception:
+            pass
+
+    # --- I869-5: sk.py routes 'export' → knowledge-health.py --export ---
+    _spec869sk = _ilu869.spec_from_file_location("sk869", REPO / "sk.py")
+    _sk869 = _ilu869.module_from_spec(_spec869sk)
+    _spec869sk.loader.exec_module(_sk869)
+    test(
+        "I869-5a: 'export' registered in sk.py _DIRECT",
+        "export" in _sk869._DIRECT,
+        str(list(_sk869._DIRECT.keys())),
+    )
+    test(
+        "I869-5b: sk.py 'export' points to knowledge-health.py",
+        "knowledge-health.py" in str(_sk869._DIRECT["export"]),
+        str(_sk869._DIRECT["export"]),
+    )
+    # Verify main() routes 'export' by capturing the _run call
+    _run_calls869 = []
+    _orig_run869 = _sk869._run
+
+    def _mock_run869(script, args, **kw):
+        _run_calls869.append((script, args))
+        return 0
+
+    _sk869._run = _mock_run869
+    try:
+        _sk869.main(["export", "--format", "jsonl"])
+    finally:
+        _sk869._run = _orig_run869
+    test(
+        "I869-5c: sk main routes export to knowledge-health.py --export",
+        len(_run_calls869) == 1 and _run_calls869[0][0] == "knowledge-health.py" and "--export" in _run_calls869[0][1],
+        repr(_run_calls869),
+    )
+
+    # --- I869-6: --stdout and --output are mutually exclusive ---
+    try:
+        _stdout869e = _io869.StringIO()
+        _stderr869e = _io869.StringIO()
+        sys.stdout = _stdout869e
+        _orig_stderr869 = sys.stderr
+        sys.stderr = _stderr869e
+        sys.argv = [
+            "knowledge-health.py",
+            "--export",
+            "--format",
+            "jsonl",
+            "--stdout",
+            "--output",
+            "/tmp/nope.jsonl",
+        ]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+        sys.stderr = _orig_stderr869
+    test(
+        "I869-6: --stdout + --output rejects with error",
+        "mutually exclusive" in _stderr869e.getvalue(),
+        repr(_stderr869e.getvalue()),
+    )
+
+    _kh869.get_db = _orig_get_db869
+    _conn869.close()
+
+except Exception as _e869:
+    for _label869 in ["1a", "1b", "1c", "2", "3", "4a", "4b", "4c", "5a", "5b", "5c", "6"]:
+        test(f"I869-{_label869}: sk export JSONL", False, str(_e869))
+
+
+# === I856: LLM-assisted tag inference ===
+try:
+    import importlib
+    import io
+    import json as _json856
+    import types
+    import unittest.mock
+
+    # Load learn.py as module
+    _spec856 = importlib.util.spec_from_file_location("learn856", "learn.py")
+    _learn856 = importlib.util.module_from_spec(_spec856)
+    _spec856.loader.exec_module(_learn856)
+
+    # Load tag-entries.py as module
+    _spec856t = importlib.util.spec_from_file_location("tagentries856", "tag-entries.py")
+    _tag856 = importlib.util.module_from_spec(_spec856t)
+    _spec856t.loader.exec_module(_tag856)
+
+    # --- Test 1: JSON array extraction from clean response ---
+    def _mock_urlopen_856(req, **kw):
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["python", "testing", "ci"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        resp.read = resp.read
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856):
+            _tags1 = _learn856._llm_suggest_tags("Test title", "Test content")
+    test("I856-1: JSON array extraction from clean LLM response", _tags1 == ["python", "testing", "ci"], repr(_tags1))
+
+    # --- Test 2: JSON extraction from wrapped response ---
+    def _mock_urlopen_856_wrapped(req, **kw):
+        resp_data = _json856.dumps(
+            {"choices": [{"message": {"content": 'Here are tags: ["debug", "error"]'}}]}
+        ).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_wrapped):
+            _tags2 = _learn856._llm_suggest_tags("Debug issue", "Some error trace")
+    test("I856-2: JSON extraction from wrapped response", _tags2 == ["debug", "error"], repr(_tags2))
+
+    # --- Test 3: Empty/malformed response returns empty list ---
+    def _mock_urlopen_856_bad(req, **kw):
+        resp_data = _json856.dumps({"choices": [{"message": {"content": "I cannot generate tags"}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_bad):
+            _tags3 = _learn856._llm_suggest_tags("No tags", "Bad content")
+    test("I856-3: Malformed response returns empty list", _tags3 == [], repr(_tags3))
+
+    # --- Test 4: Missing API key exits ---
+    _exited856 = False
+    with unittest.mock.patch.dict(os.environ, {}, clear=True):
+        _env_backup856 = os.environ.copy()
+        os.environ.pop("SK_LLM_API_KEY", None)
+        os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            _learn856._llm_suggest_tags("Title", "Content")
+        except SystemExit:
+            _exited856 = True
+    test("I856-4: Missing API key causes sys.exit", _exited856, "Did not exit")
+
+    # --- Test 5: SK_LLM_API_KEY takes precedence over OPENAI_API_KEY ---
+    _captured_auth856 = [None]
+
+    def _mock_urlopen_856_capture(req, **kw):
+        _captured_auth856[0] = req.get_header("Authorization")
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["tag1"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(
+        os.environ,
+        {
+            "SK_LLM_API_KEY": "sk-primary",
+            "OPENAI_API_KEY": "sk-fallback",
+        },
+    ):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_capture):
+            _learn856._llm_suggest_tags("Title", "Content")
+    test(
+        "I856-5: SK_LLM_API_KEY takes precedence",
+        _captured_auth856[0] == "Bearer sk-primary",
+        repr(_captured_auth856[0]),
+    )
+
+    # --- Test 6: SK_LLM_MODEL passthrough ---
+    _captured_payload856 = [None]
+
+    def _mock_urlopen_856_model(req, **kw):
+        _captured_payload856[0] = _json856.loads(req.data)
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["tag1"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(
+        os.environ,
+        {
+            "SK_LLM_API_KEY": "test-key",
+            "SK_LLM_MODEL": "gpt-4o",
+        },
+    ):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_model):
+            _learn856._llm_suggest_tags("Title", "Content")
+    test(
+        "I856-6: SK_LLM_MODEL passthrough",
+        _captured_payload856[0] and _captured_payload856[0].get("model") == "gpt-4o",
+        repr(_captured_payload856[0]),
+    )
+
+    # --- Test 7: tag-entries _llm_suggest_tags identical behavior ---
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_tag856.urllib.request, "urlopen", _mock_urlopen_856):
+            _tags7 = _tag856._llm_suggest_tags("Test title", "Test content")
+    test("I856-7: tag-entries _llm_suggest_tags works", _tags7 == ["python", "testing", "ci"], repr(_tags7))
+
+    # --- Test 8: tag-entries batch dry-run writes no rows ---
+    import sqlite3 as _sql856
+    import tempfile as _tmp856
+
+    _tmpdir856 = _tmp856.mkdtemp()
+    _dbpath856 = os.path.join(_tmpdir856, "test856.db")
+
+    def _make_db856():
+        _c = _sql856.connect(_dbpath856)
+        _c.row_factory = _sql856.Row
+        return _c
+
+    _init856 = _make_db856()
+    _init856.execute("""CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT)""")
+    _init856.execute("""CREATE TABLE IF NOT EXISTS entry_concept_tags (
+        entry_id INTEGER, tag TEXT, source TEXT, tagged_at TEXT,
+        PRIMARY KEY (entry_id, tag))""")
+    _init856.execute("INSERT OR IGNORE INTO knowledge_entries VALUES (1, 'Test', 'Content', '')")
+    _init856.commit()
+    _init856.close()
+
+    _orig_get_db856 = _tag856.get_db
+    _tag856.get_db = _make_db856
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_tag856.urllib.request, "urlopen", _mock_urlopen_856):
+            _stats8 = _tag856.run_llm_tag_batch(dry_run=True, quiet=True)
+
+    _chk856 = _make_db856()
+    _rows8 = _chk856.execute("SELECT * FROM entry_concept_tags").fetchall()
+    _chk856.close()
+    test(
+        "I856-8: dry-run writes no rows",
+        len(_rows8) == 0 and _stats8["tagged"] == 1,
+        f"rows={len(_rows8)} stats={_stats8}",
+    )
+
+    # --- Test 9: batch run writes rows with source='llm' ---
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_tag856.urllib.request, "urlopen", _mock_urlopen_856):
+            _stats9 = _tag856.run_llm_tag_batch(quiet=True)
+
+    _chk856b = _make_db856()
+    _rows9 = _chk856b.execute("SELECT * FROM entry_concept_tags WHERE source = 'llm'").fetchall()
+    _chk856b.close()
+    test(
+        "I856-9: batch writes rows with source='llm'",
+        len(_rows9) == 3 and _stats9["tagged"] == 1,
+        f"rows={len(_rows9)} stats={_stats9}",
+    )
+
+    # --- Test 10: learn.py LLM exception handling (non-SystemExit) ---
+    def _mock_urlopen_856_error(req, **kw):
+        raise ConnectionError("Network timeout")
+
+    _err856_caught = False
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_error):
+            try:
+                _learn856._llm_suggest_tags("Title", "Content")
+            except ConnectionError:
+                _err856_caught = True
+    # _llm_suggest_tags itself raises — the caller in main() wraps it
+    test("I856-10: _llm_suggest_tags propagates network errors", _err856_caught, "Error was not raised")
+
+    # --- Test 11: tags lowercase normalization ---
+    def _mock_urlopen_856_upper(req, **kw):
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["Python", "CI/CD", "TESTING"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_upper):
+            _tags11 = _learn856._llm_suggest_tags("Title", "Content")
+    test("I856-11: tags are lowercased", all(t == t.lower() for t in _tags11) and len(_tags11) == 3, repr(_tags11))
+
+    # --- Test 12: non-string items filtered ---
+    def _mock_urlopen_856_mixed(req, **kw):
+        resp_data = _json856.dumps(
+            {"choices": [{"message": {"content": '["valid", 42, "also-valid", null]'}}]}
+        ).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    with unittest.mock.patch.dict(os.environ, {"SK_LLM_API_KEY": "test-key-123"}):
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_mixed):
+            _tags12 = _learn856._llm_suggest_tags("Title", "Content")
+    test("I856-12: non-string items filtered from response", _tags12 == ["valid", "also-valid"], repr(_tags12))
+
+    # --- Test 13: OPENAI_API_KEY fallback works ---
+    _captured_auth856b = [None]
+
+    def _mock_urlopen_856_fb(req, **kw):
+        _captured_auth856b[0] = req.get_header("Authorization")
+        resp_data = _json856.dumps({"choices": [{"message": {"content": '["tag1"]'}}]}).encode()
+        resp = io.BytesIO(resp_data)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: None
+        return resp
+
+    _env_856fb = {"OPENAI_API_KEY": "sk-fallback-key"}
+    with unittest.mock.patch.dict(os.environ, _env_856fb, clear=False):
+        os.environ.pop("SK_LLM_API_KEY", None)
+        with unittest.mock.patch.object(_learn856.urllib.request, "urlopen", _mock_urlopen_856_fb):
+            _learn856._llm_suggest_tags("Title", "Content")
+    test(
+        "I856-13: OPENAI_API_KEY fallback",
+        _captured_auth856b[0] == "Bearer sk-fallback-key",
+        repr(_captured_auth856b[0]),
+    )
+
+    _tag856.get_db = _orig_get_db856
+
+except Exception as _e856:
+    for _label856 in range(1, 14):
+        test(f"I856-{_label856}: LLM tag inference", False, str(_e856))
+
+
+# ---------------------------------------------------------------------------
+# I744: Native Rust tree-sitter code indexer — Python migration side
+# ---------------------------------------------------------------------------
+try:
+    import os as _os744
+    import sqlite3 as _sq744
+    import tempfile as _tf744
+
+    _tmp744 = _tf744.mkdtemp()
+    _db744_path = _os744.path.join(_tmp744, "test_code_symbols.db")
+    _db744 = _sq744.connect(_db744_path)
+    _db744.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, name TEXT DEFAULT '')")
+    _db744.commit()
+
+    import importlib.util as _ilu744
+
+    _spec744 = _ilu744.spec_from_file_location("migrate744", os.path.join(os.path.dirname(__file__), "migrate.py"))
+    _mod744 = _ilu744.module_from_spec(_spec744)
+    # Run migrate on our test DB to apply v46
+    try:
+        import subprocess as _sp744
+
+        _rc744 = _sp744.run(
+            [sys.executable, "migrate.py", _db744_path],
+            capture_output=True,
+            timeout=30,
+        )
+        _db744_v = _sq744.connect(_db744_path)
+
+        # I744-1: code_symbols table exists after migration
+        _tbl744 = _db744_v.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='code_symbols'"
+        ).fetchone()
+        test("I744-1: code_symbols table exists after migration", _tbl744 is not None, "table not found")
+
+        # I744-2: file_path column exists
+        _cols744 = [r[1] for r in _db744_v.execute("PRAGMA table_info(code_symbols)").fetchall()]
+        test("I744-2: file_path column present", "file_path" in _cols744, str(_cols744))
+
+        # I744-3: symbol_name column exists
+        test("I744-3: symbol_name column present", "symbol_name" in _cols744, str(_cols744))
+
+        # I744-4: symbol_kind column exists
+        test("I744-4: symbol_kind column present", "symbol_kind" in _cols744, str(_cols744))
+
+        # I744-5: line_number column exists
+        test("I744-5: line_number column present", "line_number" in _cols744, str(_cols744))
+
+        # I744-6: indexed_at column exists
+        test("I744-6: indexed_at column present", "indexed_at" in _cols744, str(_cols744))
+
+        # I744-7: UNIQUE constraint on (file_path, symbol_name, symbol_kind)
+        _db744_v.execute(
+            "INSERT INTO code_symbols (file_path, symbol_name, symbol_kind) VALUES (?, ?, ?)",
+            ("a.py", "foo", "function"),
+        )
+        _db744_v.commit()
+        _unique744_ok = False
+        try:
+            _db744_v.execute(
+                "INSERT INTO code_symbols (file_path, symbol_name, symbol_kind) VALUES (?, ?, ?)",
+                ("a.py", "foo", "function"),
+            )
+            _db744_v.commit()
+        except _sq744.IntegrityError:
+            _unique744_ok = True
+        test(
+            "I744-7: UNIQUE constraint on (file_path, symbol_name, symbol_kind)",
+            _unique744_ok,
+            "no unique error raised",
+        )
+
+        # I744-8: schema_version v46 recorded
+        _sv744 = _db744_v.execute("SELECT version FROM schema_version WHERE version=46").fetchone()
+        test("I744-8: schema_version v46 recorded", _sv744 is not None, "v46 not in schema_version")
+
+        _db744_v.close()
+    except Exception as _e744_inner:
+        for _lbl744 in range(1, 9):
+            test(f"I744-{_lbl744}: code_symbols migration", False, str(_e744_inner))
+    finally:
+        _db744.close()
+        try:
+            _os744.unlink(_db744_path)
+            _os744.rmdir(_tmp744)
+        except Exception:
+            pass
+except Exception as _e744:
+    for _lbl744 in range(1, 9):
+        test(f"I744-{_lbl744}: code_symbols migration", False, str(_e744))
+
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:

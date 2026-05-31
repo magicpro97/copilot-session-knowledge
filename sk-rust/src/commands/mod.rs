@@ -1,5 +1,6 @@
 pub mod audit_log;
 pub mod briefing;
+pub mod code_search;
 pub mod embed;
 pub mod fallback;
 pub mod hooks;
@@ -9,6 +10,7 @@ pub mod mcp;
 pub mod project;
 pub mod query;
 pub mod retry;
+pub mod status;
 pub mod sync_native;
 pub mod sync_run;
 pub mod watch;

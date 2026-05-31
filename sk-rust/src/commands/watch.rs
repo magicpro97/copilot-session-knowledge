@@ -427,6 +427,43 @@ fn check_and_index(
         }
 
         state.last_index = Some(chrono::Utc::now().to_rfc3339());
+
+        // --- Issue #744: Native tree-sitter code indexer (feature-gated) ---
+        #[cfg(feature = "tree-sitter-indexer")]
+        {
+            use crate::index::code_indexer;
+            let code_files: Vec<&str> = changed
+                .iter()
+                .copied()
+                .filter(|p| {
+                    std::path::Path::new(p)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(code_indexer::supported_extension)
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            if !code_files.is_empty() {
+                if let Ok(conn) = rusqlite::Connection::open(db_path) {
+                    let mut sym_count = 0usize;
+                    for path_str in &code_files {
+                        let p = std::path::Path::new(path_str);
+                        sym_count += code_indexer::index_file(p, &conn);
+                    }
+                    if sym_count > 0 {
+                        // TRACE-level: only log when symbols were found.
+                        if std::env::var("SK_TRACE").is_ok() {
+                            eprintln!(
+                                "[watch] Code indexed {} symbol(s) from {} file(s)",
+                                sym_count,
+                                code_files.len()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // #353: record whether any files changed so the caller can skip the

@@ -139,6 +139,16 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Show knowledge DB status (entries, sessions, watch daemon, sync)
+    Status {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Compact one-liner for shell prompts (e.g. ⚡ 42 entries · 3m ago)
+    Statusline {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Suggest new skills from knowledge DB patterns (suggestion-only)
     #[command(name = "skill-suggest")]
     SkillSuggest {
@@ -170,6 +180,12 @@ enum Commands {
     },
     /// Start MCP stdio server (MCP 2024-11-05 / JSON-RPC 2.0)
     Mcp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Search indexed code symbols (requires tree-sitter-indexer feature)
+    #[command(name = "code-search")]
+    CodeSearch {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -334,11 +350,16 @@ fn main() -> ExitCode {
             }
         }
         Some(Commands::SkillSuggest { args }) => run_fallback("skill-suggest.py", &args),
+        Some(Commands::Statusline { args }) => commands::status::run_statusline_command(&args),
+        Some(Commands::Status { args }) => commands::status::run_status_command(&args),
         Some(Commands::SkillPatch { args }) => run_fallback("skill-patch.py", &args),
         Some(Commands::AuditHooks { args }) => run_fallback("audit-hooks.py", &args),
         Some(Commands::AuditLog { args }) => commands::audit_log::run_audit_log_command(&args),
         Some(Commands::Retry { args }) => commands::retry::run_retry_command(&args),
         Some(Commands::Mcp { args }) => commands::mcp::run_mcp_command(&args),
+        Some(Commands::CodeSearch { args }) => {
+            commands::code_search::run_code_search_command(&args)
+        }
     };
 
     if cli.time {
