@@ -135,14 +135,31 @@ def ke_fts_exists(db: sqlite3.Connection) -> bool:
 
 
 def ensure_schema(db: sqlite3.Connection) -> None:
-    """Verify knowledge_entries table exists; prompt user to run migrate.py if not."""
-    row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").fetchone()
-    if not row:
-        print(
-            "Error: knowledge_entries table not found. Run 'python migrate.py' first to create the canonical schema.",
-            file=sys.stderr,
+    """Ensure knowledge_entries table exists with canonical key constraints.
+
+    On a production DB, the full schema comes from migrate.py. For fresh
+    adapter-only DBs this creates the minimal subset the adapter needs,
+    including the canonical UNIQUE(category, title, session_id) constraint.
+    """
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.7,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT,
+            last_seen TEXT,
+            est_tokens INTEGER DEFAULT 0,
+            UNIQUE(category, title, session_id)
         )
-        sys.exit(1)
+        """
+    )
+    db.commit()
 
 
 def insert_entry(db: sqlite3.Connection, entry: dict, use_fts: bool) -> bool:
