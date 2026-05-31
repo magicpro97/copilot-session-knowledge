@@ -60,6 +60,21 @@ def _extract_file_path(data: dict) -> str:
     return ""
 
 
+def _extract_file_path(data: dict) -> str:
+    """Extract file path from tool event data (preToolUse or postToolUse).
+
+    Checks both ``toolArgs`` (preToolUse) and ``toolInput`` (postToolUse).
+    Returns the first non-empty ``path`` value found, or ``""`` if absent.
+    """
+    for key in ("toolArgs", "toolInput"):
+        args = data.get(key)
+        if isinstance(args, dict):
+            path = args.get("path", "")
+            if path:
+                return path
+    return ""
+
+
 def _audit_log(event, tool, rule_name, decision, detail=""):
     """Append to audit log (best-effort, never blocks)."""
     try:
