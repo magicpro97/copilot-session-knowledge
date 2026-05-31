@@ -1254,6 +1254,24 @@ RESOURCES = [
         "description": "Structured diff of knowledge entries between two sessions. URI template: sk://sessions/diff?a={id}&b={id}",
         "mimeType": "application/json",
     },
+    {
+        "uri": "sk://knowledge/search",
+        "name": "Knowledge search",
+        "description": "FTS5 search over knowledge entries. Append ?q=<term>&limit=N to the URI.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "sk://health",
+        "name": "Knowledge health",
+        "description": "Health metrics: total entries, stale percentage, average confidence, category counts",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "sk://retro/summary",
+        "name": "Retro summary",
+        "description": "Recent discovery entries tagged retro or session-retrospective",
+        "mimeType": "application/json",
+    },
 ]
 
 
@@ -1398,6 +1416,161 @@ def _resource_code_symbols(project_id: str) -> list:
         return []
 
 
+def _sanitize_fts(text: str) -> str:
+    """Strip FTS5 special operators to prevent MATCH syntax errors."""
+    text = text.replace("'", " ")
+    text = re.sub(r'[*():\\^"-]|\b(?:OR|AND|NOT|NEAR)\b', " ", text, flags=re.IGNORECASE)
+    return " ".join(text.split())
+
+
+def _resource_knowledge_search(query: str, limit: int = 10) -> dict:
+    """FTS5 search over knowledge entries; falls back to LIKE if FTS is unavailable."""
+    if not _DB_PATH.exists():
+        return {"entries": [], "count": 0}
+    limit = max(1, min(int(limit), 100))
+    try:
+        with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
+            db.row_factory = sqlite3.Row
+            fts_safe = _sanitize_fts(query)
+            if not fts_safe:
+                return {"entries": [], "count": 0}
+            terms = fts_safe.split()
+            match_expr = " ".join(f'"{t}"*' for t in terms)
+            try:
+                rows = db.execute(
+                    """
+                    SELECT ke.id, ke.category, ke.title, ke.confidence
+                    FROM ke_fts fts
+                    JOIN knowledge_entries ke ON fts.rowid = ke.id
+                    WHERE ke_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    [match_expr, limit],
+                ).fetchall()
+            except sqlite3.OperationalError:
+                like_term = f"%{query.lower()}%"
+                rows = db.execute(
+                    """
+                    SELECT id, category, title, confidence
+                    FROM knowledge_entries
+                    WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ?
+                    ORDER BY confidence DESC
+                    LIMIT ?
+                    """,
+                    [like_term, like_term, limit],
+                ).fetchall()
+        entries = [
+            {"id": r["id"], "category": r["category"], "title": r["title"], "confidence": r["confidence"]} for r in rows
+        ]
+        return {"entries": entries, "count": len(entries)}
+    except (sqlite3.Error, OSError) as exc:
+        _log_resource_error(exc)
+        return {"entries": [], "count": 0}
+
+
+def _resource_health() -> dict:
+    """Return knowledge-base health metrics inline (no subprocess)."""
+    if not _DB_PATH.exists():
+        return {"total_entries": 0, "stale_pct": 0.0, "avg_confidence": 0.0, "categories": {}}
+    import time as _time
+
+    try:
+        with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
+            db.row_factory = sqlite3.Row
+            _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+            _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+
+            total = db.execute(f"SELECT COUNT(*) FROM knowledge_entries WHERE 1=1 {_nd}").fetchone()[0]
+            if total == 0:
+                return {"total_entries": 0, "stale_pct": 0.0, "avg_confidence": 0.0, "categories": {}}
+
+            cat_rows = db.execute(
+                f"SELECT category, COUNT(*) as cnt FROM knowledge_entries WHERE 1=1 {_nd} GROUP BY category"
+            ).fetchall()
+            categories = {r["category"]: r["cnt"] for r in cat_rows}
+
+            avg_row = db.execute(f"SELECT AVG(confidence) FROM knowledge_entries WHERE 1=1 {_nd}").fetchone()
+            avg_confidence = round(float(avg_row[0] or 0.0), 3)
+
+            cutoff = _time.strftime("%Y-%m-%d", _time.gmtime(_time.time() - 30 * 86400))
+            stale = db.execute(
+                f"SELECT COUNT(*) FROM knowledge_entries WHERE last_seen < ? AND last_seen IS NOT NULL AND last_seen != '' {_nd}",
+                (cutoff,),
+            ).fetchone()[0]
+            stale_pct = round((stale / total) * 100, 1) if total > 0 else 0.0
+
+        return {
+            "total_entries": total,
+            "stale_pct": stale_pct,
+            "avg_confidence": avg_confidence,
+            "categories": categories,
+        }
+    except (sqlite3.Error, OSError) as exc:
+        _log_resource_error(exc)
+        return {"total_entries": 0, "stale_pct": 0.0, "avg_confidence": 0.0, "categories": {}}
+
+
+def _resource_retro_summary() -> dict:
+    """Return recent discovery entries tagged retro or session-retrospective."""
+    if not _DB_PATH.exists():
+        return {"entries": [], "count": 0}
+    try:
+        with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                SELECT id, title, content, tags, first_seen, last_seen
+                FROM knowledge_entries
+                WHERE category = 'discovery'
+                  AND (
+                    (',' || tags || ',') LIKE '%,retro,%'
+                    OR (',' || tags || ',') LIKE '%,session-retrospective,%'
+                  )
+                ORDER BY last_seen DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        entries = [dict(r) for r in rows]
+        return {"entries": entries, "count": len(entries)}
+    except (sqlite3.Error, OSError) as exc:
+        _log_resource_error(exc)
+        return {"entries": [], "count": 0}
+
+
+def _resource_session(session_id: str) -> dict:
+    """Return summary stats for a single session by ID."""
+    if not _DB_PATH.exists():
+        return {}
+    try:
+        with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
+            db.row_factory = sqlite3.Row
+            sess = db.execute("SELECT id, summary, indexed_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if sess is None:
+                return {}
+            cat_rows = db.execute(
+                "SELECT category, COUNT(*) as cnt FROM knowledge_entries WHERE session_id = ? GROUP BY category",
+                (session_id,),
+            ).fetchall()
+            categories = {r["category"]: r["cnt"] for r in cat_rows}
+            entry_count = sum(categories.values())
+            dates = db.execute(
+                "SELECT MIN(first_seen) as first_seen, MAX(last_seen) as last_seen FROM knowledge_entries WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return {
+            "session_id": sess["id"],
+            "summary": sess["summary"],
+            "entry_count": entry_count,
+            "categories": categories,
+            "first_seen": dates["first_seen"] if dates else None,
+            "last_seen": dates["last_seen"] if dates else None,
+        }
+    except (sqlite3.Error, OSError) as exc:
+        _log_resource_error(exc)
+        return {}
+
+
 def _handle_resources_list() -> dict:
     resources = list(RESOURCES)
     # Add dynamic resources for knowledge entries if DB exists
@@ -1418,7 +1591,41 @@ def _handle_resources_list() -> dict:
                 )
         except (sqlite3.Error, OSError) as exc:
             _log_resource_error(exc)
+        # Add dynamic session resources
+        try:
+            with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
+                db.row_factory = sqlite3.Row
+                sess_rows = db.execute("SELECT id, summary FROM sessions ORDER BY indexed_at DESC LIMIT 10").fetchall()
+            for sr in sess_rows:
+                sid = str(sr["id"])
+                resources.append(
+                    {
+                        "uri": f"sk://sessions/{sid}",
+                        "name": sr["summary"] or f"Session {sid}",
+                        "description": f"Session stats for {sid}",
+                        "mimeType": "application/json",
+                    }
+                )
+        except (sqlite3.Error, OSError) as exc:
+            _log_resource_error(exc)
     return {"resources": resources}
+
+
+def _parse_query_string(uri: str) -> tuple[str, dict[str, str]]:
+    """Split URI into base path and query-string parameters (URL-decoded)."""
+    from urllib.parse import unquote
+
+    if "?" not in uri:
+        return uri, {}
+    base, qs = uri.split("?", 1)
+    params: dict[str, str] = {}
+    for part in qs.split("&"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            params[unquote(k)] = unquote(v)
+        elif part:
+            params[unquote(part)] = ""
+    return base, params
 
 
 def _handle_resources_read(params: dict) -> dict:
@@ -1451,6 +1658,26 @@ def _handle_resources_read(params: dict) -> dict:
         if not a or not b:
             raise JsonRpcError(JSONRPC_INVALID_PARAMS, "sk://sessions/diff requires ?a=<id>&b=<id>")
         data = _resource_sessions_diff(a, b)
+
+    # sk://knowledge/search?q=<term>&limit=N — must be checked before generic sk://knowledge/<id>
+    base_uri, qs_params = _parse_query_string(uri)
+    if base_uri == "sk://knowledge/search":
+        q = qs_params.get("q", "")
+        try:
+            limit = int(qs_params.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        data = _resource_knowledge_search(q, limit)
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    if uri == "sk://health":
+        data = _resource_health()
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    if uri == "sk://retro/summary":
+        data = _resource_retro_summary()
         text = json.dumps(data, ensure_ascii=False, indent=2)
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
 
@@ -1474,6 +1701,14 @@ def _handle_resources_read(params: dict) -> dict:
         lines.append(entry.get("content", ""))
         text = "\n".join(lines)
         return {"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]}
+
+    if uri.startswith("sk://sessions/") and uri != "sk://sessions/recent":
+        session_id = uri[len("sk://sessions/") :]
+        data = _resource_session(session_id)
+        if not data:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Session not found: {session_id}")
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
 
     if uri.startswith("sk://code/symbols/"):
         project_id = uri[len("sk://code/symbols/") :]

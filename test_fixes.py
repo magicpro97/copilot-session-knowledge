@@ -11401,6 +11401,295 @@ try:
 except Exception as _e756:
     for _suffix756 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "3a", "3b", "3c", "4a", "4b", "4c", "5a", "5b"]:
         test(f"I756-{_suffix756}: MCP resources", False, str(_e756))
+# === I871: MCP resource catalog expansion ===
+print("\n📡 I871: MCP resource catalog expansion")
+
+
+def _mcp871_roundtrip(_home871: Path, method: str, params: dict):
+    _env871 = os.environ.copy()
+    _env871["HOME"] = str(_home871)
+    _env871["USERPROFILE"] = str(_home871)
+    _proc871 = subprocess.Popen(
+        [sys.executable, str(REPO / "mcp-server.py")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_env871,
+        cwd=str(REPO),
+    )
+    _request_bytes871 = bytearray()
+    for _msg871 in (
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
+        {"jsonrpc": "2.0", "id": 3, "method": "shutdown"},
+    ):
+        _payload871 = json.dumps(_msg871).encode("utf-8")
+        _request_bytes871.extend(f"Content-Length: {len(_payload871)}\r\n\r\n".encode("ascii") + _payload871)
+    try:
+        _stdout871, _stderr871 = _proc871.communicate(bytes(_request_bytes871), timeout=15)
+    finally:
+        if _proc871.poll() is None:
+            _proc871.kill()
+            _proc871.wait(timeout=5)
+
+    _responses871 = []
+    _remaining871 = _stdout871
+    while _remaining871:
+        if b"Content-Length:" not in _remaining871:
+            break
+        _hdr_end871 = _remaining871.find(b"\r\n\r\n")
+        if _hdr_end871 == -1:
+            break
+        _header871 = _remaining871[:_hdr_end871].decode("ascii", errors="replace")
+        _length871 = int(
+            [_ln.split(":", 1)[1].strip() for _ln in _header871.split("\r\n") if "content-length" in _ln.lower()][0]
+        )
+        _body_start871 = _hdr_end871 + 4
+        _body871 = _remaining871[_body_start871 : _body_start871 + _length871]
+        _remaining871 = _remaining871[_body_start871 + _length871 :]
+        try:
+            _responses871.append(json.loads(_body871))
+        except Exception:
+            pass
+
+    _matches871 = [r for r in _responses871 if r.get("id") == 2]
+    if not _matches871:
+        raise RuntimeError(_stderr871.decode("utf-8", errors="replace") or "no MCP response")
+    return _matches871[0]
+
+
+def _run_i871_resource_tests():
+    import shutil as _sh871
+
+    _root871 = Path(tempfile.mkdtemp(prefix="i871-", dir=str(REPO)))
+    try:
+        _home871 = _root871 / "home"
+        _state871 = _home871 / ".copilot" / "session-state"
+        _state871.mkdir(parents=True, exist_ok=True)
+        _db871 = sqlite3.connect(_state871 / "knowledge.db")
+        _db871.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT '',
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                summary TEXT DEFAULT '',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                document_id INTEGER,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                source TEXT DEFAULT 'copilot',
+                topic_key TEXT,
+                revision_count INTEGER DEFAULT 1,
+                content_hash TEXT,
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_section TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                error_type TEXT DEFAULT '',
+                root_cause TEXT DEFAULT '',
+                severity TEXT DEFAULT 'medium',
+                is_resolved INTEGER DEFAULT 0,
+                fix_steps TEXT DEFAULT '',
+                prevention_hook TEXT DEFAULT '',
+                recurrence_after_briefing INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5,
+                priority TEXT DEFAULT 'P2',
+                project_id TEXT DEFAULT ''
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags,
+                content=knowledge_entries, content_rowid=id
+            );
+            """
+        )
+        _db871.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (30, "i871-catalog"))
+        _db871.execute(
+            "INSERT INTO sessions (id, path, summary, indexed_at) VALUES (?, ?, ?, ?)",
+            ("sess-871", "/repo", "I871 test session", "2025-03-01T00:00:00Z"),
+        )
+        _db871.executemany(
+            "INSERT INTO knowledge_entries (id, session_id, category, title, content, tags, confidence, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    1,
+                    "sess-871",
+                    "pattern",
+                    "Auth middleware pattern",
+                    "Use JWT tokens for auth",
+                    "auth,middleware",
+                    0.9,
+                    "2025-03-01T00:00:00Z",
+                    "2025-03-05T00:00:00Z",
+                ),
+                (
+                    2,
+                    "sess-871",
+                    "mistake",
+                    "DB connection leak",
+                    "Always close DB after use",
+                    "db,leak",
+                    0.8,
+                    "2025-03-02T00:00:00Z",
+                    "2025-03-06T00:00:00Z",
+                ),
+                (
+                    3,
+                    "sess-871",
+                    "discovery",
+                    "Retro learning",
+                    "Session was productive",
+                    "retro,session-retrospective",
+                    0.95,
+                    "2025-03-03T00:00:00Z",
+                    "2025-03-07T00:00:00Z",
+                ),
+            ],
+        )
+        # Populate ke_fts
+        _db871.executemany(
+            "INSERT INTO ke_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
+            [
+                (1, "Auth middleware pattern", "Use JWT tokens for auth", "auth,middleware"),
+                (2, "DB connection leak", "Always close DB after use", "db,leak"),
+                (3, "Retro learning", "Session was productive", "retro,session-retrospective"),
+            ],
+        )
+        _db871.commit()
+        _db871.close()
+
+        # I871-1: resources/list includes all 4 new static resources
+        _res_list871 = _mcp871_roundtrip(_home871, "resources/list", {})
+        _uris871 = [r.get("uri") for r in _res_list871.get("result", {}).get("resources", [])]
+        test(
+            "I871-1a: resources/list includes sk://knowledge/search", "sk://knowledge/search" in _uris871, str(_uris871)
+        )
+        test("I871-1b: resources/list includes sk://health", "sk://health" in _uris871, str(_uris871))
+        test("I871-1c: resources/list includes sk://retro/summary", "sk://retro/summary" in _uris871, str(_uris871))
+        test(
+            "I871-1d: resources/list includes dynamic sk://sessions/sess-871",
+            "sk://sessions/sess-871" in _uris871,
+            str(_uris871),
+        )
+
+        # I871-2: sk://knowledge/search
+        _res_search871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://knowledge/search?q=auth&limit=5"})
+        _search871 = json.loads(_res_search871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-2a: knowledge/search returns entries key", "entries" in _search871, str(_search871))
+        test("I871-2b: knowledge/search returns count key", "count" in _search871, str(_search871))
+        test(
+            "I871-2c: knowledge/search count is non-negative int",
+            isinstance(_search871.get("count"), int) and _search871["count"] >= 0,
+            str(_search871),
+        )
+
+        # I871-3: sk://health
+        _res_health871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://health"})
+        _health871 = json.loads(_res_health871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-3a: health returns total_entries", "total_entries" in _health871, str(_health871))
+        test("I871-3b: health total_entries is 3", _health871.get("total_entries") == 3, str(_health871))
+        test("I871-3c: health returns stale_pct", "stale_pct" in _health871, str(_health871))
+        test("I871-3d: health returns avg_confidence", "avg_confidence" in _health871, str(_health871))
+        test("I871-3e: health returns categories dict", isinstance(_health871.get("categories"), dict), str(_health871))
+        test(
+            "I871-3f: health categories contains pattern",
+            _health871.get("categories", {}).get("pattern") == 1,
+            str(_health871),
+        )
+
+        # I871-4: sk://retro/summary
+        _res_retro871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://retro/summary"})
+        _retro871 = json.loads(_res_retro871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-4a: retro/summary returns entries key", "entries" in _retro871, str(_retro871))
+        test("I871-4b: retro/summary returns count key", "count" in _retro871, str(_retro871))
+        test(
+            "I871-4c: retro/summary count matches entries",
+            _retro871.get("count") == len(_retro871.get("entries", [])),
+            str(_retro871),
+        )
+        test("I871-4d: retro/summary finds seeded retro entry", _retro871.get("count", 0) >= 1, str(_retro871))
+
+        # I871-5: sk://sessions/<id>
+        _res_sess871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://sessions/sess-871"})
+        _sess871 = json.loads(_res_sess871.get("result", {}).get("contents", [{}])[0].get("text", "{}"))
+        test("I871-5a: sessions/<id> returns session_id", _sess871.get("session_id") == "sess-871", str(_sess871))
+        test("I871-5b: sessions/<id> returns entry_count", _sess871.get("entry_count") == 3, str(_sess871))
+        test(
+            "I871-5c: sessions/<id> returns categories dict",
+            isinstance(_sess871.get("categories"), dict),
+            str(_sess871),
+        )
+        test("I871-5d: sessions/<id> returns first_seen", "first_seen" in _sess871, str(_sess871))
+        test("I871-5e: sessions/<id> returns last_seen", "last_seen" in _sess871, str(_sess871))
+
+        # I871-6: sk://sessions/<id> for missing session returns error
+        _res_missing871 = _mcp871_roundtrip(_home871, "resources/read", {"uri": "sk://sessions/no-such-session"})
+        _err871 = _res_missing871.get("error", {})
+        test("I871-6a: missing session returns error code -32602", _err871.get("code") == -32602, str(_err871))
+
+    finally:
+        _sh871.rmtree(_root871, ignore_errors=True)
+
+
+try:
+    _run_i871_resource_tests()
+except Exception as _e871:
+    for _suffix871 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "3e",
+        "3f",
+        "4a",
+        "4b",
+        "4c",
+        "4d",
+        "5a",
+        "5b",
+        "5c",
+        "5d",
+        "5e",
+        "6a",
+    ]:
+        test(f"I871-{_suffix871}: MCP resource catalog expansion", False, str(_e871))
 # === I759: tag-entries TF-IDF opt-in ===
 print("\n🔍 I759: tag-entries TF-IDF opt-in")
 
