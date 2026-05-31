@@ -14047,7 +14047,6 @@ try:
 except Exception as _e851:
     for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
         test(f"I851-{_lbl851}: briefing semantic dedup", False, str(_e851))
-# === I853: hook rule context filters (file_patterns, require_wing, require_room) ===
 print("\n🪝 I853: hook rule context filters")
 
 try:
