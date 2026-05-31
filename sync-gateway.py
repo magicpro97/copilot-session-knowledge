@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-sync-gateway.py — Reference/mock sync gateway for local integration tests.
+sync-gateway.py — Sync gateway with per-repo namespace scoping.
 
-This is intentionally not a production multi-tenant sync service.
+Supports namespace isolation via ``?namespace=`` query param so that
+different repositories federate independently.  Entries with
+``visibility='private'`` in their ``row_payload`` are accepted but
+excluded from outbound pull responses.
+
+Deployment: see docs/SYNC-FEDERATION.md.
 """
 
 import argparse
@@ -44,6 +49,17 @@ _DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_BODY_BYTES: int = int(os.environ.get("SYNC_MAX_BODY_BYTES", str(_DEFAULT_MAX_BODY_BYTES)))
 
 
+def _filter_public_ops(ops: list[dict]) -> list[dict]:
+    """Strip ops whose row_payload has visibility='private' from pull responses."""
+    result = []
+    for op in ops:
+        payload = op.get("row_payload", {})
+        if isinstance(payload, dict) and payload.get("visibility") == "private":
+            continue
+        result.append(op)
+    return result
+
+
 def _check_gateway_auth(handler: "BaseHTTPRequestHandler", token: str) -> bool:
     """Return True if the request is authorized.
 
@@ -82,13 +98,16 @@ class GatewayStore:
                 """
                 CREATE TABLE IF NOT EXISTS txns (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    txn_id TEXT NOT NULL UNIQUE,
+                    txn_id TEXT NOT NULL,
                     replica_id TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
+                    namespace TEXT NOT NULL DEFAULT 'default',
+                    payload_json TEXT NOT NULL,
+                    UNIQUE(namespace, txn_id)
                 );
                 CREATE TABLE IF NOT EXISTS ops (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     txn_id TEXT NOT NULL,
+                    namespace TEXT NOT NULL DEFAULT 'default',
                     table_name TEXT NOT NULL,
                     op_type TEXT NOT NULL,
                     row_stable_id TEXT NOT NULL,
@@ -97,25 +116,30 @@ class GatewayStore:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_txns_seq ON txns(seq);
+                CREATE INDEX IF NOT EXISTS idx_txns_namespace ON txns(namespace);
                 CREATE INDEX IF NOT EXISTS idx_ops_txn_id ON ops(txn_id);
+                CREATE INDEX IF NOT EXISTS idx_ops_namespace ON ops(namespace);
                 """
             )
             self.conn.commit()
 
-    def latest_txn_id(self) -> str | None:
+    def latest_txn_id(self, namespace: str = "default") -> str | None:
         with self.lock:
-            row = self.conn.execute("SELECT txn_id FROM txns ORDER BY seq DESC LIMIT 1").fetchone()
+            row = self.conn.execute(
+                "SELECT txn_id FROM txns WHERE namespace = ? ORDER BY seq DESC LIMIT 1",
+                (namespace,),
+            ).fetchone()
         return row["txn_id"] if row else None
 
-    def _insert_txn_in_current_transaction(self, txn: dict) -> bool:
+    def _insert_txn_in_current_transaction(self, txn: dict, namespace: str) -> bool:
         payload = json.dumps(txn, separators=(",", ":"), ensure_ascii=False)
         try:
             self.conn.execute(
-                "INSERT INTO txns (txn_id, replica_id, payload_json) VALUES (?, ?, ?)",
-                (txn["txn_id"], txn["replica_id"], payload),
+                "INSERT INTO txns (txn_id, replica_id, namespace, payload_json) VALUES (?, ?, ?, ?)",
+                (txn["txn_id"], txn["replica_id"], namespace, payload),
             )
         except sqlite3.IntegrityError as exc:
-            if "UNIQUE constraint failed: txns.txn_id" in str(exc):
+            if "UNIQUE constraint failed" in str(exc):
                 return False
             raise
 
@@ -123,13 +147,14 @@ class GatewayStore:
             self.conn.execute(
                 """
                 INSERT INTO ops (
-                    txn_id, table_name, op_type, row_stable_id,
+                    txn_id, namespace, table_name, op_type, row_stable_id,
                     row_payload_json, op_index, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     txn["txn_id"],
+                    namespace,
                     op["table_name"],
                     op["op_type"],
                     op["row_stable_id"],
@@ -140,11 +165,11 @@ class GatewayStore:
             )
         return True
 
-    def insert_txn(self, txn: dict) -> bool:
-        accepted_ids, _ = self.insert_txns([txn])
+    def insert_txn(self, txn: dict, namespace: str = "default") -> bool:
+        accepted_ids, _ = self.insert_txns([txn], namespace=namespace)
         return bool(accepted_ids)
 
-    def insert_txns(self, txns: list[dict]) -> tuple[list[str], list[str]]:
+    def insert_txns(self, txns: list[dict], namespace: str = "default") -> tuple[list[str], list[str]]:
         accepted_txn_ids: list[str] = []
         duplicate_txn_ids: list[str] = []
         with self.lock:
@@ -152,7 +177,7 @@ class GatewayStore:
                 self.conn.execute("BEGIN")
                 for txn in txns:
                     txn_id = txn["txn_id"]
-                    inserted = self._insert_txn_in_current_transaction(txn)
+                    inserted = self._insert_txn_in_current_transaction(txn, namespace)
                     if inserted:
                         accepted_txn_ids.append(txn_id)
                     else:
@@ -163,24 +188,33 @@ class GatewayStore:
                 raise
         return accepted_txn_ids, duplicate_txn_ids
 
-    def pull(self, after_txn_id: str | None, limit: int) -> tuple[list[dict], str | None, bool]:
+    def pull(
+        self, after_txn_id: str | None, limit: int, namespace: str = "default"
+    ) -> tuple[list[dict], str | None, bool]:
         with self.lock:
             after_seq = 0
             if after_txn_id:
-                row = self.conn.execute("SELECT seq FROM txns WHERE txn_id = ? LIMIT 1", (after_txn_id,)).fetchone()
+                row = self.conn.execute(
+                    "SELECT seq FROM txns WHERE txn_id = ? AND namespace = ? LIMIT 1",
+                    (after_txn_id, namespace),
+                ).fetchone()
                 if row is None:
                     raise ValueError("unknown_after")
                 after_seq = int(row["seq"])
 
             rows = self.conn.execute(
-                "SELECT seq, txn_id, payload_json FROM txns WHERE seq > ? ORDER BY seq ASC LIMIT ?",
-                (after_seq, limit + 1),
+                "SELECT seq, txn_id, payload_json FROM txns WHERE namespace = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
+                (namespace, after_seq, limit + 1),
             ).fetchall()
 
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]
-        txns = [json.loads(r["payload_json"]) for r in rows]
+        txns = []
+        for r in rows:
+            txn = json.loads(r["payload_json"])
+            txn["ops"] = _filter_public_ops(txn.get("ops", []))
+            txns.append(txn)
         next_after = rows[-1]["txn_id"] if rows else (after_txn_id or None)
         return txns, next_after, has_more
 
@@ -236,7 +270,7 @@ def make_handler(store: GatewayStore, token: str = ""):
                     200,
                     {
                         "status": "ok",
-                        "service": "sync-reference-mock-gateway",
+                        "service": "sync-gateway",
                     },
                 )
                 return
@@ -255,6 +289,7 @@ def make_handler(store: GatewayStore, token: str = ""):
             if not replica_id:
                 _error(self, 400, "missing_replica_id")
                 return
+            namespace = (qs.get("namespace") or ["default"])[0].strip() or "default"
             after = (qs.get("after") or [""])[0].strip() or None
             limit_raw = (qs.get("limit") or ["100"])[0].strip()
             try:
@@ -268,7 +303,7 @@ def make_handler(store: GatewayStore, token: str = ""):
             limit = min(limit, 1000)
 
             try:
-                txns, next_after, has_more = store.pull(after, limit)
+                txns, next_after, has_more = store.pull(after, limit, namespace=namespace)
             except ValueError:
                 _error(self, 400, "unknown_after")
                 return
@@ -320,6 +355,7 @@ def make_handler(store: GatewayStore, token: str = ""):
                 return
 
             replica_id = payload.get("replica_id")
+            namespace = str(payload.get("namespace", "default")).strip() or "default"
             txns = payload.get("txns")
             if not isinstance(replica_id, str) or not replica_id.strip():
                 _error(self, 400, "missing_replica_id")
@@ -340,7 +376,7 @@ def make_handler(store: GatewayStore, token: str = ""):
                 validated_txns.append(txn)
 
             try:
-                accepted_txn_ids, duplicate_txn_ids = store.insert_txns(validated_txns)
+                accepted_txn_ids, duplicate_txn_ids = store.insert_txns(validated_txns, namespace=namespace)
             except Exception:
                 _error(self, 500, "insert_failed")
                 return
@@ -351,7 +387,8 @@ def make_handler(store: GatewayStore, token: str = ""):
                 {
                     "accepted_txn_ids": accepted_txn_ids,
                     "duplicate_txn_ids": duplicate_txn_ids,
-                    "latest_txn_id": store.latest_txn_id(),
+                    "latest_txn_id": store.latest_txn_id(namespace=namespace),
+                    "namespace": namespace,
                 },
             )
 
@@ -365,7 +402,7 @@ def create_server(host: str, port: int, db_path: Path, token: str = "") -> tuple
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Reference/mock sync gateway (local integration contract surface)")
+    parser = argparse.ArgumentParser(description="Sync gateway with per-repo namespace scoping")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
@@ -382,7 +419,7 @@ def main() -> int:
 
     server, store = create_server(args.host, args.port, Path(args.db), token=args.token)
     host, port = server.server_address
-    print(f"sync-gateway reference/mock listening on http://{host}:{port}")
+    print(f"sync-gateway listening on http://{host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

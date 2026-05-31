@@ -1918,6 +1918,14 @@ if __name__ == "__main__":
                 END""",
             ],
         ),
+        (
+            46,
+            "sync_federation_namespace_visibility",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'",
+                "CREATE INDEX IF NOT EXISTS idx_ke_visibility ON knowledge_entries (visibility)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
