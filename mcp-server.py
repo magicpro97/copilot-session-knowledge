@@ -319,13 +319,17 @@ TOOLS = [
     },
     {
         "name": "batch_learn",
-        "description": "Record multiple knowledge entries in a single atomic transaction. Max 50 entries per batch. Issue #833.",
+        "description": (
+            "Write multiple knowledge entries in a single call. "
+            "Supports MCP progress notifications (issue #855): pass _meta.progressToken to receive "
+            "per-entry progress. Each entry follows the same schema as the 'learn' tool."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "entries": {
                     "type": "array",
-                    "maxItems": 50,
+                    "description": "List of knowledge entries to record.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -347,8 +351,13 @@ TOOLS = [
                         "required": ["type", "title", "content"],
                         "additionalProperties": False,
                     },
-                    "description": "Array of knowledge entries to write atomically.",
-                }
+                    "minItems": 1,
+                    "maxItems": 50,
+                },
+                "token": {
+                    "type": "string",
+                    "description": "Auth token (required when COPILOT_MCP_TOKEN is set).",
+                },
             },
             "required": ["entries"],
             "additionalProperties": False,
@@ -415,7 +424,7 @@ def _capture_module_main(module, argv: list[str]) -> tuple[int, str, str]:
     return exit_code, stdout_buf.getvalue(), stderr_buf.getvalue()
 
 
-def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_briefing(arguments: dict[str, Any], progress_token: Any = None) -> dict[str, Any]:
     task = _require_string(arguments, "task")
     mode = arguments.get("mode", "auto")
     if not isinstance(mode, str) or mode not in VALID_BRIEFING_MODES:
@@ -438,7 +447,9 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
         argv += ["--available-tokens", str(available_tokens)]
     if synthesize:
         argv += ["--rag"]
+    _send_progress(progress_token, 0.0, 1.0, "starting briefing")
     exit_code, stdout_text, stderr_text = _capture_module_main(briefing_mod, argv)
+    _send_progress(progress_token, 0.5, 1.0, "processing results")
     if exit_code != 0:
         message = stderr_text.strip() or stdout_text.strip() or "briefing failed"
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, message)
@@ -450,6 +461,7 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
     result = {"content": [{"type": "text", "text": text}]}
     if structured is not None:
         result["structuredContent"] = structured
+    _send_progress(progress_token, 1.0, 1.0, "done")
     return result
 
 
@@ -672,14 +684,14 @@ def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# batch_learn — bulk atomic knowledge writes (issue #833)
+# batch_learn — bulk atomic knowledge writes with progress (issue #833, #855)
 # ---------------------------------------------------------------------------
 
 _BATCH_LEARN_MAX = 50
 
 
-def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Write multiple knowledge entries in a single SQLite transaction."""
+def _run_batch_learn(arguments: dict[str, Any], progress_token: Any = None) -> dict[str, Any]:
+    """Write multiple knowledge entries in a single SQLite transaction with progress notifications."""
     _check_auth(arguments)
 
     raw_entries = arguments.get("entries")
@@ -777,6 +789,7 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
 
     now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     batch_session_id = f"batch_{_uuid833.uuid4().hex[:12]}"
+    total = float(len(validated))
 
     created_ids: list[int] = []
     try:
@@ -786,7 +799,7 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
             has_stable_id = "stable_id" in ke_columns
 
             with db:
-                for entry in validated:
+                for i, entry in enumerate(validated):
                     cat = entry["category"]
                     ttl = entry["title"]
                     body = entry["content"]
@@ -831,6 +844,12 @@ def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
                         pass  # ke_fts may not exist on older schemas
 
                     created_ids.append(entry_id)
+                    _send_progress(
+                        progress_token,
+                        float(i + 1),
+                        total,
+                        f"recorded entry {i + 1}/{int(total)}",
+                    )
         finally:
             db.close()
     except JsonRpcError:
@@ -1158,8 +1177,10 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         arguments = {}
     if not isinstance(arguments, dict):
         raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'arguments' must be an object")
+    meta = params.get("_meta", {})
+    progress_token = meta.get("progressToken") if isinstance(meta, dict) else None
     if name == "briefing":
-        return _run_briefing(arguments)
+        return _run_briefing(arguments, progress_token=progress_token)
     if name == "query_session":
         return _run_query_session(arguments)
     if name == "query_memory":
@@ -1177,7 +1198,7 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     if name == "sk_compact_session":
         return _run_compact_session(arguments)
     if name == "batch_learn":
-        return _run_batch_learn(arguments)
+        return _run_batch_learn(arguments, progress_token=progress_token)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 
@@ -1426,6 +1447,24 @@ def _write_message(stream, payload: dict[str, Any]) -> None:
 
 def _write_result(request_id: Any, result: dict[str, Any]) -> None:
     _write_message(sys.stdout.buffer, {"jsonrpc": "2.0", "id": request_id, "result": result})
+
+
+def _send_progress(progress_token: Any, progress: float, total: float = 1.0, message: str = "") -> None:
+    """Send a progress notification per MCP spec (issue #855). Fire-and-forget."""
+    if not progress_token:
+        return
+    notification: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+            "progressToken": progress_token,
+            "progress": progress,
+            "total": total,
+        },
+    }
+    if message:
+        notification["params"]["message"] = message
+    _write_message(sys.stdout.buffer, notification)
 
 
 def _write_error(request_id: Any, code: int, message: str, data: Any = None) -> None:
