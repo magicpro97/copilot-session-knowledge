@@ -22,13 +22,19 @@ STALE_MIN_RECALL = 2
 LOW_CONFIDENCE = 0.3
 
 
+def _wal_connect(path: "str | Path", **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
 def _get_db(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         print(f"Error: DB not found at {db_path}", file=sys.stderr)
         sys.exit(1)
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn = _wal_connect(db_path)
     return conn
 
 

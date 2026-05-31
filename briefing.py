@@ -33,6 +33,8 @@ Usage:
     python briefing.py "task" --no-repeat                  # Skip entries already served this session
     python briefing.py "task" --no-repeat=off              # Disable session-scoped deduplication
     python briefing.py "task" --available-tokens 5000 --pressure-compact  # Auto-compact if < 20% context left
+    python briefing.py --watch                                # Live-poll for new entries (Ctrl-C to stop)
+    python briefing.py --watch --interval 10                  # Poll every 10s instead of default 30s
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -477,13 +479,19 @@ def _generate_skill_index(skills_dir: "Path | None" = None) -> str:
         return ""  # always fail-open
 
 
+def _wal_connect(path: "str | Path", **kwargs) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL journal mode and busy timeout."""
+    db = sqlite3.connect(str(path), **kwargs)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    return db
+
+
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
         print("Error: Knowledge database not found. Run build-session-index.py first.", file=sys.stderr)
         sys.exit(1)
-    db = sqlite3.connect(str(DB_PATH))
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
+    db = _wal_connect(DB_PATH)
     db.row_factory = sqlite3.Row
     return db
 
@@ -661,9 +669,7 @@ def _record_recall_event(
     )
     db = None
     try:
-        db = sqlite3.connect(str(DB_PATH))
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=5000")
+        db = _wal_connect(str(DB_PATH))
         db.execute(
             """
             INSERT INTO recall_events (
@@ -4308,9 +4314,7 @@ def generate_briefing_history(days: int = 7, fmt: str = "text") -> str:
         return msg
 
     try:
-        db = sqlite3.connect(str(DB_PATH))
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=5000")
+        db = _wal_connect(str(DB_PATH))
         db.row_factory = sqlite3.Row
     except Exception as exc:
         msg = f"Cannot open database: {exc}"
@@ -4407,9 +4411,7 @@ def generate_never_recalled(fmt: str = "text") -> str:
         return msg
 
     try:
-        db = sqlite3.connect(str(DB_PATH))
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=5000")
+        db = _wal_connect(str(DB_PATH))
         db.row_factory = sqlite3.Row
     except Exception as exc:
         msg = f"Cannot open database: {exc}"
@@ -4470,9 +4472,7 @@ def generate_never_recalled(fmt: str = "text") -> str:
 def _query_code_context(db_path: Path, query: str, token_budget: int = 1000) -> list[dict]:
     """Query code_fts for relevant snippets. Returns [] if table missing or error."""
     try:
-        db = sqlite3.connect(str(db_path))
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=5000")
+        db = _wal_connect(str(db_path))
         has = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has:
             db.close()
@@ -4633,9 +4633,7 @@ def _delta_report(db_path: "Path", window: str) -> None:
         return
 
     try:
-        db = sqlite3.connect(str(db_path))
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=5000")
+        db = _wal_connect(str(db_path))
         db.row_factory = sqlite3.Row
     except Exception as exc:
         print(f"Cannot open database: {exc}", file=sys.stderr)
@@ -4922,9 +4920,7 @@ def _statistical_reflect(entries: list[dict], question: str) -> str:
 
 def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
     """Run --reflect mode: fetch entries, synthesize insight, optionally store."""
-    db = sqlite3.connect(db_path)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
+    db = _wal_connect(db_path)
     entries = _fetch_reflect_entries(db, question)
 
     if not entries:
@@ -4951,6 +4947,75 @@ def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
         )
         db.commit()
     db.close()
+
+
+def _run_watch(db_path: str, interval: int = 30, broadcast_check: bool = False) -> None:
+    """Poll knowledge.db for new entries and print diffs (issue #839)."""
+    import signal
+    import time
+
+    if not Path(db_path).exists():
+        print(f"[watch] Database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = _wal_connect(db_path)
+    last_max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM knowledge_entries").fetchone()[0]
+
+    print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop")
+    print(f"[watch] Starting from entry id>{last_max_id}")
+
+    def _handle_signal(sig, frame):
+        print("\n[watch] Stopped.")
+        conn.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_signal)
+
+    broadcast_path = Path.home() / ".copilot" / "markers" / "knowledge-broadcast.jsonl"
+
+    while True:
+        time.sleep(interval)
+        try:
+            rows = conn.execute(
+                "SELECT id, category, title, confidence FROM knowledge_entries WHERE id > ? ORDER BY id",
+                (last_max_id,),
+            ).fetchall()
+            if rows:
+                print(f"\n⚡ {len(rows)} new entr{'y' if len(rows) == 1 else 'ies'} since last check:")
+                for r in rows:
+                    print(f"  #{r[0]} [{r[1]}] {r[2][:60]}  conf={r[3]:.1f}")
+                last_max_id = rows[-1][0]
+            if broadcast_check and broadcast_path.exists():
+                _show_broadcast_entries(broadcast_path)
+        except Exception as e:
+            print(f"[watch] error: {e}", file=sys.stderr)
+
+
+def _show_broadcast_entries(broadcast_path: Path) -> None:
+    """Print recent broadcast entries from parallel agents."""
+    import json
+    import time as _t
+
+    cutoff = _t.time() - 3600  # last 1h
+    new_count = 0
+    try:
+        with broadcast_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("ts", 0) >= cutoff:
+                        new_count += 1
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except OSError:
+        pass
+    if new_count:
+        print(f"📡 {new_count} new entries from parallel agents (last 1h) — run: sk knowledge broadcast")
 
 
 def _synthesize_category_section(category: str, entries: list[dict], mode: str, task: str) -> str:
@@ -5024,9 +5089,7 @@ def _group_by_relations(db: sqlite3.Connection, entries: list[dict]) -> dict[str
 
 def _run_rag_briefing(db_path: str, query: str, mode: str = "auto") -> None:
     """RAG synthesis mode: retrieve top entries then synthesize into prose."""
-    db = sqlite3.connect(db_path)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
+    db = _wal_connect(db_path)
     db.row_factory = sqlite3.Row
     entries = _fetch_rag_entries(db, query)
     if not entries:
@@ -5097,9 +5160,7 @@ def main():
         no_danger = "--no-danger" in args
         if not no_danger and DB_PATH.exists():
             try:
-                _db = sqlite3.connect(str(DB_PATH))
-                _db.execute("PRAGMA journal_mode=WAL")
-                _db.execute("PRAGMA busy_timeout=5000")
+                _db = _wal_connect(str(DB_PATH))
                 _db.row_factory = sqlite3.Row
                 danger = _fetch_danger_lane(_db)
                 if danger:
@@ -5197,6 +5258,21 @@ def main():
         _rf_store = "--no-store" not in args
         _run_reflect(str(DB_PATH), _rf_question, store=_rf_store)
         return
+
+    # Handle --watch [--interval N] mode (issue #839)
+    if "--watch" in args:
+        _watch_interval = 30
+        if "--interval" in args:
+            _wi_idx = args.index("--interval")
+            try:
+                _watch_interval = (
+                    int(args[_wi_idx + 1]) if _wi_idx + 1 < len(args) and not args[_wi_idx + 1].startswith("--") else 30
+                )
+            except (ValueError, IndexError):
+                _watch_interval = 30
+        _watch_interval = max(1, _watch_interval)
+        _watch_broadcast = "--broadcast-check" in args
+        _run_watch(str(DB_PATH), interval=_watch_interval, broadcast_check=_watch_broadcast)
 
     # Handle --rag / --synthesize mode (issue #815)
     if "--rag" in args or "--synthesize" in args:
@@ -5673,9 +5749,7 @@ def main():
     # when --no-danger is not set (issue #781).
     if not no_danger and fmt in ("compact", "pack", "md") and DB_PATH.exists():
         try:
-            _dl_db = sqlite3.connect(str(DB_PATH))
-            _dl_db.execute("PRAGMA journal_mode=WAL")
-            _dl_db.execute("PRAGMA busy_timeout=5000")
+            _dl_db = _wal_connect(str(DB_PATH))
             _dl_db.row_factory = sqlite3.Row
             danger = _fetch_danger_lane(_dl_db, since_date=since_date)
             if danger:

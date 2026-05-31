@@ -42,6 +42,7 @@ Usage:
     python query-session.py --feedback 42 good                 # Mark entry #42 as good (+1)
     python query-session.py --feedback 42 bad                  # Mark entry #42 as bad (-1)
     python query-session.py --feedback 42 neutral              # Mark entry #42 as neutral (0)
+    python query-session.py "search" --explain                 # Show score breakdown per result
 
 Doc types: checkpoint, research, artifact, plan, claude-session
 Knowledge categories: mistake, pattern, decision, tool
@@ -1461,6 +1462,95 @@ def show_detail(entry_id: int):
     return {"opened_entry_id": int(entry_id), "hit_count": 1, "selected_entry_ids": [int(entry_id)]}
 
 
+def _explain_scores_for_entry(
+    db, entry_id: int, rank: int = 0, bm25_rank: float | None = None, row_data: dict | None = None
+) -> dict:
+    """Return a score-breakdown dict for a knowledge entry.
+
+    Computes: bm25 (from ke_fts rank), decay (recency), access_count, and a
+    composite rrf score using 1/(k + rank + 1) matching the repo convention.
+
+    Args:
+        rank: 0-based position in the result list (used for RRF).
+        bm25_rank: raw FTS5 rank value (negative; lower = better).
+        row_data: pre-fetched row dict to avoid N+1 query (needs last_seen,
+            occurrence_count, confidence, intensity).
+    """
+    import datetime as _dt_ex
+
+    if row_data is not None:
+        row_d = dict(row_data)
+    else:
+        row = db.execute(
+            """
+            SELECT ke.id, ke.title, ke.category, ke.confidence,
+                   ke.occurrence_count, ke.last_seen,
+                   COALESCE(ke.intensity, ke.confidence) AS intensity,
+                   COALESCE(ke.priority, 'P2') AS priority
+            FROM knowledge_entries ke WHERE ke.id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        if not row:
+            return {}
+        row_d = dict(row)
+
+    # BM25 rank from ke_fts (lower is better in SQLite FTS5; negate for display)
+    bm25 = None
+    if bm25_rank is not None:
+        bm25 = round(-float(bm25_rank), 4)
+    else:
+        try:
+            fts_row = db.execute(
+                "SELECT rank FROM ke_fts fts JOIN knowledge_entries ke ON fts.rowid = ke.id WHERE ke.id = ? LIMIT 1",
+                (entry_id,),
+            ).fetchone()
+            if fts_row:
+                bm25 = round(-float(fts_row[0]), 4)
+        except Exception:
+            pass
+
+    # Recency decay (mirrors briefing._recency_decay)
+    _half_life = 30.0
+    try:
+        _hl_row = db.execute("SELECT value FROM wakeup_config WHERE key='briefing_recency_half_life'").fetchone()
+        if _hl_row and _hl_row[0]:
+            v = float(_hl_row[0])
+            if v > 0:
+                _half_life = v
+    except Exception:
+        pass
+
+    last_seen_str = row_d.get("last_seen")
+    decay = 1.0
+    age_days = 0.0
+    if last_seen_str:
+        try:
+            ts_str = str(last_seen_str)[:19].replace("T", " ")
+            ts = _dt_ex.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            now_utc = _dt_ex.datetime.now(_dt_ex.timezone.utc).replace(tzinfo=None)
+            age_days = max(0.0, (now_utc - ts).total_seconds() / 86400.0)
+            decay = 0.5 ** (age_days / _half_life)
+        except Exception:
+            pass
+
+    access_count = int(row_d.get("occurrence_count") or 1)
+    intensity = float(row_d.get("intensity") or row_d.get("confidence") or 0.5)
+
+    # RRF composite: 1/(k + rank + 1) matching embed.py / briefing.py convention
+    _k = 60.0
+    rrf = round(1.0 / (_k + rank + 1), 6)
+
+    return {
+        "bm25": bm25,
+        "decay": round(decay, 4),
+        "rrf": rrf,
+        "access_count": access_count,
+        "age_days": round(age_days, 1),
+        "intensity": round(intensity, 4),
+    }
+
+
 def explain_why(entry_id: int, as_json: bool = False):
     """Explain why an entry scored as it did: FTS rank, recency decay, recurrence weight, final score.
 
@@ -1885,11 +1975,13 @@ def search_knowledge(
     retrieval_query: str = None,
     error_type: str = None,
     since_date: "str | None" = None,
+    explain: bool = False,
 ):
     """Search knowledge entries with FTS5 and adaptive strictness.
 
     ``since_date`` is an optional ISO-8601 date string (``YYYY-MM-DD``).  When
     provided, only entries whose ``last_seen >= since_date`` are returned.
+    ``explain`` appends a per-result score breakdown line (bm25/decay/rrf/access).
     """
     db = get_db()
     query_for_retrieval = retrieval_query if retrieval_query is not None else query
@@ -1921,7 +2013,8 @@ def search_knowledge(
     try:
         rows = db.execute(
             f"""
-            SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
+            SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt,
+                   rank as _fts_rank
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             WHERE ke_fts MATCH ?{et_clause}{date_clause}
@@ -1939,7 +2032,8 @@ def search_knowledge(
         try:
             rows = db.execute(
                 f"""
-                SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
+                SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt,
+                       rank as _fts_rank
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?{et_clause}{date_clause}
@@ -1962,7 +2056,8 @@ def search_knowledge(
             rows = db.execute(
                 f"""
                 SELECT ke.*,
-                       SUBSTR(ke.content, MAX(1, INSTR(LOWER(ke.content), LOWER(?)) - 40), 128) as excerpt
+                       SUBSTR(ke.content, MAX(1, INSTR(LOWER(ke.content), LOWER(?)) - 40), 128) as excerpt,
+                       NULL as _fts_rank
                 FROM knowledge_entries ke
                 WHERE (LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?){et_like}{date_like}
                 ORDER BY ke.confidence DESC
@@ -1985,7 +2080,19 @@ def search_knowledge(
     if export_fmt == "json" and rows:
         # Issue #377: suppress status-note entries in all output formats
         rows = [r for r in rows if not _STATUS_NOTE_RE.search(dict(r).get("title", "") or "")]
-        _export_json([dict(r) for r in rows])
+        rows_dicts = [dict(r) for r in rows]
+        if explain:
+            for idx, rd in enumerate(rows_dicts):
+                bm25_rank = rd.pop("_fts_rank", None)
+                entry_id = rd.get("id")
+                if isinstance(entry_id, int):
+                    rd["scores"] = _explain_scores_for_entry(db, entry_id, rank=idx, bm25_rank=bm25_rank, row_data=rd)
+                else:
+                    rd.pop("_fts_rank", None)
+        else:
+            for rd in rows_dicts:
+                rd.pop("_fts_rank", None)
+        _export_json(rows_dicts)
         db.close()
         return
 
@@ -2013,6 +2120,20 @@ def search_knowledge(
             print(f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}{meta_str}")
             print(f"   {DIM}Session:{RESET} {sid}..  {DIM}Tags:{RESET} {r['tags']}")
             print(f"   {excerpt}")
+            if explain:
+                rd = dict(r)
+                bm25_rank = rd.get("_fts_rank")
+                entry_id = rd.get("id")
+                if isinstance(entry_id, int):
+                    sc = _explain_scores_for_entry(db, entry_id, rank=i - 1, bm25_rank=bm25_rank, row_data=rd)
+                    bm25_str = f"{sc['bm25']:.3f}" if sc.get("bm25") is not None else "n/a"
+                    decay_str = f"{sc['decay']:.2f}"
+                    rrf_str = f"{sc['rrf']:.3f}"
+                    age_str = f"{sc['age_days']:.0f}d"
+                    print(
+                        f"   {DIM}bm25={bm25_str}  decay={decay_str}  rrf={rrf_str}"
+                        f"  access={sc['access_count']}  age={age_str}{RESET}"
+                    )
             print()
 
     if not rows and export_fmt != "json":
@@ -2231,7 +2352,14 @@ def export_search_results(results: list, fmt: str):
             print("---\n")
 
 
-def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieval_query: str = None, rrf_k: int = None):
+def semantic_search(
+    query: str,
+    limit: int = 10,
+    verbose: bool = False,
+    retrieval_query: str = None,
+    rrf_k: int = None,
+    explain: bool = False,
+):
     """Hybrid search: FTS5 keyword + vector semantic, merged with RRF."""
     try:
         tools_dir = Path(__file__).parent
@@ -2330,6 +2458,19 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieva
 
         if verbose and "section_name" in r:
             print(f"   {DIM}Section: {r['section_name']}{RESET}")
+
+        if explain:
+            entry_id = r.get("id")
+            if isinstance(entry_id, int):
+                sc = _explain_scores_for_entry(db, entry_id, rank=i - 1)
+                bm25_str = f"{sc['bm25']:.3f}" if sc.get("bm25") is not None else "n/a"
+                decay_str = f"{sc['decay']:.2f}"
+                rrf_str = f"{sc['rrf']:.3f}"
+                age_str = f"{sc['age_days']:.0f}d"
+                print(
+                    f"   {DIM}bm25={bm25_str}  decay={decay_str}  rrf={rrf_str}"
+                    f"  access={sc['access_count']}  age={age_str}{RESET}"
+                )
 
         print()
 
@@ -3338,6 +3479,8 @@ def _run(args: list, compact: bool = False):
     use_semantic = "--semantic" in args or "-s" in args
     # Issue #371: synonym expansion flag
     use_expand_synonyms = "--expand-synonyms" in args
+    # Issue #838: score breakdown flag
+    use_explain = "--explain" in args
     # Issue #375: configurable RRF k
     rrf_k_override = None
     if "--rrf-k" in args:
@@ -3370,6 +3513,8 @@ def _run(args: list, compact: bool = False):
             i += 2  # skip flag + value (already parsed above)
         elif args[i] in ("--compact", "--snippet", "--no-snippet"):
             i += 1  # already consumed or toggle flags
+        elif args[i] in ("--explain",):
+            i += 1  # already captured above
         elif args[i] in ("--agent-tag", "--msg-tag"):
             i += 2  # skip flag + value; tag filters must not enter query text
         elif args[i].startswith("--"):
@@ -3395,7 +3540,9 @@ def _run(args: list, compact: bool = False):
         rewritten_query = _expand_synonyms_fts(rewritten_query)
 
     if use_semantic:
-        output, meta = _run_with_capture(semantic_search, query, limit, verbose, semantic_query, rrf_k_override)
+        output, meta = _run_with_capture(
+            semantic_search, query, limit, verbose, semantic_query, rrf_k_override, use_explain
+        )
         meta = meta or {"hit_count": 0, "selected_entry_ids": []}
         _record_recall_event(
             event_kind="recall",
@@ -3463,7 +3610,9 @@ def _run(args: list, compact: bool = False):
 
             # Also search knowledge entries
             knowledge_meta = _coerce_recall_meta(
-                search_knowledge(query, limit=5, retrieval_query=rewritten_query, since_date=since_date_filter),
+                search_knowledge(
+                    query, limit=5, retrieval_query=rewritten_query, since_date=since_date_filter, explain=use_explain
+                ),
                 {"hit_count": 0, "selected_entry_ids": []},
             )
             total_hit_count += int(knowledge_meta.get("hit_count", 0) or 0)

@@ -13,16 +13,18 @@ Usage:
     python3 retro.py --mode repo             # Repo-only mode (git signals only, no local DBs)
     python3 retro.py --days N                # Lookback window in days (default 30)
     python3 retro.py --stale N               # Staleness threshold in days for knowledge (default 30)
+    python3 retro.py --capture               # Auto-persist retro report as a knowledge entry via learn.py
 
 Modes:
     local (default) — reads knowledge.db, skill-metrics.db, audit.jsonl, git history
     repo            — reads only git history; safe for CI and environments without local DBs
 
 Read-only guarantees:
-    - No writes to any database
+    - No writes to any database (unless --capture is passed)
     - No issue creation, PR creation, or git commits
     - No hook binding or indexing side effects
     - State cache (.retro-state.json) is written locally but never committed
+    - --capture invokes learn.py to persist the report as a knowledge entry
 """
 
 import importlib.util
@@ -1333,6 +1335,7 @@ def _parse_args(argv: list) -> dict:
         "by_wing": False,
         "by_tag": None,
         "by_room": None,
+        "capture": False,
     }
     i = 0
     while i < len(argv):
@@ -1378,6 +1381,8 @@ def _parse_args(argv: list) -> dict:
             if i + 1 < len(argv):
                 i += 1
                 args["by_room"] = argv[i]
+        elif a == "--capture":
+            args["capture"] = True
         i += 1
     return args
 
@@ -1452,6 +1457,30 @@ def main() -> None:
             except Exception:
                 pass
         print(report)
+        if args["capture"]:
+            import datetime as _dt834
+
+            _today = _dt834.datetime.now().strftime("%Y-%m-%d")
+            title = f"Session retro {_today}"
+            tags = f"retro,session-retrospective,date:{_today}"
+            _cap = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).parent / "learn.py"),
+                    "--discovery",
+                    title,
+                    report,
+                    "--tags",
+                    tags,
+                ],
+                check=False,
+                capture_output=True,
+                timeout=30,
+            )
+            if _cap.returncode == 0:
+                print(f"[retro] Saved as knowledge entry: {title}")
+            else:
+                print(f"[retro] Failed to save knowledge entry (exit {_cap.returncode})", file=sys.stderr)
 
 
 if __name__ == "__main__":

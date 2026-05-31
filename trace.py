@@ -319,9 +319,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
     """Analyze tool-call patterns from indexed spans."""
-    db = sqlite3.connect(str(_DB_PATH))
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
+    db = _open_db()
+    if db is None:
+        return 1
     report = getattr(args, "report", "tool-frequency")
     limit = getattr(args, "limit", 20)
 
