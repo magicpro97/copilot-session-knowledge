@@ -13279,6 +13279,240 @@ except Exception as _e840:
         test(f"I840-{_label840}: parallel session indexing", False, str(_e840))
 
 # ---------------------------------------------------------------------------
+# I838: sk query --explain — recall score breakdown
+# ---------------------------------------------------------------------------
+print("\n🔍 I838: sk query --explain — recall score breakdown")
+
+try:
+    import datetime as _dt838
+    import importlib.util as _ilu838
+    import sqlite3 as _sq838
+    import tempfile as _tf838
+    from pathlib import Path as _Path838
+
+    _spec838 = _ilu838.spec_from_file_location("qs838", Path("query-session.py"))
+    _qs838 = _ilu838.module_from_spec(_spec838)
+    _spec838.loader.exec_module(_qs838)
+
+    with _tf838.TemporaryDirectory(prefix="i838-test-") as _td838:
+        _db_dir838 = _Path838(_td838) / ".copilot" / "session-state"
+        _db_dir838.mkdir(parents=True)
+        _db838 = _sq838.connect(str(_db_dir838 / "knowledge.db"))
+        _db838.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT 'sess-838',
+                document_id INTEGER DEFAULT NULL,
+                category TEXT NOT NULL DEFAULT 'mistake',
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 0.9,
+                occurrence_count INTEGER DEFAULT 5,
+                first_seen TEXT DEFAULT '2024-01-01 00:00:00',
+                last_seen TEXT DEFAULT '2024-06-01 00:00:00',
+                source TEXT DEFAULT 'copilot',
+                est_tokens INTEGER DEFAULT 0,
+                intensity REAL DEFAULT 0.85,
+                priority TEXT DEFAULT 'P2',
+                error_type TEXT DEFAULT NULL,
+                severity TEXT DEFAULT NULL,
+                root_cause TEXT DEFAULT NULL,
+                affected_files TEXT DEFAULT '[]',
+                facts TEXT DEFAULT '[]'
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags,
+                content='knowledge_entries', content_rowid='id'
+            );
+        """)
+        _db838.execute(
+            "INSERT INTO knowledge_entries (id, title, content, tags, confidence, occurrence_count, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                1042,
+                "Docker DNS resolution fix",
+                "Fix Docker DNS resolution issues by setting custom nameservers",
+                "docker,dns",
+                0.9,
+                5,
+                _dt838.datetime.now(_dt838.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        _db838.execute(
+            "INSERT INTO ke_fts(rowid, title, content, tags) VALUES (1042, 'Docker DNS resolution fix', 'Fix Docker DNS resolution issues by setting custom nameservers', 'docker,dns')"
+        )
+        _db838.commit()
+        _db838.close()
+
+        _orig_db838 = _qs838.DB_PATH
+        _qs838.DB_PATH = _Path838(_db_dir838 / "knowledge.db")
+
+        try:
+            # Test 1: _explain_scores_for_entry returns expected keys
+            _db_conn838 = _qs838.get_db()
+            _sc838 = _qs838._explain_scores_for_entry(_db_conn838, 1042)
+            _db_conn838.close()
+            test(
+                "I838-1a: _explain_scores_for_entry returns decay key",
+                "decay" in _sc838,
+                str(_sc838),
+            )
+            test(
+                "I838-1b: _explain_scores_for_entry returns access_count key",
+                "access_count" in _sc838,
+                str(_sc838),
+            )
+            test(
+                "I838-1c: _explain_scores_for_entry access_count matches occurrence_count",
+                _sc838.get("access_count") == 5,
+                str(_sc838),
+            )
+            test(
+                "I838-1d: _explain_scores_for_entry decay is in (0, 1]",
+                0 < _sc838.get("decay", 0) <= 1.0,
+                str(_sc838),
+            )
+            test(
+                "I838-1e: _explain_scores_for_entry rrf is float > 0",
+                isinstance(_sc838.get("rrf"), float) and _sc838["rrf"] > 0,
+                str(_sc838),
+            )
+            # Verify RRF formula: 1/(60 + 0 + 1) for rank=0
+            test(
+                "I838-1f: _explain_scores_for_entry rrf matches 1/(k+rank+1)",
+                abs(_sc838.get("rrf", 0) - round(1.0 / 61, 6)) < 1e-7,
+                f"rrf={_sc838.get('rrf')}, expected={round(1.0 / 61, 6)}",
+            )
+            test(
+                "I838-1g: _explain_scores_for_entry bm25 is float or None",
+                _sc838.get("bm25") is None or isinstance(_sc838["bm25"], float),
+                str(_sc838),
+            )
+
+            # Test 2: text output with --explain shows score line
+            import io as _io838
+            from contextlib import redirect_stdout as _rs838
+
+            _buf838 = _io838.StringIO()
+            with _rs838(_buf838):
+                _qs838.search_knowledge("Docker DNS", explain=True)
+            _out838 = _buf838.getvalue()
+            test(
+                "I838-2a: --explain text output contains 'decay='",
+                "decay=" in _out838,
+                repr(_out838[:300]),
+            )
+            test(
+                "I838-2b: --explain text output contains 'access='",
+                "access=" in _out838,
+                repr(_out838[:300]),
+            )
+            test(
+                "I838-2c: --explain text output contains 'bm25='",
+                "bm25=" in _out838,
+                repr(_out838[:300]),
+            )
+
+            # Test 3: JSON export with explain adds scores field
+            import json as _json838
+
+            _buf838j = _io838.StringIO()
+            with _rs838(_buf838j):
+                _qs838.search_knowledge("Docker DNS", export_fmt="json", explain=True)
+            _raw838j = _buf838j.getvalue().strip()
+            try:
+                _parsed838 = _json838.loads(_raw838j)
+                _first838 = _parsed838[0] if _parsed838 else {}
+                test(
+                    "I838-3a: JSON --explain output is valid JSON list",
+                    isinstance(_parsed838, list) and len(_parsed838) > 0,
+                    repr(_raw838j[:200]),
+                )
+                test(
+                    "I838-3b: JSON --explain result has 'scores' key",
+                    "scores" in _first838,
+                    str(list(_first838.keys())),
+                )
+                test(
+                    "I838-3c: JSON --explain scores.decay is float",
+                    isinstance(_first838.get("scores", {}).get("decay"), float),
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3d: JSON --explain scores.access_count is int",
+                    isinstance(_first838.get("scores", {}).get("access_count"), int),
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3e: JSON --explain scores.rrf is float > 0",
+                    isinstance(_first838.get("scores", {}).get("rrf"), float) and _first838["scores"]["rrf"] > 0,
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3f: JSON --explain scores.bm25 is present",
+                    "bm25" in _first838.get("scores", {}),
+                    str(_first838.get("scores")),
+                )
+            except Exception as _je838:
+                test("I838-3a: JSON --explain output is valid JSON list", False, str(_je838))
+                test("I838-3b: JSON --explain result has 'scores' key", False, str(_je838))
+                test("I838-3c: JSON --explain scores.decay is float", False, str(_je838))
+                test("I838-3d: JSON --explain scores.access_count is int", False, str(_je838))
+
+            # Test 4: without --explain, no score line in text output
+            _buf838_no = _io838.StringIO()
+            with _rs838(_buf838_no):
+                _qs838.search_knowledge("Docker DNS", explain=False)
+            _out838_no = _buf838_no.getvalue()
+            test(
+                "I838-4a: without --explain no 'bm25=' in text output",
+                "bm25=" not in _out838_no,
+                repr(_out838_no[:300]),
+            )
+
+            # Test 5: without --explain, JSON output has no 'scores' key
+            _buf838_noj = _io838.StringIO()
+            with _rs838(_buf838_noj):
+                _qs838.search_knowledge("Docker DNS", export_fmt="json", explain=False)
+            _raw838_noj = _buf838_noj.getvalue().strip()
+            try:
+                _parsed838_noj = _json838.loads(_raw838_noj)
+                _first838_noj = _parsed838_noj[0] if _parsed838_noj else {}
+                test(
+                    "I838-5a: JSON without --explain has no 'scores' key",
+                    "scores" not in _first838_noj,
+                    str(list(_first838_noj.keys())),
+                )
+            except Exception as _je838_noj:
+                test("I838-5a: JSON without --explain has no 'scores' key", False, str(_je838_noj))
+
+        finally:
+            _qs838.DB_PATH = _orig_db838
+
+except Exception as _e838:
+    for _label838 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "1f",
+        "1g",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "3e",
+        "3f",
+        "4a",
+        "5a",
+    ]:
+        test(f"I838-{_label838}: sk query --explain score breakdown", False, str(_e838))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
