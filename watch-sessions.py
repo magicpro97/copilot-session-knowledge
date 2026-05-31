@@ -20,6 +20,7 @@ Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 
 import atexit
 import hashlib
+import json
 import os
 import re
 import signal
@@ -53,6 +54,89 @@ DEFAULT_INTERVAL = 60  # seconds
 # preserve timestamps.  Value of 30 ≈ 30 min at 60 s default interval.
 _PERIODIC_VERIFY_INTERVAL: int = 30
 _check_and_index_poll: int = 0
+
+# Tail-reading constants for large JSONL files
+_FAST_PATH_BYTES = 256 * 1024    # >256KB triggers tail-read
+_TAIL_CHUNK_SIZE = 64 * 1024     # read 64KB at a time
+_TAIL_MAX_BYTES = 1024 * 1024    # read at most 1MB from end
+
+# Bootstrap message markers (system prompt detection)
+_BOOTSTRAP_MARKERS = [
+    '<environment_context>',
+    'agents.md instructions',
+    '<instructions>',
+    'you are a coding agent',
+    'copilot cli',
+]
+
+
+def _is_bootstrap_message(content: str) -> bool:
+    """Detect system prompt / bootstrap messages that should not be indexed."""
+    if not content:
+        return False
+    normalized = content.lower()
+    if '<environment_context>' in normalized:
+        return True
+    hits = sum(1 for m in _BOOTSTRAP_MARKERS if m in normalized)
+    return hits >= 2
+
+
+def _read_jsonl_tail(path, max_messages: int = 500) -> list:
+    """Read last max_messages lines from a JSONL file.
+
+    For files <= _FAST_PATH_BYTES, reads the whole file (existing behavior).
+    For larger files, reads backwards in 64KB chunks up to _TAIL_MAX_BYTES,
+    then parses the accumulated suffix for complete JSON lines.
+    """
+    file_size = os.path.getsize(path)
+    if file_size <= _FAST_PATH_BYTES:
+        # Small file: existing sequential read
+        lines = []
+        try:
+            with open(path, encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            lines.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        except OSError:
+            pass
+        return lines
+
+    # Large file: read backwards in chunks
+    chunks = []
+    total_read = 0
+    try:
+        with open(path, 'rb') as f:
+            pos = file_size
+            while pos > 0 and total_read < _TAIL_MAX_BYTES:
+                read_size = min(_TAIL_CHUNK_SIZE, pos, _TAIL_MAX_BYTES - total_read)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                chunks.insert(0, chunk)
+                total_read += read_size
+    except OSError:
+        return []
+
+    tail_bytes = b''.join(chunks)
+    tail_text = tail_bytes.decode('utf-8', errors='replace')
+    lines = tail_text.splitlines()
+
+    messages = []
+    for line in lines:
+        line = line.strip()
+        if line:
+            try:
+                messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+
+    # Return last max_messages entries
+    return messages[-max_messages:] if len(messages) > max_messages else messages
+
 
 # Matches canonical UUID format (8-4-4-4-12 hex digits)
 _UUID_RE = re.compile(

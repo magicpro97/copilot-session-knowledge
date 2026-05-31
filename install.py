@@ -237,6 +237,7 @@ TOOL_FILES = [
     "install.py",
     "statusline.py",
     "harness-init.py",
+    "doctor.py",
 ]
 
 SUPPORT_FILES = [
