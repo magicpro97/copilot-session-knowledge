@@ -836,16 +836,16 @@ def _resource_status() -> dict:
             with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
                 try:
                     sv = db.execute("SELECT MAX(version) FROM schema_version").fetchone()
-                    info["schema_version"] = sv[0] if sv and sv[0] is not None else 0
+                    info["schema_version"] = sv[0] if sv else None
                 except sqlite3.Error:
-                    info["schema_version"] = 0
+                    info["schema_version"] = None
                 ke = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
                 info["knowledge_entries"] = ke[0] if ke else 0
                 sess = db.execute("SELECT COUNT(*) FROM sessions").fetchone()
                 info["sessions"] = sess[0] if sess else 0
         except (sqlite3.Error, OSError) as exc:
             _log_resource_error(exc)
-            info["db_error"] = "could not query DB"
+            info["db_error"] = f"could not query DB: {exc}"
     return info
 
 
