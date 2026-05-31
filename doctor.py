@@ -265,7 +265,14 @@ def check_mcp_smoke(timeout: int = 5) -> dict:
                 )
             )
             proc.stdin.flush()
-            _read_response(proc.stdout)  # initialize response; validate it parses
+            init_resp = _read_response(proc.stdout)
+            # Verify initialize succeeded (JSON-RPC result with matching id)
+            if "error" in init_resp:
+                error_holder.append(Exception(f"initialize error: {init_resp['error']}"))
+                return
+            if init_resp.get("id") != 1 or "result" not in init_resp:
+                error_holder.append(Exception(f"initialize bad response: id={init_resp.get('id')}"))
+                return
 
             proc.stdin.write(_encode({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
             proc.stdin.flush()
