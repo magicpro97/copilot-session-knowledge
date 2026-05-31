@@ -33,6 +33,8 @@ Usage:
     python briefing.py "task" --no-repeat                  # Skip entries already served this session
     python briefing.py "task" --no-repeat=off              # Disable session-scoped deduplication
     python briefing.py "task" --available-tokens 5000 --pressure-compact  # Auto-compact if < 20% context left
+    python briefing.py --watch                                # Live-poll for new entries (Ctrl-C to stop)
+    python briefing.py --watch --interval 10                  # Poll every 10s instead of default 30s
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -4939,6 +4941,76 @@ def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
     db.close()
 
 
+def _run_watch(db_path: str, interval: int = 30, broadcast_check: bool = False) -> None:
+    """Poll knowledge.db for new entries and print diffs (issue #839)."""
+    import signal
+    import time
+
+    if not Path(db_path).exists():
+        print(f"[watch] Database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    last_max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM knowledge_entries").fetchone()[0]
+
+    print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop")
+    print(f"[watch] Starting from entry id>{last_max_id}")
+
+    def _handle_signal(sig, frame):
+        print("\n[watch] Stopped.")
+        conn.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_signal)
+
+    broadcast_path = Path.home() / ".copilot" / "markers" / "knowledge-broadcast.jsonl"
+
+    while True:
+        time.sleep(interval)
+        try:
+            rows = conn.execute(
+                "SELECT id, category, title, confidence FROM knowledge_entries WHERE id > ? ORDER BY id",
+                (last_max_id,),
+            ).fetchall()
+            if rows:
+                print(f"\n⚡ {len(rows)} new entr{'y' if len(rows) == 1 else 'ies'} since last check:")
+                for r in rows:
+                    print(f"  #{r[0]} [{r[1]}] {r[2][:60]}  conf={r[3]:.1f}")
+                last_max_id = rows[-1][0]
+            if broadcast_check and broadcast_path.exists():
+                _show_broadcast_entries(broadcast_path)
+        except Exception as e:
+            print(f"[watch] error: {e}", file=sys.stderr)
+
+
+def _show_broadcast_entries(broadcast_path: Path) -> None:
+    """Print recent broadcast entries from parallel agents."""
+    import json
+    import time as _t
+
+    cutoff = _t.time() - 3600  # last 1h
+    new_count = 0
+    try:
+        with broadcast_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("ts", 0) >= cutoff:
+                        new_count += 1
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except OSError:
+        pass
+    if new_count:
+        print(f"📡 {new_count} new entries from parallel agents (last 1h) — run: sk knowledge broadcast")
+
+
 def _synthesize_category_section(category: str, entries: list[dict], mode: str, task: str) -> str:
     """Synthesize retrieved entries into task-aware imperative prose.
     Groups by tags, produces concise directives instead of flat list."""
@@ -5179,6 +5251,21 @@ def main():
         _rf_store = "--no-store" not in args
         _run_reflect(str(DB_PATH), _rf_question, store=_rf_store)
         return
+
+    # Handle --watch [--interval N] mode (issue #839)
+    if "--watch" in args:
+        _watch_interval = 30
+        if "--interval" in args:
+            _wi_idx = args.index("--interval")
+            try:
+                _watch_interval = (
+                    int(args[_wi_idx + 1]) if _wi_idx + 1 < len(args) and not args[_wi_idx + 1].startswith("--") else 30
+                )
+            except (ValueError, IndexError):
+                _watch_interval = 30
+        _watch_interval = max(1, _watch_interval)
+        _watch_broadcast = "--broadcast-check" in args
+        _run_watch(str(DB_PATH), interval=_watch_interval, broadcast_check=_watch_broadcast)
 
     # Handle --rag / --synthesize mode (issue #815)
     if "--rag" in args or "--synthesize" in args:
