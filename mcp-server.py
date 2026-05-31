@@ -118,6 +118,11 @@ TOOLS = [
                     "type": "integer",
                     "description": "Total context window tokens available; used to auto-allocate between response/knowledge/code/constitution slots",
                 },
+                "synthesize": {
+                    "type": "boolean",
+                    "description": "Synthesize entries into RAG prose instead of list",
+                    "default": False,
+                },
             },
             "required": ["task"],
             "additionalProperties": False,
@@ -285,6 +290,62 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "sk_compact_session",
+        "description": "Capture a mid-session structured checkpoint from conversation history into knowledge.db. Returns summary of what was stored.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Conversation summary to compact (required)",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to associate with (optional, auto-detected if omitted)",
+                },
+            },
+            "required": ["summary"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "batch_learn",
+        "description": "Record multiple knowledge entries in a single atomic transaction. Max 50 entries per batch. Issue #833.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": sorted(VALID_LEARN_CATEGORIES),
+                                "description": "Knowledge category.",
+                            },
+                            "title": {"type": "string", "description": "Short title for the knowledge entry."},
+                            "content": {"type": "string", "description": "Content / body of the knowledge entry."},
+                            "tags": {"type": "string", "description": "Comma-separated tags (optional)."},
+                            "confidence": {
+                                "type": "number",
+                                "minimum": 0.1,
+                                "maximum": 1.0,
+                                "description": "Confidence score (optional, 0.1–1.0).",
+                            },
+                        },
+                        "required": ["type", "title", "content"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Array of knowledge entries to write atomically.",
+                }
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -357,6 +418,7 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
     with_code_context = _optional_bool(arguments, "with_code_context", default=False)
     code_tokens = _optional_int(arguments, "code_tokens", default=1000, minimum=100, maximum=4000)
     available_tokens = _optional_int(arguments, "available_tokens", default=0, minimum=0, maximum=10_000_000)
+    synthesize = _optional_bool(arguments, "synthesize", default=False)
     argv = [task, "--pack", "--mode", mode, "--limit", str(limit)]
     if agent_tag:
         argv += ["--agent-tag", agent_tag]
@@ -366,6 +428,8 @@ def _run_briefing(arguments: dict[str, Any]) -> dict[str, Any]:
         argv += ["--with-code-context", "--code-tokens", str(code_tokens)]
     if available_tokens:
         argv += ["--available-tokens", str(available_tokens)]
+    if synthesize:
+        argv += ["--rag"]
     exit_code, stdout_text, stderr_text = _capture_module_main(briefing_mod, argv)
     if exit_code != 0:
         message = stderr_text.strip() or stdout_text.strip() or "briefing failed"
@@ -596,6 +660,184 @@ def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
     return {
         "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
         "structuredContent": body,
+    }
+
+
+# ---------------------------------------------------------------------------
+# batch_learn — bulk atomic knowledge writes (issue #833)
+# ---------------------------------------------------------------------------
+
+_BATCH_LEARN_MAX = 50
+
+
+def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Write multiple knowledge entries in a single SQLite transaction."""
+    _check_auth(arguments)
+
+    raw_entries = arguments.get("entries")
+    if not isinstance(raw_entries, list):
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'entries' must be an array")
+    if len(raw_entries) == 0:
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'entries' must not be empty")
+    if len(raw_entries) > _BATCH_LEARN_MAX:
+        raise JsonRpcError(
+            JSONRPC_INVALID_PARAMS,
+            f"'entries' exceeds max batch size of {_BATCH_LEARN_MAX}",
+        )
+
+    # Validate all entries before touching the DB
+    validated: list[dict] = []
+    for idx, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}] must be an object")
+        entry_type = item.get("type", "")
+        if not isinstance(entry_type, str) or entry_type not in VALID_LEARN_CATEGORIES:
+            raise JsonRpcError(
+                JSONRPC_INVALID_PARAMS,
+                f"entries[{idx}].type must be one of: {', '.join(sorted(VALID_LEARN_CATEGORIES))}",
+            )
+        title = item.get("title", "")
+        if not isinstance(title, str) or not title.strip():
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].title must be a non-empty string")
+        if len(title) > 500:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].title exceeds 500 characters")
+        content = item.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].content must be a non-empty string")
+        if len(content) > 10_000:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].content exceeds 10000 characters")
+        tags = item.get("tags", "")
+        if not isinstance(tags, str):
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].tags must be a string")
+        confidence = item.get("confidence")
+        if confidence is not None:
+            if not isinstance(confidence, (int, float)):
+                raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].confidence must be a number")
+            confidence = float(confidence)
+            if not (0.1 <= confidence <= 1.0):
+                raise JsonRpcError(
+                    JSONRPC_INVALID_PARAMS,
+                    f"entries[{idx}].confidence must be between 0.1 and 1.0",
+                )
+        validated.append(
+            {
+                "category": entry_type,
+                "title": title.strip(),
+                "content": content.strip(),
+                "tags": tags.strip(),
+                "confidence": confidence if confidence is not None else 1.0,
+            }
+        )
+
+    if not _DB_PATH.exists():
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Knowledge DB not found: {_DB_PATH}")
+
+    # --- Prompt-injection / credential scanning (mirrors learn.py) ---
+    import re as _re833
+
+    _INJECTION_PATTERNS_833 = [
+        (r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b", "prompt injection: 'ignore previous instructions'"),
+        (r"(?i)\byou\s+are\s+now\b", "role hijacking: 'you are now'"),
+        (r"(?i)\bsystem\s*:\s*", "role injection: 'system:' prefix"),
+        (r"(?i)\b(assistant|user|human)\s*:\s*", "role injection: fake role prefix"),
+        (r"(?i)\bforget\s+(everything|all|your)\b", "memory manipulation: 'forget everything'"),
+        (r"(?i)\bdo\s+not\s+follow\b", "instruction override: 'do not follow'"),
+        (r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S+", "credential leak: API key/password/token"),
+        (r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----", "credential leak: private key"),
+        (r"(?i)\beval\s*\(", "code injection: eval()"),
+        (r"(?i)\bexec\s*\(", "code injection: exec()"),
+        (r"[\u200b\u200c\u200d\u2060\ufeff]", "invisible Unicode characters (zero-width)"),
+        (r"(?i)\bACT\s+AS\b", "role hijacking: 'act as'"),
+        (r"(?i)\bpretend\s+(you\s+are|to\s+be)\b", "role hijacking: 'pretend to be'"),
+        (r"(?i)\b(curl|wget|nc|ncat)\s+.*\|\s*(ba)?sh\b", "remote code execution pattern"),
+        (r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "credential leak: GitHub access token"),
+        (r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b", "credential leak: JWT token"),
+        (r"(?i)\bAuthorization\s*:\s*Bearer\s+\S{16,}", "credential leak: Authorization Bearer token"),
+        (r"\bAKIA[0-9A-Z]{16}\b", "credential leak: AWS access key ID"),
+    ]
+    for idx, entry in enumerate(validated):
+        text = f"{entry['title']}\n{entry['content']}"
+        for pat_str, desc in _INJECTION_PATTERNS_833:
+            if _re833.search(pat_str, text):
+                raise JsonRpcError(
+                    JSONRPC_INVALID_PARAMS,
+                    f"entries[{idx}] rejected — {desc}",
+                )
+
+    import datetime as _dt
+    import uuid as _uuid833
+
+    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    batch_session_id = f"batch_{_uuid833.uuid4().hex[:12]}"
+
+    created_ids: list[int] = []
+    try:
+        db = sqlite3.connect(str(_DB_PATH), timeout=30.0)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
+        try:
+            ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+            has_stable_id = "stable_id" in ke_columns
+
+            with db:
+                for entry in validated:
+                    cat = entry["category"]
+                    ttl = entry["title"]
+                    body = entry["content"]
+                    tgs = entry["tags"]
+                    conf = entry["confidence"]
+                    est_tokens = len(f"{ttl} {body}") // 4
+
+                    if has_stable_id:
+                        import hashlib as _hl
+
+                        stable_id = _hl.sha256(f"knowledge||{cat}||{ttl}||".encode()).hexdigest()[:16]
+                        db.execute(
+                            """
+                            INSERT INTO knowledge_entries
+                                (category, title, stable_id, content, tags, confidence,
+                                 session_id, occurrence_count, first_seen, last_seen,
+                                 est_tokens)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                            """,
+                            (cat, ttl, stable_id, body, tgs, conf, batch_session_id, now, now, est_tokens),
+                        )
+                    else:
+                        db.execute(
+                            """
+                            INSERT INTO knowledge_entries
+                                (category, title, content, tags, confidence,
+                                 session_id, occurrence_count, first_seen, last_seen,
+                                 est_tokens)
+                            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                            """,
+                            (cat, ttl, body, tgs, conf, batch_session_id, now, now, est_tokens),
+                        )
+                    entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                    # Update FTS index inside the same transaction
+                    try:
+                        db.execute(
+                            "INSERT INTO ke_fts (rowid, title, content) VALUES (?, ?, ?)",
+                            (entry_id, ttl, body),
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # ke_fts may not exist on older schemas
+
+                    created_ids.append(entry_id)
+        finally:
+            db.close()
+    except JsonRpcError:
+        raise
+    except sqlite3.OperationalError as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB error: {exc}") from exc
+    except Exception as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"batch_learn error: {exc}") from exc
+
+    body_out = {"created": created_ids, "count": len(created_ids)}
+    return {
+        "content": [{"type": "text", "text": json.dumps(body_out, ensure_ascii=False)}],
+        "structuredContent": body_out,
     }
 
 
@@ -876,6 +1118,31 @@ def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
 
 
+def _run_compact_session(arguments: dict) -> dict:
+    """Delegate to session-compact.py with a caller-provided summary."""
+    summary = _require_string(arguments, "summary", max_length=32_000)
+    session_id = _optional_string(arguments, "session_id", max_length=200)
+
+    cmd = [sys.executable, str(TOOLS_DIR / "session-compact.py"), "--summary", summary, "--json"]
+    if session_id:
+        cmd += ["--session-id", session_id]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        body = {"status": "error", "output": "Timed out after 30s"}
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+    except Exception as exc:
+        body = {"status": "error", "output": str(exc)}
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+    if proc.returncode == 0:
+        body = {"status": "ok", "output": proc.stdout.strip()}
+    else:
+        body = {"status": "error", "output": (proc.stderr.strip() or proc.stdout.strip())}
+    return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -901,6 +1168,10 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_code_search(arguments)
     if name == "rate_entry":
         return _run_rate_entry(arguments)
+    if name == "sk_compact_session":
+        return _run_compact_session(arguments)
+    if name == "batch_learn":
+        return _run_batch_learn(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

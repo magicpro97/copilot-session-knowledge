@@ -3,11 +3,16 @@
 //! Each test that modifies env vars takes the `TEST_LOCK` mutex to avoid
 //! races when the test suite runs tests in parallel.
 
-use std::io::Write;
 use std::sync::Mutex;
+
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::time::Instant;
 
-use super::{invoke_retry_listener, ListenerDecision, RetryListenerPayload};
+use super::RetryListenerPayload;
+#[cfg(unix)]
+use super::{invoke_retry_listener, ListenerDecision};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 

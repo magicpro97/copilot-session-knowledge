@@ -56,6 +56,7 @@ Usage:
     sk cron   add|remove|list|run [<args>...]
     sk project add|remove|list [<args>...]
     sk events append|status|replay|tail [<args>...]
+    sk curate scan|list|resolve|stats [<args>...]
 
     sk --help     Show this help
     sk --version  Show version
@@ -90,11 +91,13 @@ _PROJECT_DB_SCRIPTS = {
     "anatomy-map.py",
     "briefing.py",
     "build-session-index.py",
+    "curate.py",
     "embed.py",
     "entity-extract.py",
     "extract-knowledge.py",
     "index-status.py",
     "knowledge-health.py",
+    "knowledge-import.py",
     "learn.py",
     "migrate.py",
     "query-session.py",
@@ -171,8 +174,13 @@ _DIRECT: dict[str, CommandMeta] = {
     "repo-map": CommandMeta("repo-map.py", "PageRank-ranked symbol map for AI context injection", ("index", "map")),
     "coverage": CommandMeta("coverage.py", "Per-file knowledge coverage heatmap showing blind spots", ("index", "map")),
     "trace": CommandMeta("trace.py", "Parse Copilot JSONL tool-call spans into SQLite", ("index", "observability")),
-    "aider-import": CommandMeta("aider-adapter.py", "Import Aider chat history into knowledge base", ("import", "adapters")),
-    "windsurf-import": CommandMeta("windsurf-adapter.py", "Import Windsurf session history into knowledge base", ("import", "adapters")),
+    "aider-import": CommandMeta(
+        "aider-adapter.py", "Import Aider chat history into knowledge base", ("import", "adapters")
+    ),
+    "windsurf-import": CommandMeta(
+        "windsurf-adapter.py", "Import Windsurf session history into knowledge base", ("import", "adapters")
+    ),
+    "curate": CommandMeta("curate.py", "Automated stale/duplicate knowledge entry curation", ("knowledge", "curation")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -267,6 +275,8 @@ _GROUPS: dict[str, dict[str, str]] = {
         "unpin": "knowledge-health.py",
         "pins": "knowledge-health.py",
         "bulk-tag": "knowledge-health.py",
+        "broadcast": "knowledge-broadcast.py",
+        "import": "knowledge-import.py",
     },
     "entity": {
         "extract": "entity-extract.py",

@@ -23,7 +23,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 if os.name == "nt":
@@ -34,9 +34,7 @@ if os.name == "nt":
         pass
 
 DB_PATH = Path(
-    os.environ.get(
-        "SK_DB_PATH", str(Path.home() / ".copilot" / "session-state" / "knowledge.db")
-    )
+    os.environ.get("SK_DB_PATH", str(Path.home() / ".copilot" / "session-state" / "knowledge.db"))
 ).expanduser()
 
 WINDSURF_EXPORT = Path.home() / ".windsurf" / "sessions" / "export.json"
@@ -99,7 +97,7 @@ def parse_windsurf_sessions(path: Path, since: date | None = None) -> list[dict]
     """Parse Windsurf session JSON and return list of extracted entries."""
     sessions = load_sessions(path)
     entries = []
-    now_iso = datetime.utcnow().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     for session in sessions:
         session_date: date | None = None
@@ -144,34 +142,26 @@ def parse_windsurf_sessions(path: Path, since: date | None = None) -> list[dict]
 
 
 def ke_fts_exists(db: sqlite3.Connection) -> bool:
-    row = db.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ke_fts'"
-    ).fetchone()
+    row = db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ke_fts'").fetchone()
     return bool(row and row[0])
 
 
 def ensure_schema(db: sqlite3.Connection) -> None:
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            category TEXT,
-            title TEXT,
-            content TEXT,
-            tags TEXT,
-            confidence REAL DEFAULT 0.5,
-            occurrence_count INTEGER DEFAULT 1,
-            first_seen TEXT,
-            last_seen TEXT
+    """Verify knowledge_entries table exists; prompt user to run migrate.py if not."""
+    row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").fetchone()
+    if not row:
+        print(
+            "Error: knowledge_entries table not found. Run 'python migrate.py' first to create the canonical schema.",
+            file=sys.stderr,
         )
-    """)
-    db.commit()
+        sys.exit(1)
 
 
 def insert_entry(db: sqlite3.Connection, entry: dict, use_fts: bool) -> bool:
-    """Insert entry if title not already present. Returns True if inserted."""
+    """Insert entry if (category, title, session_id) not already present. Returns True if inserted."""
     count = db.execute(
-        "SELECT COUNT(*) FROM knowledge_entries WHERE title = ?", (entry["title"],)
+        "SELECT COUNT(*) FROM knowledge_entries WHERE category = ? AND title = ? AND session_id = ?",
+        (entry["category"], entry["title"], entry["session_id"]),
     ).fetchone()[0]
     if count > 0:
         return False
@@ -205,9 +195,7 @@ def insert_entry(db: sqlite3.Connection, entry: dict, use_fts: bool) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Import Windsurf session history into knowledge base"
-    )
+    parser = argparse.ArgumentParser(description="Import Windsurf session history into knowledge base")
     parser.add_argument("--from", dest="from_path", default=None, help="Path to session JSON file")
     parser.add_argument("--dry-run", action="store_true", help="Parse but don't write to DB")
     parser.add_argument("--since", default=None, help="Only import entries on/after YYYY-MM-DD")

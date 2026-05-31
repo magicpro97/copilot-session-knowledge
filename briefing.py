@@ -33,6 +33,8 @@ Usage:
     python briefing.py "task" --no-repeat                  # Skip entries already served this session
     python briefing.py "task" --no-repeat=off              # Disable session-scoped deduplication
     python briefing.py "task" --available-tokens 5000 --pressure-compact  # Auto-compact if < 20% context left
+    python briefing.py --watch                                # Live-poll for new entries (Ctrl-C to stop)
+    python briefing.py --watch --interval 10                  # Poll every 10s instead of default 30s
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -119,6 +121,108 @@ DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))
 _CLARIFY_STORE_PATH = SESSION_STATE / "clarifications.json"
 _CONSTITUTION_RELATIVE_PATH = Path(".copilot") / "constitution.md"
 _CONSTITUTION_RULE_RE = re.compile(r"\s*\[rule:[a-z0-9-]+\]\s*", re.IGNORECASE)
+
+# Prefetch cache (issue #818): warm briefing cache on branch checkout
+_PREFETCH_TTL_SECONDS = 4 * 3600  # 4-hour expiry
+
+
+def _get_current_sha8() -> str:
+    """Return the first 8 chars of HEAD sha, or empty string on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _prefetch_args_hash(args: list[str]) -> str:
+    """Return a stable short hash for the exact invocation a cache entry targets."""
+    normalized: list[str] = []
+    value_flags = {
+        "--format",
+        "--limit",
+        "--min-confidence",
+        "--budget",
+        "--mode",
+        "--available-tokens",
+        "--agent-tag",
+        "--msg-tag",
+        "--since",
+        "--days",
+        "--code-tokens",
+    }
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--prefetch":
+            i += 1
+            continue
+        normalized.append(arg)
+        if arg in value_flags and i + 1 < len(args):
+            normalized.append(args[i + 1])
+            i += 2
+            continue
+        i += 1
+    data = "\0".join(normalized).encode("utf-8")
+    return hashlib.md5(data).hexdigest()[:8]
+
+
+def _prefetch_cache_path(sha8: str, args_hash: str = "") -> "Path | None":
+    """Return the prefetch cache file path for a given sha8/arg hash, or None if sha8 is empty."""
+    if not sha8:
+        return None
+    suffix = f"-{args_hash}" if args_hash else ""
+    return SESSION_STATE / f"briefing-prefetch-{sha8}{suffix}.json"
+
+
+def _write_prefetch_cache(sha8: str, query: str, output: str, args_hash: str = "") -> None:
+    """Write briefing output to the prefetch cache for sha8/arg hash (fail-silent)."""
+    cache_path = _prefetch_cache_path(sha8, args_hash=args_hash)
+    if cache_path is None:
+        return
+    try:
+        import time
+
+        SESSION_STATE.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "sha8": sha8,
+            "args_hash": args_hash,
+            "generated_at": time.time(),
+            "query": query,
+            "output": output,
+        }
+        cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_prefetch_cache(sha8: str, args_hash: str = "") -> "str | None":
+    """Return cached briefing output for sha8/arg hash if still fresh (<4 h), else None."""
+    cache_path = _prefetch_cache_path(sha8, args_hash=args_hash)
+    if cache_path is None or not cache_path.exists():
+        return None
+    try:
+        import time
+
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if args_hash and payload.get("args_hash", "") != args_hash:
+            return None
+        age = time.time() - float(payload.get("generated_at", 0))
+        if age > _PREFETCH_TTL_SECONDS:
+            return None
+        cached_output = payload.get("output", "")
+        if not cached_output:
+            return None
+        return cached_output
+    except Exception:
+        return None
 
 
 def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
@@ -1777,6 +1881,15 @@ def _ke_has_is_resolved(db: sqlite3.Connection) -> bool:
         return False
 
 
+def _ke_has_stability_factor(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the stability_factor column (v37 migration applied)."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "stability_factor" in cols
+    except Exception:
+        return False
+
+
 def _ke_has_recurrence(db: sqlite3.Connection) -> bool:
     """Return True if knowledge_entries has the recurrence_after_briefing column."""
     try:
@@ -1811,11 +1924,16 @@ def _intensity_order_expr(alias: str = "ke", has_priority: bool = False) -> str:
     return f"COALESCE({alias}.intensity, 0.5) DESC, {alias}.confidence DESC, rank"
 
 
-def _recency_decay(last_seen_str: str | None, half_life_days: float = 30.0) -> float:
-    """Exponential decay weight for an entry's age.
+def _recency_decay(
+    last_seen_str: str | None,
+    half_life_days: float = 30.0,
+    stability_factor: float = 1.0,
+) -> float:
+    """Exponential decay weight for an entry's age, scaled by FSRS stability factor.
 
     Returns a value in (0, 1]: 1.0 for a just-created entry, approaching 0 for
-    a very old one.  An entry exactly ``half_life_days`` old scores 0.5.
+    a very old one.  An entry exactly ``half_life_days * stability_factor`` old
+    scores 0.5 — higher stability means slower decay (issue #797).
     Returns 1.0 (fail-open) when the timestamp is absent or unparseable.
     """
     if not last_seen_str or half_life_days <= 0:
@@ -1825,7 +1943,8 @@ def _recency_decay(last_seen_str: str | None, half_life_days: float = 30.0) -> f
         ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
         now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         age_days = max(0.0, (now_utc - ts).total_seconds() / 86400.0)
-        return 0.5 ** (age_days / half_life_days)
+        effective_half_life = half_life_days * max(0.1, stability_factor or 1.0)
+        return 0.5 ** (age_days / effective_half_life)
     except Exception:
         return 1.0
 
@@ -1963,7 +2082,8 @@ def _recency_composite_score(entry: dict, half_life_days: float) -> float:
         # no-intensity rows to the same constant.
         confidence_raw = entry.get("confidence")
         intensity = float(confidence_raw) if confidence_raw is not None else 0.5
-    decay = _recency_decay(entry.get("last_seen"), half_life_days)
+    stability = float(entry.get("stability_factor") or 1.0)
+    decay = _recency_decay(entry.get("last_seen"), half_life_days, stability_factor=stability)
     access_decay = _decay_weight(entry.get("last_accessed_at", ""))
     return priority_base + intensity * decay * access_decay
 
@@ -2047,9 +2167,11 @@ def search_knowledge_entries(
     has_recurrence = _ke_has_recurrence(db)
     has_is_resolved = _ke_has_is_resolved(db)
     has_last_accessed = _ke_has_last_accessed(db)
+    has_stability = _ke_has_stability_factor(db)
     order_by = _intensity_order_expr("ke", has_priority) if has_intensity else "ke.confidence DESC, rank"
     # Extra columns fetched so Python-level recency composite scoring has priority + intensity + age.
     _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
+    _stability_col = ", COALESCE(ke.stability_factor, 1.0) as stability_factor" if has_stability else ""
     _priority_col = ", COALESCE(ke.priority, 'P2') as priority" if has_priority else ""
     _recurrence_col = (
         ", COALESCE(ke.recurrence_after_briefing, 0) AS recurrence_after_briefing" if has_recurrence else ""
@@ -2080,7 +2202,7 @@ def search_knowledge_entries(
                    d.doc_type as source_doc_type,
                    d.title as source_doc_title,
                    d.file_path as source_doc_file_path,
-                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             LEFT JOIN documents d ON ke.document_id = d.id
@@ -2089,7 +2211,7 @@ def search_knowledge_entries(
             AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
             ORDER BY {order_by}
             LIMIT ?
-        """,
+            """,
             (fts_query, category, effective_confidence, *_date_params, limit),
         ).fetchall()
         results.extend([dict(r) for r in rows])
@@ -2098,7 +2220,7 @@ def search_knowledge_entries(
             rows = db.execute(
                 f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
-                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
@@ -2127,7 +2249,7 @@ def search_knowledge_entries(
                        d.doc_type as source_doc_type,
                        d.title as source_doc_title,
                        d.file_path as source_doc_file_path,
-                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 LEFT JOIN documents d ON ke.document_id = d.id
@@ -2136,7 +2258,7 @@ def search_knowledge_entries(
                 AND ke.confidence >= ?{_date_clause}{_resolved_clause}{_exclude_clause}
                 ORDER BY {order_by}
                 LIMIT ?
-            """,
+                """,
                 (base_query, category, min_confidence, *_date_params, limit),
             ).fetchall()
             results.extend([dict(r) for r in rows])
@@ -2145,7 +2267,7 @@ def search_knowledge_entries(
                 rows = db.execute(
                     f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
-                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
+                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}{_stability_col}
                     FROM ke_fts fts
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
@@ -4819,6 +4941,164 @@ def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
     db.close()
 
 
+def _run_watch(db_path: str, interval: int = 30, broadcast_check: bool = False) -> None:
+    """Poll knowledge.db for new entries and print diffs (issue #839)."""
+    import signal
+    import time
+
+    if not Path(db_path).exists():
+        print(f"[watch] Database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    last_max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM knowledge_entries").fetchone()[0]
+
+    print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop")
+    print(f"[watch] Starting from entry id>{last_max_id}")
+
+    def _handle_signal(sig, frame):
+        print("\n[watch] Stopped.")
+        conn.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_signal)
+
+    broadcast_path = Path.home() / ".copilot" / "markers" / "knowledge-broadcast.jsonl"
+
+    while True:
+        time.sleep(interval)
+        try:
+            rows = conn.execute(
+                "SELECT id, category, title, confidence FROM knowledge_entries WHERE id > ? ORDER BY id",
+                (last_max_id,),
+            ).fetchall()
+            if rows:
+                print(f"\n⚡ {len(rows)} new entr{'y' if len(rows) == 1 else 'ies'} since last check:")
+                for r in rows:
+                    print(f"  #{r[0]} [{r[1]}] {r[2][:60]}  conf={r[3]:.1f}")
+                last_max_id = rows[-1][0]
+            if broadcast_check and broadcast_path.exists():
+                _show_broadcast_entries(broadcast_path)
+        except Exception as e:
+            print(f"[watch] error: {e}", file=sys.stderr)
+
+
+def _show_broadcast_entries(broadcast_path: Path) -> None:
+    """Print recent broadcast entries from parallel agents."""
+    import json
+    import time as _t
+
+    cutoff = _t.time() - 3600  # last 1h
+    new_count = 0
+    try:
+        with broadcast_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("ts", 0) >= cutoff:
+                        new_count += 1
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except OSError:
+        pass
+    if new_count:
+        print(f"📡 {new_count} new entries from parallel agents (last 1h) — run: sk knowledge broadcast")
+
+
+def _synthesize_category_section(category: str, entries: list[dict], mode: str, task: str) -> str:
+    """Synthesize retrieved entries into task-aware imperative prose.
+    Groups by tags, produces concise directives instead of flat list."""
+    if not entries:
+        return ""
+
+    avoid = [e for e in entries if e.get("category") == "mistake"]
+    use = [e for e in entries if e.get("category") == "pattern"]
+    note = [e for e in entries if e.get("category") not in ("mistake", "pattern")]
+
+    lines = []
+    if avoid:
+        items = "; ".join(f'"{e["title"][:50]}"' for e in avoid[:3])
+        lines.append(f"AVOID: {items}")
+    if use:
+        items = "; ".join(f'"{e["title"][:50]}"' for e in use[:3])
+        lines.append(f"USE: {items}")
+    if note:
+        items = "; ".join(f'"{e["title"][:50]}"' for e in note[:2])
+        lines.append(f"NOTE: {items}")
+
+    if avoid:
+        top = max(avoid, key=lambda e: e.get("occurrence_count", 1) or 1)
+        occ = top.get("occurrence_count", 1) or 1
+        if occ >= 3:
+            lines.append(f"\u26a0\ufe0f '{top['title'][:60]}' occurred {occ}\u00d7 \u2014 high priority")
+
+    header = f"## {category.upper()} context ({len(entries)} entries)"
+    return header + "\n" + "\n".join(lines)
+
+
+def _fetch_rag_entries(db: sqlite3.Connection, query: str) -> list[dict]:
+    """Retrieve entries for RAG via the filtered briefing pipeline."""
+    superseded_ids = _get_superseded_ids(db)
+    entries: list[dict] = []
+    for cat in ("mistake", "pattern", "insight", "context"):
+        cat_entries = search_knowledge_entries(db, query, cat, limit=5)
+        entries.extend(cat_entries)
+    entries = [e for e in entries if not _briefing_entry_is_unsafe(e) and e.get("id") not in superseded_ids]
+    return entries
+
+
+def _group_by_relations(db: sqlite3.Connection, entries: list[dict]) -> dict[str, list[dict]]:
+    """Group entries using knowledge_relations graph, fallback to category."""
+    entry_ids = [e["id"] for e in entries]
+    leaders: dict[int, int] = {}
+    if entry_ids:
+        try:
+            ph = ",".join("?" * len(entry_ids))
+            rels = db.execute(
+                f"SELECT source_id, target_id FROM knowledge_relations "
+                f"WHERE source_id IN ({ph}) OR target_id IN ({ph})",
+                entry_ids + entry_ids,
+            ).fetchall()
+            for row in rels:
+                src, tgt = int(row[0]), int(row[1])
+                leader = min(src, tgt)
+                leaders[src] = min(leaders.get(src, leader), leader)
+                leaders[tgt] = min(leaders.get(tgt, leader), leader)
+        except Exception:
+            pass
+    groups: dict[str, list[dict]] = {}
+    for e in entries:
+        eid = e["id"]
+        key = f"related-{leaders[eid]}" if eid in leaders else e.get("category", "other")
+        groups.setdefault(key, []).append(e)
+    return groups
+
+
+def _run_rag_briefing(db_path: str, query: str, mode: str = "auto") -> None:
+    """RAG synthesis mode: retrieve top entries then synthesize into prose."""
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    entries = _fetch_rag_entries(db, query)
+    if not entries:
+        db.close()
+        print("No relevant entries found for RAG synthesis.")
+        return
+    by_group = _group_by_relations(db, entries)
+    db.close()
+    sections = []
+    for label, grp in sorted(by_group.items()):
+        section = _synthesize_category_section(label, grp, mode, query)
+        if section:
+            sections.append(section)
+    print("\n".join(sections) if sections else "No synthesis available.")
+
+
 def main():
     args = sys.argv[1:]
 
@@ -4884,6 +5164,32 @@ def main():
         print(generate_wakeup())
         return
 
+    # Handle --prefetch mode (issue #818): generate and cache briefing for current HEAD
+    if "--prefetch" in args:
+        _pf_sha8 = _get_current_sha8()
+        if not _pf_sha8:
+            print("[prefetch] Could not determine HEAD sha — skipping cache write.", file=sys.stderr)
+            return
+        if not DB_PATH.exists():
+            print("[prefetch] Knowledge DB not found — skipping prefetch.", file=sys.stderr)
+            return
+        _pf_args_hash = _prefetch_args_hash(["--auto"])
+        _pf_query = auto_detect_context()
+        print(f"[prefetch] Warming cache for sha={_pf_sha8} query={_pf_query!r}", file=sys.stderr)
+        try:
+            _pf_output, _ = generate_briefing(
+                _pf_query,
+                limit=3,
+                fmt="compact",
+                with_meta=True,
+            )
+        except Exception as _pf_exc:
+            print(f"[prefetch] briefing generation failed: {_pf_exc}", file=sys.stderr)
+            return
+        _write_prefetch_cache(_pf_sha8, _pf_query, _pf_output, args_hash=_pf_args_hash)
+        print(f"[prefetch] Cache written → {_prefetch_cache_path(_pf_sha8, args_hash=_pf_args_hash)}", file=sys.stderr)
+        return
+
     # Handle --history [--days N] mode (issue #720)
     if "--history" in args:
         _hist_days = 7
@@ -4944,6 +5250,38 @@ def main():
             return
         _rf_store = "--no-store" not in args
         _run_reflect(str(DB_PATH), _rf_question, store=_rf_store)
+        return
+
+    # Handle --watch [--interval N] mode (issue #839)
+    if "--watch" in args:
+        _watch_interval = 30
+        if "--interval" in args:
+            _wi_idx = args.index("--interval")
+            try:
+                _watch_interval = (
+                    int(args[_wi_idx + 1]) if _wi_idx + 1 < len(args) and not args[_wi_idx + 1].startswith("--") else 30
+                )
+            except (ValueError, IndexError):
+                _watch_interval = 30
+        _watch_interval = max(1, _watch_interval)
+        _watch_broadcast = "--broadcast-check" in args
+        _run_watch(str(DB_PATH), interval=_watch_interval, broadcast_check=_watch_broadcast)
+
+    # Handle --rag / --synthesize mode (issue #815)
+    if "--rag" in args or "--synthesize" in args:
+        _opt_flags = {"--mode", "--limit", "--agent-tag", "--code-tokens", "--available-tokens"}
+        _skip_idx: set[int] = set()
+        for _i, _a in enumerate(args):
+            if _a in _opt_flags and _i + 1 < len(args):
+                _skip_idx.add(_i + 1)
+        _rag_query_parts = [a for i, a in enumerate(args) if not a.startswith("--") and i not in _skip_idx]
+        _rag_query = " ".join(_rag_query_parts)
+        _rag_mode = "auto"
+        if "--mode" in args:
+            _mode_idx = args.index("--mode")
+            if _mode_idx + 1 < len(args):
+                _rag_mode = args[_mode_idx + 1]
+        _run_rag_briefing(str(DB_PATH), _rag_query, mode=_rag_mode)
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)
@@ -5132,6 +5470,7 @@ def main():
 
     subagent_mode = "--for-subagent" in args
     no_danger = "--no-danger" in args
+    broadcast_check = "--broadcast-check" in args
 
     # --with-code-context: append relevant code spans from code_index (issue #747)
     with_code_context = "--with-code-context" in args
@@ -5167,6 +5506,16 @@ def main():
         already_served = _load_briefed_ids(_no_repeat_session_id)
 
     if auto_mode:
+        _cache_sha8 = _get_current_sha8()
+        _cache_args_hash = _prefetch_args_hash(args)
+        _cache_allowed = not (no_repeat and _no_repeat_session_id)
+        _cached_output = (
+            _read_prefetch_cache(_cache_sha8, args_hash=_cache_args_hash) if _cache_allowed and _cache_sha8 else None
+        )
+        if _cached_output is not None:
+            print(f"[briefing] serving prefetch cache (sha={_cache_sha8}) [cached]", file=sys.stderr)
+            print(_cached_output)
+            return
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
     else:
@@ -5408,6 +5757,19 @@ def main():
             _no_repeat_session_id,
             already_served | set(output_meta.get("selected_entry_ids", [])),
         )
+
+    if broadcast_check:
+        since = time.time() - 3600  # last 1 hour
+        broadcast_path = Path.home() / ".copilot" / "markers" / "knowledge-broadcast.jsonl"
+        new_count = 0
+        if broadcast_path.exists():
+            try:
+                with broadcast_path.open(encoding="utf-8") as f:
+                    new_count = sum(1 for line in f if line.strip() and json.loads(line).get("ts", 0) >= since)
+            except Exception:
+                pass
+        if new_count > 0:
+            print(f"⚡ {new_count} new entries from parallel agents (last 1h) — run: sk knowledge broadcast")
 
     print(output)
 
