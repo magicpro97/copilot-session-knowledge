@@ -55,6 +55,8 @@ SCOUT_SCRIPT = SCRIPT_DIR / "trend-scout.py"
 _VALID_SECTIONS = ("knowledge", "skills", "hooks", "git", "behavior")
 _VALID_MODES = ("local", "repo")
 
+_FRESHNESS_DAYS = 30  # entries updated within this many days count as fresh
+
 # Maximum lines to read from audit.jsonl (safety limit)
 _AUDIT_MAX_LINES = 5000
 
@@ -140,6 +142,102 @@ def collect_knowledge_signals(stale_days: int = 30) -> dict:
         }
     except Exception:
         return {**base, "available": True}
+
+
+def collect_grouped_signals(
+    db_path: "Path | None" = None,
+    by_tag: "str | None" = None,
+    by_room: "str | None" = None,
+) -> list:
+    """Query knowledge_entries grouped by wing, with optional tag/room filters.
+
+    Returns a list of dicts, one per wing group:
+        {"name": str, "count": int, "freshness_pct": int, "recent": str, "oldest": str}
+    """
+    path = db_path or KNOWLEDGE_DB
+    if not Path(path).exists():
+        return []
+    try:
+        db = sqlite3.connect(str(path))
+        db.row_factory = sqlite3.Row
+
+        params: list = []
+        where_clauses: list = []
+        if by_tag:
+            where_clauses.append("tags LIKE ?")
+            params.append(f"%{by_tag}%")
+        if by_room:
+            where_clauses.append("room = ?")
+            params.append(by_room)
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        rows = db.execute(
+            f"SELECT COALESCE(NULLIF(wing,''),'(none)') AS w, id, title, last_seen "
+            f"FROM knowledge_entries {where_sql} ORDER BY last_seen DESC",
+            params,
+        ).fetchall()
+        db.close()
+    except Exception:
+        return []
+
+    import datetime as _dt
+
+    now = _dt.datetime.utcnow()
+
+    groups: dict = {}
+    for row in rows:
+        w = row["w"]
+        if w not in groups:
+            groups[w] = {"entries": [], "titles": []}
+        groups[w]["entries"].append(row["last_seen"] or "")
+        groups[w]["titles"].append(row["title"] or "")
+
+    result = []
+    for w, data in sorted(groups.items()):
+        dates = data["entries"]
+        titles = data["titles"]
+        count = len(dates)
+
+        fresh = 0
+        for d in dates:
+            try:
+                ts = _dt.datetime.strptime(d[:19], "%Y-%m-%dT%H:%M:%S")
+                if (now - ts).days < _FRESHNESS_DAYS:
+                    fresh += 1
+            except Exception:
+                pass
+
+        freshness_pct = int(round(fresh / count * 100)) if count else 0
+
+        result.append(
+            {
+                "name": w,
+                "count": count,
+                "freshness_pct": freshness_pct,
+                "recent": titles[0] if titles else "",
+                "oldest": titles[-1] if titles else "",
+            }
+        )
+    return result
+
+
+def format_grouped_output(groups: list, total: int) -> str:
+    """Render the grouped wing view as a text block."""
+    lines = ["== By Wing ==", ""]
+    if not groups:
+        lines.append("  (no entries)")
+        return "\n".join(lines)
+    for g in groups:
+        bar = _bar(g["freshness_pct"], 6)
+        lines.append(f"[{g['name']}] — {g['count']} entries, freshness: {bar} {g['freshness_pct']}%")
+        if g["recent"]:
+            lines.append(f'  • Most recent: "{g["recent"]}"')
+        if g["oldest"] and g["oldest"] != g["recent"]:
+            lines.append(f'  • Oldest: "{g["oldest"]}"')
+        lines.append("")
+    lines.append(f"Total: {total} entries")
+    return "\n".join(lines)
 
 
 def collect_skill_signals() -> dict:
@@ -1168,6 +1266,9 @@ def _parse_args(argv: list) -> dict:
         "subreport": None,
         "help": False,
         "no_cache": False,
+        "by_wing": False,
+        "by_tag": None,
+        "by_room": None,
     }
     i = 0
     while i < len(argv):
@@ -1203,6 +1304,16 @@ def _parse_args(argv: list) -> dict:
                     pass
         elif a == "--no-cache":
             args["no_cache"] = True
+        elif a == "--by-wing":
+            args["by_wing"] = True
+        elif a == "--by-tag":
+            if i + 1 < len(argv):
+                i += 1
+                args["by_tag"] = argv[i]
+        elif a == "--by-room":
+            if i + 1 < len(argv):
+                i += 1
+                args["by_room"] = argv[i]
         i += 1
     return args
 
@@ -1221,6 +1332,20 @@ def main() -> None:
 
     days = args["days"]
     stale = args["stale"]
+    by_wing = args["by_wing"]
+    by_tag = args["by_tag"]
+    by_room = args["by_room"]
+
+    # --by-wing / --by-tag / --by-room: grouped domain view (short-circuit)
+    if by_wing or by_tag or by_room:
+        groups = collect_grouped_signals(db_path=KNOWLEDGE_DB, by_tag=by_tag, by_room=by_room)
+        total = sum(g["count"] for g in groups)
+        output = args["output"]
+        if output == "json":
+            print(json.dumps({"groups": groups, "total": total}, indent=2, ensure_ascii=False))
+        else:
+            print(format_grouped_output(groups, total))
+        return
 
     # Collect signals
     if mode == "repo":
