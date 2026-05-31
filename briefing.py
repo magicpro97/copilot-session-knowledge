@@ -84,13 +84,7 @@ class BriefingBudget:
 
     @property
     def knowledge_budget(self) -> int:
-        used = (
-            self.response_reserve
-            + self.constitution_max
-            + self.code_context_max
-            + self.pinned_entries_max
-            + self.danger_slot
-        )
+        used = self.response_reserve + self.constitution_max + self.code_context_max + self.pinned_entries_max
         return max(500, self.total_available - used)
 
     @property
