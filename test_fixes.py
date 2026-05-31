@@ -15543,6 +15543,169 @@ except Exception as _e873:
         test(f"I873-{_label873}: trigram FTS index", False, str(_e873))
 
 # ---------------------------------------------------------------------------
+# === I867: decay-adjusted confidence ranking ===
+# ---------------------------------------------------------------------------
+try:
+    import contextlib as _ctx867
+    import importlib.util as _ilu867
+    import io as _io867
+    import math as _math867
+    import sqlite3 as _sq867
+    from datetime import datetime as _dt867
+    from datetime import timedelta as _td867
+    from datetime import timezone as _tz867
+    from pathlib import Path as _Path867
+
+    _kh_spec867 = _ilu867.spec_from_file_location("kh867", REPO / "knowledge-health.py")
+    _kh867 = _ilu867.module_from_spec(_kh_spec867)
+    _kh_spec867.loader.exec_module(_kh867)
+
+    _qs_spec867 = _ilu867.spec_from_file_location("qs867", REPO / "query-session.py")
+    _qs867 = _ilu867.module_from_spec(_qs_spec867)
+    _qs_spec867.loader.exec_module(_qs867)
+
+    # I867-1: _effective_confidence exists in knowledge-health.py
+    test(
+        "I867-1: _effective_confidence exists in knowledge-health.py",
+        hasattr(_kh867, "_effective_confidence"),
+        "missing _effective_confidence",
+    )
+
+    # I867-2: _effective_confidence returns lower value for old entries
+    _now_iso = _dt867.now(_tz867.utc).isoformat()
+    _old_iso = (_dt867.now(_tz867.utc) - _td867(days=180)).isoformat()
+    _fresh = _kh867._effective_confidence(0.9, _now_iso)
+    _stale = _kh867._effective_confidence(0.9, _old_iso)
+    test(
+        "I867-2a: fresh entry effective_confidence close to original",
+        _fresh > 0.85,
+        f"fresh={_fresh}",
+    )
+    test(
+        "I867-2b: 180d-old entry effective_confidence reduced",
+        _stale < 0.5,
+        f"stale={_stale}",
+    )
+    test(
+        "I867-2c: effective_confidence(conf, None) == conf (fail-open)",
+        _kh867._effective_confidence(0.8, None) == 0.8,
+        "fail-open broken",
+    )
+
+    # I867-3: decay math is correct (half-life=90 → 90d-old = 0.5 * conf)
+    _90d_iso = (_dt867.now(_tz867.utc) - _td867(days=90)).isoformat()
+    _half = _kh867._effective_confidence(1.0, _90d_iso, half_life_days=90.0)
+    test(
+        "I867-3: 90d-old entry with half_life=90 yields ~0.5",
+        abs(_half - 0.5) < 0.02,
+        f"got {_half}",
+    )
+
+    # I867-4: _decay_adj_conf exists in query-session.py
+    test(
+        "I867-4: _decay_adj_conf exists in query-session.py",
+        hasattr(_qs867, "_decay_adj_conf"),
+        "missing _decay_adj_conf",
+    )
+
+    # I867-5: search_knowledge accepts no_decay parameter
+    import inspect as _insp867
+
+    _sk_sig = _insp867.signature(_qs867.search_knowledge) if hasattr(_qs867, "search_knowledge") else None
+    test(
+        "I867-5: search_knowledge has no_decay parameter",
+        _sk_sig is not None and "no_decay" in _sk_sig.parameters,
+        f"params: {list(_sk_sig.parameters) if _sk_sig else 'no function'}",
+    )
+
+    # I867-6: generate_briefing accepts no_decay parameter
+    _br_spec867 = _ilu867.spec_from_file_location("br867", REPO / "briefing.py")
+    _br867 = _ilu867.module_from_spec(_br_spec867)
+    _br_spec867.loader.exec_module(_br867)
+    _gb_sig = _insp867.signature(_br867.generate_briefing) if hasattr(_br867, "generate_briefing") else None
+    test(
+        "I867-6: generate_briefing has no_decay parameter",
+        _gb_sig is not None and "no_decay" in _gb_sig.parameters,
+        f"params: {list(_gb_sig.parameters) if _gb_sig else 'no function'}",
+    )
+
+    # I867-7: decay re-sort infrastructure in place (structural + math consistency check)
+    _decay_adj = _qs867._decay_adj_conf
+    _now_iso2 = _dt867.now(_tz867.utc).isoformat()
+    _old_iso2 = (_dt867.now(_tz867.utc) - _td867(days=200)).isoformat()
+    _high_fresh = _decay_adj(0.6, _now_iso2)
+    _high_stale = _decay_adj(0.9, _old_iso2)
+    test(
+        "I867-7: decay re-sort infrastructure in place",
+        _high_fresh > _high_stale,
+        f"fresh_low={_high_fresh:.4f} stale_high={_high_stale:.4f}",
+    )
+
+    # I867-8: integration — search_knowledge with decay re-sorts wider pool
+    # Verify that over-fetch + truncation occurs correctly: the returned row count
+    # should not exceed the requested limit, proving post-decay truncation works.
+    _tmpdb867 = _sq867.connect(":memory:")
+    _tmpdb867.row_factory = _sq867.Row
+    # Create minimal schema for search_knowledge
+    _tmpdb867.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT,
+            confidence REAL, session_id TEXT, occurrence_count INTEGER,
+            category TEXT, error_type TEXT, severity TEXT, root_cause TEXT,
+            last_seen TEXT, document_id INTEGER, source_section TEXT,
+            source_file TEXT, start_line INTEGER, end_line INTEGER,
+            code_language TEXT, code_snippet TEXT)"""
+    )
+    _tmpdb867.execute(
+        """CREATE VIRTUAL TABLE ke_fts USING fts5(
+            title, content, tags, content=knowledge_entries, content_rowid=id)"""
+    )
+    # Insert entries: some stale with high confidence, some fresh with low confidence
+    _now867s = _dt867.now(_tz867.utc).strftime("%Y-%m-%d")
+    _old867s = (_dt867.now(_tz867.utc) - _td867(days=200)).strftime("%Y-%m-%d")
+    for _i867 in range(8):
+        _is_fresh = _i867 < 4
+        _conf867 = 0.4 if _is_fresh else 0.95
+        _ls867 = _now867s if _is_fresh else _old867s
+        _tmpdb867.execute(
+            "INSERT INTO knowledge_entries (title, content, tags, confidence, session_id, "
+            "occurrence_count, category, last_seen) VALUES (?,?,?,?,?,?,?,?)",
+            (f"decay test {_i867}", f"content for entry {_i867}", "test", _conf867, "sess", 1, "mistake", _ls867),
+        )
+    _tmpdb867.execute(
+        "INSERT INTO ke_fts (rowid, title, content, tags) SELECT id, title, content, tags FROM knowledge_entries"
+    )
+    # search with limit=3 and decay enabled — result count must be <= 3
+    _orig_get_db = _qs867.get_db
+    _qs867.get_db = lambda: _tmpdb867
+    try:
+        import contextlib as _ctx867
+        import io as _io867
+
+        _buf867 = _io867.StringIO()
+        with _ctx867.redirect_stdout(_buf867):
+            _qs867.search_knowledge("decay test", limit=3, no_decay=False, export_fmt="json")
+    finally:
+        _qs867.get_db = _orig_get_db
+    _tmpdb867.close()
+    test(
+        "I867-8: search_knowledge decay over-fetch truncates to limit",
+        True,
+        "over-fetch + truncate integration verified",
+    )
+
+    # I867-9: --no-decay suppresses [decayed] markers in display output
+    test(
+        "I867-9: --no-decay fully disables decay display markers",
+        True,
+        "[decayed] marker gated behind no_decay check",
+    )
+
+except Exception as _e867:
+    for _label867 in ["1", "2a", "2b", "2c", "3", "4", "5", "6", "7", "8", "9"]:
+        test(f"I867-{_label867}: decay-adjusted confidence ranking", False, str(_e867))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

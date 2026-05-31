@@ -2902,6 +2902,7 @@ def generate_briefing(
     pinned_n: int = 0,
     exclude_ids: "set[int] | None" = None,
     no_dedup: bool = False,
+    no_decay: bool = False,
 ):
     """Generate a structured briefing from the knowledge base.
 
@@ -2915,6 +2916,9 @@ def generate_briefing(
 
     ``no_dedup``: when True, skip the semantic near-duplicate collapse pass
     (issue #851).  Dedup is applied by default in compact mode only.
+
+    ``no_decay``: when True, skip the decay-adjusted confidence re-sort in
+    compact mode (issue #867).
     """
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
@@ -2997,7 +3001,7 @@ def generate_briefing(
         # output formats (text, json, pack, compact) consistently omit Wave-style
         # status-note entries, not just the compact formatter.
         safe_entries = []
-        for e in merged[:cat_limit]:
+        for e in merged:
             if _briefing_entry_is_unsafe(e):
                 print(
                     f"  [briefing] suppressed unsafe entry: {e.get('title', '')[:60]!r}",
@@ -3025,6 +3029,24 @@ def generate_briefing(
                 "briefing_merge_event",
                 {"merged_count": merged_count, "query": query[:120], "fmt": fmt},
             )
+
+    # Issue #867: decay-adjusted confidence re-sort in compact mode.
+    # Applied to the wider candidate pool (not yet truncated to cat_limit) so that
+    # fresh entries ranked beyond the original LIMIT can be promoted by decay weighting.
+    if not no_decay and fmt == "compact":
+
+        def _eff_conf_briefing(e: dict) -> float:
+            conf = float(e.get("confidence") or 0.5)
+            last_seen = e.get("last_seen")
+            return conf * _decay_weight(str(last_seen) if last_seen else "", half_life_days=90)
+
+        for cat in list(briefing_data.keys()):
+            briefing_data[cat] = sorted(briefing_data[cat], key=_eff_conf_briefing, reverse=True)
+
+    # Truncate each category to its intended limit after decay re-sort (issue #867).
+    for cat in list(briefing_data.keys()):
+        _cat_lim = per_cat_limit.get(cat, limit)
+        briefing_data[cat] = briefing_data[cat][:_cat_lim]
 
     past_work = search_past_work(db, rewritten_query, limit)
 
@@ -5590,6 +5612,9 @@ def main():
     # --no-dedup: disable semantic near-duplicate collapse (issue #851).
     no_dedup = "--no-dedup" in args
 
+    # --no-decay: disable decay-adjusted confidence re-sort (issue #867).
+    no_decay = "--no-decay" in args
+
     if auto_mode:
         _cache_sha8 = _get_current_sha8()
         _cache_args_hash = _prefetch_args_hash(args)
@@ -5706,6 +5731,7 @@ def main():
             pinned_n=pinned_n,
             exclude_ids=already_served if (no_repeat and _no_repeat_session_id) else None,
             no_dedup=no_dedup,
+            no_decay=no_decay,
         )
 
     if budget > 0 and len(output) > budget:
@@ -5745,6 +5771,7 @@ def main():
                     pinned_n=pinned_n,
                     exclude_ids=already_served if (no_repeat and _no_repeat_session_id) else None,
                     no_dedup=no_dedup,
+                    no_decay=no_decay,
                 )
             if len(output) <= budget:
                 break
