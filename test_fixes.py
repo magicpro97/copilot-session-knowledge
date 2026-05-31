@@ -2820,6 +2820,7 @@ with tempfile.TemporaryDirectory(prefix="mcp-server-test-") as _mcp_tmp:
                     _mcp_proc.kill()
                     _mcp_proc.wait(timeout=5)
 
+
 def test_i754_briefing_with_code_context_emits_snippets():
     base_dir = REPO / "_test_i754_briefing_code_context"
     shutil.rmtree(base_dir, ignore_errors=True)
