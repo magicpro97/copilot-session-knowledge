@@ -442,6 +442,19 @@ echo '{}' | sk hooks agentStop
 
 Set `HOOK_DRY_RUN=1` to verify denial logic without blocking, and `HOOK_LOG_LEVEL=DEBUG` for verbose audit output. Audit entries are written to `~/.copilot/markers/audit.jsonl`.
 
+### Debounce (Python shim only)
+
+Set `SK_HOOK_DEBOUNCE_SECS=N` to skip re-evaluation of identical `preToolUse`
+invocations (same `toolName` + `toolArgs`) within the last `N` seconds. Default
+is **0** (disabled). When enabled, debounce keys on a SHA-256 hash of the
+invocation and only records after the full rule loop completes without a deny —
+security gates are never suppressed.
+
+> **Note:** This env var is honoured only by the Python `hook_runner.py`. Rust
+> binary installs that route `preToolUse` through the native runner
+> (`sk-rust/src/commands/hooks.rs`) do not implement debounce yet. A follow-up
+> issue will track the native-runner port.
+
 ## preToolUse Routing-Flip Specification
 
 This section records the verified state of the managed routing flip for `preToolUse`.
