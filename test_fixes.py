@@ -11529,6 +11529,247 @@ except Exception as _e759:
         test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
 
 # ---------------------------------------------------------------------------
+# === I839: briefing --watch — live context refresh ===
+print("\n🔍 I839: briefing --watch live polling")
+
+import importlib as _il839
+import sqlite3 as _sq839
+import sys as _sys839
+import threading as _th839
+import time as _ti839
+import types as _ty839
+from pathlib import Path as _Path839
+
+try:
+    _bmod839 = _il839.import_module("briefing") if "briefing" in sys.modules else None
+    if _bmod839 is None:
+        import importlib.util as _ilu839
+
+        _spec839 = _ilu839.spec_from_file_location("briefing839", Path(__file__).parent / "briefing.py")
+        _bmod839 = _ilu839.module_from_spec(_spec839)
+        _spec839.loader.exec_module(_bmod839)
+except Exception as _e839_load:
+    _bmod839 = None
+
+# I839-1: _run_watch function exists and is callable
+test(
+    "I839-1a: _run_watch function exists in briefing.py",
+    _bmod839 is not None and hasattr(_bmod839, "_run_watch"),
+    "function not found",
+)
+test(
+    "I839-1b: _run_watch is callable",
+    _bmod839 is not None and callable(getattr(_bmod839, "_run_watch", None)),
+    "not callable",
+)
+
+# I839-2: --watch argument is handled in main (inspect source)
+try:
+    import inspect as _ins839
+
+    _src839 = _ins839.getsource(_bmod839.main) if _bmod839 else ""
+    test(
+        "I839-2a: main() handles --watch flag",
+        "--watch" in _src839,
+        "no --watch branch in main()",
+    )
+    test(
+        "I839-2b: main() handles --interval flag",
+        "--interval" in _src839,
+        "no --interval branch in main()",
+    )
+except Exception as _e839_2:
+    test("I839-2a: main() handles --watch flag", False, str(_e839_2))
+    test("I839-2b: main() handles --interval flag", False, str(_e839_2))
+
+# I839-3: polling detects new entries via threading (unit test of _run_watch loop)
+try:
+    import tempfile as _tf839
+
+    _td839 = _tf839.mkdtemp()
+    _db839_path = Path(_td839) / "watch_test.db"
+    _db839 = _sq839.connect(str(_db839_path))
+    _db839.execute(
+        "CREATE TABLE knowledge_entries "
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT, confidence REAL DEFAULT 0.7)"
+    )
+    _db839.execute("INSERT INTO knowledge_entries (id, category, title, content) VALUES (1, 'mistake', 'Old entry', 'old')")
+    _db839.commit()
+    _db839.close()
+
+    _detected839: list = []
+    _orig_sleep839 = _ti839.sleep
+    _call_count839 = [0]
+
+    def _fast_sleep839(secs):
+        _call_count839[0] += 1
+        if _call_count839[0] == 1:
+            # Insert a new entry before the first poll wakes
+            _c = _sq839.connect(str(_db839_path))
+            _c.execute(
+                "INSERT INTO knowledge_entries (id, category, title, content) VALUES (2, 'pattern', 'New watch entry', 'new')"
+            )
+            _c.commit()
+            _c.close()
+        elif _call_count839[0] >= 2:
+            raise SystemExit(0)
+
+    import io as _io839
+    import unittest.mock as _mock839
+
+    _buf839 = _io839.StringIO()
+    with (
+        _mock839.patch("time.sleep", side_effect=_fast_sleep839),
+        _mock839.patch("sys.stdout", _buf839),
+        _mock839.patch("signal.signal"),
+    ):
+        try:
+            _bmod839._run_watch(str(_db839_path), interval=1)
+        except SystemExit:
+            pass
+
+    _out839 = _buf839.getvalue()
+    test(
+        "I839-3a: _run_watch prints startup banner",
+        "[watch]" in _out839,
+        f"out={_out839[:200]}",
+    )
+    test(
+        "I839-3b: _run_watch detects new entry with ⚡ prefix",
+        "⚡" in _out839 and "New watch entry" in _out839,
+        f"out={_out839[:300]}",
+    )
+    test(
+        "I839-3c: new entry output includes category and confidence",
+        "[pattern]" in _out839 and "conf=" in _out839,
+        f"out={_out839[:300]}",
+    )
+
+    # Clean up
+    try:
+        import shutil as _sh839
+
+        _sh839.rmtree(_td839, ignore_errors=True)
+    except Exception:
+        pass
+
+except Exception as _e839_3:
+    test("I839-3a: _run_watch prints startup banner", False, str(_e839_3))
+    test("I839-3b: _run_watch detects new entry with ⚡ prefix", False, str(_e839_3))
+    test("I839-3c: new entry output includes category and confidence", False, str(_e839_3))
+
+# I839-4: no new entries → no ⚡ output (silent poll)
+try:
+    import tempfile as _tf839b
+
+    _td839b = _tf839b.mkdtemp()
+    _db839b_path = Path(_td839b) / "watch_silent.db"
+    _db839b = _sq839.connect(str(_db839b_path))
+    _db839b.execute(
+        "CREATE TABLE knowledge_entries "
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT, confidence REAL DEFAULT 0.7)"
+    )
+    _db839b.execute(
+        "INSERT INTO knowledge_entries (id, category, title, content) VALUES (1, 'mistake', 'Existing entry', 'content')"
+    )
+    _db839b.commit()
+    _db839b.close()
+
+    _call_count839b = [0]
+
+    def _fast_sleep839b(secs):
+        _call_count839b[0] += 1
+        if _call_count839b[0] >= 2:
+            raise SystemExit(0)
+
+    import io as _io839b
+    import unittest.mock as _mock839b
+
+    _buf839b = _io839b.StringIO()
+    with (
+        _mock839b.patch("time.sleep", side_effect=_fast_sleep839b),
+        _mock839b.patch("sys.stdout", _buf839b),
+        _mock839b.patch("signal.signal"),
+    ):
+        try:
+            _bmod839._run_watch(str(_db839b_path), interval=1)
+        except SystemExit:
+            pass
+
+    _out839b = _buf839b.getvalue()
+    test(
+        "I839-4a: silent poll (no new entries) produces no ⚡ output",
+        "⚡" not in _out839b,
+        f"out={_out839b[:200]}",
+    )
+
+    try:
+        import shutil as _sh839b
+
+        _sh839b.rmtree(_td839b, ignore_errors=True)
+    except Exception:
+        pass
+
+except Exception as _e839_4:
+    test("I839-4a: silent poll (no new entries) produces no ⚡ output", False, str(_e839_4))
+
+# I839-5: --watch subprocess exits with rc=0 on Ctrl-C equivalent (SIGINT)
+try:
+    import subprocess as _sp839
+    import signal as _sig839
+    import tempfile as _tf839c
+
+    _td839c = tempfile.mkdtemp()
+    _db839c_path = Path(_td839c) / "watch_proc.db"
+    _db839c = _sq839.connect(str(_db839c_path))
+    _db839c.execute(
+        "CREATE TABLE knowledge_entries "
+        "(id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT, confidence REAL DEFAULT 0.7)"
+    )
+    _db839c.commit()
+    _db839c.close()
+
+    _briefing_path839 = Path(__file__).parent / "briefing.py"
+    _env839 = {**os.environ, "COPILOT_DB_PATH": str(_db839c_path)}
+    _proc839 = _sp839.Popen(
+        [sys.executable, str(_briefing_path839), "--watch", "--interval", "60"],
+        stdout=_sp839.PIPE,
+        stderr=_sp839.PIPE,
+        env=_env839,
+        text=True,
+    )
+    # Give it 2s to start
+    _ti839.sleep(2)
+    # Send SIGINT (Ctrl-C)
+    _proc839.send_signal(_sig839.SIGINT)
+    try:
+        _proc839.wait(timeout=5)
+    except Exception:
+        _proc839.kill()
+    _out839c = (_proc839.stdout.read() if _proc839.stdout else "") + (_proc839.stderr.read() if _proc839.stderr else "")
+    test(
+        "I839-5a: --watch process starts and prints banner",
+        "[watch]" in _out839c,
+        f"out={_out839c[:200]}",
+    )
+    test(
+        "I839-5b: --watch exits cleanly on SIGINT (rc=0 or rc=130)",
+        _proc839.returncode in (0, 130),
+        f"rc={_proc839.returncode}",
+    )
+
+    try:
+        import shutil as _sh839c
+
+        _sh839c.rmtree(_td839c, ignore_errors=True)
+    except Exception:
+        pass
+
+except Exception as _e839_5:
+    test("I839-5a: --watch process starts and prints banner", False, str(_e839_5))
+    test("I839-5b: --watch exits cleanly on SIGINT (rc=0 or rc=130)", False, str(_e839_5))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

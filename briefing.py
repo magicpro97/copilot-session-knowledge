@@ -4819,6 +4819,45 @@ def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
     db.close()
 
 
+def _run_watch(db_path: str, interval: int = 30) -> None:
+    """Poll knowledge.db for new entries and print diffs (issue #839)."""
+    import signal
+    import time
+
+    if not Path(db_path).exists():
+        print(f"[watch] Database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    last_max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM knowledge_entries").fetchone()[0]
+
+    print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop")
+    print(f"[watch] Starting from entry id>{last_max_id}")
+
+    def _handle_signal(sig, frame):
+        print("\n[watch] Stopped.")
+        conn.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    while True:
+        time.sleep(interval)
+        try:
+            rows = conn.execute(
+                "SELECT id, category, title, confidence FROM knowledge_entries WHERE id > ? ORDER BY id",
+                (last_max_id,),
+            ).fetchall()
+            if rows:
+                print(f"\n⚡ {len(rows)} new entr{'y' if len(rows) == 1 else 'ies'} since last check:")
+                for r in rows:
+                    print(f"  #{r[0]} [{r[1]}] {r[2][:60]}  conf={r[3]:.1f}")
+                last_max_id = rows[-1][0]
+        except Exception as e:
+            print(f"[watch] error: {e}", file=sys.stderr)
+
+
 def main():
     args = sys.argv[1:]
 
@@ -4944,6 +4983,21 @@ def main():
             return
         _rf_store = "--no-store" not in args
         _run_reflect(str(DB_PATH), _rf_question, store=_rf_store)
+        return
+
+    # Handle --watch [--interval N] mode (issue #839)
+    if "--watch" in args:
+        _watch_interval = 30
+        if "--interval" in args:
+            _wi_idx = args.index("--interval")
+            try:
+                _watch_interval = (
+                    int(args[_wi_idx + 1]) if _wi_idx + 1 < len(args) and not args[_wi_idx + 1].startswith("--") else 30
+                )
+            except (ValueError, IndexError):
+                _watch_interval = 30
+        _watch_interval = max(1, _watch_interval)
+        _run_watch(str(DB_PATH), interval=_watch_interval)
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)
