@@ -1980,6 +1980,52 @@ def show_graph(topic: str, predicate: str | None = None):
     db.close()
 
 
+def _fuzzy_title_search(
+    conn,
+    query: str,
+    limit: int = 10,
+    error_type: "str | None" = None,
+    since_date: "str | None" = None,
+) -> list:
+    """Trigram-style fuzzy match against knowledge entry titles.
+
+    Scores each candidate by the fraction of query words present in the title
+    and returns the top results sorted by descending score.  Used as a last-
+    resort fallback when both FTS5 and substring LIKE searches return 0 rows.
+
+    Respects the same ``error_type`` and ``since_date`` filters that the
+    caller already applied to the FTS and LIKE searches so the fuzzy fallback
+    never returns rows outside those constraints.
+    """
+    words = query.lower().split()
+    if not words:
+        return []
+    clauses: list[str] = []
+    params: list = []
+    if error_type:
+        clauses.append("ke.error_type = ?")
+        params.append(error_type)
+    if since_date:
+        clauses.append("ke.last_seen >= ?")
+        params.append(since_date)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    try:
+        candidates = conn.execute(
+            f"SELECT ke.*, '' AS excerpt FROM knowledge_entries ke{where} ORDER BY ke.last_seen DESC LIMIT 500",
+            params,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    scored: list[tuple[float, object]] = []
+    for row in candidates:
+        title_lower = (row["title"] or "").lower()
+        hits = sum(1 for w in words if w in title_lower)
+        if hits > 0:
+            scored.append((hits / len(words), row))
+    scored.sort(key=lambda x: -x[0])
+    return [r for _, r in scored[:limit]]
+
+
 def search_knowledge(
     query: str,
     limit: int = 10,
@@ -2058,6 +2104,7 @@ def search_knowledge(
             rows = []
 
     # Fallback: substring LIKE search when FTS returns nothing
+    _fuzzy_result = False
     if not rows:
         like_query_text = query.strip() or query_for_retrieval
         try:
@@ -2088,6 +2135,15 @@ def search_knowledge(
                 print(f"{DIM}(FTS returned 0 — showing substring matches){RESET}")
         except sqlite3.OperationalError:
             rows = []
+
+    # Fuzzy fallback: word-overlap score against titles when all prior searches fail
+    if not rows:
+        fuzzy_rows = _fuzzy_title_search(db, query, limit=limit, error_type=error_type, since_date=since_date)
+        if fuzzy_rows:
+            rows = fuzzy_rows
+            _fuzzy_result = True
+            if export_fmt != "json":
+                print(f"{DIM}(no exact matches — showing fuzzy title matches){RESET}")
 
     if export_fmt == "json" and rows:
         # Issue #377: suppress status-note entries in all output formats
@@ -2129,7 +2185,11 @@ def search_knowledge(
             if root_cause:
                 meta_parts.append(f"cause:{root_cause[:40]}")
             meta_str = f" {DIM}({', '.join(meta_parts)}){RESET}" if meta_parts else ""
-            print(f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}{meta_str}")
+            print(
+                f"{BOLD}{i}. [fuzzy][{r['category']}] {r['title']}{RESET}{meta_str}"
+                if _fuzzy_result
+                else f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}{meta_str}"
+            )
             print(f"   {DIM}Session:{RESET} {sid}..  {DIM}Tags:{RESET} {r['tags']}")
             print(f"   {excerpt}")
             if explain:
