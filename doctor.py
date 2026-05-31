@@ -9,18 +9,19 @@ Usage:
 """
 
 if __name__ == "__main__" and __package__ is None:
-    import os, sys
+    import os  # noqa: E401
+    import sys
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import os
-import sys
-import json
-import subprocess
-import sqlite3
 import argparse
-from pathlib import Path
+import json
+import os
+import sqlite3
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 
 if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8")
