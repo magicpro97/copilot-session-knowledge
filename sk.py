@@ -24,7 +24,7 @@ Usage:
     sk benchmark [<args>...]      Run benchmark.py
     sk retro    [<args>...]       Run retro.py
     sk heal     [<args>...]       Run copilot-cli-healer.py
-    sk doctor   [<args>...]       Run install.py --doctor
+    sk doctor   [<args>...]       Run doctor.py health checks
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
@@ -123,7 +123,9 @@ _DIRECT: dict[str, CommandMeta] = {
     "heal": CommandMeta(
         "copilot-cli-healer.py", "Diagnose and fix common sk installation issues", ("install", "doctor")
     ),
-    "doctor": CommandMeta("install.py", "Run installation health checks", ("install", "doctor")),
+    "doctor": CommandMeta(
+        "doctor.py", "Run automated config health checks with severity levels", ("install", "doctor")
+    ),
     "watch": CommandMeta("watch-sessions.py", "Watch and auto-index new CLI sessions", ("watch", "index")),
     "export-buglog": CommandMeta("buglog-export.py", "Export bug log entries", ("export", "buglog")),
     "buglog": CommandMeta(
@@ -976,7 +978,7 @@ def main(argv: list[str] | None = None) -> int:
     if cmd in {"plan", "tasks"}:
         return _run_spec_phase(cmd, rest)
     if cmd == "doctor":
-        return _run("install.py", ["--doctor"] + rest)
+        return _run("doctor.py", rest)
     if cmd == "init":
         return _run("setup-project.py", ["--init-mode"] + rest)
     if cmd in _DIRECT:
