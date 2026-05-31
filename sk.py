@@ -249,6 +249,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "digest": "query-session.py",
         "stats": "query-session.py",
         "compare": "session-compare.py",
+        "compact": "session-compact.py",
     },
     "knowledge": {
         "freshness": "knowledge-health.py",

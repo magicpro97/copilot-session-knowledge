@@ -242,6 +242,7 @@ TOOL_FILES = [
     "code-index.py",
     "cost-analytics.py",
     "session-compare.py",
+    "session-compact.py",
 ]
 
 SUPPORT_FILES = [
