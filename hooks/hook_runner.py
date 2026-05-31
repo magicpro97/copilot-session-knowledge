@@ -17,7 +17,7 @@ agentStop, subagentStop, errorOccurred, userPromptSubmitted
 Environment variables:
   HOOK_DRY_RUN=1            — Log denials but allow through (testing mode)
   HOOK_LOG_LEVEL=DEBUG      — Enable verbose audit logging
-  SK_HOOK_DEBOUNCE_SECS=N   — Debounce window in seconds for preToolUse hooks (default: 5)
+  SK_HOOK_DEBOUNCE_SECS=N   — Debounce window in seconds for preToolUse hooks (default: 0, disabled)
 """
 
 import json
@@ -204,7 +204,7 @@ def main():
     # Debounce by (tool_name + args hash): skip re-evaluation only if the exact same
     # tool invocation was already processed within the window and did NOT deny.
     try:
-        _debounce_secs = int(os.environ.get("SK_HOOK_DEBOUNCE_SECS", "5"))
+        _debounce_secs = int(os.environ.get("SK_HOOK_DEBOUNCE_SECS", "0"))
     except (ValueError, TypeError):
         _debounce_secs = 5
 
