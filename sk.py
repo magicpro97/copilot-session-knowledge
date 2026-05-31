@@ -91,6 +91,7 @@ _PROJECT_DB_SCRIPTS = {
     "anatomy-map.py",
     "briefing.py",
     "build-session-index.py",
+    "curate.py",
     "embed.py",
     "entity-extract.py",
     "extract-knowledge.py",

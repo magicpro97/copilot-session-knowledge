@@ -8,13 +8,15 @@ if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8")
 
 import argparse
+import datetime
 import json
 import re
 import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path.home() / ".copilot" / "tools" / "knowledge.db"
+SESSION_STATE = Path.home() / ".copilot" / "tools"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 STALE_DAYS = 90
 STALE_MIN_RECALL = 2
 LOW_CONFIDENCE = 0.3
@@ -46,12 +48,15 @@ def _cmd_scan(args):
     flagged = 0
 
     # 1. Stale entries: old + low recall
+    cutoff_iso = datetime.datetime.utcfromtimestamp(cutoff).isoformat()
     stale = db.execute(
-        "SELECT id, title FROM knowledge_entries "
-        "WHERE (last_seen IS NULL OR last_seen < ?) AND (recall_count IS NULL OR recall_count < ?) "
-        "AND (curation_state IS NULL OR curation_state = '') "
-        "AND (is_resolved IS NULL OR is_resolved = 0)",
-        (cutoff, STALE_MIN_RECALL),
+        "SELECT ke.id, ke.title FROM knowledge_entries ke "
+        "LEFT JOIN entry_recall_stats ers ON ers.entry_id = ke.id "
+        "WHERE (ke.last_seen IS NULL OR ke.last_seen < ?) "
+        "AND (ers.recall_count IS NULL OR ers.recall_count < ?) "
+        "AND (ke.curation_state IS NULL OR ke.curation_state = '') "
+        "AND (ke.is_resolved IS NULL OR ke.is_resolved = 0)",
+        (cutoff_iso, STALE_MIN_RECALL),
     ).fetchall()
     for row in stale:
         db.execute(
@@ -77,21 +82,28 @@ def _cmd_scan(args):
 
     # 3. Near-duplicates (Jaccard > 0.7 on title+content)
     all_entries = db.execute(
-        "SELECT id, title, content FROM knowledge_entries WHERE curation_state IS NULL OR curation_state = '' LIMIT 500"
+        "SELECT id, title, content, confidence FROM knowledge_entries "
+        "WHERE curation_state IS NULL OR curation_state = '' LIMIT 500"
     ).fetchall()
     seen_dups: set = set()
-    for i, (id_a, title_a, content_a) in enumerate(all_entries):
-        for id_b, title_b, content_b in all_entries[i + 1 :]:
+    for i, (id_a, title_a, content_a, conf_a) in enumerate(all_entries):
+        for id_b, title_b, content_b, conf_b in all_entries[i + 1 :]:
             text_a = f"{title_a} {content_a or ''}"
             text_b = f"{title_b} {content_b or ''}"
-            if _jaccard_similarity(text_a, text_b) > 0.7 and id_b not in seen_dups:
-                seen_dups.add(id_b)
-                db.execute(
-                    "UPDATE knowledge_entries SET curation_state = 'pending_review' WHERE id = ?",
-                    (id_b,),
-                )
-                print(f"  [dup] #{id_b} ~ #{id_a} — {title_b[:50]}")
-                flagged += 1
+            if _jaccard_similarity(text_a, text_b) > 0.7:
+                # Flag the lower-confidence entry
+                if (conf_b or 1.0) < (conf_a or 1.0):
+                    flag_id, flag_title, other_id = id_b, title_b, id_a
+                else:
+                    flag_id, flag_title, other_id = id_a, title_a, id_b
+                if flag_id not in seen_dups:
+                    seen_dups.add(flag_id)
+                    db.execute(
+                        "UPDATE knowledge_entries SET curation_state = 'pending_review' WHERE id = ?",
+                        (flag_id,),
+                    )
+                    print(f"  [dup] #{flag_id} ~ #{other_id} — {flag_title[:50]}")
+                    flagged += 1
 
     db.commit()
     db.close()
@@ -103,7 +115,7 @@ def _cmd_list(args):
     db = _get_db(Path(args.db))
     rows = db.execute(
         "SELECT id, category, title, confidence, curation_state FROM knowledge_entries "
-        "WHERE curation_state IS NOT NULL AND curation_state != '' "
+        "WHERE curation_state = 'pending_review' "
         "ORDER BY confidence ASC LIMIT ?",
         (args.limit,),
     ).fetchall()
@@ -163,7 +175,7 @@ def main():
 
     res_p = sub.add_parser("resolve", help="Resolve a flagged entry")
     res_p.add_argument("entry_id", type=int)
-    res_p.add_argument("--action", choices=["keep", "archive", "merge"], default="keep")
+    res_p.add_argument("--action", choices=["keep", "archive"], default="keep")
     res_p.set_defaults(func=_cmd_resolve)
 
     stats_p = sub.add_parser("stats", help="Curation statistics")
