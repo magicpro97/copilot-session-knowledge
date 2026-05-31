@@ -4114,6 +4114,31 @@ def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
         db.close()
         return
 
+    recall_event_count = db.execute("SELECT COUNT(*) FROM recall_events").fetchone()[0]
+    if recall_event_count == 0:
+        message = "No recall events recorded yet. Use briefing to generate recall data first."
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "message": message,
+                        "days": days,
+                        "total_recall_events": 0,
+                        "precision_by_query": [],
+                        "dead_knowledge_count": 0,
+                        "dead_knowledge": [],
+                        "pin_candidates": [],
+                        "category_breakdown": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(message)
+        db.close()
+        return
+
     cutoff = f"-{days} days"
 
     # 1. Precision by query (from search_feedback verdicts)
@@ -4126,7 +4151,8 @@ def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
                    SUM(CASE WHEN verdict = 1 THEN 1 ELSE 0 END) AS good,
                    SUM(CASE WHEN verdict = -1 THEN 1 ELSE 0 END) AS bad
             FROM search_feedback
-            WHERE date(created_at) >= date('now', ?)
+            WHERE result_kind IN ('briefing', 'knowledge')
+              AND date(created_at) >= date('now', ?)
               AND query IS NOT NULL AND query != ''
             GROUP BY query
             HAVING total >= 2
@@ -4162,12 +4188,14 @@ def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
                 pass
 
         dead_rows = db.execute(
-            """SELECT id, title, entry_type, priority, created_at FROM knowledge_entries
-               WHERE date(created_at) <= date('now', ?)""",
+            """SELECT id, title, category, priority, COALESCE(last_seen, first_seen) AS seen_at
+               FROM knowledge_entries
+               WHERE date(COALESCE(last_seen, first_seen)) <= date('now', ?)
+               ORDER BY COALESCE(last_seen, first_seen) ASC""",
             (cutoff,),
         ).fetchall()
         dead_entries = [
-            {"id": r["id"], "title": r["title"], "type": r["entry_type"], "priority": r["priority"]}
+            {"id": r["id"], "title": r["title"], "type": r["category"], "priority": r["priority"]}
             for r in dead_rows
             if str(r["id"]) not in ever_recalled
         ]
@@ -4212,11 +4240,11 @@ def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
     category_breakdown = []
     if "knowledge_entries" in tables and total_window > 0:
         cat_rows = db.execute(
-            """SELECT ke.entry_type AS category, COUNT(DISTINCT re.id) AS events
+            """SELECT ke.category AS category, COUNT(DISTINCT re.id) AS events
                FROM recall_events re
                JOIN knowledge_entries ke ON ke.id = re.opened_entry_id
                WHERE date(re.created_at) >= date('now', ?)
-               GROUP BY ke.entry_type
+               GROUP BY ke.category
                ORDER BY events DESC""",
             (cutoff,),
         ).fetchall()
@@ -4253,7 +4281,7 @@ def _recall_quality_report(db_path, days: int, as_json: bool) -> None:
             for q in low[:5]:
                 print(f"  ⚠  {q['query'][:40]:<40} {q['precision_pct']:3}%  ({q['total']} hits, {q['bad']} bad)")
     else:
-        print("\n  No feedback data yet — use 'sk query --feedback <id> good|bad|neutral' to train.")
+        print("\n  No feedback data yet — use 'python3 briefing.py --feedback \"<query>\" good|bad' to train.")
 
     print(f"\nDead knowledge (never recalled, older than {days}d): {len(dead_entries)} entries")
     if dead_entries:
@@ -4365,6 +4393,7 @@ def main():
                 )
             except (ValueError, IndexError):
                 _rq_days = 30
+        _rq_days = max(1, _rq_days)
         _rq_json = "--json" in args
         _recall_quality_report(DB_PATH, _rq_days, _rq_json)
         return
