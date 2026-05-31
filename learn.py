@@ -85,7 +85,7 @@ RELATION_TYPES: dict[str, str] = {
     "causes": "caused_by",
     "fixes": "fixed_by",
     "requires": "required_by",
-    "supersedes": "superseded_by",
+    "SUPERSEDES": "superseded_by",
     "related_to": "related_to",
     "navigates_to": "navigated_from",
     "uses": "used_by",
@@ -2759,7 +2759,9 @@ def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str 
             db.close()
             sys.exit(1)
 
-        now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         sid = session_id or ""
         db.execute(
             """
@@ -2791,7 +2793,7 @@ def _insert_typed_relation(
     Warns if predicate is not in RELATION_TYPES (but still writes it).
     Auto-creates the inverse relation when a known inverse exists.
     """
-    predicate = predicate.lower().strip()
+    predicate = predicate.strip()
     if predicate not in RELATION_TYPES:
         print(
             f"  ⚠ Unknown predicate '{predicate}'. Known types: {', '.join(sorted(RELATION_TYPES))}",
@@ -2810,29 +2812,64 @@ def _insert_typed_relation(
             db.close()
             sys.exit(1)
 
-        now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-        sid = session_id or ""
-        db.execute(
-            """
-            INSERT OR IGNORE INTO knowledge_relations
-                (source_id, target_id, relation_type, confidence, created_at, session_id)
-            VALUES (?, ?, ?, 1.0, ?, ?)
-            """,
-            (source_id, target_id, predicate, now, sid),
-        )
-        print(f"  ✅ #{source_id} --[{predicate}]--> #{target_id}: {target_row['title'][:50]}")
+        from datetime import datetime, timezone
 
-        # Auto-create inverse relation when predicate has a known, distinct inverse.
-        inverse = RELATION_TYPES.get(predicate)
-        if inverse and inverse != predicate:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        sid = session_id or ""
+
+        # Check if stable_id columns exist
+        _cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_relations)").fetchall()}
+        _has_stable = "stable_id" in _cols
+
+        if _has_stable:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO knowledge_relations
+                    (source_id, target_id, relation_type, confidence, created_at, session_id,
+                     source_stable_id, target_stable_id, stable_id)
+                VALUES (?, ?, ?, 1.0, ?, ?,
+                        (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                        (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                        lower(hex(randomblob(8))))
+                """,
+                (source_id, target_id, predicate, now, sid, source_id, target_id),
+            )
+        else:
             db.execute(
                 """
                 INSERT OR IGNORE INTO knowledge_relations
                     (source_id, target_id, relation_type, confidence, created_at, session_id)
                 VALUES (?, ?, ?, 1.0, ?, ?)
                 """,
-                (target_id, source_id, inverse, now, sid),
+                (source_id, target_id, predicate, now, sid),
             )
+        print(f"  ✅ #{source_id} --[{predicate}]--> #{target_id}: {target_row['title'][:50]}")
+
+        # Auto-create inverse relation when predicate has a known, distinct inverse.
+        inverse = RELATION_TYPES.get(predicate)
+        if inverse and inverse != predicate:
+            if _has_stable:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_relations
+                        (source_id, target_id, relation_type, confidence, created_at, session_id,
+                         source_stable_id, target_stable_id, stable_id)
+                    VALUES (?, ?, ?, 1.0, ?, ?,
+                            (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                            (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                            lower(hex(randomblob(8))))
+                    """,
+                    (target_id, source_id, inverse, now, sid, target_id, source_id),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_relations
+                        (source_id, target_id, relation_type, confidence, created_at, session_id)
+                    VALUES (?, ?, ?, 1.0, ?, ?)
+                    """,
+                    (target_id, source_id, inverse, now, sid),
+                )
             print(f"  ↩  #{target_id} --[{inverse}]--> #{source_id} (auto-inverse)")
         db.commit()
     except Exception as exc:  # noqa: BLE001

@@ -3314,7 +3314,10 @@ def _run(args: list, compact: bool = False):
             _predicate: str | None = None
             if "--predicate" in args:
                 _pi = args.index("--predicate")
-                _predicate = args[_pi + 1] if _pi + 1 < len(args) and not args[_pi + 1].startswith("--") else None
+                if _pi + 1 >= len(args) or args[_pi + 1].startswith("--"):
+                    print("Error: --predicate requires a value (e.g. --predicate causes)")
+                    return
+                _predicate = args[_pi + 1]
             show_graph(args[idx + 1], predicate=_predicate)
         else:
             print("Error: --graph requires a topic")
