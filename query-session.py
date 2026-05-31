@@ -1460,29 +1460,38 @@ def show_detail(entry_id: int):
     return {"opened_entry_id": int(entry_id), "hit_count": 1, "selected_entry_ids": [int(entry_id)]}
 
 
-def _explain_scores_for_entry(db, entry_id: int, bm25_rank: float | None = None) -> dict:
+def _explain_scores_for_entry(
+    db, entry_id: int, rank: int = 0, bm25_rank: float | None = None, row_data: dict | None = None
+) -> dict:
     """Return a score-breakdown dict for a knowledge entry.
 
     Computes: bm25 (from ke_fts rank), decay (recency), access_count, and a
-    composite rrf-style score so callers can show one concise score line.
+    composite rrf score using 1/(k + rank + 1) matching the repo convention.
+
+    Args:
+        rank: 0-based position in the result list (used for RRF).
+        bm25_rank: raw FTS5 rank value (negative; lower = better).
+        row_data: pre-fetched row dict to avoid N+1 query (needs last_seen,
+            occurrence_count, confidence, intensity).
     """
     import datetime as _dt_ex
-    import math as _math_ex
 
-    row = db.execute(
-        """
-        SELECT ke.id, ke.title, ke.category, ke.confidence,
-               ke.occurrence_count, ke.last_seen,
-               COALESCE(ke.intensity, ke.confidence) AS intensity,
-               COALESCE(ke.priority, 'P2') AS priority
-        FROM knowledge_entries ke WHERE ke.id = ?
-        """,
-        (entry_id,),
-    ).fetchone()
-    if not row:
-        return {}
-
-    row_d = dict(row)
+    if row_data is not None:
+        row_d = dict(row_data)
+    else:
+        row = db.execute(
+            """
+            SELECT ke.id, ke.title, ke.category, ke.confidence,
+                   ke.occurrence_count, ke.last_seen,
+                   COALESCE(ke.intensity, ke.confidence) AS intensity,
+                   COALESCE(ke.priority, 'P2') AS priority
+            FROM knowledge_entries ke WHERE ke.id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        if not row:
+            return {}
+        row_d = dict(row)
 
     # BM25 rank from ke_fts (lower is better in SQLite FTS5; negate for display)
     bm25 = None
@@ -1526,12 +1535,9 @@ def _explain_scores_for_entry(db, entry_id: int, bm25_rank: float | None = None)
     access_count = int(row_d.get("occurrence_count") or 1)
     intensity = float(row_d.get("intensity") or row_d.get("confidence") or 0.5)
 
-    # RRF-style composite: bm25-weighted + decay contribution
-    # rrf = 1/(k + rank) where rank is 1-based; approximate from bm25 when available
-    rrf = None
-    if bm25 is not None:
-        _k = 60.0
-        rrf = round(1.0 / (_k + max(0.0, 1.0 / max(bm25, 1e-9))), 6) if bm25 > 0 else round(1.0 / (_k + 1.0), 6)
+    # RRF composite: 1/(k + rank + 1) matching embed.py / briefing.py convention
+    _k = 60.0
+    rrf = round(1.0 / (_k + rank + 1), 6)
 
     return {
         "bm25": bm25,
@@ -2074,11 +2080,11 @@ def search_knowledge(
         rows = [r for r in rows if not _STATUS_NOTE_RE.search(dict(r).get("title", "") or "")]
         rows_dicts = [dict(r) for r in rows]
         if explain:
-            for rd in rows_dicts:
+            for idx, rd in enumerate(rows_dicts):
                 bm25_rank = rd.pop("_fts_rank", None)
                 entry_id = rd.get("id")
                 if isinstance(entry_id, int):
-                    rd["scores"] = _explain_scores_for_entry(db, entry_id, bm25_rank=bm25_rank)
+                    rd["scores"] = _explain_scores_for_entry(db, entry_id, rank=idx, bm25_rank=bm25_rank, row_data=rd)
                 else:
                     rd.pop("_fts_rank", None)
         else:
@@ -2117,10 +2123,10 @@ def search_knowledge(
                 bm25_rank = rd.get("_fts_rank")
                 entry_id = rd.get("id")
                 if isinstance(entry_id, int):
-                    sc = _explain_scores_for_entry(db, entry_id, bm25_rank=bm25_rank)
+                    sc = _explain_scores_for_entry(db, entry_id, rank=i - 1, bm25_rank=bm25_rank, row_data=rd)
                     bm25_str = f"{sc['bm25']:.3f}" if sc.get("bm25") is not None else "n/a"
                     decay_str = f"{sc['decay']:.2f}"
-                    rrf_str = f"{sc['rrf']:.3f}" if sc.get("rrf") is not None else "n/a"
+                    rrf_str = f"{sc['rrf']:.3f}"
                     age_str = f"{sc['age_days']:.0f}d"
                     print(
                         f"   {DIM}bm25={bm25_str}  decay={decay_str}  rrf={rrf_str}"
@@ -2344,7 +2350,14 @@ def export_search_results(results: list, fmt: str):
             print("---\n")
 
 
-def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieval_query: str = None, rrf_k: int = None):
+def semantic_search(
+    query: str,
+    limit: int = 10,
+    verbose: bool = False,
+    retrieval_query: str = None,
+    rrf_k: int = None,
+    explain: bool = False,
+):
     """Hybrid search: FTS5 keyword + vector semantic, merged with RRF."""
     try:
         tools_dir = Path(__file__).parent
@@ -2443,6 +2456,19 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False, retrieva
 
         if verbose and "section_name" in r:
             print(f"   {DIM}Section: {r['section_name']}{RESET}")
+
+        if explain:
+            entry_id = r.get("id")
+            if isinstance(entry_id, int):
+                sc = _explain_scores_for_entry(db, entry_id, rank=i - 1)
+                bm25_str = f"{sc['bm25']:.3f}" if sc.get("bm25") is not None else "n/a"
+                decay_str = f"{sc['decay']:.2f}"
+                rrf_str = f"{sc['rrf']:.3f}"
+                age_str = f"{sc['age_days']:.0f}d"
+                print(
+                    f"   {DIM}bm25={bm25_str}  decay={decay_str}  rrf={rrf_str}"
+                    f"  access={sc['access_count']}  age={age_str}{RESET}"
+                )
 
         print()
 
@@ -3512,7 +3538,9 @@ def _run(args: list, compact: bool = False):
         rewritten_query = _expand_synonyms_fts(rewritten_query)
 
     if use_semantic:
-        output, meta = _run_with_capture(semantic_search, query, limit, verbose, semantic_query, rrf_k_override)
+        output, meta = _run_with_capture(
+            semantic_search, query, limit, verbose, semantic_query, rrf_k_override, use_explain
+        )
         meta = meta or {"hit_count": 0, "selected_entry_ids": []}
         _record_recall_event(
             event_kind="recall",

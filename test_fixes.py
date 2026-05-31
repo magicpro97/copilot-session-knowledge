@@ -13328,10 +13328,19 @@ try:
         """)
         _db838.execute(
             "INSERT INTO knowledge_entries (id, title, content, tags, confidence, occurrence_count, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (1042, "Docker DNS resolution fix", "Fix Docker DNS resolution issues by setting custom nameservers", "docker,dns", 0.9, 5,
-             _dt838.datetime.now(_dt838.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+            (
+                1042,
+                "Docker DNS resolution fix",
+                "Fix Docker DNS resolution issues by setting custom nameservers",
+                "docker,dns",
+                0.9,
+                5,
+                _dt838.datetime.now(_dt838.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
         )
-        _db838.execute("INSERT INTO ke_fts(rowid, title, content, tags) VALUES (1042, 'Docker DNS resolution fix', 'Fix Docker DNS resolution issues by setting custom nameservers', 'docker,dns')")
+        _db838.execute(
+            "INSERT INTO ke_fts(rowid, title, content, tags) VALUES (1042, 'Docker DNS resolution fix', 'Fix Docker DNS resolution issues by setting custom nameservers', 'docker,dns')"
+        )
         _db838.commit()
         _db838.close()
 
@@ -13361,6 +13370,22 @@ try:
             test(
                 "I838-1d: _explain_scores_for_entry decay is in (0, 1]",
                 0 < _sc838.get("decay", 0) <= 1.0,
+                str(_sc838),
+            )
+            test(
+                "I838-1e: _explain_scores_for_entry rrf is float > 0",
+                isinstance(_sc838.get("rrf"), float) and _sc838["rrf"] > 0,
+                str(_sc838),
+            )
+            # Verify RRF formula: 1/(60 + 0 + 1) for rank=0
+            test(
+                "I838-1f: _explain_scores_for_entry rrf matches 1/(k+rank+1)",
+                abs(_sc838.get("rrf", 0) - round(1.0 / 61, 6)) < 1e-7,
+                f"rrf={_sc838.get('rrf')}, expected={round(1.0 / 61, 6)}",
+            )
+            test(
+                "I838-1g: _explain_scores_for_entry bm25 is float or None",
+                _sc838.get("bm25") is None or isinstance(_sc838["bm25"], float),
                 str(_sc838),
             )
 
@@ -13418,6 +13443,16 @@ try:
                     isinstance(_first838.get("scores", {}).get("access_count"), int),
                     str(_first838.get("scores")),
                 )
+                test(
+                    "I838-3e: JSON --explain scores.rrf is float > 0",
+                    isinstance(_first838.get("scores", {}).get("rrf"), float) and _first838["scores"]["rrf"] > 0,
+                    str(_first838.get("scores")),
+                )
+                test(
+                    "I838-3f: JSON --explain scores.bm25 is present",
+                    "bm25" in _first838.get("scores", {}),
+                    str(_first838.get("scores")),
+                )
             except Exception as _je838:
                 test("I838-3a: JSON --explain output is valid JSON list", False, str(_je838))
                 test("I838-3b: JSON --explain result has 'scores' key", False, str(_je838))
@@ -13455,7 +13490,26 @@ try:
             _qs838.DB_PATH = _orig_db838
 
 except Exception as _e838:
-    for _label838 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "3a", "3b", "3c", "3d", "4a", "5a"]:
+    for _label838 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "1f",
+        "1g",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "3e",
+        "3f",
+        "4a",
+        "5a",
+    ]:
         test(f"I838-{_label838}: sk query --explain score breakdown", False, str(_e838))
 
 # ---------------------------------------------------------------------------
