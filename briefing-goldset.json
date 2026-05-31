@@ -1,0 +1,72 @@
+[
+  {
+    "query": "fix import error in Python module",
+    "mode": "debug",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template: replace [] with real IDs after DB population"
+  },
+  {
+    "query": "add retry logic to API calls",
+    "mode": "auto",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "SQL injection prevention parameterized queries",
+    "mode": "auto",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "git commit before testing causes CI failure",
+    "mode": "debug",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "Docker networking bridge DNS resolution",
+    "mode": "auto",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "authentication token expiry middleware",
+    "mode": "auto",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "database migration rollback strategy",
+    "mode": "auto",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "async await promise rejection unhandled",
+    "mode": "debug",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "memory leak event listener not removed",
+    "mode": "debug",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  },
+  {
+    "query": "CI environment variable not set deployment fails",
+    "mode": "auto",
+    "expected_entry_ids": [],
+    "min_recall_at_k": 0.5,
+    "notes": "Template"
+  }
+]

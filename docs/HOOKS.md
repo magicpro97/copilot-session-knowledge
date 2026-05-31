@@ -54,6 +54,7 @@ hooks/
 | `verification-gate` | preToolUse + postToolUse | Tracks dirty Python / `browse-ui` TS/JS surfaces, records successful verification commands, and blocks closeout-style actions (`task_complete`, `gh issue close/comment`, tentacle `handoff --status DONE`, tentacle `complete`) until the required fresh evidence exists. |
 | `file-size-advisory` | preToolUse | Warns when an `edit`/`create` payload would leave a Python file over 400 lines. Advisory-only and fail-open: emits information but never denies the tool call. |
 | `new-file-advisory` | preToolUse | Warns when a `create` payload targets a new root Python script. Advisory-only and fail-open: cites Rule 11 and asks agents to justify the new file, reuse an existing home when possible, and update tests/lint coverage. |
+| `post-commit-briefing` | postToolUse | Emits a scoped mini-briefing when `git commit` completes in `bash`. Queries `knowledge_entries` for entries referencing committed files, then returns relevant past mistakes and patterns as `additionalContext`. Fail-open and silent when no entries match. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete; writes `learn-done` for `learn.py` and `sk learn`; also surfaces [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) plus a skill-creator standards follow-up when lessons should update reusable skills |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
@@ -440,6 +441,19 @@ echo '{}' | sk hooks agentStop
 ```
 
 Set `HOOK_DRY_RUN=1` to verify denial logic without blocking, and `HOOK_LOG_LEVEL=DEBUG` for verbose audit output. Audit entries are written to `~/.copilot/markers/audit.jsonl`.
+
+### Debounce (Python shim only)
+
+Set `SK_HOOK_DEBOUNCE_SECS=N` to skip re-evaluation of identical `preToolUse`
+invocations (same `toolName` + `toolArgs`) within the last `N` seconds. Default
+is **0** (disabled). When enabled, debounce keys on a SHA-256 hash of the
+invocation and only records after the full rule loop completes without a deny —
+security gates are never suppressed.
+
+> **Note:** This env var is honoured only by the Python `hook_runner.py`. Rust
+> binary installs that route `preToolUse` through the native runner
+> (`sk-rust/src/commands/hooks.rs`) do not implement debounce yet. A follow-up
+> issue will track the native-runner port.
 
 ## preToolUse Routing-Flip Specification
 

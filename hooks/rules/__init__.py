@@ -37,6 +37,7 @@ def get_rules_for_event(event):
     from .new_file_advisory import NewFileAdvisoryRule
     from .nextjs_typecheck import NextjsTypecheckRule
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
+    from .post_commit_briefing import PostCommitBriefingRule
     from .prompt_context import UserPromptContextRule
     from .read_before_edit import ReadBeforeEditRule
     from .read_tracker import ReadTrackerRule
@@ -88,6 +89,7 @@ def get_rules_for_event(event):
         SkillUsageRule(),  # Issue #119: event-level skill usage tracking
         TokenTrackerRule(),  # Issue #84: token usage tracking (postToolUse)
         EpisodeBatcherRule(),  # Issue #394: batch episode auto-learn (opt-in)
+        PostCommitBriefingRule(),  # Issue #804: scoped mini-briefing after git commit
         # VerificationGateRule also handles postToolUse (already registered above)
         # errorOccurred
         ErrorKBRule(),
