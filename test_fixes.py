@@ -16603,6 +16603,43 @@ except Exception as _e856:
         test(f"I856-{_label856}: LLM tag inference", False, str(_e856))
 
 
+# ─── I743: code-embed command ─────────────────────────────────────────────
+
+print("\n🧠 I743: code-embed command")
+
+_code_embed_path = REPO / "code-embed.py"
+_code_embed_text = _code_embed_path.read_text(encoding="utf-8") if _code_embed_path.exists() else ""
+
+try:
+    import ast as _ast743
+
+    _ast743.parse(_code_embed_text)
+    test("I743-01: code-embed.py exists and parses cleanly", _code_embed_path.exists())
+except Exception as _e743_parse:
+    test("I743-01: code-embed.py exists and parses cleanly", False, str(_e743_parse))
+
+test(
+    "I743-02: Has Windows UTF-8 block",
+    'if os.name == "nt":\n    sys.stdout.reconfigure(encoding="utf-8")' in _code_embed_text,
+)
+test("I743-03: No pickle usage", "pickle" not in _code_embed_text)
+test("I743-04: No datetime.utcnow usage", "datetime.utcnow" not in _code_embed_text)
+test("I743-05: Uses struct.pack for embedding", "struct.pack" in _code_embed_text)
+test("I743-06: Has --provider flag in argparse", '"--provider"' in _code_embed_text)
+test("I743-07: Has --batch-size flag", '"--batch-size"' in _code_embed_text)
+test("I743-08: FTS5 sanitization function exists", "def _sanitize_fts" in _code_embed_text)
+test("I743-09: RRF fusion function exists", "def _rrf_fusion" in _code_embed_text)
+test(
+    "I743-10: Graceful fallback to BM25-only when no provider",
+    "return bm25_rows[:limit]" in _code_embed_text and "provider is None" in _code_embed_text,
+)
+_migrate_text743 = (REPO / "migrate.py").read_text(encoding="utf-8")
+test(
+    "I743-11: migration v47 exists in migrate.py",
+    "47" in _migrate_text743 and "code_index_embedding" in _migrate_text743 and "embedding BLOB" in _migrate_text743,
+)
+
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
