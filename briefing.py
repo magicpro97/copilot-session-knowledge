@@ -1775,15 +1775,26 @@ def _expand_query_with_entities(db: sqlite3.Connection, task: str) -> list[str]:
     if not row:
         return []
 
-    file_re = _re.compile(r"\b[\w/.-]+\.(?:py|ts|js|go|rs|java|rb|cpp|h|json|yaml|yml|toml)\b")
+    file_re = _re.compile(r"\b[\w/.-]+\.(?:py|ts|js|go|rs|java|rb|cpp|h|json|yaml|yml|toml|md)\b")
+    func_re = _re.compile(r"\b(?:def|function|fn|func|async\s+fn|async\s+function)\s+(\w+)")
     error_re = _re.compile(r"\b([A-Z][a-zA-Z]*(?:Error|Exception|Warning|Failure|Fault))\b")
+    tool_re = _re.compile(r"`(sk|git|gh|npm|pip|cargo|ruff|pytest|python3?)\s+[\w-]+`")
+    symbol_re = _re.compile(r"\b([A-Z][a-zA-Z0-9]{3,}(?:[A-Z][a-z]+)+)\b")
 
     entities: list[tuple[str, str]] = []
     for m in file_re.findall(task):
         if len(m) > 4:
             entities.append(("file_path", m.lower()))
+    for m in func_re.findall(task):
+        if len(m) > 2:
+            entities.append(("function", m.lower()))
     for m in error_re.findall(task):
         entities.append(("error_type", m))
+    for m in tool_re.findall(task):
+        entities.append(("tool", m.lower()))
+    for m in symbol_re.findall(task):
+        if len(m) > 5:
+            entities.append(("symbol", m))
 
     if not entities:
         return []
@@ -2581,9 +2592,9 @@ def generate_briefing(
                     continue
                 merged.append(r)
 
-        def _entity_boost(e: dict) -> float:
-            """1.2× multiplier for entries sharing entities with the task (issue #770)."""
-            return 1.2 if str(e.get("id", "")) in entity_matched_ids else 1.0
+        def _entity_bonus(e: dict) -> float:
+            """Additive boost for entries sharing entities with the task (issue #770)."""
+            return 0.2 if str(e.get("id", "")) in entity_matched_ids else 0.0
 
         # For mistakes, boost recurring entries to the top before composite recency sort.
         # Recurring mistakes (re-encountered after a briefing) are the most actionable signal.
@@ -2591,14 +2602,14 @@ def generate_briefing(
             merged.sort(
                 key=lambda e: (
                     -(int(e.get("recurrence_after_briefing") or 0)),
-                    -_recency_composite_score(e, half_life) * _entity_boost(e),
+                    -(_recency_composite_score(e, half_life) + _entity_bonus(e)),
                 )
             )
         else:
             # Rerank by composite recency score before truncating so that a recent
             # entry can always surface ahead of an equally-intense stale one.
             merged.sort(
-                key=lambda e: _recency_composite_score(e, half_life) * _entity_boost(e),
+                key=lambda e: _recency_composite_score(e, half_life) + _entity_bonus(e),
                 reverse=True,
             )
         # WBS-014: defense-in-depth read-side credential/injection filter

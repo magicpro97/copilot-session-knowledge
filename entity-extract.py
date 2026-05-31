@@ -20,11 +20,7 @@ from pathlib import Path
 if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8")
 
-_DB_CANDIDATES = [
-    Path.home() / ".copilot/knowledge.db",
-    Path(__file__).parent / "sessions.db",
-    Path.home() / ".copilot/tools/sessions.db",
-]
+_DEFAULT_DB_PATH = Path.home() / ".copilot" / "session-state" / "knowledge.db"
 
 # File path patterns — match things like auth.py, src/auth/middleware.ts
 _FILE_RE = re.compile(r"\b[\w/.-]+\.(?:py|ts|js|go|rs|java|rb|cpp|h|json|yaml|yml|toml|md)\b")
@@ -40,11 +36,8 @@ _SYMBOL_RE = re.compile(r"\b([A-Z][a-zA-Z0-9]{3,}(?:[A-Z][a-z]+)+)\b")
 
 def _db_path() -> Path:
     if e := os.environ.get("SK_DB_PATH"):
-        return Path(e)
-    for p in _DB_CANDIDATES:
-        if p.exists():
-            return p
-    return Path.home() / ".copilot/knowledge.db"
+        return Path(e).expanduser().resolve()
+    return _DEFAULT_DB_PATH.expanduser().resolve()
 
 
 def _has_entities_table(db: sqlite3.Connection) -> bool:
@@ -89,12 +82,13 @@ def _process_entry(
     count = 0
     for etype, evalue in entities:
         try:
-            db.execute(
+            cur = db.execute(
                 "INSERT OR IGNORE INTO knowledge_entities"
                 " (entry_id, entity_type, entity_value, created_at) VALUES (?,?,?,?)",
                 (entry_id, etype, evalue, now),
             )
-            count += 1
+            if cur.rowcount > 0:
+                count += 1
         except sqlite3.IntegrityError:
             pass
     return count

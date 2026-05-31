@@ -91,6 +91,7 @@ _PROJECT_DB_SCRIPTS = {
     "briefing.py",
     "build-session-index.py",
     "embed.py",
+    "entity-extract.py",
     "extract-knowledge.py",
     "index-status.py",
     "knowledge-health.py",
