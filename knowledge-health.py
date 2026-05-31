@@ -1660,6 +1660,28 @@ def compute_decay_preview(limit: int = 20, half_life_days: float = 30.0) -> dict
     }
 
 
+def _effective_confidence(confidence: float, last_seen_iso: "str | None", half_life_days: float = 90.0) -> float:
+    """Exponential decay: effective = confidence * exp(-ln(2)/half_life * days_elapsed).
+
+    Returns confidence unchanged when last_seen_iso is absent or unparseable (fail-open).
+    Issue #867: used for decay-adjusted confidence ranking in briefing and query.
+    """
+    import math
+
+    if not last_seen_iso:
+        return confidence
+    try:
+        last = datetime.fromisoformat(last_seen_iso.replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        days = max(0, (now - last).total_seconds() / 86400)
+        decay = math.exp(-math.log(2) / half_life_days * days)
+        return round(confidence * decay, 4)
+    except Exception:
+        return confidence
+
+
 def format_decay_preview(result: dict) -> str:
     """Format compute_decay_preview() output as a human-readable dashboard."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")

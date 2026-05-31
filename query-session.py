@@ -2048,6 +2048,31 @@ def _fuzzy_title_search(
     return [r for _, r in scored[:limit]]
 
 
+def _decay_adj_conf(confidence: float, last_seen_iso: "str | None", half_life_days: float = 90.0) -> float:
+    """Exponential decay: effective = confidence * exp(-ln(2)/half_life * days_elapsed).
+
+    Standalone copy of knowledge-health._effective_confidence for use in query-session.py.
+    Returns confidence unchanged when last_seen_iso is absent or unparseable (fail-open).
+    Issue #867: decay-adjusted confidence ranking.
+    """
+    if not last_seen_iso:
+        return confidence
+    try:
+        import math as _m867
+        from datetime import datetime as _dt867
+        from datetime import timezone as _tz867
+
+        last = _dt867.fromisoformat(str(last_seen_iso).replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=_tz867.utc)
+        now = _dt867.now(_tz867.utc)
+        days = max(0, (now - last).total_seconds() / 86400)
+        decay = _m867.exp(-_m867.log(2) / half_life_days * days)
+        return round(confidence * decay, 4)
+    except Exception:
+        return confidence
+
+
 def search_knowledge(
     query: str,
     limit: int = 10,
@@ -2056,12 +2081,14 @@ def search_knowledge(
     error_type: str = None,
     since_date: "str | None" = None,
     explain: bool = False,
+    no_decay: bool = False,
 ):
     """Search knowledge entries with FTS5 and adaptive strictness.
 
     ``since_date`` is an optional ISO-8601 date string (``YYYY-MM-DD``).  When
     provided, only entries whose ``last_seen >= since_date`` are returned.
     ``explain`` appends a per-result score breakdown line (bm25/decay/rrf/access).
+    ``no_decay``: when True, skip the decay-adjusted confidence re-sort (issue #867).
     """
     db = get_db()
     query_for_retrieval = retrieval_query if retrieval_query is not None else query
@@ -2193,6 +2220,17 @@ def search_knowledge(
             if export_fmt != "json":
                 print(f"{DIM}(no exact matches — showing fuzzy title matches){RESET}")
 
+    # Issue #867: re-sort by decay-adjusted confidence unless --no-decay
+    if not no_decay and rows:
+        rows = sorted(
+            rows,
+            key=lambda r: _decay_adj_conf(
+                float(r["confidence"] or 0.5),
+                r["last_seen"] if "last_seen" in r.keys() else None,
+            ),
+            reverse=True,
+        )
+
     if export_fmt == "json" and rows:
         # Issue #377: suppress status-note entries in all output formats
         rows = [r for r in rows if not _STATUS_NOTE_RE.search(dict(r).get("title", "") or "")]
@@ -2233,10 +2271,14 @@ def search_knowledge(
             if root_cause:
                 meta_parts.append(f"cause:{root_cause[:40]}")
             meta_str = f" {DIM}({', '.join(meta_parts)}){RESET}" if meta_parts else ""
+            # Issue #867: show [decayed] marker when effective confidence drops below 50% of original
+            _orig_conf = float(r["confidence"] or 0.5)
+            _eff_conf = _decay_adj_conf(_orig_conf, r["last_seen"] if "last_seen" in r.keys() else None)
+            _decay_marker = f" {DIM}[decayed]{RESET}" if _eff_conf < 0.5 * _orig_conf else ""
             print(
-                f"{BOLD}{i}. [fuzzy][{r['category']}] {r['title']}{RESET}{meta_str}"
+                f"{BOLD}{i}. [fuzzy][{r['category']}] {r['title']}{RESET}{meta_str}{_decay_marker}"
                 if _fuzzy_result
-                else f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}{meta_str}"
+                else f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}{meta_str}{_decay_marker}"
             )
             print(f"   {DIM}Session:{RESET} {sid}..  {DIM}Tags:{RESET} {r['tags']}")
             print(f"   {excerpt}")
@@ -3738,7 +3780,12 @@ def _run(args: list, compact: bool = False):
             # Also search knowledge entries
             knowledge_meta = _coerce_recall_meta(
                 search_knowledge(
-                    query, limit=5, retrieval_query=rewritten_query, since_date=since_date_filter, explain=use_explain
+                    query,
+                    limit=5,
+                    retrieval_query=rewritten_query,
+                    since_date=since_date_filter,
+                    explain=use_explain,
+                    no_decay="--no-decay" in args,
                 ),
                 {"hit_count": 0, "selected_entry_ids": []},
             )
