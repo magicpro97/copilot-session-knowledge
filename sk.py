@@ -263,6 +263,9 @@ _GROUPS: dict[str, dict[str, str]] = {
         "pins": "knowledge-health.py",
         "bulk-tag": "knowledge-health.py",
     },
+    "entity": {
+        "extract": "entity-extract.py",
+    },
 }
 
 

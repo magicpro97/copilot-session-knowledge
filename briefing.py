@@ -1763,6 +1763,43 @@ def _get_superseded_ids(db: sqlite3.Connection) -> set:
         return set()
 
 
+def _expand_query_with_entities(db: sqlite3.Connection, task: str) -> list[str]:
+    """Extract entities from task text and return matching knowledge_entry IDs.
+
+    Used to boost entries that share entities with the current task.
+    Returns empty list if knowledge_entities table doesn't exist.
+    """
+    import re as _re
+
+    row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entities'").fetchone()
+    if not row:
+        return []
+
+    file_re = _re.compile(r"\b[\w/.-]+\.(?:py|ts|js|go|rs|java|rb|cpp|h|json|yaml|yml|toml)\b")
+    error_re = _re.compile(r"\b([A-Z][a-zA-Z]*(?:Error|Exception|Warning|Failure|Fault))\b")
+
+    entities: list[tuple[str, str]] = []
+    for m in file_re.findall(task):
+        if len(m) > 4:
+            entities.append(("file_path", m.lower()))
+    for m in error_re.findall(task):
+        entities.append(("error_type", m))
+
+    if not entities:
+        return []
+
+    placeholders = ",".join("(?,?)" for _ in entities)
+    params = [v for pair in entities for v in pair]
+    try:
+        rows = db.execute(
+            f"SELECT DISTINCT entry_id FROM knowledge_entities WHERE (entity_type, entity_value) IN ({placeholders})",
+            params,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [str(r[0]) for r in rows]
+
+
 def _recency_composite_score(entry: dict, half_life_days: float) -> float:
     """Composite ranking score = priority_base + intensity * recency_decay.
 
@@ -2506,6 +2543,7 @@ def generate_briefing(
     half_life = _get_briefing_half_life(db)
 
     superseded_ids: set = set() if include_superseded else _get_superseded_ids(db)
+    entity_matched_ids = set(_expand_query_with_entities(db, query))
 
     briefing_data = {}
     global_seen_titles = set()  # Cross-category dedup
@@ -2543,19 +2581,26 @@ def generate_briefing(
                     continue
                 merged.append(r)
 
+        def _entity_boost(e: dict) -> float:
+            """1.2× multiplier for entries sharing entities with the task (issue #770)."""
+            return 1.2 if str(e.get("id", "")) in entity_matched_ids else 1.0
+
         # For mistakes, boost recurring entries to the top before composite recency sort.
         # Recurring mistakes (re-encountered after a briefing) are the most actionable signal.
         if cat == "mistake":
             merged.sort(
                 key=lambda e: (
                     -(int(e.get("recurrence_after_briefing") or 0)),
-                    -_recency_composite_score(e, half_life),
+                    -_recency_composite_score(e, half_life) * _entity_boost(e),
                 )
             )
         else:
             # Rerank by composite recency score before truncating so that a recent
             # entry can always surface ahead of an equally-intense stale one.
-            merged.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
+            merged.sort(
+                key=lambda e: _recency_composite_score(e, half_life) * _entity_boost(e),
+                reverse=True,
+            )
         # WBS-014: defense-in-depth read-side credential/injection filter
         # Issue #377: universal status-note suppression — applied here so ALL
         # output formats (text, json, pack, compact) consistently omit Wave-style
