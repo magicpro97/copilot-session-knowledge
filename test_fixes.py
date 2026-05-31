@@ -12460,7 +12460,11 @@ except Exception as _e833_01:
 
 # I833-02: _run_batch_learn function defined
 try:
-    test("I833-02: _run_batch_learn function defined", "def _run_batch_learn(" in _mcp833_src, "_run_batch_learn not found")
+    test(
+        "I833-02: _run_batch_learn function defined",
+        "def _run_batch_learn(" in _mcp833_src,
+        "_run_batch_learn not found",
+    )
 except Exception as _e833_02:
     test("I833-02: _run_batch_learn defined", False, str(_e833_02))
 
@@ -12548,10 +12552,14 @@ try:
                 env=_env833,
             )
             try:
-                init_msg = _json833.dumps({
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                    "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
-                }).encode()
+                init_msg = _json833.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                    }
+                ).encode()
                 notif = _json833.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
                 req = _json833.dumps({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}).encode()
                 shutdown_msg = _json833.dumps({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}).encode()
@@ -12577,8 +12585,8 @@ try:
                 hdr = remaining[:hdr_end].decode("ascii", errors="replace")
                 cl = int([l.split(":")[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()][0])
                 body_start = hdr_end + 4
-                body = remaining[body_start: body_start + cl]
-                remaining = remaining[body_start + cl:]
+                body = remaining[body_start : body_start + cl]
+                remaining = remaining[body_start + cl :]
                 try:
                     responses.append(_json833.loads(body))
                 except Exception:
@@ -12592,8 +12600,18 @@ try:
                 "name": "batch_learn",
                 "arguments": {
                     "entries": [
-                        {"type": "mistake", "title": "I833 Test Mistake", "content": "batch test body A", "tags": "test,i833"},
-                        {"type": "pattern", "title": "I833 Test Pattern", "content": "batch test body B", "confidence": 0.9},
+                        {
+                            "type": "mistake",
+                            "title": "I833 Test Mistake",
+                            "content": "batch test body A",
+                            "tags": "test,i833",
+                        },
+                        {
+                            "type": "pattern",
+                            "title": "I833 Test Pattern",
+                            "content": "batch test body B",
+                            "confidence": 0.9,
+                        },
                     ]
                 },
             },
@@ -12603,7 +12621,9 @@ try:
             _text833 = _r833.get("content", [{}])[0].get("text", "{}")
             _parsed833 = _json833.loads(_text833)
             test("I833-05a: batch_learn returns count=2", _parsed833.get("count") == 2, str(_parsed833))
-            test("I833-05b: batch_learn returns 2 created IDs", len(_parsed833.get("created", [])) == 2, str(_parsed833))
+            test(
+                "I833-05b: batch_learn returns 2 created IDs", len(_parsed833.get("created", [])) == 2, str(_parsed833)
+            )
             # Verify rows in DB
             _dbv833 = _sq833.connect(str(_state833 / "knowledge.db"))
             _rows833 = _dbv833.execute("SELECT id, category, title FROM knowledge_entries ORDER BY id").fetchall()
@@ -12650,9 +12670,8 @@ try:
             "tools/call",
             {"name": "batch_learn", "arguments": {"entries": _big_entries}},
         )
-        _got_err833c = (
-            (_resp833c and "error" in _resp833c[0])
-            or (_resp833c and _resp833c[0].get("result", {}).get("isError", False))
+        _got_err833c = (_resp833c and "error" in _resp833c[0]) or (
+            _resp833c and _resp833c[0].get("result", {}).get("isError", False)
         )
         test("I833-07: >50 entries rejected", _got_err833c, str(_resp833c[0] if _resp833c else "no response"))
 
