@@ -5,6 +5,10 @@ use crate::commands::fallback::run_fallback;
 // Native code indexer using tree-sitter (when `native-code-index` feature is enabled).
 // Falls back to Python `code-search.py --index` when feature is disabled.
 
+/// Maximum file size to index (1 MB, matching Python indexer).
+#[cfg(feature = "native-code-index")]
+const MAX_FILE_BYTES: u64 = 1_024 * 1_024;
+
 // ── Feature-gated tree-sitter implementation ───────────────────────
 #[cfg(feature = "native-code-index")]
 mod native {
@@ -15,11 +19,13 @@ mod native {
     use std::time::SystemTime;
 
     use rusqlite::Connection;
-
-    // tree-sitter 0.23+ QueryMatches uses StreamingIterator
+    use sha2::{Digest, Sha256};
     use streaming_iterator::StreamingIterator;
 
-    /// A single extracted symbol from source code.
+    use crate::db::connection::knowledge_db_path;
+
+    use super::MAX_FILE_BYTES;
+
     struct Symbol {
         kind: String,
         name: String,
@@ -28,39 +34,47 @@ mod native {
         snippet: String,
     }
 
-    /// Determine the language of a file by extension.
+    /// Determine language by file extension.
     fn detect_language(path: &Path) -> Option<&'static str> {
         match path.extension()?.to_str()? {
             "py" => Some("python"),
             "rs" => Some("rust"),
             "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
-            "ts" | "tsx" => Some("javascript"), // tree-sitter-javascript handles TS basics
+            "ts" | "tsx" => Some("typescript"),
+            _ => None,
+        }
+    }
+
+    /// Map language label to tree-sitter grammar + query pattern.
+    fn ts_grammar(language: &str) -> Option<(tree_sitter::Language, &'static str)> {
+        match language {
+            "python" => Some((
+                tree_sitter_python::LANGUAGE.into(),
+                "(function_definition name: (identifier) @name) @func
+                 (class_definition name: (identifier) @name) @cls",
+            )),
+            "rust" => Some((
+                tree_sitter_rust::LANGUAGE.into(),
+                "(function_item name: (identifier) @name) @func
+                 (struct_item name: (type_identifier) @name) @strct
+                 (enum_item name: (type_identifier) @name) @enm
+                 (impl_item type: (type_identifier) @name) @impl_blk",
+            )),
+            "javascript" | "typescript" => Some((
+                tree_sitter_javascript::LANGUAGE.into(),
+                "(function_declaration name: (identifier) @name) @func
+                 (class_declaration name: (identifier) @name) @cls
+                 (method_definition name: (property_identifier) @name) @method",
+            )),
             _ => None,
         }
     }
 
     /// Extract symbols from source code using tree-sitter.
     fn extract_symbols(source: &str, language: &str) -> Vec<Symbol> {
-        let (ts_lang, query_pattern) = match language {
-            "python" => (
-                tree_sitter_python::LANGUAGE.into(),
-                "(function_definition name: (identifier) @name) @func
-                 (class_definition name: (identifier) @name) @cls",
-            ),
-            "rust" => (
-                tree_sitter_rust::LANGUAGE.into(),
-                "(function_item name: (identifier) @name) @func
-                 (struct_item name: (type_identifier) @name) @strct
-                 (enum_item name: (type_identifier) @name) @enm
-                 (impl_item type: (type_identifier) @name) @impl_blk",
-            ),
-            "javascript" => (
-                tree_sitter_javascript::LANGUAGE.into(),
-                "(function_declaration name: (identifier) @name) @func
-                 (class_declaration name: (identifier) @name) @cls
-                 (method_definition name: (property_identifier) @name) @method",
-            ),
-            _ => return Vec::new(),
+        let (ts_lang, query_pattern) = match ts_grammar(language) {
+            Some(pair) => pair,
+            None => return Vec::new(),
         };
 
         let mut parser = tree_sitter::Parser::new();
@@ -80,15 +94,14 @@ mod native {
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-
         let mut symbols = Vec::new();
         let lines: Vec<&str> = source.lines().collect();
 
         while let Some(m) = matches.next() {
             let mut name = String::new();
             let mut kind = String::new();
-            let mut start_line = 0usize;
-            let mut end_line = 0usize;
+            let mut start_row = 0usize;
+            let mut end_row = 0usize;
 
             for cap in m.captures {
                 let cap_name = &query.capture_names()[cap.index as usize];
@@ -96,10 +109,9 @@ mod native {
                 if *cap_name == "name" {
                     name = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 } else {
-                    // The outer capture (func/cls/etc.) gives us span info
                     kind = cap_name.to_string();
-                    start_line = node.start_position().row;
-                    end_line = node.end_position().row;
+                    start_row = node.start_position().row;
+                    end_row = node.end_position().row;
                 }
             }
 
@@ -107,15 +119,15 @@ mod native {
                 continue;
             }
 
-            // Build a snippet (first 5 lines of the definition)
-            let snippet_end = (start_line + 5).min(end_line + 1).min(lines.len());
-            let snippet = lines[start_line..snippet_end].join("\n");
+            let snippet_end = (start_row + 5).min(end_row + 1).min(lines.len());
+            let snippet = lines[start_row..snippet_end].join("\n");
 
+            // Convert 0-based (tree-sitter) to 1-based (code_index schema)
             symbols.push(Symbol {
                 kind,
                 name,
-                start_line,
-                end_line,
+                start_line: start_row + 1,
+                end_line: end_row + 1,
                 snippet,
             });
         }
@@ -123,7 +135,6 @@ mod native {
         symbols
     }
 
-    /// Get file mtime as seconds since epoch.
     fn file_mtime(path: &Path) -> f64 {
         path.metadata()
             .and_then(|m| m.modified())
@@ -135,18 +146,24 @@ mod native {
             .unwrap_or(0.0)
     }
 
-    /// Open or create the knowledge database and ensure code_index table exists.
+    /// Derive a stable SHA-256 project_id from canonical path (matches Python).
+    fn derive_project_id(canonical: &Path) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.to_string_lossy().as_bytes());
+        let hash = hasher.finalize();
+        format!("{:x}", hash)[..16].to_string()
+    }
+
+    /// Open knowledge.db using the standard SK_DB-aware path resolver.
     fn open_db() -> Result<Connection, String> {
-        let db_dir = dirs::home_dir()
-            .ok_or("cannot find home directory")?
-            .join(".copilot")
-            .join("session-state");
-        std::fs::create_dir_all(&db_dir).map_err(|e| format!("mkdir: {e}"))?;
-        let db_path = db_dir.join("knowledge.db");
+        let db_path = knowledge_db_path();
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+        }
         let conn = Connection::open(&db_path).map_err(|e| format!("open db: {e}"))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
             .map_err(|e| format!("pragma: {e}"))?;
-        // Ensure tables exist (matching migrate.py v35 schema)
+        // Ensure tables + indexes exist (matching migrate.py v35 schema)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS code_index (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +179,11 @@ mod native {
                 indexed_at TEXT DEFAULT (datetime('now')),
                 UNIQUE(project_id, file_path, start_line, symbol_name)
             );
+            CREATE INDEX IF NOT EXISTS idx_ci_project ON code_index(project_id);
+            CREATE INDEX IF NOT EXISTS idx_ci_language ON code_index(language);
+            CREATE INDEX IF NOT EXISTS idx_ci_symbol ON code_index(symbol_name);
+            CREATE INDEX IF NOT EXISTS idx_ci_file ON code_index(file_path);
+            CREATE INDEX IF NOT EXISTS idx_ci_mtime ON code_index(file_mtime);
             CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
                 symbol_name,
                 content_snippet,
@@ -183,7 +205,11 @@ mod native {
         let mut existing_mtimes: HashMap<String, f64> = HashMap::new();
         {
             let mut stmt = conn
-                .prepare("SELECT DISTINCT file_path, MAX(file_mtime) FROM code_index WHERE project_id = ? GROUP BY file_path")
+                .prepare(
+                    "SELECT file_path, MAX(file_mtime) \
+                     FROM code_index WHERE project_id = ? \
+                     GROUP BY file_path",
+                )
                 .map_err(|e| format!("prepare: {e}"))?;
             let rows = stmt
                 .query_map(rusqlite::params![project_id], |row| {
@@ -203,7 +229,6 @@ mod native {
             .into_iter()
             .filter_entry(|e| {
                 let name = e.file_name().to_string_lossy();
-                // Skip hidden dirs, node_modules, target, __pycache__, .git
                 !(e.file_type().is_dir()
                     && (name.starts_with('.')
                         || name == "node_modules"
@@ -220,6 +245,14 @@ mod native {
             if !entry.file_type().is_file() {
                 continue;
             }
+
+            // Skip files exceeding MAX_FILE_BYTES (matches Python indexer)
+            if let Ok(meta) = entry.metadata() {
+                if meta.len() > MAX_FILE_BYTES {
+                    continue;
+                }
+            }
+
             let file_path = entry.path();
             let lang = match detect_language(file_path) {
                 Some(l) => l,
@@ -258,7 +291,6 @@ mod native {
             )
             .ok();
 
-            // Delete from FTS too
             conn.execute(
                 "DELETE FROM code_fts WHERE file_path = ? AND project_id = ?",
                 rusqlite::params![rel_path, project_id],
@@ -266,6 +298,7 @@ mod native {
             .ok();
 
             for sym in &symbols {
+                // Insert into code_index and get the rowid
                 conn.execute(
                     "INSERT OR REPLACE INTO code_index \
                      (project_id, file_path, language, symbol_kind, symbol_name, \
@@ -285,10 +318,13 @@ mod native {
                 )
                 .map_err(|e| format!("insert: {e}"))?;
 
+                // Use last_insert_rowid so code_fts.rowid matches code_index.id
+                let rowid = conn.last_insert_rowid();
                 conn.execute(
-                    "INSERT INTO code_fts (symbol_name, content_snippet, file_path, language, project_id) \
-                     VALUES (?, ?, ?, ?, ?)",
-                    rusqlite::params![sym.name, sym.snippet, rel_path, lang, project_id],
+                    "INSERT INTO code_fts (rowid, symbol_name, content_snippet, \
+                     file_path, language, project_id) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                    rusqlite::params![rowid, sym.name, sym.snippet, rel_path, lang, project_id],
                 )
                 .ok(); // FTS insert failure is non-fatal
             }
@@ -322,7 +358,10 @@ mod native {
             .unwrap_or(0);
         let languages: Vec<(String, i64)> = {
             let mut stmt = conn
-                .prepare("SELECT language, COUNT(*) FROM code_index GROUP BY language ORDER BY COUNT(*) DESC")
+                .prepare(
+                    "SELECT language, COUNT(*) FROM code_index \
+                     GROUP BY language ORDER BY COUNT(*) DESC",
+                )
                 .map_err(|e| format!("prepare: {e}"))?;
             let rows = stmt
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -356,7 +395,6 @@ mod native {
             };
         }
 
-        // First positional arg is the path to index
         let path_str = args
             .iter()
             .find(|a| !a.starts_with('-'))
@@ -377,11 +415,7 @@ mod native {
             }
         };
 
-        // Use the directory name as project_id
-        let project_id = canonical
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "default".to_string());
+        let project_id = derive_project_id(&canonical);
 
         eprintln!(
             "Indexing {} (project: {project_id}) ...",
@@ -413,20 +447,27 @@ pub fn run_code_index_command(args: &[String]) -> ExitCode {
         // --watch mode is not yet implemented in native; fall back to Python
         if args.iter().any(|a| a == "--watch") {
             eprintln!("note: --watch mode not yet native; falling back to Python");
-            return run_fallback("code-search.py", &{
-                let mut v = vec!["--index".to_string()];
-                v.extend(args.iter().cloned());
-                v
-            });
+            let mut v = vec!["--index".to_string()];
+            v.extend(args.iter().cloned());
+            return run_fallback("code-search.py", &v);
         }
         native::run(args)
     }
 
     #[cfg(not(feature = "native-code-index"))]
     {
-        // No tree-sitter: delegate to Python
-        let mut py_args = vec!["--index".to_string()];
-        py_args.extend(args.iter().cloned());
-        run_fallback("code-search.py", &py_args)
+        // No tree-sitter: delegate to Python code-search.py
+        // Map code-index flags to code-search.py equivalents
+        if args.iter().any(|a| a == "--status") {
+            run_fallback("code-search.py", &["--index-status".to_string()])
+        } else {
+            let mut py_args = vec!["--index".to_string()];
+            for a in args {
+                if a != "--status" {
+                    py_args.push(a.clone());
+                }
+            }
+            run_fallback("code-search.py", &py_args)
+        }
     }
 }
