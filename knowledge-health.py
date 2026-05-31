@@ -2565,8 +2565,8 @@ def main():
         if "--format" in args:
             idx = args.index("--format")
             fmt = args[idx + 1] if idx + 1 < len(args) else "json"
-        # --all-categories: ignore --category and export everything
-        all_categories = "--all-categories" in args
+        # --all-categories / --all: ignore --category and export everything
+        all_categories = "--all-categories" in args or "--all" in args
         category = None
         if not all_categories and "--category" in args:
             idx = args.index("--category")
@@ -2591,6 +2591,9 @@ def main():
             idx = args.index("--output")
             output_file = args[idx + 1] if idx + 1 < len(args) else None
         stdout_mode = "--stdout" in args
+        if stdout_mode and output_file:
+            print("⚠ --stdout and --output are mutually exclusive", file=sys.stderr)
+            return
 
         try:
             result = compute_knowledge_export(fmt=fmt, category=category, tag=tag, limit=limit, since=since)
@@ -2601,63 +2604,18 @@ def main():
         if fmt == "jsonl":
             if stdout_mode:
                 for entry in result["entries"]:
-                    line = json.dumps(
-                        {
-                            "id": entry.get("id"),
-                            "category": entry.get("category"),
-                            "title": entry.get("title"),
-                            "content": entry.get("content"),
-                            "tags": entry.get("tags"),
-                            "confidence": entry.get("confidence"),
-                            "first_seen": entry.get("first_seen"),
-                            "last_seen": entry.get("last_seen"),
-                        },
-                        ensure_ascii=False,
-                        default=str,
-                    )
-                    print(line)
+                    print(json.dumps(dict(entry), ensure_ascii=False, default=str))
             elif output_file:
                 try:
                     with open(output_file, "w", encoding="utf-8") as _f:
                         for entry in result["entries"]:
-                            _f.write(
-                                json.dumps(
-                                    {
-                                        "id": entry.get("id"),
-                                        "category": entry.get("category"),
-                                        "title": entry.get("title"),
-                                        "content": entry.get("content"),
-                                        "tags": entry.get("tags"),
-                                        "confidence": entry.get("confidence"),
-                                        "first_seen": entry.get("first_seen"),
-                                        "last_seen": entry.get("last_seen"),
-                                    },
-                                    ensure_ascii=False,
-                                    default=str,
-                                )
-                                + "\n"
-                            )
+                            _f.write(json.dumps(dict(entry), ensure_ascii=False, default=str) + "\n")
                     print(f"Exported {result['count']} entries to {output_file} (JSONL)")
                 except OSError as exc:
                     print(f"⚠ Could not write {output_file}: {exc}", file=sys.stderr)
             else:
                 for entry in result["entries"]:
-                    print(
-                        json.dumps(
-                            {
-                                "id": entry.get("id"),
-                                "category": entry.get("category"),
-                                "title": entry.get("title"),
-                                "content": entry.get("content"),
-                                "tags": entry.get("tags"),
-                                "confidence": entry.get("confidence"),
-                                "first_seen": entry.get("first_seen"),
-                                "last_seen": entry.get("last_seen"),
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                        )
-                    )
+                    print(json.dumps(dict(entry), ensure_ascii=False, default=str))
             return
 
         if fmt == "markdown":

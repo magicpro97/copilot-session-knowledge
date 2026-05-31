@@ -16001,7 +16001,6 @@ try:
     import importlib.util as _ilu869
     import io as _io869
     import sqlite3 as _sqlite3869
-    import tempfile as _tf869
 
     _spec869 = _ilu869.spec_from_file_location("kh869", REPO / "knowledge-health.py")
     _kh869 = _ilu869.module_from_spec(_spec869)
@@ -16067,21 +16066,27 @@ try:
 
     _kh869.get_db = _fake_get_db869
 
-    # --- I869-1: JSONL format produces one JSON object per line ---
-    _stdout869a = _io869.StringIO()
     _orig_stdout869 = sys.stdout
-    sys.stdout = _stdout869a
     _orig_argv869 = sys.argv
-    sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl"]
-    _kh869.main()
-    sys.argv = _orig_argv869
-    sys.stdout = _orig_stdout869
+
+    # --- I869-1: JSONL format produces one JSON object per line ---
+    try:
+        _stdout869a = _io869.StringIO()
+        sys.stdout = _stdout869a
+        sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl"]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
     _jsonl869_lines = [ln for ln in _stdout869a.getvalue().splitlines() if ln.strip()]
     test("I869-1a: JSONL export produces 2 lines", len(_jsonl869_lines) == 2, repr(_jsonl869_lines))
     _parsed869 = [json.loads(ln) for ln in _jsonl869_lines]
     test(
         "I869-1b: each JSONL line has required keys",
-        all({"id", "category", "title", "content", "tags", "confidence", "first_seen", "last_seen"} <= set(p.keys()) for p in _parsed869),
+        all(
+            {"id", "category", "title", "content", "tags", "confidence", "first_seen", "last_seen"} <= set(p.keys())
+            for p in _parsed869
+        ),
         repr(_parsed869),
     )
     test(
@@ -16091,26 +16096,38 @@ try:
     )
 
     # --- I869-2: --stdout flag works the same as default stdout ---
-    _stdout869b = _io869.StringIO()
-    sys.stdout = _stdout869b
-    sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--stdout"]
-    _kh869.main()
-    sys.argv = _orig_argv869
-    sys.stdout = _orig_stdout869
+    try:
+        _stdout869b = _io869.StringIO()
+        sys.stdout = _stdout869b
+        sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--stdout"]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
     _jsonl869b_lines = [ln for ln in _stdout869b.getvalue().splitlines() if ln.strip()]
     test("I869-2: --stdout flag produces same output as default", len(_jsonl869b_lines) == 2, repr(_jsonl869b_lines))
 
-    # --- I869-3: --all-categories exports all categories (ignores --category) ---
-    _stdout869c = _io869.StringIO()
-    sys.stdout = _stdout869c
-    sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--all-categories"]
-    _kh869.main()
-    sys.argv = _orig_argv869
-    sys.stdout = _orig_stdout869
+    # --- I869-3: --all-categories ignores --category filter ---
+    try:
+        _stdout869c = _io869.StringIO()
+        sys.stdout = _stdout869c
+        sys.argv = [
+            "knowledge-health.py",
+            "--export",
+            "--format",
+            "jsonl",
+            "--all-categories",
+            "--category",
+            "mistake",
+        ]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
     _jsonl869c_lines = [ln for ln in _stdout869c.getvalue().splitlines() if ln.strip()]
     _cats869 = {json.loads(ln)["category"] for ln in _jsonl869c_lines}
     test(
-        "I869-3: --all-categories exports both 'mistake' and 'pattern' entries",
+        "I869-3: --all-categories ignores --category and exports all",
         "mistake" in _cats869 and "pattern" in _cats869,
         repr(_cats869),
     )
@@ -16122,8 +16139,10 @@ try:
         sys.stdout = _stdout869d
         sys.argv = ["knowledge-health.py", "--export", "--format", "jsonl", "--output", str(_out869_path)]
         _kh869.main()
+    finally:
         sys.argv = _orig_argv869
         sys.stdout = _orig_stdout869
+    try:
         _msg869 = _stdout869d.getvalue()
         test("I869-4a: output message mentions 'Exported'", "Exported" in _msg869, repr(_msg869))
         test("I869-4b: JSONL output file exists", _out869_path.exists(), str(_out869_path))
@@ -16135,7 +16154,6 @@ try:
                 repr(_file869_lines),
             )
     finally:
-        sys.argv = _orig_argv869
         try:
             _out869_path.unlink()
         except Exception:
@@ -16146,7 +16164,7 @@ try:
     _sk869 = _ilu869.module_from_spec(_spec869sk)
     _spec869sk.loader.exec_module(_sk869)
     test(
-        "I869-5: 'export' is registered in sk.py _DIRECT",
+        "I869-5a: 'export' registered in sk.py _DIRECT",
         "export" in _sk869._DIRECT,
         str(list(_sk869._DIRECT.keys())),
     )
@@ -16155,12 +16173,57 @@ try:
         "knowledge-health.py" in str(_sk869._DIRECT["export"]),
         str(_sk869._DIRECT["export"]),
     )
+    # Verify main() routes 'export' by capturing the _run call
+    _run_calls869 = []
+    _orig_run869 = _sk869._run
+
+    def _mock_run869(script, args, **kw):
+        _run_calls869.append((script, args))
+        return 0
+
+    _sk869._run = _mock_run869
+    try:
+        _sk869.main(["export", "--format", "jsonl"])
+    finally:
+        _sk869._run = _orig_run869
+    test(
+        "I869-5c: sk main routes export to knowledge-health.py --export",
+        len(_run_calls869) == 1 and _run_calls869[0][0] == "knowledge-health.py" and "--export" in _run_calls869[0][1],
+        repr(_run_calls869),
+    )
+
+    # --- I869-6: --stdout and --output are mutually exclusive ---
+    try:
+        _stdout869e = _io869.StringIO()
+        _stderr869e = _io869.StringIO()
+        sys.stdout = _stdout869e
+        _orig_stderr869 = sys.stderr
+        sys.stderr = _stderr869e
+        sys.argv = [
+            "knowledge-health.py",
+            "--export",
+            "--format",
+            "jsonl",
+            "--stdout",
+            "--output",
+            "/tmp/nope.jsonl",
+        ]
+        _kh869.main()
+    finally:
+        sys.argv = _orig_argv869
+        sys.stdout = _orig_stdout869
+        sys.stderr = _orig_stderr869
+    test(
+        "I869-6: --stdout + --output rejects with error",
+        "mutually exclusive" in _stderr869e.getvalue(),
+        repr(_stderr869e.getvalue()),
+    )
 
     _kh869.get_db = _orig_get_db869
     _conn869.close()
 
 except Exception as _e869:
-    for _label869 in ["1a", "1b", "1c", "2", "3", "4a", "4b", "4c", "5", "5b"]:
+    for _label869 in ["1a", "1b", "1c", "2", "3", "4a", "4b", "4c", "5a", "5b", "5c", "6"]:
         test(f"I869-{_label869}: sk export JSONL", False, str(_e869))
 
 # ---------------------------------------------------------------------------
