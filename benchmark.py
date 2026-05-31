@@ -642,6 +642,98 @@ def cmd_startup(
     return exit_code
 
 
+# ── Recall@K evaluation ──────────────────────────────────────────────────────
+
+
+def _cmd_recall(args: dict) -> int:
+    """Evaluate Recall@K and MRR against a goldset."""
+    import re
+
+    goldset_path = Path(args["goldset"]) if args["goldset"] else SCRIPT_DIR / "briefing-goldset.json"
+    if not goldset_path.exists():
+        print(f"Goldset not found: {goldset_path}", file=sys.stderr)
+        return 1
+
+    with goldset_path.open() as f:
+        goldset = json.load(f)
+
+    briefing_path = SCRIPT_DIR / "briefing.py"
+    if not briefing_path.exists():
+        print(f"briefing.py not found: {briefing_path}", file=sys.stderr)
+        return 1
+
+    spec = importlib.util.spec_from_file_location("briefing", briefing_path)
+    briefing_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(briefing_mod)  # type: ignore[union-attr]
+
+    k = args["k"]
+    db_path = str(args["db"])
+
+    results: list[dict] = []
+    for item in goldset:
+        query = item["query"]
+        expected = set(item.get("expected_entry_ids") or [])
+
+        if not expected:
+            results.append({"query": query[:50], "recall": None, "rr": None, "skipped": True})
+            continue
+
+        try:
+            output = briefing_mod.generate_briefing(query, db_path=db_path, limit=k, fmt="json")
+            retrieved_ids = set(int(x) for x in re.findall(r'"id":\s*(\d+)', output))
+        except Exception as e:
+            results.append({"query": query[:50], "error": str(e)})
+            continue
+
+        hits = retrieved_ids & expected
+        recall_at_k = len(hits) / max(len(expected), 1)
+
+        rr = 0.0
+        for rank, eid in enumerate(list(retrieved_ids)[:k], 1):
+            if eid in expected:
+                rr = 1.0 / rank
+                break
+
+        results.append(
+            {
+                "query": query[:50],
+                "recall_at_k": recall_at_k,
+                "mrr": rr,
+                "hits": len(hits),
+                "expected": len(expected),
+                "retrieved": len(retrieved_ids),
+            }
+        )
+
+    scored = [r for r in results if "recall_at_k" in r]
+    if scored:
+        avg_recall = sum(r["recall_at_k"] for r in scored) / len(scored)
+        avg_mrr = sum(r["mrr"] for r in scored) / len(scored)
+    else:
+        avg_recall = avg_mrr = 0.0
+
+    if args["json"]:
+        print(
+            json.dumps(
+                {"results": results, "avg_recall_at_k": avg_recall, "avg_mrr": avg_mrr},
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"Recall@{k} Evaluation ({len(goldset)} queries, {len(scored)} scored)")
+    print(f"  Avg Recall@{k}: {avg_recall:.3f}  |  Avg MRR: {avg_mrr:.3f}")
+    print()
+    for r in results:
+        if r.get("skipped"):
+            print(f"  SKIP  {r['query']}")
+        elif "error" in r:
+            print(f"  ERR   {r['query']}: {r['error'][:40]}")
+        else:
+            print(f"  R@{k}={r['recall_at_k']:.2f}  MRR={r['mrr']:.2f}  {r['query']}")
+    return 0
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -660,11 +752,14 @@ def _parse_args(argv: list) -> dict:
         "baseline_file": None,
         "regression_threshold": None,
         "startup_command": ["sk", "--help"],
+        # recall-specific
+        "k": 5,
+        "goldset": None,
     }
     i = 1
     while i < len(argv):
         a = argv[i]
-        if a in ("record", "compare", "list", "startup"):
+        if a in ("record", "compare", "list", "startup", "recall"):
             args["cmd"] = a
         elif a == "--":
             args["startup_command"] = argv[i + 1 :]
@@ -701,6 +796,12 @@ def _parse_args(argv: list) -> dict:
             i += 2
         elif a == "--json":
             args["json"] = True
+        elif a == "--k" and i + 1 < len(argv):
+            i += 1
+            args["k"] = int(argv[i])
+        elif a == "--goldset" and i + 1 < len(argv):
+            i += 1
+            args["goldset"] = argv[i]
         i += 1
     return args
 
@@ -712,12 +813,16 @@ def main(argv: "list | None" = None) -> int:
 
     if args["cmd"] is None:
         print(
-            "Usage: benchmark.py <record|compare|list> [--db PATH] [--commit SHA] "
+            "Usage: benchmark.py <record|compare|list|recall> [--db PATH] [--commit SHA] "
             "[--mode local|repo] [--limit N] [--json] [--commits SHA SHA]\n"
             "       benchmark.py startup [--runs N] [--warmups N] [--timeout SEC] "
-            "[--baseline-file PATH] [--regression-threshold PERCENT] [-- COMMAND...]"
+            "[--baseline-file PATH] [--regression-threshold PERCENT] [-- COMMAND...]\n"
+            "       benchmark.py recall [--k N] [--goldset PATH] [--db PATH] [--json]"
         )
         return 1
+
+    if args["cmd"] == "recall":
+        return _cmd_recall(args)
 
     db_path = Path(args["db"])
     mode = args["mode"]

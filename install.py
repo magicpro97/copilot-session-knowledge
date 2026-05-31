@@ -247,6 +247,9 @@ TOOL_FILES = [
     "coverage.py",
     "entity-extract.py",
     "trace.py",
+    "knowledge-broadcast.py",
+    "curate.py",
+    "knowledge-import.py",
 ]
 
 SUPPORT_FILES = [
@@ -3311,11 +3314,11 @@ def repair_hooks():
 
 
 def install_git_hooks(target_dir: "Path | None" = None, non_interactive: bool = False) -> None:
-    """Install pre-commit and pre-push git hooks into a repository's .git/hooks/.
+    """Install pre-commit, pre-push, and post-checkout git hooks into a repository's .git/hooks/.
 
-    Copies hooks/pre-commit and hooks/pre-push from the tools source tree into
-    <target_dir>/.git/hooks/ (or the git root of cwd if target_dir is None).
-    Makes both files executable (chmod +x on POSIX).  Does NOT overwrite existing
+    Copies hooks/pre-commit, hooks/pre-push, and hooks/post-checkout from the tools source
+    tree into <target_dir>/.git/hooks/ (or the git root of cwd if target_dir is None).
+    Makes all files executable (chmod +x on POSIX).  Does NOT overwrite existing
     hooks that differ without interactive confirmation.
 
     The installed hooks reference $HOME/.copilot/tools unconditionally so they
@@ -3323,10 +3326,10 @@ def install_git_hooks(target_dir: "Path | None" = None, non_interactive: bool = 
 
     WBS-012: non_interactive=True skips the overwrite prompt and skips differing hooks.
     """
-    print("\nInstall Git Hooks (pre-commit / pre-push)")
+    print("\nInstall Git Hooks (pre-commit / pre-push / post-checkout)")
 
     hooks_src_dir = _SCRIPT_DIR / "hooks"
-    hook_names = ["pre-commit", "pre-push"]
+    hook_names = ["pre-commit", "pre-push", "post-checkout"]
 
     if target_dir is None:
         target_dir = _git_root()
@@ -3404,6 +3407,7 @@ def install_git_hooks(target_dir: "Path | None" = None, non_interactive: bool = 
     else:
         print(f"\n  {len(installed)} installed, {len(skipped)} already up to date (of {total} hooks).")
         print("  Hooks block git commit/push when dispatched-subagent-active marker is fresh.")
+        print("  post-checkout warms the briefing prefetch cache on every branch switch.")
         print("  NOTE: After each 'auto-update-tools.py' run, re-run --install-git-hooks here")
         print("        to pick up new hook logic (auto-update cannot do this for you safely).")
 

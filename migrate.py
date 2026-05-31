@@ -1839,11 +1839,57 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_tool_spans_tool ON tool_spans (tool_name)",
             ],
         ),
+        # v37: issue #799 — mistake recurrence detection.
+        # recurrence_count tracks how many times a mistake entry was re-learned after
+        # a similar entry was recently served via recall_events (8-hour window).
+        (
+            40,
+            "add_recurrence_count",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN recurrence_count INTEGER DEFAULT 0",
+            ],
+        ),
+        # v37: issue #797 — FSRS-style recall stability factor.
+        # stability_factor scales the Ebbinghaus half-life in briefing decay scoring.
+        # Default 1.0 = unchanged; ×1.3 on good feedback, ×0.8 on bad feedback,
+        # ×1.5 on mark-resolved (mistake). Clamped to [0.5, 4.0].
+        (
+            41,
+            "fsrs_stability_factor",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN stability_factor REAL DEFAULT 1.0",
+            ],
+        ),
         (
             42,
             "search_feedback_note",
             [
                 "ALTER TABLE search_feedback ADD COLUMN note TEXT",
+            ],
+        ),
+        (
+            43,
+            "curation_state",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN curation_state TEXT DEFAULT NULL",
+            ],
+        ),
+        (
+            44,
+            "knowledge_entry_history",
+            [
+                """CREATE TABLE IF NOT EXISTS knowledge_entry_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    content_before TEXT NOT NULL DEFAULT '',
+                    content_after TEXT NOT NULL DEFAULT '',
+                    confidence_before REAL NOT NULL DEFAULT 0.0,
+                    confidence_after REAL NOT NULL DEFAULT 0.0,
+                    change_source TEXT NOT NULL DEFAULT 'learn'
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_keh_entry_id ON knowledge_entry_history (entry_id)",
+                "CREATE INDEX IF NOT EXISTS idx_keh_changed_at ON knowledge_entry_history (changed_at)",
             ],
         ),
     ]
