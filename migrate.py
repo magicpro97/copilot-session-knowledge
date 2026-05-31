@@ -1874,6 +1874,24 @@ if __name__ == "__main__":
                 "ALTER TABLE knowledge_entries ADD COLUMN curation_state TEXT DEFAULT NULL",
             ],
         ),
+        (
+            44,
+            "knowledge_entry_history",
+            [
+                """CREATE TABLE IF NOT EXISTS knowledge_entry_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    content_before TEXT NOT NULL DEFAULT '',
+                    content_after TEXT NOT NULL DEFAULT '',
+                    confidence_before REAL NOT NULL DEFAULT 0.0,
+                    confidence_after REAL NOT NULL DEFAULT 0.0,
+                    change_source TEXT NOT NULL DEFAULT 'learn'
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_keh_entry_id ON knowledge_entry_history (entry_id)",
+                "CREATE INDEX IF NOT EXISTS idx_keh_changed_at ON knowledge_entry_history (changed_at)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

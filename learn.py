@@ -1358,7 +1358,7 @@ def add_entry(
 
     # Check for existing entry with same title in same category (exclude soft-deleted rows)
     existing_sql = """
-        SELECT id, occurrence_count, content, session_id
+        SELECT id, occurrence_count, content, session_id, confidence
     """
     if has_topic_key_column:
         existing_sql += ", COALESCE(topic_key, '') AS topic_key"
@@ -1462,6 +1462,29 @@ def add_entry(
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
         entry_id = existing["id"]
+        # Record version history when content changes (fail-open: non-critical)
+        _has_entry_history = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entry_history'"
+        ).fetchone()
+        if _has_entry_history and new_content != existing["content"]:
+            try:
+                db.execute(
+                    """INSERT INTO knowledge_entry_history
+                       (entry_id, changed_at, content_before, content_after,
+                        confidence_before, confidence_after, change_source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        entry_id,
+                        now,
+                        existing["content"],
+                        new_content,
+                        float(existing["confidence"] or 0.0),
+                        new_confidence,
+                        "learn",
+                    ),
+                )
+            except Exception:
+                pass  # fail-open: history tracking is non-critical
         # Recurrence auto-bump: if this entry was already delivered in a briefing for
         # the current session, the mistake recurred after being shown — bump counter.
         if has_recurrence_column and has_briefing_deliveries and session_id and session_id != "manual":
