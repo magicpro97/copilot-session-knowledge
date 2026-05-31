@@ -342,6 +342,12 @@ def main() -> None:
         dest="cross_session",
         help="Cluster last N session summaries using TF-IDF (default N=20)",
     )
+    parser.add_argument(
+        "--summary", dest="summary", default=None, help="Use provided text as checkpoint content directly (MCP path)"
+    )
+    parser.add_argument(
+        "--session-id", dest="session_id_flag", default=None, help="Session ID (alternative to positional arg)"
+    )
     args = parser.parse_args()
 
     db_path = _db_path()
@@ -379,10 +385,44 @@ def main() -> None:
         conn.close()
         return
 
-    session_id = args.session_id or _most_recent_session(conn)
+    session_id = args.session_id_flag or args.session_id or _most_recent_session(conn)
     if not session_id:
         print("No sessions found.", file=sys.stderr)
         sys.exit(1)
+
+    # MCP path: caller provides the summary text directly — store it without DB entry lookup
+    if args.summary:
+        content = args.summary.strip()
+        if not content:
+            print("--summary must not be empty.", file=sys.stderr)
+            sys.exit(1)
+        existing = _existing_checkpoint(conn, session_id)
+        est_tokens = len(content) // 4
+        if args.dry_run:
+            print(f"DRY RUN — would store provided summary for session {session_id[:30]}...")
+            print(f"Checkpoint: {len(content)} chars (~{est_tokens} tokens)")
+            conn.close()
+            return
+        entry_id = _store_checkpoint(conn, session_id, content, existing["id"] if existing else None)
+        if args.as_json:
+            print(
+                json.dumps(
+                    {
+                        "session_id": session_id,
+                        "entry_id": entry_id,
+                        "entries_compacted": 0,
+                        "checkpoint_chars": len(content),
+                        "est_tokens": est_tokens,
+                        "updated": existing is not None,
+                    }
+                )
+            )
+        else:
+            action = "Updated" if existing else "Created"
+            print(f"✅ {action} checkpoint #{entry_id} for session {session_id[:30]}...")
+            print(f"   Stored provided summary → {len(content)} chars (~{est_tokens} tokens)")
+        conn.close()
+        return
 
     entries = _get_entries(conn, session_id)
     if not entries:

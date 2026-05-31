@@ -285,6 +285,25 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "sk_compact_session",
+        "description": "Capture a mid-session structured checkpoint from conversation history into knowledge.db. Returns summary of what was stored.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Conversation summary to compact (required)",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to associate with (optional, auto-detected if omitted)",
+                },
+            },
+            "required": ["summary"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -876,6 +895,31 @@ def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
 
 
+def _run_compact_session(arguments: dict) -> dict:
+    """Delegate to session-compact.py with a caller-provided summary."""
+    summary = _require_string(arguments, "summary", max_length=32_000)
+    session_id = _optional_string(arguments, "session_id", max_length=200)
+
+    cmd = [sys.executable, str(TOOLS_DIR / "session-compact.py"), "--summary", summary, "--json"]
+    if session_id:
+        cmd += ["--session-id", session_id]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        body = {"status": "error", "output": "Timed out after 30s"}
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+    except Exception as exc:
+        body = {"status": "error", "output": str(exc)}
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+    if proc.returncode == 0:
+        body = {"status": "ok", "output": proc.stdout.strip()}
+    else:
+        body = {"status": "error", "output": (proc.stderr.strip() or proc.stdout.strip())}
+    return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -901,6 +945,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_code_search(arguments)
     if name == "rate_entry":
         return _run_rate_entry(arguments)
+    if name == "sk_compact_session":
+        return _run_compact_session(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 
