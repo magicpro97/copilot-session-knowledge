@@ -12272,6 +12272,135 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# I835: sk doctor — MCP server smoke-test check
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu835
+    import types as _types835
+
+    _spec835 = _ilu835.spec_from_file_location("doctor835", REPO / "doctor.py")
+    _doc835 = _ilu835.module_from_spec(_spec835)
+    _spec835.loader.exec_module(_doc835)
+
+    # I835-1: check_mcp_smoke function exists
+    test("I835-1: check_mcp_smoke exists in doctor.py", hasattr(_doc835, "check_mcp_smoke"))
+
+    # I835-2: check_mcp_smoke is registered in ALL_CHECKS
+    test(
+        "I835-2: check_mcp_smoke in ALL_CHECKS",
+        _doc835.check_mcp_smoke in _doc835.ALL_CHECKS,
+    )
+
+    # I835-3: check_mcp_smoke is in CATEGORY_MAP["mcp"]
+    test(
+        "I835-3: check_mcp_smoke in CATEGORY_MAP['mcp']",
+        _doc835.check_mcp_smoke in _doc835.CATEGORY_MAP.get("mcp", []),
+    )
+
+    # I835-4: returns SKIP/INFO when mcp-server.py absent
+    import unittest.mock as _mock835
+
+    with _mock835.patch.object(_doc835.Path, "exists", return_value=False):
+        # Patch TOOLS_DIR / "mcp-server.py" path.exists
+        _fake_path835 = _mock835.MagicMock()
+        _fake_path835.exists.return_value = False
+        with _mock835.patch.object(_doc835, "TOOLS_DIR", new=Path("/nonexistent_path_835xyz")):
+            _r835_skip = _doc835.check_mcp_smoke()
+    test(
+        "I835-4: check_mcp_smoke returns INFO when mcp-server.py absent",
+        _r835_skip["status"] in ("info", "skip"),
+        str(_r835_skip),
+    )
+
+    # I835-5: result dict has required keys
+    test(
+        "I835-5: result has id/category/status/message keys",
+        all(k in _r835_skip for k in ("id", "category", "status", "message")),
+        str(_r835_skip),
+    )
+
+    # I835-6: check_mcp_smoke id is "mcp_smoke"
+    test("I835-6: result id is 'mcp_smoke'", _r835_skip["id"] == "mcp_smoke", str(_r835_skip))
+
+    # I835-7: check_mcp_smoke category is "mcp"
+    test("I835-7: result category is 'mcp'", _r835_skip["category"] == "mcp", str(_r835_skip))
+
+    # I835-8: live smoke test when mcp-server.py present
+    _mcp835_path = REPO / "mcp-server.py"
+    if _mcp835_path.exists():
+        _r835_live = _doc835.check_mcp_smoke(timeout=10)
+        test(
+            "I835-8: live smoke returns ok",
+            _r835_live["status"] == "ok",
+            str(_r835_live),
+        )
+        test(
+            "I835-8b: live smoke reports latency",
+            "latency" in _r835_live["message"],
+            str(_r835_live),
+        )
+    else:
+        test("I835-8: live smoke skipped (mcp-server.py not present)", True)
+        test("I835-8b: live smoke latency skipped", True)
+
+    # I835-9: deterministic mock test — success path
+    # Mock subprocess.Popen to simulate a server returning valid initialize + tools/list
+    import io as _io835
+    import json as _json835
+
+    def _make_lsp_frame(payload: dict) -> bytes:
+        body = _json835.dumps(payload, separators=(",", ":")).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        return header + body
+
+    _init_ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+    _tools_ok = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "tools": [
+                {"name": "briefing", "description": "b"},
+                {"name": "learn", "description": "l"},
+                {"name": "query_session", "description": "q"},
+            ]
+        },
+    }
+    _mock_stdout = _io835.BytesIO(_make_lsp_frame(_init_ok) + _make_lsp_frame(_tools_ok))
+    _mock_stdin = _io835.BytesIO()
+    _mock_proc = _mock835.MagicMock()
+    _mock_proc.stdin = _mock_stdin
+    _mock_proc.stdout = _mock_stdout
+    _mock_proc.stderr = _io835.BytesIO(b"")
+    _mock_proc.kill = _mock835.MagicMock()
+
+    with _mock835.patch("subprocess.Popen", return_value=_mock_proc):
+        _r835_mock_ok = _doc835.check_mcp_smoke(timeout=5)
+    test(
+        "I835-9: mocked smoke returns ok with 3 expected tools",
+        _r835_mock_ok["status"] == "ok" and "PASS" in _r835_mock_ok["message"],
+        str(_r835_mock_ok),
+    )
+
+    # I835-10: deterministic mock — initialize error returns FAIL
+    _init_err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "bad request"}}
+    _mock_stdout2 = _io835.BytesIO(_make_lsp_frame(_init_err))
+    _mock_proc2 = _mock835.MagicMock()
+    _mock_proc2.stdin = _io835.BytesIO()
+    _mock_proc2.stdout = _mock_stdout2
+    _mock_proc2.stderr = _io835.BytesIO(b"")
+    _mock_proc2.kill = _mock835.MagicMock()
+
+    with _mock835.patch("subprocess.Popen", return_value=_mock_proc2):
+        _r835_mock_err = _doc835.check_mcp_smoke(timeout=5)
+    test(
+        "I835-10: mocked smoke returns error on initialize failure",
+        _r835_mock_err["status"] == "error" and "FAIL" in _r835_mock_err["message"],
+        str(_r835_mock_err),
+    )
+
+except Exception as _e835:
+    for _lbl835 in ["1", "2", "3", "4", "5", "6", "7", "8", "8b", "9", "10"]:
+        test(f"I835-{_lbl835}: mcp smoke check", False, str(_e835))
 # I832: hook debounce / rate limiting for preToolUse hooks
 # ---------------------------------------------------------------------------
 print("\n🔍 I832: hook debounce / rate limiting")
