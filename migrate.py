@@ -1813,6 +1813,15 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_ke_ent_type_val ON knowledge_entities(entity_type, entity_value)",
             ],
         ),
+        (
+            38,
+            "knowledge_entry_access_tracking",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN last_accessed_at TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN access_count INTEGER DEFAULT 0",
+                "CREATE INDEX IF NOT EXISTS idx_ke_last_accessed ON knowledge_entries(last_accessed_at)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
