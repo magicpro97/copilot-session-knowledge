@@ -56,17 +56,17 @@ _PERIODIC_VERIFY_INTERVAL: int = 30
 _check_and_index_poll: int = 0
 
 # Tail-reading constants for large JSONL files
-_FAST_PATH_BYTES = 256 * 1024    # >256KB triggers tail-read
-_TAIL_CHUNK_SIZE = 64 * 1024     # read 64KB at a time
-_TAIL_MAX_BYTES = 1024 * 1024    # read at most 1MB from end
+_FAST_PATH_BYTES = 256 * 1024  # >256KB triggers tail-read
+_TAIL_CHUNK_SIZE = 64 * 1024  # read 64KB at a time
+_TAIL_MAX_BYTES = 1024 * 1024  # read at most 1MB from end
 
 # Bootstrap message markers (system prompt detection)
 _BOOTSTRAP_MARKERS = [
-    '<environment_context>',
-    'agents.md instructions',
-    '<instructions>',
-    'you are a coding agent',
-    'copilot cli',
+    "<environment_context>",
+    "agents.md instructions",
+    "<instructions>",
+    "you are a coding agent",
+    "copilot cli",
 ]
 
 
@@ -75,7 +75,7 @@ def _is_bootstrap_message(content: str) -> bool:
     if not content:
         return False
     normalized = content.lower()
-    if '<environment_context>' in normalized:
+    if "<environment_context>" in normalized:
         return True
     hits = sum(1 for m in _BOOTSTRAP_MARKERS if m in normalized)
     return hits >= 2
@@ -93,7 +93,7 @@ def _read_jsonl_tail(path, max_messages: int = 500) -> list:
         # Small file: existing sequential read
         lines = []
         try:
-            with open(path, encoding='utf-8', errors='replace') as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -109,7 +109,7 @@ def _read_jsonl_tail(path, max_messages: int = 500) -> list:
     chunks = []
     total_read = 0
     try:
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             pos = file_size
             while pos > 0 and total_read < _TAIL_MAX_BYTES:
                 read_size = min(_TAIL_CHUNK_SIZE, pos, _TAIL_MAX_BYTES - total_read)
@@ -121,8 +121,8 @@ def _read_jsonl_tail(path, max_messages: int = 500) -> list:
     except OSError:
         return []
 
-    tail_bytes = b''.join(chunks)
-    tail_text = tail_bytes.decode('utf-8', errors='replace')
+    tail_bytes = b"".join(chunks)
+    tail_text = tail_bytes.decode("utf-8", errors="replace")
     lines = tail_text.splitlines()
 
     messages = []
