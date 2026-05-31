@@ -1043,17 +1043,20 @@ test("17a: explicit_budget=3000 → 3000 (ignores available_tokens)", _b._comput
 test("17a: explicit_budget=1000, available_tokens=200000 → 1000", _b._compute_dynamic_budget(1000, 200000) == 1000)
 test("17a: explicit_budget=500, available_tokens=40000 → 500", _b._compute_dynamic_budget(500, 40000) == 500)
 
-# 17b. Dynamic formula: min(2000, int(N * 0.05)) — no floor
-# available_tokens=40000 → 40000 * 0.05 = 2000 → capped at 2000
-test("17b: avail=40000 → min(2000, 2000) = 2000", _b._compute_dynamic_budget(0, 40000) == 2000)
-# available_tokens=60000 → 60000 * 0.05 = 3000 → capped at 2000
-test("17b: avail=60000 → capped at 2000", _b._compute_dynamic_budget(0, 60000) == 2000)
-# available_tokens=8000 → 8000 * 0.05 = 400 → no floor, result is 400
-test("17b: avail=8000 → 400 (5% of 8000, no floor)", _b._compute_dynamic_budget(0, 8000) == 400)
-# available_tokens=20000 → 20000 * 0.05 = 1000 → within (0, 2000]
-test("17b: avail=20000 → 1000", _b._compute_dynamic_budget(0, 20000) == 1000)
-# available_tokens=10000 → 10000 * 0.05 = 500 → exactly at 5%
-test("17b: avail=10000 → 500 (exactly 5% of 10000)", _b._compute_dynamic_budget(0, 10000) == 500)
+# 17b. BriefingBudget-based formula (issue #772): formal slot allocation.
+# When raw_surplus > 0: budget = max(500, surplus) * 4 chars.
+# When raw_surplus <= 0 (small context): falls back to min(2000, N*0.05).
+# Slot total = 4096+1000+2000+500 = 7596 tokens.
+# available_tokens=40000 → surplus=32404 → max(500,32404)*4 = 129616
+test("17b: avail=40000 → BriefingBudget surplus path = 129616", _b._compute_dynamic_budget(0, 40000) == 129616)
+# available_tokens=60000 → surplus=52404 → 52404*4 = 209616
+test("17b: avail=60000 → BriefingBudget surplus path = 209616", _b._compute_dynamic_budget(0, 60000) == 209616)
+# available_tokens=8000 → surplus=404 → max(500,404)*4 = 2000 (floor applies)
+test("17b: avail=8000 → BriefingBudget floor → 2000", _b._compute_dynamic_budget(0, 8000) == 2000)
+# available_tokens=20000 → surplus=12404 → 12404*4 = 49616
+test("17b: avail=20000 → BriefingBudget surplus path = 49616", _b._compute_dynamic_budget(0, 20000) == 49616)
+# available_tokens=10000 → surplus=2404 → 2404*4 = 9616
+test("17b: avail=10000 → BriefingBudget surplus path = 9616", _b._compute_dynamic_budget(0, 10000) == 9616)
 
 # 17c. Fallback: no budget (available_tokens=0 or negative) → 0 (no cap)
 test("17c: explicit=0, avail=0 → 0 (no cap)", _b._compute_dynamic_budget(0, 0) == 0)
@@ -1061,12 +1064,12 @@ test("17c: explicit=0, avail negative → 0", _b._compute_dynamic_budget(0, -1) 
 test("17c: no args → 0", _b._compute_dynamic_budget(0) == 0)
 
 # 17d. Token tracking: _estimate_tokens round-trips correctly
-_budget_chars = _b._compute_dynamic_budget(0, 40000)  # 2000
+_budget_chars = _b._compute_dynamic_budget(0, 40000)  # 129616 (BriefingBudget surplus path)
 _budget_tokens = _b._estimate_tokens(_budget_chars)
-test("17d: budget=2000 chars → ~500 tokens", _budget_tokens == 500)
-_budget_chars2 = _b._compute_dynamic_budget(0, 20000)  # 1000
+test("17d: budget=129616 chars → ~32404 tokens", _budget_tokens == 32404)
+_budget_chars2 = _b._compute_dynamic_budget(0, 20000)  # 49616 (BriefingBudget surplus path)
 _budget_tokens2 = _b._estimate_tokens(_budget_chars2)
-test("17d: budget=1000 chars → ~250 tokens", _budget_tokens2 == 250)
+test("17d: budget=49616 chars → ~12404 tokens", _budget_tokens2 == 12404)
 
 # 17e. Priority order: _format_compact puts mistakes before patterns/decisions/tools
 # Build minimal data with one entry per category
@@ -1255,6 +1258,47 @@ try:
     )
 finally:
     _shutil.rmtree(str(_17m_home), ignore_errors=True)
+
+
+# ── 17n. BriefingBudget dataclass (issue #772) ────────────────────────────────
+
+print("\n🏦 17n: BriefingBudget dataclass (issue #772)")
+
+test("17n: BriefingBudget class exists on module", hasattr(_b, "BriefingBudget"))
+
+_bb8k = _b.BriefingBudget(total_available=8000)
+_bb8k_expected_kb = max(500, 8000 - 4096 - 1000 - 2000 - 500)
+test(
+    "17n: knowledge_budget(8000) = max(500, 8000-7596) = 500",
+    _bb8k.knowledge_budget == _bb8k_expected_kb,
+    f"got={_bb8k.knowledge_budget} expected={_bb8k_expected_kb}",
+)
+
+test(
+    "17n: output_tier large context (16000) → full",
+    _b.BriefingBudget(total_available=16000).output_tier == "full",
+)
+test(
+    "17n: output_tier medium context (6000) → compact",
+    _b.BriefingBudget(total_available=6000).output_tier == "compact",
+)
+test(
+    "17n: output_tier small context (2000) → titles",
+    _b.BriefingBudget(total_available=2000).output_tier == "titles",
+)
+
+_bb_desc = _b.BriefingBudget(total_available=8000).describe()
+test("17n: describe() contains total=8000", "total=8000" in _bb_desc)
+test("17n: describe() contains knowledge_budget line", "knowledge_budget" in _bb_desc)
+test("17n: describe() contains tier", "tier=" in _bb_desc)
+
+# Slot defaults are as specified in issue #772
+_bb_def = _b.BriefingBudget()
+test("17n: default total_available=8000", _bb_def.total_available == 8000)
+test("17n: default response_reserve=4096", _bb_def.response_reserve == 4096)
+test("17n: default constitution_max=1000", _bb_def.constitution_max == 1000)
+test("17n: default code_context_max=2000", _bb_def.code_context_max == 2000)
+test("17n: default pinned_entries_max=500", _bb_def.pinned_entries_max == 500)
 
 
 # ── 18. Clarify result matching + rendering (issue #101) ───────────────────────

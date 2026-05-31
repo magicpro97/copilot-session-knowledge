@@ -41,6 +41,7 @@ context pressure (5% of N, capped at 2000 chars/~500 tokens) so output adapts to
 context pressure automatically. Explicit --budget always takes precedence over --available-tokens.
 """
 
+import dataclasses
 import datetime
 import hashlib
 import json
@@ -64,6 +65,52 @@ if os.name == "nt":
 
 TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
+
+
+@dataclasses.dataclass
+class BriefingBudget:
+    """Formal token budget allocator for sk briefing components.
+
+    Inspired by yoheinakajima/babyagi3 context_budget.py.
+    Each named slot has a maximum; knowledge_budget is whatever remains.
+    """
+
+    total_available: int = 8000
+    response_reserve: int = 4096
+    constitution_max: int = 1000
+    code_context_max: int = 2000
+    pinned_entries_max: int = 500
+
+    @property
+    def knowledge_budget(self) -> int:
+        used = self.response_reserve + self.constitution_max + self.code_context_max + self.pinned_entries_max
+        return max(500, self.total_available - used)
+
+    @property
+    def output_tier(self) -> str:
+        """Auto-select output tier from total_available tokens.
+
+        Tiers are based on total context size so small/medium/large contexts
+        always route correctly regardless of slot configuration.
+        """
+        if self.total_available >= 16000:
+            return "full"
+        if self.total_available >= 6000:
+            return "compact"
+        return "titles"
+
+    def describe(self) -> str:
+        """Human-readable budget allocation summary."""
+        return (
+            f"Budget allocation (total={self.total_available}):\n"
+            f"  response_reserve : {self.response_reserve}\n"
+            f"  constitution_max : {self.constitution_max}\n"
+            f"  code_context_max : {self.code_context_max}\n"
+            f"  pinned_max       : {self.pinned_entries_max}\n"
+            f"  knowledge_budget : {self.knowledge_budget}  → tier={self.output_tier}"
+        )
+
+
 DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 _CLARIFY_STORE_PATH = SESSION_STATE / "clarifications.json"
 _CONSTITUTION_RELATIVE_PATH = Path(".copilot") / "constitution.md"
@@ -361,14 +408,15 @@ def _estimate_tokens(output_chars: int) -> int:
 
 
 def _compute_dynamic_budget(explicit_budget: int, available_tokens: int = 0) -> int:
-    """Compute effective char-budget for briefing output (issue #125).
+    """Compute effective char-budget for briefing output (issue #125, #772).
 
     Priority order:
       1. If ``explicit_budget > 0``, return it unchanged (caller override wins).
-      2. If ``available_tokens > 0``, derive: min(2000, int(available_tokens * 0.05)).
-         This reserves at most 5% of the estimated context window for briefing output,
-         capped at 2000 chars (~500 tokens). No floor is applied — very small contexts
-         receive proportionally small budgets.
+      2. If ``available_tokens > 0``, derive knowledge_budget from BriefingBudget
+         (issue #772: replaces the 5%-capped heuristic with formal slot allocation).
+         When total_available < sum of all slots (raw surplus ≤ 0), fall back to
+         the proportional heuristic so very small contexts still get proportionally
+         small budgets rather than the 500-token floor.
       3. Otherwise return 0 (no budget cap — existing behaviour preserved).
 
     ``available_tokens`` is accepted from the caller via ``--available-tokens N``; briefing
@@ -377,9 +425,15 @@ def _compute_dynamic_budget(explicit_budget: int, available_tokens: int = 0) -> 
     if explicit_budget > 0:
         return explicit_budget
     if available_tokens > 0:
-        # max(1, ...) ensures budget stays active (>0) even for very small contexts
-        # where int(available_tokens * 0.05) would round to 0 (i.e., available_tokens < 20).
-        return max(1, min(2000, int(available_tokens * 0.05)))
+        bb = BriefingBudget(total_available=available_tokens)
+        used = bb.response_reserve + bb.constitution_max + bb.code_context_max + bb.pinned_entries_max
+        raw_surplus = available_tokens - used
+        if raw_surplus <= 0:
+            # Context too small for full slot allocation; proportional fallback preserves
+            # the small-budget enforcement that existing tests rely on (e.g. test 17m).
+            return max(1, min(2000, int(available_tokens * 0.05)))
+        # Convert token budget to chars (4 chars/token) for consistency with existing budget logic.
+        return bb.knowledge_budget * 4
     return 0
 
 
@@ -4665,6 +4719,22 @@ def main():
             except ValueError:
                 available_tokens = 0
     budget = _compute_dynamic_budget(explicit_budget, available_tokens)
+
+    # Auto-select output tier from BriefingBudget when --available-tokens is set
+    # and no explicit tier flag was supplied (issue #772).
+    if available_tokens > 0 and not explicit_budget:
+        bb = BriefingBudget(total_available=available_tokens)
+        if bb.output_tier == "full" and "--full" not in args:
+            full_mode = True
+        elif bb.output_tier == "titles" and "--compact" not in args and "--full" not in args:
+            # Redirect to --titles-only mode for minimal budget
+            print(generate_titles_only(query=query, limit=limit))
+            return
+
+    # Show budget allocation header in --full mode when --available-tokens is set.
+    if full_mode and available_tokens > 0:
+        print(BriefingBudget(total_available=available_tokens).describe())
+        print()
 
     if subagent_mode:
         infer_auto_mode = mode_explicit
