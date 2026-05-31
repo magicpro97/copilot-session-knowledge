@@ -91,6 +91,7 @@ _PROJECT_DB_SCRIPTS = {
     "briefing.py",
     "build-session-index.py",
     "embed.py",
+    "entity-extract.py",
     "extract-knowledge.py",
     "index-status.py",
     "knowledge-health.py",
@@ -263,6 +264,9 @@ _GROUPS: dict[str, dict[str, str]] = {
         "unpin": "knowledge-health.py",
         "pins": "knowledge-health.py",
         "bulk-tag": "knowledge-health.py",
+    },
+    "entity": {
+        "extract": "entity-extract.py",
     },
 }
 

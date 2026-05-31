@@ -220,6 +220,179 @@ def check_binary() -> dict:
     )
 
 
+def check_recall_hit_rate() -> dict:
+    """Check briefing recall quality from search_feedback table."""
+    if not DB_PATH.exists():
+        return _check("recall_hit_rate", "recall", WARN, "DB not found — skipping recall check")
+    try:
+        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "search_feedback" not in tables:
+            db.close()
+            return _check(
+                "recall_hit_rate",
+                "recall",
+                INFO,
+                "No feedback yet — use 'sk query --feedback <id> good|bad' to train",
+            )
+        row = db.execute(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN verdict=1 THEN 1 ELSE 0 END) AS good,"
+            " SUM(CASE WHEN verdict=-1 THEN 1 ELSE 0 END) AS bad FROM search_feedback"
+        ).fetchone()
+        db.close()
+        total, good, bad = row[0], row[1] or 0, row[2] or 0
+        if total < 5:
+            return _check(
+                "recall_hit_rate",
+                "recall",
+                INFO,
+                f"Too few feedback samples ({total}) — need 5+ for hit-rate estimate",
+            )
+        pct = round(good / total * 100) if total else 0
+        if pct >= 70:
+            return _check("recall_hit_rate", "recall", OK, f"Hit rate {pct}% ({good}/{total} good, {bad} bad)")
+        if pct >= 40:
+            return _check(
+                "recall_hit_rate",
+                "recall",
+                WARN,
+                f"Hit rate {pct}% ({good}/{total} good) — consider sk briefing --recall-quality",
+                "Run: sk briefing --recall-quality --days 30",
+            )
+        return _check(
+            "recall_hit_rate",
+            "recall",
+            ERROR,
+            f"Low hit rate {pct}% ({good}/{total} good, {bad} bad)",
+            "Run: sk briefing --recall-quality --days 30  and review low-precision queries",
+        )
+    except sqlite3.OperationalError as e:
+        return _check("recall_hit_rate", "recall", WARN, f"Could not check hit rate: {e}")
+
+
+def check_knowledge_growth() -> dict:
+    """Check knowledge entry growth rate over last 4 weeks."""
+    if not DB_PATH.exists():
+        return _check("knowledge_growth", "recall", WARN, "DB not found — skipping growth check")
+    try:
+        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        rows = db.execute(
+            """SELECT strftime('%Y-%W', first_seen) AS week, COUNT(*) AS cnt
+               FROM knowledge_entries
+               WHERE first_seen >= date('now', '-28 days')
+               GROUP BY week ORDER BY week"""
+        ).fetchall()
+        db.close()
+        if not rows:
+            return _check(
+                "knowledge_growth",
+                "recall",
+                WARN,
+                "No entries in last 28 days — is sk watch running?",
+                "Run: sk watch start",
+            )
+        total = sum(r[1] for r in rows)
+        weeks = len(rows)
+        avg = round(total / weeks, 1) if weeks else 0
+        if avg >= 3:
+            return _check(
+                "knowledge_growth",
+                "recall",
+                OK,
+                f"Knowledge growing — {total} entries over {weeks} weeks (avg {avg}/week)",
+            )
+        return _check(
+            "knowledge_growth",
+            "recall",
+            WARN,
+            f"Low growth rate — {total} entries over {weeks} weeks (avg {avg}/week)",
+            "Run: sk learn --pattern 'title' 'content'  to add knowledge",
+        )
+    except sqlite3.OperationalError as e:
+        return _check("knowledge_growth", "recall", WARN, f"Could not check growth: {e}")
+
+
+def check_stale_knowledge() -> dict:
+    """Check for knowledge entries never recalled (access_count=0 or missing)."""
+    if not DB_PATH.exists():
+        return _check("stale_knowledge", "recall", WARN, "DB not found — skipping stale check")
+    try:
+        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        if "access_count" not in cols:
+            db.close()
+            return _check(
+                "stale_knowledge",
+                "recall",
+                INFO,
+                "access_count column not yet migrated — run: python3 migrate.py",
+            )
+        row = db.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) AS never_accessed
+               FROM knowledge_entries"""
+        ).fetchone()
+        db.close()
+        total, never = row[0], row[1] or 0
+        if total == 0:
+            return _check("stale_knowledge", "recall", WARN, "No knowledge entries found")
+        stale_pct = round(never / total * 100) if total else 0
+        if stale_pct <= 30:
+            return _check(
+                "stale_knowledge",
+                "recall",
+                OK,
+                f"Stale entries: {stale_pct}% ({never}/{total} never recalled)",
+            )
+        if stale_pct <= 60:
+            return _check(
+                "stale_knowledge",
+                "recall",
+                WARN,
+                f"High stale rate: {stale_pct}% ({never}/{total} never recalled)",
+                "Run: sk briefing --recall-quality  to identify dead knowledge",
+            )
+        return _check(
+            "stale_knowledge",
+            "recall",
+            ERROR,
+            f"Very high stale rate: {stale_pct}% ({never}/{total} never recalled)",
+            "Run: sk knowledge evict --dry-run  to review stale entries",
+        )
+    except sqlite3.OperationalError as e:
+        return _check("stale_knowledge", "recall", WARN, f"Could not check stale entries: {e}")
+
+
+def check_recurring_mistakes() -> dict:
+    """Check for unresolved recurring mistakes (same title, multiple occurrences)."""
+    if not DB_PATH.exists():
+        return _check("recurring_mistakes", "recall", WARN, "DB not found — skipping mistake check")
+    try:
+        db = sqlite3.connect(str(DB_PATH) + "?mode=ro", uri=True)
+        rows = db.execute(
+            """SELECT title, COUNT(*) AS cnt
+               FROM knowledge_entries
+               WHERE category = 'mistake' AND (is_resolved = 0 OR is_resolved IS NULL)
+               GROUP BY lower(trim(title))
+               HAVING cnt > 1
+               ORDER BY cnt DESC
+               LIMIT 5"""
+        ).fetchall()
+        db.close()
+        if not rows:
+            return _check("recurring_mistakes", "recall", OK, "No recurring unresolved mistakes found")
+        names = "; ".join(f"{r[0][:40]} (×{r[1]})" for r in rows[:3])
+        return _check(
+            "recurring_mistakes",
+            "recall",
+            WARN,
+            f"{len(rows)} recurring unresolved mistake(s): {names}",
+            "Run: sk learn --mistake 'title' 'resolution' --tags 'resolved'",
+        )
+    except sqlite3.OperationalError as e:
+        return _check("recurring_mistakes", "recall", WARN, f"Could not check mistakes: {e}")
+
+
 ALL_CHECKS = [
     check_python_version,
     check_sqlite3,
@@ -230,6 +403,11 @@ ALL_CHECKS = [
     check_hooks,
     check_mcp,
     check_binary,
+    # recall health checks
+    check_recall_hit_rate,
+    check_knowledge_growth,
+    check_stale_knowledge,
+    check_recurring_mistakes,
 ]
 
 CATEGORY_MAP = {
@@ -239,6 +417,7 @@ CATEGORY_MAP = {
     "hooks": [check_hooks],
     "mcp": [check_mcp],
     "binary": [check_binary],
+    "recall": [check_recall_hit_rate, check_knowledge_growth, check_stale_knowledge, check_recurring_mistakes],
 }
 
 STATUS_ICON = {OK: "✅", WARN: "⚠️ ", ERROR: "❌", INFO: "ℹ️ "}
@@ -304,7 +483,7 @@ def main():
     parser = argparse.ArgumentParser(description="sk doctor — configuration health check")
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument("--fix", action="store_true", help="Auto-fix safe issues")
-    parser.add_argument("--category", help="Run only a category: python|db|config|hooks|mcp|binary")
+    parser.add_argument("--category", help="Run only a category: python|db|config|hooks|mcp|binary|recall")
     args = parser.parse_args()
 
     results = run_checks(args.category)

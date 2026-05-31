@@ -245,6 +245,7 @@ TOOL_FILES = [
     "session-compact.py",
     "repo-map.py",
     "coverage.py",
+    "entity-extract.py",
 ]
 
 SUPPORT_FILES = [
