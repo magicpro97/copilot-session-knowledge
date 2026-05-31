@@ -56,6 +56,7 @@ Usage:
     sk cron   add|remove|list|run [<args>...]
     sk project add|remove|list [<args>...]
     sk events append|status|replay|tail [<args>...]
+    sk curate scan|list|resolve|stats [<args>...]
 
     sk --help     Show this help
     sk --version  Show version
@@ -171,6 +172,7 @@ _DIRECT: dict[str, CommandMeta] = {
     "repo-map": CommandMeta("repo-map.py", "PageRank-ranked symbol map for AI context injection", ("index", "map")),
     "coverage": CommandMeta("coverage.py", "Per-file knowledge coverage heatmap showing blind spots", ("index", "map")),
     "trace": CommandMeta("trace.py", "Parse Copilot JSONL tool-call spans into SQLite", ("index", "observability")),
+    "curate": CommandMeta("curate.py", "Automated stale/duplicate knowledge entry curation", ("knowledge", "curation")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
