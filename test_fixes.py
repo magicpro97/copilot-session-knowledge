@@ -13184,15 +13184,16 @@ try:
         hasattr(_bsi840, "index_sessions_parallel"),
         "index_sessions_parallel not found",
     )
+    _expected_workers840 = int(os.environ.get("SK_INDEX_WORKERS", "4"))
     test(
-        "I840-2: MAX_WORKERS defaults to 4",
-        _bsi840.MAX_WORKERS == 4,
-        f"got {_bsi840.MAX_WORKERS}",
+        "I840-2: MAX_WORKERS matches SK_INDEX_WORKERS env (default 4)",
+        _bsi840.MAX_WORKERS == _expected_workers840,
+        f"got {_bsi840.MAX_WORKERS}, expected {_expected_workers840}",
     )
     test(
         "I840-3: SK_INDEX_WORKERS env override respected",
         int(os.environ.get("SK_INDEX_WORKERS", "4")) == _bsi840.MAX_WORKERS,
-        "env var not reflected at import time (expected: already set or default 4)",
+        "env var not reflected at import time",
     )
 
     # I840-4: parallel produces same DB entries as sequential on a temp fixture
@@ -13227,17 +13228,13 @@ try:
         for _sd in _sessions840:
             _bsi840.index_session(_db_conn_seq, _sd, False)
         _db_conn_seq.commit()
-        _seq_rows840 = set(
-            r[0] for r in _db_conn_seq.execute("SELECT id FROM sessions").fetchall()
-        )
+        _seq_rows840 = set(r[0] for r in _db_conn_seq.execute("SELECT id FROM sessions").fetchall())
         _db_conn_seq.close()
 
         # Parallel run
         _par_results840 = _bsi840.index_sessions_parallel(_sessions840, _db_par840, False, workers=2)
         _db_conn_par = _bsi840.create_db(_db_par840)
-        _par_rows840 = set(
-            r[0] for r in _db_conn_par.execute("SELECT id FROM sessions").fetchall()
-        )
+        _par_rows840 = set(r[0] for r in _db_conn_par.execute("SELECT id FROM sessions").fetchall())
         _db_conn_par.close()
 
         test(
@@ -13274,6 +13271,7 @@ try:
 
     finally:
         import shutil as _shutil840
+
         _shutil840.rmtree(str(_tmpdir840), ignore_errors=True)
 
 except Exception as _e840:

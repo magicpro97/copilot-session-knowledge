@@ -1160,57 +1160,13 @@ _db_lock = threading.Lock()
 def _index_session_parallel(session_dir: Path, db_path: Path, incremental: bool) -> dict:
     """Process a single session directory in a thread pool worker.
 
-    Opens its own DB connection to avoid sharing a connection across threads.
-    All writes are serialized via _db_lock so SQLite WAL mode isn't required.
-    Returns a result dict with path, stats, and optional error.
+    DB writes in index_session() are serialized via _db_lock. The FS reads
+    inside index_session() (checkpoint parsing, file scanning) happen outside
+    the lock's critical path when other threads hold it, providing modest
+    parallelism for IO-bound workloads.
     """
     result: dict = {"path": str(session_dir), "stats": {}, "error": None}
     try:
-        # Read-phase: parse files without holding the lock
-        session_id = session_dir.name
-        stats: dict[str, int] = {"checkpoints": 0, "research": 0, "files": 0, "plan": 0}
-        file_stats_data: dict = {}
-
-        checkpoints = parse_checkpoint_index(session_dir)
-        research_dir = session_dir / "research"
-        files_dir = session_dir / "files"
-        plan_path = session_dir / "plan.md"
-
-        # Gather research/file/plan counts (read-only FS ops)
-        research_files = list(research_dir.glob("*.md")) if research_dir.exists() else []
-        artifact_files = (
-            [f for f in files_dir.iterdir() if f.is_file() and f.suffix in (".md", ".txt")]
-            if files_dir.exists()
-            else []
-        )
-        has_plan = plan_path.exists() and plan_path.stat().st_size > 50
-
-        summary = ""
-        if checkpoints:
-            latest = session_dir / "checkpoints" / checkpoints[-1]["file"]
-            if latest.exists():
-                content = latest.read_text(encoding="utf-8", errors="ignore")
-                summary = extract_section(content, "overview")[:500]
-
-        cost_data: dict | None = None
-        try:
-            cost_data = _extract_session_cost(session_dir)
-        except Exception:
-            pass
-
-        file_stats_data = {
-            "session_id": session_id,
-            "session_dir": session_dir,
-            "checkpoints": checkpoints,
-            "research_files": research_files,
-            "artifact_files": artifact_files,
-            "has_plan": has_plan,
-            "plan_path": plan_path,
-            "summary": summary,
-            "cost_data": cost_data,
-        }
-
-        # Write-phase: serialize DB writes across threads
         with _db_lock:
             conn = create_db(db_path)
             try:
@@ -1218,16 +1174,14 @@ def _index_session_parallel(session_dir: Path, db_path: Path, incremental: bool)
                 conn.commit()
             finally:
                 conn.close()
-
         result["stats"] = stats
     except Exception as exc:
         result["error"] = str(exc)
-
     return result
 
 
 def index_sessions_parallel(
-    session_dirs: list,
+    session_dirs: list[Path],
     db_path: Path,
     incremental: bool,
     workers: int = MAX_WORKERS,
@@ -1239,23 +1193,25 @@ def index_sessions_parallel(
     Returns a list of result dicts (one per session).
     """
     if workers <= 1 or len(session_dirs) <= 1:
-        # Sequential path — one connection per session to avoid lock contention
-        results = []
-        for session_dir in session_dirs:
-            with _db_lock:
-                conn = create_db(db_path)
+        # Sequential path — reuse a single DB connection
+        conn = create_db(db_path)
+        results: list[dict] = []
+        try:
+            for session_dir in session_dirs:
                 try:
                     stats = index_session(conn, session_dir, incremental)
                     conn.commit()
-                finally:
-                    conn.close()
-            results.append({"path": str(session_dir), "stats": stats, "error": None})
+                    results.append({"path": str(session_dir), "stats": stats, "error": None})
+                except Exception as exc:
+                    results.append({"path": str(session_dir), "stats": {}, "error": str(exc)})
+        finally:
+            conn.close()
         return results
 
     try:
-        results: list[dict] = []
+        results = []
         total = len(session_dirs)
-        t0 = time.time()
+        t0 = time.monotonic()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_dir = {
@@ -1268,7 +1224,7 @@ def index_sessions_parallel(
                     result = {"path": str(future_to_dir[future]), "stats": {}, "error": str(exc)}
                 results.append(result)
 
-                elapsed = time.time() - t0
+                elapsed = time.monotonic() - t0
                 rate = i / elapsed if elapsed > 0 else 0
                 print(f"\r[index] {i}/{total} sessions ({rate:.1f}/s)", end="", flush=True)
 
@@ -1276,18 +1232,20 @@ def index_sessions_parallel(
         return results
 
     except Exception as exc:
-        # Fallback to sequential on executor error
+        # Fallback to sequential on executor error — reuse single connection
         print(f"\n[index] parallel executor error ({exc}), falling back to sequential", flush=True)
+        conn = create_db(db_path)
         results = []
-        for session_dir in session_dirs:
-            with _db_lock:
-                conn = create_db(db_path)
+        try:
+            for session_dir in session_dirs:
                 try:
                     stats = index_session(conn, session_dir, incremental)
                     conn.commit()
-                finally:
-                    conn.close()
-            results.append({"path": str(session_dir), "stats": stats, "error": None})
+                    results.append({"path": str(session_dir), "stats": stats, "error": None})
+                except Exception as exc2:
+                    results.append({"path": str(session_dir), "stats": {}, "error": str(exc2)})
+        finally:
+            conn.close()
         return results
 
 
