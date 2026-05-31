@@ -144,15 +144,25 @@ def test_no_subprocess_commits():
 
 
 def test_no_learn_calls():
-    """retro.py must not invoke learn.py, learn() functions, or indexing."""
+    """retro.py must not invoke learn.py outside --capture, and never call indexing."""
     retro = load_retro()
     import inspect
+    import re
 
     src = inspect.getsource(retro)
+    # learn.py is allowed inside the --capture guard block and in docstrings.
+    # Strip both before checking for banned references.
+    _capture_re = re.compile(
+        r'if args\["capture"\]:.*?(?=\n    if |\n\nif __name__|$)', re.DOTALL
+    )
+    src_no_capture = _capture_re.sub("", src)
+    # Also strip triple-quoted docstrings (both ''' and """)
+    _doc_re = re.compile(r'""".*?"""|\'\'\'.*?\'\'\'', re.DOTALL)
+    src_clean = _doc_re.sub("", src_no_capture)
     banned = ["learn.py", "build-session-index", "extract-knowledge", "watch-sessions"]
-    found = [b for b in banned if b in src]
+    found = [b for b in banned if b in src_clean]
     test(
-        "retro.py has no indexing/learning side-effects",
+        "retro.py has no indexing/learning side-effects outside --capture",
         len(found) == 0,
         f"found: {found}" if found else "",
     )

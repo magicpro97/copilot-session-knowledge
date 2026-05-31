@@ -18,6 +18,7 @@ Usage:
     python query-session.py --decisions                        # Show tech decisions
     python query-session.py --detail <id>                      # Full detail of entry
     python query-session.py --context <id>                     # Entry + related context
+    python query-session.py --history <id>                     # Show version history timeline for an entry
     python query-session.py --related <id>                     # Show knowledge graph relations
     python query-session.py --graph "spring boot"              # Mini knowledge graph for topic
     python query-session.py --relate "entity"                   # Query entity relations (new graph)
@@ -1667,6 +1668,71 @@ def show_context(entry_id: int):
         print("⚠ knowledge_relations table not found; skipping linked entries", file=sys.stderr)
 
 
+def show_entry_history(entry_id: int):
+    """Print compact version timeline for a knowledge entry."""
+    db = get_db()
+    entry = db.execute(
+        "SELECT id, title, category, content, confidence FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not entry:
+        print(f"No knowledge entry with ID {entry_id}")
+        db.close()
+        return
+
+    has_history_table = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entry_history'"
+    ).fetchone()
+
+    print(f"\n{BOLD}Version history for #{entry_id}: {entry['title']}{RESET}")
+    _conf = entry["confidence"] if entry["confidence"] is not None else 1.0
+    print(f"{DIM}Category: {entry['category']} | Current confidence: {_conf:.2f}{RESET}")
+
+    if not has_history_table:
+        print(f"{DIM}(knowledge_entry_history table not found — run migrate.py to enable history){RESET}")
+        db.close()
+        return
+
+    rows = db.execute(
+        """SELECT changed_at, content_before, content_after,
+                  confidence_before, confidence_after, change_source
+           FROM knowledge_entry_history
+           WHERE entry_id = ?
+           ORDER BY changed_at ASC""",
+        (entry_id,),
+    ).fetchall()
+
+    if not rows:
+        print(f"{DIM}  No history recorded yet (content updates will be tracked from now on){RESET}")
+        print(f"\n{BOLD}Current content:{RESET}")
+        print(f"  {entry['content'][:300]}")
+        if len(entry["content"]) > 300:
+            print(f"{DIM}  ... ({len(entry['content'])} chars, use --detail {entry_id} for full){RESET}")
+        db.close()
+        return
+
+    print()
+    for i, row in enumerate(rows, 1):
+        date = row["changed_at"][:10]
+        time_part = row["changed_at"][11:16] if len(row["changed_at"]) >= 16 else ""
+        conf_before = row["confidence_before"] if row["confidence_before"] is not None else 1.0
+        conf_after = row["confidence_after"] if row["confidence_after"] is not None else 1.0
+        before_len = len(row["content_before"])
+        after_len = len(row["content_after"])
+        delta = after_len - before_len
+        delta_str = f"+{delta}" if delta >= 0 else str(delta)
+        print(
+            f"  v{i} [{date} {time_part}] confidence={conf_before:.2f}→{conf_after:.2f} | "
+            f"{delta_str} chars | source={row['change_source']}"
+        )
+
+    print(f"\n{BOLD}Current content ({len(entry['content'])} chars):{RESET}")
+    print(f"  {entry['content'][:300]}")
+    if len(entry["content"]) > 300:
+        print(f"{DIM}  ... use --detail {entry_id} for full content{RESET}")
+    db.close()
+
+
 def show_related(entry_id: int):
     """Show entries related to the given entry via knowledge graph."""
     db = get_db()
@@ -3061,6 +3127,14 @@ def _run(args: list, compact: bool = False):
             show_context(int(args[idx + 1]))
         else:
             print("Error: --context requires an entry ID")
+        return
+
+    if "--history" in args:
+        idx = args.index("--history")
+        if idx + 1 < len(args):
+            show_entry_history(int(args[idx + 1]))
+        else:
+            print("Error: --history requires an entry ID")
         return
 
     if "--why" in args:

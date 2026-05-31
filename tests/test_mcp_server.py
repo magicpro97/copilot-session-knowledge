@@ -103,8 +103,8 @@ class TestToolsList(unittest.TestCase):
         self.tools = {t["name"]: t for t in mcp.TOOLS}
 
     def test_exactly_two_tools(self):
-        # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry added (#820); now 8 tools total
-        self.assertEqual(len(mcp.TOOLS), 8)
+        # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry added (#820); batch_learn added (#833); now 10 tools total
+        self.assertEqual(len(mcp.TOOLS), 10)
 
     def test_briefing_tool_present(self):
         self.assertIn("briefing", self.tools)
@@ -1098,8 +1098,8 @@ class TestQueryMemoryTool(unittest.TestCase):
         self.assertTrue(self.tools["code_search"]["description"])
 
     def test_exactly_three_tools(self):
-        # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry added (#820); now 8 tools total
-        self.assertEqual(len(mcp.TOOLS), 8)
+        # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry added (#820); batch_learn added (#833); now 10 tools total
+        self.assertEqual(len(mcp.TOOLS), 10)
 
     def test_rate_entry_tool_present(self):
         self.assertIn("rate_entry", self.tools)
