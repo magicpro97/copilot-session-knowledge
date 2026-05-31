@@ -182,6 +182,7 @@ _DIRECT: dict[str, CommandMeta] = {
         "windsurf-adapter.py", "Import Windsurf session history into knowledge base", ("import", "adapters")
     ),
     "curate": CommandMeta("curate.py", "Automated stale/duplicate knowledge entry curation", ("knowledge", "curation")),
+    "tui": CommandMeta("tui.py", "Interactive terminal knowledge browser (curses)", ("browse", "ui")),
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
