@@ -248,6 +248,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "labels": "query-session.py",
         "digest": "query-session.py",
         "stats": "query-session.py",
+        "compare": "session-compare.py",
     },
     "knowledge": {
         "freshness": "knowledge-health.py",
