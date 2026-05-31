@@ -13,8 +13,11 @@ Usage:
 """
 
 import argparse
+import collections
 import json
+import math
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -166,6 +169,146 @@ def _store_checkpoint(
         return cur.lastrowid
 
 
+# ---------------------------------------------------------------------------
+# RAPTOR-style TF-IDF clustering helpers (pure stdlib — no scikit-learn)
+# ---------------------------------------------------------------------------
+
+
+def _tokenize(text: str) -> list[str]:
+    """Simple word tokenizer — lowercase, alphanumeric only."""
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _compute_tfidf(docs: list[str]) -> list[dict[str, float]]:
+    """Compute TF-IDF vectors for a list of documents."""
+    tokenized = [_tokenize(d) for d in docs]
+    df: dict[str, int] = collections.Counter()
+    for tokens in tokenized:
+        df.update(set(tokens))
+    N = len(docs)
+    idf = {w: math.log((N + 1) / (df[w] + 1)) + 1.0 for w in df}
+    vecs = []
+    for tokens in tokenized:
+        tf = collections.Counter(tokens)
+        total = len(tokens) or 1
+        vec = {w: (tf[w] / total) * idf[w] for w in tf}
+        vecs.append(vec)
+    return vecs
+
+
+def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+    """Cosine similarity between two TF-IDF vectors."""
+    dot = sum(a.get(w, 0) * b.get(w, 0) for w in b)
+    na = math.sqrt(sum(v * v for v in a.values())) or 1e-9
+    nb = math.sqrt(sum(v * v for v in b.values())) or 1e-9
+    return dot / (na * nb)
+
+
+def _cluster_sessions(summaries: list[tuple[str, str]], threshold: float = 0.15) -> list[list[tuple[str, str]]]:
+    """Group sessions by TF-IDF similarity (greedy single-linkage).
+
+    summaries = [(session_id, text), ...]
+    """
+    if not summaries:
+        return []
+    docs = [s[1] for s in summaries]
+    vecs = _compute_tfidf(docs)
+    clusters: list[list[int]] = []
+    assigned = [False] * len(summaries)
+    for i in range(len(summaries)):
+        if assigned[i]:
+            continue
+        cluster = [i]
+        assigned[i] = True
+        for j in range(i + 1, len(summaries)):
+            if not assigned[j] and _cosine(vecs[i], vecs[j]) >= threshold:
+                cluster.append(j)
+                assigned[j] = True
+        clusters.append(cluster)
+    return [[summaries[i] for i in c] for c in clusters]
+
+
+def _fetch_cross_session_summaries(conn: sqlite3.Connection, limit: int) -> list[tuple[str, str]]:
+    """Return last *limit* session summaries suitable for clustering.
+
+    Tries session_compact entries first, then falls back to session_checkpoint,
+    and finally to raw session summaries from the sessions table.
+    """
+    for category in ("session_compact", "session_checkpoint"):
+        try:
+            rows = conn.execute(
+                """SELECT session_id, title || ' ' || content
+                   FROM knowledge_entries
+                   WHERE category = ?
+                   ORDER BY last_seen DESC
+                   LIMIT ?""",
+                (category, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            break
+        if rows:
+            return [(r[0], r[1]) for r in rows]
+
+    # Last resort: sessions table summary column (may not always exist)
+    try:
+        rows = conn.execute(
+            "SELECT id, summary FROM sessions WHERE summary IS NOT NULL ORDER BY indexed_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        if rows:
+            return [(r[0], r[1]) for r in rows]
+    except sqlite3.OperationalError:
+        pass
+
+    return []
+
+
+def _store_cross_session_cluster(conn: sqlite3.Connection, content: str, session_id: str = "cross_session") -> int:
+    """Persist the cross-session cluster summary as a knowledge entry."""
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute(
+        "SELECT id FROM knowledge_entries WHERE category='cross_session_cluster' ORDER BY last_seen DESC LIMIT 1"
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE knowledge_entries SET content=?, last_seen=? WHERE id=?",
+            (content, now, existing[0]),
+        )
+        conn.commit()
+        return existing[0]
+    cur = conn.execute(
+        """INSERT INTO knowledge_entries
+           (session_id, category, title, content, first_seen, last_seen, priority, source)
+           VALUES (?,?,?,?,?,?,'P1','compact')""",
+        (session_id, "cross_session_cluster", "Cross-session cluster summary", content, now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _format_cross_session_output(clusters: list[list[tuple[str, str]]], as_json: bool = False) -> str:
+    """Format clustered session summaries for output."""
+    if as_json:
+        data = [
+            {
+                "cluster": i + 1,
+                "sessions": [{"session_id": sid, "summary": text[:300]} for sid, text in c],
+            }
+            for i, c in enumerate(clusters)
+        ]
+        return json.dumps(data, indent=2)
+
+    lines: list[str] = [f"Cross-session clusters ({len(clusters)} groups)\n"]
+    for i, cluster in enumerate(clusters, 1):
+        label = "session" if len(cluster) == 1 else "sessions"
+        lines.append(f"## Cluster {i} ({len(cluster)} {label})")
+        for sid, text in cluster:
+            snippet = text[:200].replace("\n", " ")
+            lines.append(f"  • [{sid[:20]}] {snippet}...")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _list_checkpoints(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """SELECT ke.id, ke.session_id, ke.title, ke.first_seen,
@@ -190,6 +333,15 @@ def main() -> None:
         dest="no_llm",
         help="Skip LLM call, use template-based compaction",
     )
+    parser.add_argument(
+        "--cross-session",
+        nargs="?",
+        const=20,
+        type=int,
+        metavar="N",
+        dest="cross_session",
+        help="Cluster last N session summaries using TF-IDF (default N=20)",
+    )
     args = parser.parse_args()
 
     db_path = _db_path()
@@ -198,6 +350,23 @@ def main() -> None:
         sys.exit(1)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+
+    if args.cross_session is not None:
+        limit = max(2, args.cross_session)
+        summaries = _fetch_cross_session_summaries(conn, limit)
+        if not summaries:
+            print("No session summaries found for cross-session clustering.", file=sys.stderr)
+            conn.close()
+            sys.exit(1)
+        clusters = _cluster_sessions(summaries)
+        output = _format_cross_session_output(clusters, as_json=args.as_json)
+        print(output)
+        if not args.dry_run:
+            entry_id = _store_cross_session_cluster(conn, output)
+            if not args.as_json:
+                print(f"✅ Stored cross-session cluster summary as entry #{entry_id}")
+        conn.close()
+        return
 
     if args.list_mode:
         checkpoints = _list_checkpoints(conn)
