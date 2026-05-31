@@ -13,6 +13,9 @@ Usage:
     python tag-entries.py --limit N      # Process at most N entries
     python tag-entries.py --tfidf        # Opt into TF-IDF scoring for batch tagging
     python tag-entries.py --stats        # Show current concept-tag coverage stats
+    python tag-entries.py --cross-session              # Tag high-recurrence entries (>=3 sessions)
+    python tag-entries.py --cross-session --threshold N  # Custom session threshold
+    python tag-entries.py --cross-session --dry-run    # Preview without writing
 """
 
 import os
@@ -435,6 +438,102 @@ def run_stats() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Cross-session recurrence tagging
+# ---------------------------------------------------------------------------
+
+_HIGH_RECURRENCE_TAG = "high-recurrence"
+
+
+def run_cross_session_tag(
+    threshold: int = 3,
+    dry_run: bool = False,
+    quiet: bool = False,
+) -> dict:
+    """Tag entries whose concept appears in >= threshold distinct sessions.
+
+    For each concept tag in entry_concept_tags, count distinct session_id values
+    across linked knowledge_entries rows.  Any entry that belongs to at least one
+    concept meeting the threshold receives the 'high-recurrence' tag
+    (source='auto').
+
+    Args:
+        threshold: Minimum number of distinct sessions required (default 3).
+        dry_run:   Preview only; do not write to DB.
+        quiet:     Suppress per-entry output.
+
+    Returns:
+        Stats dict: scanned, tagged, already_tagged, errors, available.
+    """
+    db = get_db()
+    try:
+        if not _ensure_concept_tags_table(db):
+            return {"scanned": 0, "tagged": 0, "already_tagged": 0, "errors": 0, "available": False}
+
+        _seed_sync_policy(db)
+
+        # Find entry IDs that belong to at least one concept spanning >= threshold sessions.
+        candidate_rows = db.execute(
+            """
+            SELECT DISTINCT ect.entry_id
+            FROM entry_concept_tags ect
+            JOIN knowledge_entries ke ON ect.entry_id = ke.id
+            WHERE ect.source = 'auto'
+              AND ect.tag IN (
+                  SELECT ect2.tag
+                  FROM entry_concept_tags ect2
+                  JOIN knowledge_entries ke2 ON ect2.entry_id = ke2.id
+                  WHERE ect2.source = 'auto'
+                    AND ke2.session_id IS NOT NULL
+                    AND ke2.session_id != ''
+                  GROUP BY ect2.tag
+                  HAVING COUNT(DISTINCT ke2.session_id) >= ?
+              )
+            """,
+            (threshold,),
+        ).fetchall()
+
+        candidate_ids = [r[0] for r in candidate_rows]
+
+        stats: dict = {"scanned": len(candidate_ids), "tagged": 0, "already_tagged": 0, "errors": 0, "available": True}
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+        for entry_id in candidate_ids:
+            try:
+                existing = db.execute(
+                    "SELECT 1 FROM entry_concept_tags WHERE entry_id = ? AND tag = ?",
+                    (entry_id, _HIGH_RECURRENCE_TAG),
+                ).fetchone()
+
+                if existing:
+                    stats["already_tagged"] += 1
+                    continue
+
+                if not dry_run:
+                    db.execute(
+                        """
+                        INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at)
+                        VALUES (?, ?, 'auto', ?)
+                        ON CONFLICT(entry_id, tag) DO UPDATE SET tagged_at = excluded.tagged_at
+                        """,
+                        (entry_id, _HIGH_RECURRENCE_TAG, now),
+                    )
+
+                stats["tagged"] += 1
+                if not quiet:
+                    mode_prefix = "[dry-run] " if dry_run else ""
+                    print(f"  {mode_prefix}#{entry_id}: → {_HIGH_RECURRENCE_TAG}")
+            except Exception as e:
+                stats["errors"] += 1
+                print(f"  [error] entry #{entry_id}: {e}", file=sys.stderr)
+
+        if not dry_run:
+            db.commit()
+        return stats
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -454,8 +553,24 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--stats", action="store_true", help="Show concept tag coverage statistics")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-entry output")
     parser.add_argument("--tfidf", action="store_true", help="Opt into TF-IDF scoring for batch tagging")
+    parser.add_argument(
+        "--cross-session",
+        dest="cross_session",
+        action="store_true",
+        help="Tag entries with 'high-recurrence' when their concept appears in >= threshold sessions",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=int,
+        default=3,
+        help="Minimum distinct sessions for high-recurrence tagging (default: 3)",
+    )
 
     args = parser.parse_args(argv)
+
+    if args.cross_session and args.threshold < 1:
+        print("Error: --threshold must be a positive integer (>= 1).", file=sys.stderr)
+        return 1
 
     if args.stats:
         s = run_stats()
@@ -470,6 +585,23 @@ def main(argv: list | None = None) -> int:
             print("\n  Top concept tags:")
             for t in s["top_tags"][:10]:
                 print(f"    {t['freq']:5d}x  {t['tag']}")
+        return 0
+
+    if args.cross_session:
+        mode = "[dry-run] cross-session recurrence" if args.dry_run else "cross-session recurrence"
+        print(f"Concept tag batch — {mode} (threshold={args.threshold})...")
+        stats = run_cross_session_tag(
+            threshold=args.threshold,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
+        if not stats.get("available"):
+            print("  Failed to initialize entry_concept_tags table.", file=sys.stderr)
+            return 1
+        print(
+            f"\nDone — scanned={stats['scanned']}  tagged={stats['tagged']}  "
+            f"already_tagged={stats['already_tagged']}  errors={stats['errors']}"
+        )
         return 0
 
     mode = "re-tagging all" if args.retag_all else "tagging untagged"

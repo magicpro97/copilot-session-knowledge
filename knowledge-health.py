@@ -227,11 +227,15 @@ def compute_health(stale_days: int = 30) -> dict:
 
     # Concept tag coverage (informational stat only — does NOT affect weighted score)
     concept_tagged = 0
+    high_recurrence_count = 0
     try:
         has_ect = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'").fetchone()
         if has_ect:
             concept_tagged = db.execute(
                 "SELECT COUNT(DISTINCT entry_id) FROM entry_concept_tags WHERE source = 'auto'"
+            ).fetchone()[0]
+            high_recurrence_count = db.execute(
+                "SELECT COUNT(DISTINCT entry_id) FROM entry_concept_tags WHERE tag = 'high-recurrence' AND source = 'auto'"
             ).fetchone()[0]
     except sqlite3.OperationalError:
         pass
@@ -308,6 +312,8 @@ def compute_health(stale_days: int = 30) -> dict:
         "rooms": rooms,
         "sessions": sessions,
         "concept_tag_coverage_pct": concept_tag_coverage_pct,
+        "high_recurrence_count": high_recurrence_count,
+        "high_recurrence_pct": round((high_recurrence_count / total) * 100, 1) if total > 0 else 0.0,
         "subscores": {k: round(v, 1) for k, v in scores.items()},
         "toward_100": toward_100,
     }
