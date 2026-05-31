@@ -25,7 +25,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 
 # Windows encoding fix (once, not per-hook)
 if os.name == "nt":
@@ -40,6 +40,24 @@ MARKERS_DIR = Path.home() / ".copilot" / "markers"
 SYNC_NUDGE_MARKER = MARKERS_DIR / "sync-nudge.json"
 SYNC_FLUSH_MARKER = MARKERS_DIR / "sync-flush.json"
 DEBOUNCE_DIR = Path.home() / ".copilot" / "markers" / "hook-debounce"
+
+
+def _extract_file_path(data: dict) -> str:
+    """Extract file path from tool event data (preToolUse or postToolUse).
+
+    Checks ``toolArgs``, ``toolInput``, ``toolResult``, and ``input``
+    containers for both ``path`` and ``filePath`` keys so that edit, create,
+    and other tool event shapes are all handled.
+    Returns the first non-empty value found, or ``""`` if absent.
+    """
+    for key in ("toolArgs", "toolInput", "toolResult", "input"):
+        args = data.get(key)
+        if isinstance(args, dict):
+            for field in ("path", "filePath"):
+                val = args.get(field, "")
+                if val:
+                    return val
+    return ""
 
 
 def _audit_log(event, tool, rule_name, decision, detail=""):
@@ -236,6 +254,24 @@ def main():
     for rule in rules:
         # Tool matching (empty tools list = match all)
         if rule.tools and tool_name not in rule.tools:
+            continue
+
+        # File-pattern filtering (empty file_patterns = match all)
+        # Use getattr() so rules that don't inherit from Rule base class still work.
+        _file_pats = getattr(rule, "file_patterns", [])
+        if _file_pats:
+            _fp = _extract_file_path(data)
+            if not _fp or not any(PurePath(_fp).match(pat) for pat in _file_pats):
+                continue
+
+        # Wing context filtering
+        _wing = getattr(rule, "require_wing", "")
+        if _wing and os.environ.get("SK_WING", "") != _wing:
+            continue
+
+        # Room context filtering
+        _room = getattr(rule, "require_room", "")
+        if _room and os.environ.get("SK_ROOM", "") != _room:
             continue
 
         # Debounce: skip preToolUse hooks that fired within the window (issue #832)

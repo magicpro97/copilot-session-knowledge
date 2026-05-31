@@ -22,6 +22,7 @@ class FileSizeAdvisoryRule(Rule):
     name = "file-size-advisory"
     events = ["preToolUse"]
     tools = ["edit", "create"]
+    file_patterns = ["**/*.py", "*.py"]
 
     MAX_PYTHON_LINES = 400
 
