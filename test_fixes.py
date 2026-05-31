@@ -10714,9 +10714,7 @@ try:
             )"""
         )
         for row in entries:
-            _c.execute(
-                "INSERT INTO knowledge_entries (title, wing, room, tags, last_seen) VALUES (?,?,?,?,?)", row
-            )
+            _c.execute("INSERT INTO knowledge_entries (title, wing, room, tags, last_seen) VALUES (?,?,?,?,?)", row)
         _c.commit()
         _c.close()
         return _dbpath
@@ -10727,12 +10725,14 @@ try:
     _recent723 = (_now723 - _dt723.timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S")
     _old723 = (_now723 - _dt723.timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S")
 
-    _db723 = _mk_db723([
-        ("Fix FTS5 sanitization", "Backend", "search", "python,sql", _recent723),
-        ("SQL parameterized pattern", "Backend", "db", "python,sql", _old723),
-        ("React state pattern", "Frontend", "ui", "react,js", _recent723),
-        ("CSS grid layout", "Frontend", "ui", "css", _old723),
-    ])
+    _db723 = _mk_db723(
+        [
+            ("Fix FTS5 sanitization", "Backend", "search", "python,sql", _recent723),
+            ("SQL parameterized pattern", "Backend", "db", "python,sql", _old723),
+            ("React state pattern", "Frontend", "ui", "react,js", _recent723),
+            ("CSS grid layout", "Frontend", "ui", "css", _old723),
+        ]
+    )
 
     # I723-7: collect_grouped_signals returns 2 groups for the test DB
     _grps723 = _retro_mod.collect_grouped_signals(db_path=_db723)
@@ -10828,17 +10828,43 @@ try:
     test("I723-22: --by-room CLI exits 0", _r723room.returncode == 0, _r723room.stderr[:200])
 
     # I723-23: entries with no wing grouped under '(none)'
-    _db723_none = _mk_db723([
-        ("Unnamed entry", "", "", "misc", _recent723),
-    ])
+    _db723_none = _mk_db723(
+        [
+            ("Unnamed entry", "", "", "misc", _recent723),
+        ]
+    )
     _grps723_none = _retro_mod.collect_grouped_signals(db_path=_db723_none)
     _none_names = {g["name"] for g in _grps723_none}
     test("I723-23: empty wing grouped as '(none)'", "(none)" in _none_names, str(_none_names))
 
 except Exception as _e723:
-    for _sfx in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-                 "11", "12", "13", "14", "15", "16", "17", "17b", "17c",
-                 "18", "19", "20", "21", "22", "23"]:
+    for _sfx in [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "17b",
+        "17c",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+    ]:
         test(f"I723-{_sfx}: retro grouped view", False, str(_e723))
 
 # ---------------------------------------------------------------------------
