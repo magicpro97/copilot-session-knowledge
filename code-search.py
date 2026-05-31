@@ -471,8 +471,22 @@ def search_fts(
     language: str,
     project_id: str,
     limit: int,
+    rank_mode: str = "hybrid",
 ) -> list[dict]:
-    """FTS5 search over code_index. Falls back to LIKE on OperationalError."""
+    """FTS5 search over code_index with BM25 column weights.
+
+    rank_mode:
+      hybrid  (default) — symbol_name=5.0, content_snippet=1.0
+      symbol  — symbol_name=10.0, content_snippet=0.5
+      content — symbol_name=1.0, content_snippet=3.0
+    """
+    _rank_weights = {
+        "symbol": (10.0, 0.5),
+        "content": (1.0, 3.0),
+        "hybrid": (5.0, 1.0),
+    }
+    w_sym, w_body = _rank_weights.get(rank_mode, (5.0, 1.0))
+
     conditions: list[str] = []
     params: list = []
 
@@ -488,23 +502,39 @@ def search_fts(
     if not fts_safe:
         fts_safe = query.replace('"', "")
 
-    try:
-        rows = conn.execute(
+    # Prefix match for single-word queries (porter stemmer recall)
+    single_word = " " not in fts_safe.strip()
+    fts_query = f'"{fts_safe}"*' if single_word else f'"{fts_safe}"'
+
+    def _run_fts(q: str) -> list:
+        return conn.execute(
             f"""SELECT ci.file_path, ci.project_id, ci.language,
                    ci.start_line, ci.end_line, ci.symbol_name,
-                   ci.symbol_kind, ci.content_snippet
+                   ci.symbol_kind, ci.content_snippet,
+                   bm25(code_fts, {w_sym}, {w_body}) AS rank_score
             FROM code_fts fts JOIN code_index ci ON fts.rowid = ci.id
             {where_prefix}code_fts MATCH ?
-            ORDER BY rank LIMIT ?""",
-            [*params, f'"{fts_safe}"', limit],
+            ORDER BY rank_score LIMIT ?""",
+            [*params, q, limit],
         ).fetchall()
+
+    try:
+        rows = _run_fts(fts_query)
+        # OR-fallback when multi-word query returns nothing
+        if not rows and " " in fts_safe:
+            words = [w for w in fts_safe.split() if w]
+            or_query = " OR ".join(f'"{w}"' for w in words)
+            try:
+                rows = _run_fts(or_query)
+            except sqlite3.OperationalError:
+                rows = []
     except sqlite3.OperationalError:
         like = f"%{query.lower()}%"
         where_like = ("WHERE " + " AND ".join(conditions) + " AND ") if conditions else "WHERE "
         rows = conn.execute(
             f"""SELECT file_path, project_id, language,
                    start_line, end_line, symbol_name,
-                   symbol_kind, content_snippet
+                   symbol_kind, content_snippet, 0.0 AS rank_score
             FROM code_index
             {where_like}(LOWER(symbol_name) LIKE ? OR LOWER(content_snippet) LIKE ?)
             ORDER BY file_path LIMIT ?""",
@@ -520,6 +550,7 @@ def search(
     project_id: str = "",
     limit: int = 10,
     context_lines: int = 3,
+    rank_mode: str = "hybrid",
 ) -> list[dict]:
     """Primary search entry point: tries FTS first, then ripgrep fallback."""
     if not DB_PATH.exists():
@@ -530,7 +561,7 @@ def search(
         has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_index'").fetchone()
         if not has_table:
             return []
-        results = search_fts(conn, query, lang, project_id, limit)
+        results = search_fts(conn, query, lang, project_id, limit, rank_mode)
     finally:
         conn.close()
 
@@ -596,6 +627,12 @@ def main() -> None:
     parser.add_argument("--index", metavar="PATH", help="Index a directory")
     parser.add_argument("--status", action="store_true", help="Show index stats")
     parser.add_argument("--context", type=int, default=3, help="Context lines around match")
+    parser.add_argument(
+        "--rank",
+        choices=["symbol", "content", "hybrid"],
+        default="hybrid",
+        help="BM25 column weight mode: symbol (name-boosted), content (body-boosted), hybrid (default)",
+    )
 
     args = parser.parse_args()
 
@@ -615,6 +652,7 @@ def main() -> None:
         project_id=args.project_id or "",
         limit=args.limit,
         context_lines=args.context,
+        rank_mode=args.rank,
     )
 
     if args.as_json:
