@@ -1891,8 +1891,11 @@ def show_related(entry_id: int):
     db.close()
 
 
-def show_graph(topic: str):
-    """Show a mini knowledge graph around a topic."""
+def show_graph(topic: str, predicate: str | None = None):
+    """Show a mini knowledge graph around a topic.
+
+    When *predicate* is given, only edges with that relation_type are shown.
+    """
     db = get_db()
 
     fts_query = _sanitize_fts_query(topic)
@@ -1919,7 +1922,8 @@ def show_graph(topic: str):
         db.close()
         return
 
-    print(f"\n{BOLD}Knowledge Graph: {topic}{RESET}")
+    pred_label = f" [predicate={predicate}]" if predicate else ""
+    print(f"\n{BOLD}Knowledge Graph: {topic}{pred_label}{RESET}")
     print("=" * 60)
 
     entry_ids = [m["id"] for m in matches]
@@ -1932,26 +1936,34 @@ def show_graph(topic: str):
         )
 
         try:
+            pred_clause = "AND LOWER(kr.relation_type) = LOWER(?)" if predicate else ""
+            params_rel: tuple
+            if predicate:
+                params_rel = (eid, eid, eid, eid, predicate)
+            else:
+                params_rel = (eid, eid, eid, eid)
             relations = db.execute(
-                """
-                SELECT kr.relation_type, kr.confidence,
+                f"""
+                SELECT kr.relation_type, kr.confidence, kr.source_id, kr.target_id,
                        CASE WHEN kr.source_id = ? THEN kr.target_id ELSE kr.source_id END as other_id,
                        ke.category, ke.title
                 FROM knowledge_relations kr
                 JOIN knowledge_entries ke ON ke.id = CASE WHEN kr.source_id = ? THEN kr.target_id ELSE kr.source_id END
-                WHERE kr.source_id = ? OR kr.target_id = ?
+                WHERE (kr.source_id = ? OR kr.target_id = ?) {pred_clause}
                 ORDER BY kr.confidence DESC
                 LIMIT 8
             """,
-                (eid, eid, eid, eid),
+                params_rel,
             ).fetchall()
 
             for r in relations:
+                # Show directed edge label: source --[predicate]--> target
+                if r["source_id"] == eid:
+                    edge = f"#{eid} --[{r['relation_type']}]--> #{r['other_id']}"
+                else:
+                    edge = f"#{r['other_id']} --[{r['relation_type']}]--> #{eid}"
                 marker = "\u2194" if r["other_id"] in entry_ids else "\u2192"
-                print(
-                    f"  {marker} [{r['relation_type']}] {DIM}#{r['other_id']}{RESET} "
-                    f"[{r['category']}] {r['title'][:50]}"
-                )
+                print(f"  {marker} {edge} {DIM}[{r['category']}] {r['title'][:40]}{RESET}")
         except sqlite3.OperationalError:
             print(f"⚠ knowledge_relations table not found; skipping relations for #{eid}", file=sys.stderr)
 
@@ -3299,7 +3311,11 @@ def _run(args: list, compact: bool = False):
     if "--graph" in args:
         idx = args.index("--graph")
         if idx + 1 < len(args):
-            show_graph(args[idx + 1])
+            _predicate: str | None = None
+            if "--predicate" in args:
+                _pi = args.index("--predicate")
+                _predicate = args[_pi + 1] if _pi + 1 < len(args) and not args[_pi + 1].startswith("--") else None
+            show_graph(args[idx + 1], predicate=_predicate)
         else:
             print("Error: --graph requires a topic")
         return

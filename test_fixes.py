@@ -14584,6 +14584,152 @@ except Exception as _e855_integration:
     for _sfx855 in ["09", "10", "11", "12", "13", "14"]:
         test(f"I855-{_sfx855}: progress integration", False, str(_e855_integration))
 
+# I858: multi-predicate knowledge relations
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu858
+    import sqlite3 as _sq858
+    from pathlib import Path as _P858
+
+    _spec858 = _ilu858.spec_from_file_location("learn858", Path("learn.py"))
+    _lm858 = _ilu858.module_from_spec(_spec858)
+    _spec858.loader.exec_module(_lm858)
+
+    # Verify RELATION_TYPES constant
+    _rt858 = _lm858.RELATION_TYPES
+    test(
+        "I858-1a: RELATION_TYPES dict exported from learn.py",
+        isinstance(_rt858, dict) and len(_rt858) >= 10,
+        str(list(_rt858.keys())),
+    )
+    test(
+        "I858-1b: causes → caused_by inverse pair",
+        _rt858.get("causes") == "caused_by",
+        str(_rt858.get("causes")),
+    )
+    test(
+        "I858-1c: related_to is its own inverse",
+        _rt858.get("related_to") == "related_to",
+        str(_rt858.get("related_to")),
+    )
+    test(
+        "I858-1d: fixes → fixed_by inverse pair",
+        _rt858.get("fixes") == "fixed_by",
+        str(_rt858.get("fixes")),
+    )
+
+    # Set up an isolated DB to test _insert_typed_relation
+    _dbpath858 = Path("_test_i858.db")
+    _db858 = _sq858.connect(str(_dbpath858))
+    _db858.execute(
+        """CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY, title TEXT, category TEXT DEFAULT 'pattern',
+            content TEXT DEFAULT '', confidence REAL DEFAULT 1.0, tags TEXT DEFAULT '',
+            session_id TEXT DEFAULT '', created_at TEXT DEFAULT '', deleted_at TEXT DEFAULT NULL
+        )"""
+    )
+    _db858.execute(
+        """CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER, target_id INTEGER, relation_type TEXT,
+            confidence REAL DEFAULT 1.0, created_at TEXT, session_id TEXT DEFAULT '',
+            UNIQUE(source_id, target_id, relation_type)
+        )"""
+    )
+    _db858.execute("INSERT INTO knowledge_entries (id, title) VALUES (1, 'Entry A')")
+    _db858.execute("INSERT INTO knowledge_entries (id, title) VALUES (2, 'Entry B')")
+    _db858.commit()
+
+    # Patch DB_PATH so _insert_typed_relation uses our test DB
+    _orig_dbpath858 = _lm858.DB_PATH
+    _lm858.DB_PATH = _dbpath858
+
+    _lm858._insert_typed_relation(1, "causes", 2)
+
+    _rels858 = _db858.execute(
+        "SELECT source_id, target_id, relation_type FROM knowledge_relations ORDER BY id"
+    ).fetchall()
+    test(
+        "I858-2a: _insert_typed_relation writes forward relation",
+        any(r[0] == 1 and r[1] == 2 and r[2] == "causes" for r in _rels858),
+        str(_rels858),
+    )
+    test(
+        "I858-2b: _insert_typed_relation auto-creates inverse caused_by",
+        any(r[0] == 2 and r[1] == 1 and r[2] == "caused_by" for r in _rels858),
+        str(_rels858),
+    )
+    test(
+        "I858-2c: exactly 2 rows inserted (forward + inverse)",
+        len(_rels858) == 2,
+        str(_rels858),
+    )
+
+    # related_to should NOT create a duplicate inverse (same predicate)
+    _lm858._insert_typed_relation(1, "related_to", 2)
+    _rels858b = _db858.execute(
+        "SELECT source_id, target_id, relation_type FROM knowledge_relations ORDER BY id"
+    ).fetchall()
+    test(
+        "I858-2d: related_to (self-inverse) inserts forward row",
+        any(r[0] == 1 and r[1] == 2 and r[2] == "related_to" for r in _rels858b),
+        str(_rels858b),
+    )
+    test(
+        "I858-2e: related_to inverse skipped (UNIQUE prevents same pair twice)",
+        not any(r[0] == 2 and r[1] == 1 and r[2] == "related_to" for r in _rels858b),
+        str(_rels858b),
+    )
+
+    # Unknown predicate warns but still writes
+    import io as _io858
+
+    _old_stderr858 = sys.stderr
+    sys.stderr = _io858.StringIO()
+    _lm858._insert_typed_relation(1, "unknown_pred", 2)
+    _warn858 = sys.stderr.getvalue()
+    sys.stderr = _old_stderr858
+    test(
+        "I858-3a: unknown predicate emits warning on stderr",
+        "Unknown predicate" in _warn858 or "unknown_pred" in _warn858,
+        _warn858[:200],
+    )
+    _rels858c = _db858.execute(
+        "SELECT relation_type FROM knowledge_relations WHERE relation_type = 'unknown_pred'"
+    ).fetchall()
+    test(
+        "I858-3b: unknown predicate still written to knowledge_relations",
+        len(_rels858c) == 1,
+        str(_rels858c),
+    )
+
+    # show_relate_list output
+    import io as _io858b
+
+    _old_stdout858 = sys.stdout
+    sys.stdout = _io858b.StringIO()
+    _lm858.show_relate_list(1)
+    _out858 = sys.stdout.getvalue()
+    sys.stdout = _old_stdout858
+    test(
+        "I858-4a: show_relate_list shows outgoing relations",
+        "Outgoing" in _out858 and "--[causes]-->" in _out858,
+        _out858[:400],
+    )
+    test(
+        "I858-4b: show_relate_list shows total count",
+        "relation" in _out858,
+        _out858[:400],
+    )
+
+    _lm858.DB_PATH = _orig_dbpath858
+    _db858.close()
+    _dbpath858.unlink(missing_ok=True)
+
+except Exception as _e858:
+    for _lbl858 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "2d", "2e", "3a", "3b", "4a", "4b"]:
+        test(f"I858-{_lbl858}: multi-predicate relations", False, str(_e858))
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
