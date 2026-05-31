@@ -455,33 +455,6 @@ security gates are never suppressed.
 > (`sk-rust/src/commands/hooks.rs`) do not implement debounce yet. A follow-up
 > issue will track the native-runner port.
 
-### Context filter environment variables
-
-Two optional environment variables let you scope hook rule evaluation to the active working context:
-
-| Variable | Purpose | Example |
-|----------|---------|---------|
-| `SK_WING` | Declares the current *wing* (domain/team area). Rules with `require_wing` are skipped when the value doesn't match. | `SK_WING=backend` |
-| `SK_ROOM` | Declares the current *room* (feature area or sub-module). Rules with `require_room` are skipped when the value doesn't match. | `SK_ROOM=api` |
-
-Set these in your shell profile or export them before starting a session:
-
-```bash
-export SK_WING=backend
-export SK_ROOM=api
-```
-
-**Rule-level filter fields** (declare in any `Rule` subclass):
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `file_patterns` | `list[str]` | Glob patterns matched against the extracted file path via `pathlib.PurePath.match()`. Rule is skipped when no pattern matches. Empty list = match all. Example: `["**/*.py", "*.py"]` |
-| `require_wing` | `str` | Skip this rule unless `SK_WING` matches exactly. Empty string = no filtering. |
-| `require_room` | `str` | Skip this rule unless `SK_ROOM` matches exactly. Empty string = no filtering. |
-
-All three filters are evaluated before `rule.evaluate()` is called — skipped rules incur no evaluation cost.
-
-## preToolUse Routing-Flip Specification
 
 This section records the verified state of the managed routing flip for `preToolUse`.
 The flip **has occurred** for Rust-binary installs as of wave13. The Python `sk.py` shim

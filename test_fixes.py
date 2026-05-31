@@ -14047,35 +14047,6 @@ try:
 except Exception as _e851:
     for _lbl851 in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
         test(f"I851-{_lbl851}: briefing semantic dedup", False, str(_e851))
-# === I853: hook rule context filters (file_patterns, require_wing, require_room) ===
-print("\n🪝 I853: hook rule context filters")
-
-try:
-    import os as _os853
-    from pathlib import PurePath as _PP853
-
-    sys.path.insert(0, str(Path(__file__).parent / "hooks"))
-    from rules import Rule as _Rule853
-
-    # I853-1: Rule base class has file_patterns field
-    test("I853-1: Rule has file_patterns field", hasattr(_Rule853, "file_patterns"), "missing field")
-    # I853-2: Rule base class has require_wing field
-    test("I853-2: Rule has require_wing field", hasattr(_Rule853, "require_wing"), "missing field")
-    # I853-3: Rule base class has require_room field
-    test("I853-3: Rule has require_room field", hasattr(_Rule853, "require_room"), "missing field")
-
-    # I853-4: _extract_file_path importable from hook_runner
-    sys.path.insert(0, str(Path(__file__).parent / "hooks"))
-    import importlib as _il853
-    import importlib.util as _ilu853
-
-    _spec853 = _ilu853.spec_from_file_location("hook_runner853", Path(__file__).parent / "hooks" / "hook_runner.py")
-    _hr853 = _il853.util.module_from_spec(_spec853)
-    _spec853.loader.exec_module(_hr853)
-    _extract_fp853 = _hr853._extract_file_path
-    test("I853-4: _extract_file_path defined in hook_runner", callable(_extract_fp853), "not found")
-
-    # I853-5/6: file_patterns filtering logic (using production _extract_file_path)
     class _MockFP853(_Rule853):
         name = "mock-fp853"
         events = ["preToolUse"]
