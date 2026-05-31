@@ -11398,6 +11398,133 @@ try:
 except Exception as _e756:
     for _suffix756 in ["1a", "1b", "1c", "1d", "2a", "2b", "2c", "3a", "3b", "3c", "4a", "4b", "4c", "5a", "5b"]:
         test(f"I756-{_suffix756}: MCP resources", False, str(_e756))
+# === I759: tag-entries TF-IDF opt-in ===
+print("\n🔍 I759: tag-entries TF-IDF opt-in")
+
+try:
+    import importlib.util as _ilu759
+    import os as _os759
+    import sqlite3 as _sq759
+
+    _spec759 = _ilu759.spec_from_file_location("tag_entries_i759", REPO / "tag-entries.py")
+    _te759 = _ilu759.module_from_spec(_spec759)  # type: ignore[arg-type]
+    _spec759.loader.exec_module(_te759)  # type: ignore[union-attr]
+
+    _src759 = (REPO / "tag-entries.py").read_text(encoding="utf-8")
+    test("I759-1a: parser exposes --tfidf flag", '"--tfidf"' in _src759 or "'--tfidf'" in _src759)
+    test("I759-1b: IDF corpus query orders recent entries", "ORDER BY id DESC LIMIT 5000" in _src759)
+    test("I759-1c: IDF fallback threshold is 50 entries", "n_docs < 50" in _src759)
+    test(
+        "I759-1d: batch-only TF-IDF comment documents standalone scripts",
+        "learn.py and extract-knowledge.py" in _src759 and "batch-only" in _src759,
+        "missing standalone script design note",
+    )
+
+    def _make_tag_db759(name: str, total_docs: int) -> tuple[Path, int]:
+        _path759 = REPO / f".test_i759_{_os759.getpid()}_{name}.db"
+        try:
+            _path759.unlink()
+        except FileNotFoundError:
+            pass
+        _db759 = _sq759.connect(str(_path759))
+        _db759.execute(
+            "CREATE TABLE knowledge_entries (id INTEGER PRIMARY KEY, title TEXT DEFAULT '', content TEXT DEFAULT '')"
+        )
+        for _idx759 in range(1, total_docs + 1):
+            if _idx759 == total_docs:
+                _content759 = "commonterm commonterm commonterm rarefocus rarefocus signal"
+                _title759 = "Target rarefocus entry"
+            else:
+                _content759 = f"commonterm commonterm commonterm fillerterm topic{_idx759} baseline"
+                _title759 = f"Corpus entry {_idx759}"
+            _db759.execute(
+                "INSERT INTO knowledge_entries (id, title, content) VALUES (?, ?, ?)",
+                (_idx759, _title759, _content759),
+            )
+        _db759.commit()
+        _db759.close()
+        return _path759, total_docs
+
+    def _ordered_tags759(path: Path, entry_id: int) -> list[str]:
+        _db759 = _sq759.connect(str(path))
+        try:
+            return [
+                _row[0]
+                for _row in _db759.execute(
+                    "SELECT tag FROM entry_concept_tags WHERE entry_id = ? AND source = 'auto' ORDER BY id",
+                    (entry_id,),
+                ).fetchall()
+            ]
+        finally:
+            _db759.close()
+
+    _orig_db_path759 = _te759.DB_PATH
+    _db50, _target50 = _make_tag_db759("large", 50)
+    _db49, _target49 = _make_tag_db759("small", 49)
+
+    try:
+        _te759.DB_PATH = _db50
+        _stats759_tf = _te759.run_batch_tag(retag_all=False, dry_run=False, limit=0, quiet=True, tfidf=False)
+        _plain_tags759 = _ordered_tags759(_db50, _target50)
+        test(
+            "I759-2a: plain batch tagging processes 50-entry corpus",
+            _stats759_tf.get("processed") == 50,
+            str(_stats759_tf),
+        )
+        test(
+            "I759-2b: pure TF keeps common term first without --tfidf",
+            bool(_plain_tags759) and _plain_tags759[0] == "commonterm",
+            str(_plain_tags759),
+        )
+
+        _stats759_tfidf = _te759.run_batch_tag(retag_all=True, dry_run=False, limit=0, quiet=True, tfidf=True)
+        _tfidf_tags759 = _ordered_tags759(_db50, _target50)
+        test(
+            "I759-2c: TF-IDF batch re-tags 50-entry corpus",
+            _stats759_tfidf.get("processed") == 50,
+            str(_stats759_tfidf),
+        )
+        test(
+            "I759-2d: --tfidf promotes rare discriminator over common term",
+            bool(_tfidf_tags759) and _tfidf_tags759[0] == "rarefocus" and "commonterm" in _tfidf_tags759,
+            str(_tfidf_tags759),
+        )
+
+        _te759.DB_PATH = _db49
+        _stats759_small = _te759.run_batch_tag(retag_all=False, dry_run=False, limit=0, quiet=True, tfidf=True)
+        _small_tags759 = _ordered_tags759(_db49, _target49)
+        test(
+            "I759-3a: tfidf flag still processes sub-threshold corpus",
+            _stats759_small.get("processed") == 49,
+            str(_stats759_small),
+        )
+        test(
+            "I759-3b: <50 entries falls back to pure TF even with --tfidf",
+            bool(_small_tags759) and _small_tags759[0] == "commonterm",
+            str(_small_tags759),
+        )
+    finally:
+        _te759.DB_PATH = _orig_db_path759
+        for _path759 in (_db50, _db49):
+            try:
+                _path759.unlink()
+            except Exception:
+                pass
+
+except Exception as _e759:
+    for _label759 in [
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "2a",
+        "2b",
+        "2c",
+        "2d",
+        "3a",
+        "3b",
+    ]:
+        test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:

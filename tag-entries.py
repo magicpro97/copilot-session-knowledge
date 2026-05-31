@@ -11,6 +11,7 @@ Usage:
     python tag-entries.py --all          # Re-tag every entry (replace stale tags)
     python tag-entries.py --dry-run      # Preview without writing
     python tag-entries.py --limit N      # Process at most N entries
+    python tag-entries.py --tfidf        # Opt into TF-IDF scoring for batch tagging
     python tag-entries.py --stats        # Show current concept-tag coverage stats
 """
 
@@ -159,27 +160,70 @@ _CONCEPT_STOPWORDS = frozenset(
 )
 
 
-def extract_concept_tags(text: str, top_k: int = 5) -> list[str]:
-    """Extract top_k concept tags from text using pure-stdlib term frequency.
+def _compute_idf_cache(db: sqlite3.Connection | None = None) -> dict[str, float]:
+    """Compute IDF weights from a bounded recent knowledge_entries corpus.
 
-    Distinct from existing tag parsing that reads explicit user-supplied tags.
-    Pure stdlib: no numpy/sklearn/ML imports.
+    IDF(term) = log((1 + N) / (1 + df)) + 1   (sklearn smooth-IDF formula)
+    where N = total docs, df = docs containing the term.
+
+    Returns {term: idf_weight} or {} if DB unavailable.
+    """
+    import math
+
+    if db is None:
+        return {}
+    try:
+        # Cap the corpus to the 5,000 most recent entries so TF-IDF stays bounded for batch runs.
+        rows = db.execute("SELECT title, content FROM knowledge_entries ORDER BY id DESC LIMIT 5000").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    n_docs = len(rows)
+    if n_docs < 50:  # Too small to compute meaningful IDF
+        return {}
+
+    df: dict[str, int] = {}
+    for row in rows:
+        text = f"{row[0]} {row[1]}"
+        tokens = set(re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower()))
+        for tok in tokens:
+            df[tok] = df.get(tok, 0) + 1
+
+    idf: dict[str, float] = {}
+    for term, doc_freq in df.items():
+        idf[term] = math.log((1 + n_docs) / (1 + doc_freq)) + 1.0
+    return idf
+
+
+def extract_concept_tags(text: str, top_k: int = 5, idf_cache: dict | None = None) -> list[str]:
+    """Extract top_k concept tags using TF-IDF when corpus IDF available, else pure TF.
 
     Args:
         text: Combined title and content text to analyze.
         top_k: Maximum number of concept tags to return.
+        idf_cache: Optional {term: idf_weight} from _compute_idf_cache(). When provided,
+                   scores are TF * IDF; otherwise falls back to pure TF.
 
     Returns:
-        List of up to top_k lowercase concept tag strings, sorted by frequency desc.
+        List of up to top_k lowercase concept tag strings, sorted by score desc.
     """
     if not text:
         return []
     tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower())
-    freq: dict[str, int] = {}
+    tf: dict[str, int] = {}
     for tok in tokens:
         if tok not in _CONCEPT_STOPWORDS:
-            freq[tok] = freq.get(tok, 0) + 1
-    ranked = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+            tf[tok] = tf.get(tok, 0) + 1
+    if not tf:
+        return []
+    # Normalize TF by document length to avoid bias toward long entries
+    max_tf = max(tf.values())
+    scores: dict[str, float] = {}
+    for term, freq in tf.items():
+        norm_tf = freq / max_tf
+        idf = idf_cache.get(term, 1.0) if idf_cache else 1.0
+        scores[term] = norm_tf * idf
+    ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     return [tag for tag, _ in ranked[:top_k]]
 
 
@@ -244,6 +288,7 @@ def run_batch_tag(
     dry_run: bool = False,
     limit: int = 0,
     quiet: bool = False,
+    tfidf: bool = False,
 ) -> dict:
     """Run batch concept tagging.
 
@@ -253,6 +298,7 @@ def run_batch_tag(
         dry_run: Preview only; do not write to DB.
         limit: Max entries to process (0 = no limit).
         quiet: Suppress per-entry output.
+        tfidf: Opt into TF-IDF scoring for batch ranking.
 
     Returns:
         Stats dict: processed, tagged, skipped, errors.
@@ -299,6 +345,9 @@ def run_batch_tag(
                 rows = db.execute(query).fetchall()
 
         stats = {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0, "available": True}
+        # TF-IDF is an opt-in batch-only enhancement. learn.py and extract-knowledge.py
+        # intentionally keep pure TF because live writes should not depend on corpus-level IDF.
+        idf_cache = _compute_idf_cache(db) if tfidf else {}
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
         for row in rows:
@@ -308,7 +357,7 @@ def run_batch_tag(
             stats["processed"] += 1
 
             try:
-                tags = extract_concept_tags(f"{title} {content}", top_k=5)
+                tags = extract_concept_tags(f"{title} {content}", top_k=5, idf_cache=idf_cache)
                 if not tags:
                     stats["skipped"] += 1
                     continue
@@ -404,6 +453,7 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="Process at most N entries (0 = no limit)")
     parser.add_argument("--stats", action="store_true", help="Show concept tag coverage statistics")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-entry output")
+    parser.add_argument("--tfidf", action="store_true", help="Opt into TF-IDF scoring for batch tagging")
 
     args = parser.parse_args(argv)
 
@@ -425,6 +475,8 @@ def main(argv: list | None = None) -> int:
     mode = "re-tagging all" if args.retag_all else "tagging untagged"
     if args.dry_run:
         mode = f"[dry-run] {mode}"
+    if args.tfidf:
+        mode = f"{mode} with TF-IDF"
     limit_note = f" (limit {args.limit})" if args.limit > 0 else ""
     print(f"Concept tag batch — {mode} entries{limit_note}...")
 
@@ -433,6 +485,7 @@ def main(argv: list | None = None) -> int:
         dry_run=args.dry_run,
         limit=args.limit,
         quiet=args.quiet,
+        tfidf=args.tfidf,
     )
 
     if not stats.get("available"):
