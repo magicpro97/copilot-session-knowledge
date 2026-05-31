@@ -12348,6 +12348,101 @@ except Exception as _e832:
         test(f"I832-{_lbl832}: hook debounce", False, str(_e832))
 
 # ---------------------------------------------------------------------------
+# I834: retro --capture flag
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu834
+    import io as _io834
+    import subprocess as _sp834
+    from contextlib import redirect_stderr as _re834
+    from contextlib import redirect_stdout as _rs834
+
+    _retro834_path = REPO / "retro.py"
+    _spec834 = _ilu834.spec_from_file_location("retro834", str(_retro834_path))
+    _retro834 = _ilu834.module_from_spec(_spec834)
+    _spec834.loader.exec_module(_retro834)
+
+    # I834-1: _parse_args accepts --capture flag
+    _args834 = _retro834._parse_args(["--capture"])
+    test("I834-1: _parse_args accepts --capture flag", _args834.get("capture") is True, str(_args834))
+
+    # I834-2: --capture is False by default
+    _args834_def = _retro834._parse_args([])
+    test("I834-2: capture defaults to False", _args834_def.get("capture") is False, str(_args834_def))
+
+    # I834-3: --capture combined with other flags parses correctly
+    _args834_combo = _retro834._parse_args(["--mode", "repo", "--capture", "--days", "7"])
+    test(
+        "I834-3: --capture combines with --mode and --days",
+        _args834_combo.get("capture") is True
+        and _args834_combo.get("mode") == "repo"
+        and _args834_combo.get("days") == 7,
+        str(_args834_combo),
+    )
+
+    # I834-4: main() with --capture actually invokes subprocess.run with learn.py
+    _calls834: list = []
+    _orig_run834 = _sp834.run
+
+    def _mock_run834(*_a, **_kw):
+        _calls834.append((_a, _kw))
+
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return _R()
+
+    # Patch subprocess.run in the retro module's namespace
+    _retro834.subprocess.run = _mock_run834
+    _retro834_sys = _retro834.main.__globals__["sys"]
+    _orig_argv834 = _retro834_sys.argv
+    _retro834_sys.argv = ["retro.py", "--capture", "--mode", "repo"]
+    _buf834 = _io834.StringIO()
+    _ebuf834 = _io834.StringIO()
+    try:
+        with _rs834(_buf834), _re834(_ebuf834):
+            _retro834.main()
+    except SystemExit:
+        pass
+    finally:
+        _retro834_sys.argv = _orig_argv834
+        _retro834.subprocess.run = _orig_run834
+
+    _out834 = _buf834.getvalue()
+    # Find the learn.py call among all subprocess.run calls
+    _learn_calls834 = [c for c in _calls834 if any("learn.py" in str(x) for x in (c[0][0] if c[0] else []))]
+    test("I834-4a: main() invoked learn.py subprocess", len(_learn_calls834) >= 1, f"calls={len(_learn_calls834)}")
+    if _learn_calls834:
+        _cmd834 = _learn_calls834[0][0][0]
+        test("I834-4b: subprocess cmd contains --discovery", "--discovery" in _cmd834, str(_cmd834))
+        test(
+            "I834-4c: subprocess cmd contains retro tags",
+            any("retro,session-retrospective" in str(c) for c in _cmd834),
+            str(_cmd834),
+        )
+        test(
+            "I834-4d: subprocess cmd contains date tag",
+            any("date:" in str(c) for c in _cmd834),
+            str(_cmd834),
+        )
+    else:
+        for _l in ["4b", "4c", "4d"]:
+            test(f"I834-{_l}: skipped (no learn.py call found)", False, "learn.py not called")
+
+    # I834-5: success message only prints on returncode==0
+    test("I834-5: [retro] success message printed", "[retro] Saved as knowledge entry:" in _out834, repr(_out834[:200]))
+
+    # I834-6: --help/docstring mentions --capture
+    _doc834 = _retro834.__doc__ or ""
+    test("I834-6: docstring mentions --capture", "--capture" in _doc834, _doc834[:200])
+
+except Exception as _e834:
+    for _lbl834 in ["1", "2", "3", "4a", "4b", "4c", "4d", "5", "6"]:
+        test(f"I834-{_lbl834}: retro --capture", False, str(_e834))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
