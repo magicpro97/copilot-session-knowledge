@@ -27,7 +27,7 @@ pub struct DispatchStats {
 ///   2. COPILOT_SESSION_ID
 ///   3. basename of COPILOT_SESSION_STATE
 ///   4. ppid-{parent_pid}
-fn get_session_id(data: &Value) -> String {
+pub(crate) fn get_session_id(data: &Value) -> String {
     // Priority 0: event payload.
     if let Some(sid) = data.get("sessionId").and_then(|v| v.as_str()) {
         if !sid.is_empty() {
@@ -59,7 +59,7 @@ fn get_session_id(data: &Value) -> String {
 ///
 /// Mirrors Python `common.py::sanitize_session_id`: replaces path separators,
 /// removes null bytes, collapses dot-dots, keeps `[\w\-.:@]`, truncates to 128.
-fn sanitize_session_id(sid: &str) -> String {
+pub(crate) fn sanitize_session_id(sid: &str) -> String {
     if sid.is_empty() {
         return "default-session".to_string();
     }
