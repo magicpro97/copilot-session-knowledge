@@ -990,6 +990,70 @@ def _bar(value: float, width: int = 20) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def _decay_weight(last_accessed_at: str, half_life_days: int = 90) -> float:
+    """Ebbinghaus exponential decay: exp(-ln(2) * days_since / half_life).
+
+    Returns 1.0 if last_accessed_at is empty (never accessed = no decay penalty yet).
+    Returns value in (0, 1] based on recency of last access.
+    Copied verbatim from briefing.py — standalone scripts must not cross-import.
+    """
+    import math
+
+    if not last_accessed_at:
+        return 1.0
+    try:
+        import datetime
+
+        last = datetime.datetime.fromisoformat(last_accessed_at.replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        days_since = max(0, (now - last).total_seconds() / 86400)
+        return math.exp(-math.log(2) * days_since / half_life_days)
+    except (ValueError, TypeError):
+        return 1.0
+
+
+def _memory_health_section(db: sqlite3.Connection, days_threshold: int = 30) -> str:
+    """Return a 'memory health' section showing stale entries by decay score."""
+    try:
+        rows = db.execute(
+            """SELECT id, title, category, priority, last_accessed_at, access_count
+               FROM knowledge_entries
+               WHERE last_accessed_at != '' OR access_count > 0
+               ORDER BY last_accessed_at ASC
+               LIMIT 200"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return ""  # Column not yet migrated
+
+    if not rows:
+        return ""
+
+    stale = []
+    for r in rows:
+        weight = _decay_weight(r[4] if not isinstance(r, sqlite3.Row) else r["last_accessed_at"])
+        if weight < 0.3:
+            stale.append(
+                {
+                    "id": r[0] if not isinstance(r, sqlite3.Row) else r["id"],
+                    "title": r[1] if not isinstance(r, sqlite3.Row) else r["title"],
+                    "decay": round(weight, 3),
+                }
+            )
+
+    if not stale:
+        return ""
+
+    lines = [f"\n⚠️  Memory health — {len(stale)} stale entries (decay < 0.3):"]
+    for s in stale[:5]:
+        lines.append(f"  #{s['id']} {s['title'][:60]} (decay={s['decay']})")
+    if len(stale) > 5:
+        lines.append(f"  ... and {len(stale) - 5} more")
+    lines.append("  → Run: sk learn --refresh <id>  to reset decay clock")
+    return "\n".join(lines)
+
+
 def format_score_line(payload: dict) -> str:
     score = payload.get("retro_score", 0)
     grade = payload.get("grade", "")
@@ -1375,7 +1439,19 @@ def main() -> None:
         section = args.get("subreport") or ""
         print(format_subreport(payload, section))
     else:
-        print(format_text_report(payload))
+        report = format_text_report(payload)
+        # Memory health section (Ebbinghaus decay — issue #769)
+        if mode != "repo" and KNOWLEDGE_DB.exists():
+            try:
+                _db = sqlite3.connect(str(KNOWLEDGE_DB))
+                _db.row_factory = sqlite3.Row
+                mem_health = _memory_health_section(_db)
+                _db.close()
+                if mem_health:
+                    report = report + "\n" + mem_health
+            except Exception:
+                pass
+        print(report)
 
 
 if __name__ == "__main__":

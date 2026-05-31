@@ -1761,6 +1761,15 @@ def _ke_has_recurrence(db: sqlite3.Connection) -> bool:
         return False
 
 
+def _ke_has_last_accessed(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the last_accessed_at column (v36 migration applied)."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "last_accessed_at" in cols
+    except Exception:
+        return False
+
+
 def _intensity_order_expr(alias: str = "ke", has_priority: bool = False) -> str:
     """SQL ORDER BY expression that ranks entries by priority then intensity.
 
@@ -1793,6 +1802,27 @@ def _recency_decay(last_seen_str: str | None, half_life_days: float = 30.0) -> f
         age_days = max(0.0, (now_utc - ts).total_seconds() / 86400.0)
         return 0.5 ** (age_days / half_life_days)
     except Exception:
+        return 1.0
+
+
+def _decay_weight(last_accessed_at: str, half_life_days: int = 90) -> float:
+    """Ebbinghaus exponential decay: exp(-ln(2) * days_since / half_life).
+
+    Returns 1.0 if last_accessed_at is empty (never accessed = no decay penalty yet).
+    Returns value in (0, 1] based on recency of last access.
+    """
+    import math
+
+    if not last_accessed_at:
+        return 1.0
+    try:
+        last = datetime.datetime.fromisoformat(last_accessed_at.replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        days_since = max(0, (now - last).total_seconds() / 86400)
+        return math.exp(-math.log(2) * days_since / half_life_days)
+    except (ValueError, TypeError):
         return 1.0
 
 
@@ -1909,7 +1939,8 @@ def _recency_composite_score(entry: dict, half_life_days: float) -> float:
         confidence_raw = entry.get("confidence")
         intensity = float(confidence_raw) if confidence_raw is not None else 0.5
     decay = _recency_decay(entry.get("last_seen"), half_life_days)
-    return priority_base + intensity * decay
+    access_decay = _decay_weight(entry.get("last_accessed_at", ""))
+    return priority_base + intensity * decay * access_decay
 
 
 def search_knowledge_entries(
@@ -1938,6 +1969,7 @@ def search_knowledge_entries(
     has_priority = _ke_has_priority(db)
     has_recurrence = _ke_has_recurrence(db)
     has_is_resolved = _ke_has_is_resolved(db)
+    has_last_accessed = _ke_has_last_accessed(db)
     order_by = _intensity_order_expr("ke", has_priority) if has_intensity else "ke.confidence DESC, rank"
     # Extra columns fetched so Python-level recency composite scoring has priority + intensity + age.
     _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
@@ -1945,6 +1977,7 @@ def search_knowledge_entries(
     _recurrence_col = (
         ", COALESCE(ke.recurrence_after_briefing, 0) AS recurrence_after_briefing" if has_recurrence else ""
     )
+    _last_accessed_col = ", ke.last_accessed_at" if has_last_accessed else ""
 
     # Build optional date-filter clause and params
     _date_clause = " AND ke.last_seen >= ?" if since_date else ""
@@ -1970,7 +2003,7 @@ def search_knowledge_entries(
                    d.doc_type as source_doc_type,
                    d.title as source_doc_title,
                    d.file_path as source_doc_file_path,
-                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}
+                   d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             LEFT JOIN documents d ON ke.document_id = d.id
@@ -1988,7 +2021,7 @@ def search_knowledge_entries(
             rows = db.execute(
                 f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
-                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}
+                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
@@ -2017,7 +2050,7 @@ def search_knowledge_entries(
                        d.doc_type as source_doc_type,
                        d.title as source_doc_title,
                        d.file_path as source_doc_file_path,
-                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}
+                       d.seq as source_doc_seq{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 LEFT JOIN documents d ON ke.document_id = d.id
@@ -2035,7 +2068,7 @@ def search_knowledge_entries(
                 rows = db.execute(
                     f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
-                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}
+                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}{_recurrence_col}{_last_accessed_col}
                     FROM ke_fts fts
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
@@ -2751,6 +2784,24 @@ def generate_briefing(
         row.get("id") for rows in briefing_data.values() for row in rows if isinstance(row, dict)
     )
     _upsert_entry_recall_stats(db, selected_entry_ids, rewritten_query)
+
+    # Update access tracking for surfaced entries (Ebbinghaus decay — issue #769)
+    try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for entries in briefing_data.values():
+            for entry in entries:
+                eid = entry.get("id")
+                if eid:
+                    try:
+                        db.execute(
+                            "UPDATE knowledge_entries SET last_accessed_at=?, access_count=access_count+1 WHERE id=?",
+                            (now_iso, eid),
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # Column not yet migrated — skip silently
+        db.commit()
+    except Exception:
+        pass  # fail-open: access tracking is non-critical
 
     db.close()
 
