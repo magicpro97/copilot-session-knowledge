@@ -299,9 +299,7 @@ def collect_status(db_path: Path = DB_PATH, check_health: bool = True) -> dict:
         except (json.JSONDecodeError, OSError):
             out["namespace"] = "default"
 
-        has_ke = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entries'"
-        ).fetchone()
+        has_ke = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entries'").fetchone()
         if has_ke:
             try:
                 out["private_entries"] = db.execute(
