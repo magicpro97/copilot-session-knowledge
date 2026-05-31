@@ -2621,6 +2621,78 @@ def soft_delete_entry(entry_id: int) -> bool:
     return True
 
 
+def amend_entry(
+    entry_id: int,
+    *,
+    content: str | None = None,
+    title: str | None = None,
+    tags: str | None = None,
+    confidence: float | None = None,
+) -> bool:
+    """Update specific fields of an existing knowledge entry in-place (#837).
+
+    Only the supplied keyword arguments are modified; omitted fields are left unchanged.
+    A history row is written to ``knowledge_entry_history`` when content or confidence
+    changes (fail-open: non-critical if the table is absent).
+
+    Returns True on success, False when the entry does not exist.
+    """
+    db = get_db()
+    row = db.execute(
+        "SELECT id, title, content, tags, confidence, category FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        print(f"  ⚠ Entry #{entry_id} not found.", file=sys.stderr)
+        db.close()
+        return False
+
+    now = __import__("datetime").datetime.now().isoformat()
+    updates: dict[str, object] = {}
+    if content is not None:
+        updates["content"] = content[:10000]
+    if title is not None:
+        updates["title"] = title[:200]
+    if tags is not None:
+        updates["tags"] = tags
+    if confidence is not None:
+        updates["confidence"] = confidence
+    updates["last_seen"] = now
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    db.execute(
+        f"UPDATE knowledge_entries SET {set_clause} WHERE id = ?",  # noqa: S608
+        list(updates.values()) + [entry_id],
+    )
+    db.commit()
+
+    # Write history row when content or confidence changes (fail-open)
+    _has_history = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entry_history'"
+    ).fetchone()
+    if _has_history:
+        try:
+            old_content = row["content"] or ""
+            new_content = str(updates.get("content", old_content))
+            old_conf = float(row["confidence"] or 0.0)
+            new_conf = float(updates.get("confidence", old_conf))
+            if new_content != old_content or new_conf != old_conf:
+                db.execute(
+                    """INSERT INTO knowledge_entry_history
+                       (entry_id, changed_at, content_before, content_after,
+                        confidence_before, confidence_after, change_source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (entry_id, now, old_content, new_content, old_conf, new_conf, "amend"),
+                )
+                db.commit()
+        except Exception:
+            pass  # fail-open: history tracking is non-critical
+
+    db.close()
+    print(f"  ✏ Amended #{entry_id} [{row['category']}] {row['title'][:60]}")
+    return True
+
+
 def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str | None = None) -> None:
     """Insert a SUPERSEDES relation from source_id to target_id in knowledge_relations.
 
@@ -3204,6 +3276,46 @@ def main():
             sys.exit(1)
         result = soft_delete_entry(entry_id)
         if not result:
+            sys.exit(1)
+        return
+
+    # --amend <id>: update specific fields of an existing entry without creating a duplicate (#837)
+    if "--amend" in args:
+        idx = args.index("--amend")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        if not raw_id or raw_id.startswith("--"):
+            print("Error: --amend requires an integer entry ID", file=sys.stderr)
+            sys.exit(1)
+        try:
+            amend_id = int(raw_id)
+        except ValueError:
+            print(f"Error: --amend value must be an integer ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        _amend_content: str | None = None
+        if "--content" in args:
+            _ci = args.index("--content")
+            _amend_content = args[_ci + 1] if _ci + 1 < len(args) else None
+        _amend_title: str | None = None
+        if "--title" in args:
+            _ti2 = args.index("--title")
+            _amend_title = args[_ti2 + 1] if _ti2 + 1 < len(args) else None
+        _amend_tags: str | None = None
+        if "--tags" in args:
+            _tgi = args.index("--tags")
+            _amend_tags = args[_tgi + 1] if _tgi + 1 < len(args) else None
+        _amend_conf: float | None = None
+        if "--confidence" in args:
+            _confi = args.index("--confidence")
+            try:
+                _amend_conf = float(args[_confi + 1]) if _confi + 1 < len(args) else None
+            except (ValueError, TypeError):
+                print("Error: --confidence requires a float value", file=sys.stderr)
+                sys.exit(1)
+        if _amend_content is None and _amend_title is None and _amend_tags is None and _amend_conf is None:
+            print("No fields to update. Use --content, --title, --tags, or --confidence with --amend.")
+            return
+        ok = amend_entry(amend_id, content=_amend_content, title=_amend_title, tags=_amend_tags, confidence=_amend_conf)
+        if not ok:
             sys.exit(1)
         return
 
