@@ -1967,6 +1967,58 @@ def _recency_composite_score(entry: dict, half_life_days: float) -> float:
     return priority_base + intensity * decay * access_decay
 
 
+# ---------------------------------------------------------------------------
+# Multi-signal RRF fusion helpers (issue #796)
+# ---------------------------------------------------------------------------
+
+
+def _rrf_fuse(ranked_lists: list[list[int]], k: int = 60) -> list[int]:
+    """Reciprocal Rank Fusion across multiple ranked lists of entry IDs.
+    Returns merged ranked list of entry IDs."""
+    scores: dict[int, float] = {}
+    for ranked in ranked_lists:
+        for rank, entry_id in enumerate(ranked):
+            scores[entry_id] = scores.get(entry_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores, key=lambda x: scores[x], reverse=True)
+
+
+def _rank_by_bm25(entries: list[dict]) -> list[int]:
+    """Return entry IDs ranked by existing bm25_score field (or 0 if absent)."""
+    return [e["id"] for e in sorted(entries, key=lambda x: x.get("bm25_score", 0), reverse=True)]
+
+
+def _rank_by_decay(entries: list[dict]) -> list[int]:
+    """Rank entries by decay-adjusted confidence."""
+    return [e["id"] for e in sorted(entries, key=lambda x: x.get("decay_score", x.get("confidence", 0)), reverse=True)]
+
+
+def _rank_by_recall_freq(entries: list[dict]) -> list[int]:
+    """Rank entries by recall frequency (recall_count / max(recall_days, 1))."""
+
+    def _freq(e: dict) -> float:
+        rc = e.get("recall_count", 0) or 0
+        rd = e.get("recall_days", 1) or 1
+        return rc / rd
+
+    return [e["id"] for e in sorted(entries, key=_freq, reverse=True)]
+
+
+def _apply_rrf_ranking(entries: list[dict]) -> list[dict]:
+    """Re-rank entries using RRF fusion of BM25, decay, and recall frequency."""
+    if len(entries) <= 1:
+        return entries
+
+    bm25_ranked = _rank_by_bm25(entries)
+    decay_ranked = _rank_by_decay(entries)
+    recall_ranked = _rank_by_recall_freq(entries)
+
+    ranked_lists = [bm25_ranked, decay_ranked, recall_ranked]
+    fused_ids = _rrf_fuse(ranked_lists)
+
+    id_to_entry = {e["id"]: e for e in entries}
+    return [id_to_entry[eid] for eid in fused_ids if eid in id_to_entry]
+
+
 def search_knowledge_entries(
     db: sqlite3.Connection,
     query: str,
@@ -2739,6 +2791,17 @@ def generate_briefing(
                 key=lambda e: _recency_composite_score(e, half_life) + _entity_bonus(e),
                 reverse=True,
             )
+
+        # Issue #796: Apply multi-signal RRF fusion (BM25, decay, recall frequency).
+        # For mistakes, preserve danger-lane (recurring) entries at the top, then apply
+        # RRF to the remaining pool so the recurrence boost is never overridden.
+        if cat == "mistake":
+            danger = [e for e in merged if int(e.get("recurrence_after_briefing") or 0) > 0]
+            rest = [e for e in merged if not int(e.get("recurrence_after_briefing") or 0)]
+            merged = danger + _apply_rrf_ranking(rest)
+        else:
+            merged = _apply_rrf_ranking(merged)
+
         # WBS-014: defense-in-depth read-side credential/injection filter
         # Issue #377: universal status-note suppression — applied here so ALL
         # output formats (text, json, pack, compact) consistently omit Wave-style
