@@ -221,6 +221,8 @@ TOOL_FILES = [
     "embed.py",
     "sync_enqueue.py",
     "agent_adapters.py",
+    "aider-adapter.py",
+    "windsurf-adapter.py",
     "claude-adapter.py",
     "context-blocks.py",
     "cron-tasks.py",

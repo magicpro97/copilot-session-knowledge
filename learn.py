@@ -2639,7 +2639,7 @@ def amend_entry(
     """
     db = get_db()
     row = db.execute(
-        "SELECT id, title, content, tags, confidence, category FROM knowledge_entries WHERE id = ?",
+        "SELECT id, title, content, tags, confidence, category, stable_id, session_id FROM knowledge_entries WHERE id = ?",
         (entry_id,),
     ).fetchone()
     if not row:
@@ -2647,7 +2647,7 @@ def amend_entry(
         db.close()
         return False
 
-    now = __import__("datetime").datetime.now().isoformat()
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
     updates: dict[str, object] = {}
     if content is not None:
         updates["content"] = content[:10000]
@@ -2665,6 +2665,38 @@ def amend_entry(
         list(updates.values()) + [entry_id],
     )
     db.commit()
+
+    # Refresh FTS index so amended title/content/tags are searchable
+    try:
+        db.execute("DELETE FROM ke_fts WHERE rowid = ?", (entry_id,))
+        _new_title = updates.get("title", row["title"])
+        _new_content = updates.get("content", row["content"])
+        _new_tags = updates.get("tags", row["tags"] or "")
+        _new_cat = row["category"]
+        db.execute(
+            "INSERT INTO ke_fts(rowid, title, content, tags, category) VALUES (?, ?, ?, ?, ?)",
+            (entry_id, _new_title, _new_content, _new_tags, _new_cat),
+        )
+        db.commit()
+    except sqlite3.OperationalError:
+        pass  # ke_fts may not exist on older schemas
+
+    # Enqueue sync op so amended entries propagate to replicas
+    _amend_stable_id = row["stable_id"] if "stable_id" in row.keys() else ""
+    if _amend_stable_id:
+        _enqueue_sync_op_fail_open(
+            db,
+            "knowledge_entries",
+            _amend_stable_id,
+            {
+                "category": row["category"],
+                "title": str(updates.get("title", row["title"])),
+                "content": str(updates.get("content", row["content"])),
+                "tags": str(updates.get("tags", row["tags"] or "")),
+                "confidence": float(updates.get("confidence", row["confidence"] or 1.0)),
+            },
+            op_type="upsert",
+        )
 
     # Write history row when content or confidence changes (fail-open)
     _has_history = db.execute(
@@ -3306,8 +3338,11 @@ def main():
         _amend_conf: float | None = None
         if "--confidence" in args:
             _confi = args.index("--confidence")
+            if _confi + 1 >= len(args) or args[_confi + 1].startswith("--"):
+                print("Error: --confidence requires a float value", file=sys.stderr)
+                sys.exit(1)
             try:
-                _amend_conf = float(args[_confi + 1]) if _confi + 1 < len(args) else None
+                _amend_conf = float(args[_confi + 1])
             except (ValueError, TypeError):
                 print("Error: --confidence requires a float value", file=sys.stderr)
                 sys.exit(1)
@@ -3692,7 +3727,7 @@ def main():
             print(f"Error: --merge entry #{merge_id} not found", file=sys.stderr)
             _db.close()
             sys.exit(1)
-        now = __import__("datetime").datetime.now().isoformat()
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
         _db.execute(
             """UPDATE knowledge_entries
                SET title = ?, content = ?, category = ?, tags = ?,
