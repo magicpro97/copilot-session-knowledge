@@ -4837,6 +4837,60 @@ def _run_reflect(db_path: str, question: str, store: bool = True) -> None:
     db.close()
 
 
+def _synthesize_category_section(category: str, entries: list[dict], mode: str, task: str) -> str:
+    """Synthesize retrieved entries into task-aware imperative prose.
+    Groups by tags, produces concise directives instead of flat list."""
+    if not entries:
+        return ""
+
+    avoid = [e for e in entries if e.get("category") == "mistake"]
+    use = [e for e in entries if e.get("category") == "pattern"]
+    note = [e for e in entries if e.get("category") not in ("mistake", "pattern")]
+
+    lines = []
+    if avoid:
+        items = "; ".join(f'"{e["title"][:50]}"' for e in avoid[:3])
+        lines.append(f"AVOID: {items}")
+    if use:
+        items = "; ".join(f'"{e["title"][:50]}"' for e in use[:3])
+        lines.append(f"USE: {items}")
+    if note:
+        items = "; ".join(f'"{e["title"][:50]}"' for e in note[:2])
+        lines.append(f"NOTE: {items}")
+
+    if avoid:
+        top = max(avoid, key=lambda e: e.get("occurrence_count", 1) or 1)
+        occ = top.get("occurrence_count", 1) or 1
+        if occ >= 3:
+            lines.append(f"\u26a0\ufe0f '{top['title'][:60]}' occurred {occ}\u00d7 \u2014 high priority")
+
+    header = f"## {category.upper()} context ({len(entries)} entries)"
+    return header + "\n" + "\n".join(lines)
+
+
+def _run_rag_briefing(db_path: str, query: str, mode: str = "auto") -> None:
+    """RAG synthesis mode: retrieve top entries then synthesize into prose."""
+    db = sqlite3.connect(db_path)
+    entries = _fetch_reflect_entries(db, query, limit=15)
+    db.close()
+
+    if not entries:
+        print("No relevant entries found for RAG synthesis.")
+        return
+
+    sections = []
+    by_cat: dict = {}
+    for e in entries:
+        by_cat.setdefault(e.get("category", "other"), []).append(e)
+
+    for cat, cat_entries in sorted(by_cat.items()):
+        section = _synthesize_category_section(cat, cat_entries, mode, query)
+        if section:
+            sections.append(section)
+
+    print("\n".join(sections) if sections else "No synthesis available.")
+
+
 def main():
     args = sys.argv[1:]
 
@@ -4962,6 +5016,18 @@ def main():
             return
         _rf_store = "--no-store" not in args
         _run_reflect(str(DB_PATH), _rf_question, store=_rf_store)
+        return
+
+    # Handle --rag / --synthesize mode (issue #815)
+    if "--rag" in args or "--synthesize" in args:
+        _rag_query_parts = [a for a in args if not a.startswith("--")]
+        _rag_query = " ".join(_rag_query_parts)
+        _rag_mode = "auto"
+        if "--mode" in args:
+            _mode_idx = args.index("--mode")
+            if _mode_idx + 1 < len(args):
+                _rag_mode = args[_mode_idx + 1]
+        _run_rag_briefing(str(DB_PATH), _rag_query, mode=_rag_mode)
         return
 
     # Handle --titles-only mode (progressive disclosure layer 1)
