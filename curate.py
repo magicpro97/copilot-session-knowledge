@@ -26,7 +26,10 @@ def _get_db(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         print(f"Error: DB not found at {db_path}", file=sys.stderr)
         sys.exit(1)
-    return sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 
 def _jaccard_similarity(a: str, b: str) -> float:

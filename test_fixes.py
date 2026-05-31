@@ -12272,6 +12272,103 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# === I831: Uniform SQLite WAL + busy-timeout ===
+# ---------------------------------------------------------------------------
+
+print("\n🗃️  I831: SQLite WAL + busy-timeout pragmas")
+
+try:
+    import importlib.util as _ilu831
+    import tempfile as _tf831
+
+    with _tf831.TemporaryDirectory() as _td831:
+        _db831_path = Path(_td831) / "knowledge.db"
+
+        # Bootstrap a minimal DB by importing briefing.py with a custom SK_DB_PATH
+        _old_env_831 = os.environ.get("SK_DB_PATH")
+        os.environ["SK_DB_PATH"] = str(_db831_path)
+
+        _br831_spec = _ilu831.spec_from_file_location("briefing831", REPO / "briefing.py")
+        _br831 = _ilu831.module_from_spec(_br831_spec)
+        _br831_spec.loader.exec_module(_br831)
+        _br831.DB_PATH = _db831_path
+
+        # Create a minimal DB so get_db() won't sys.exit
+        _setup_conn = sqlite3.connect(str(_db831_path))
+        _setup_conn.execute("CREATE TABLE IF NOT EXISTS knowledge_entries (id INTEGER PRIMARY KEY, title TEXT)")
+        _setup_conn.commit()
+        _setup_conn.close()
+
+        # I831-1: briefing.py get_db() sets journal_mode=WAL
+        _conn831 = _br831.get_db()
+        _jm831 = _conn831.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831.close()
+        test("I831-1: briefing.py get_db() sets journal_mode=WAL", _jm831 == "wal", f"got {_jm831!r}")
+
+        # I831-2: briefing.py get_db() sets busy_timeout=5000
+        _conn831b = _br831.get_db()
+        _bt831 = _conn831b.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831b.close()
+        test("I831-2: briefing.py get_db() sets busy_timeout=5000", _bt831 == 5000, f"got {_bt831!r}")
+
+        # I831-3: query-session.py get_db() sets journal_mode=WAL
+        _qs831_spec = _ilu831.spec_from_file_location("query_session831", REPO / "query-session.py")
+        _qs831 = _ilu831.module_from_spec(_qs831_spec)
+        _qs831_spec.loader.exec_module(_qs831)
+        _qs831.DB_PATH = _db831_path
+        _conn831c = _qs831.get_db()
+        _jm831c = _conn831c.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831c.close()
+        test("I831-3: query-session.py get_db() sets journal_mode=WAL", _jm831c == "wal", f"got {_jm831c!r}")
+
+        # I831-4: query-session.py get_db() sets busy_timeout=5000
+        _conn831d = _qs831.get_db()
+        _bt831d = _conn831d.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831d.close()
+        test("I831-4: query-session.py get_db() sets busy_timeout=5000", _bt831d == 5000, f"got {_bt831d!r}")
+
+        # I831-5: knowledge-health.py get_db() sets journal_mode=WAL
+        _kh831_spec = _ilu831.spec_from_file_location("knowledge_health831", REPO / "knowledge-health.py")
+        _kh831 = _ilu831.module_from_spec(_kh831_spec)
+        _kh831_spec.loader.exec_module(_kh831)
+        _kh831.DB_PATH = _db831_path
+        _conn831e = _kh831.get_db()
+        _jm831e = _conn831e.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831e.close()
+        test("I831-5: knowledge-health.py get_db() sets journal_mode=WAL", _jm831e == "wal", f"got {_jm831e!r}")
+
+        # I831-6: knowledge-health.py get_db() sets busy_timeout=5000
+        _conn831f = _kh831.get_db()
+        _bt831f = _conn831f.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831f.close()
+        test("I831-6: knowledge-health.py get_db() sets busy_timeout=5000", _bt831f == 5000, f"got {_bt831f!r}")
+
+        # I831-7: curate.py _get_db() sets journal_mode=WAL
+        _cu831_spec = _ilu831.spec_from_file_location("curate831", REPO / "curate.py")
+        _cu831 = _ilu831.module_from_spec(_cu831_spec)
+        _cu831_spec.loader.exec_module(_cu831)
+        _conn831g = _cu831._get_db(_db831_path)
+        _jm831g = _conn831g.execute("PRAGMA journal_mode").fetchone()[0]
+        _conn831g.close()
+        test("I831-7: curate.py _get_db() sets journal_mode=WAL", _jm831g == "wal", f"got {_jm831g!r}")
+
+        # I831-8: curate.py _get_db() sets busy_timeout=5000
+        _conn831h = _cu831._get_db(_db831_path)
+        _bt831h = _conn831h.execute("PRAGMA busy_timeout").fetchone()[0]
+        _conn831h.close()
+        test("I831-8: curate.py _get_db() sets busy_timeout=5000", _bt831h == 5000, f"got {_bt831h!r}")
+
+        # Restore SK_DB_PATH
+        if _old_env_831 is None:
+            os.environ.pop("SK_DB_PATH", None)
+        else:
+            os.environ["SK_DB_PATH"] = _old_env_831
+
+except Exception as _e831:
+    for _lbl831 in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        test(f"I831-{_lbl831}: WAL+busy_timeout pragma", False, str(_e831))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

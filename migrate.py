@@ -108,7 +108,11 @@ def _create_backup_copy(db_path: str, backup_path: str | None = None) -> Path:
         raise FileExistsError(f"backup destination already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     src_conn = sqlite3.connect(str(source))
+    src_conn.execute("PRAGMA journal_mode=WAL")
+    src_conn.execute("PRAGMA busy_timeout=5000")
     dst_conn = sqlite3.connect(str(destination))
+    dst_conn.execute("PRAGMA journal_mode=WAL")
+    dst_conn.execute("PRAGMA busy_timeout=5000")
     backup_error = None
     try:
         src_conn.backup(dst_conn)
@@ -122,6 +126,8 @@ def _create_backup_copy(db_path: str, backup_path: str | None = None) -> Path:
         raise backup_error
 
     verify_conn = sqlite3.connect(str(destination))
+    verify_conn.execute("PRAGMA journal_mode=WAL")
+    verify_conn.execute("PRAGMA busy_timeout=5000")
     verify_error = None
     try:
         row = verify_conn.execute("PRAGMA quick_check").fetchone()
@@ -1049,6 +1055,8 @@ if __name__ == "__main__":
 
     try:
         db = sqlite3.connect(db_path)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=5000")
     except sqlite3.Error as exc:
         _print_database_recovery_hint(db_path, str(exc))
         raise SystemExit(1) from None

@@ -876,6 +876,8 @@ def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
 
     try:
         db = sqlite3.connect(str(_DB_PATH))
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=5000")
     except sqlite3.OperationalError as exc:
         raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB open error: {exc}") from exc
 
