@@ -12272,6 +12272,225 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# I833: batch_learn MCP tool — bulk atomic knowledge writes
+# ---------------------------------------------------------------------------
+print("\n📝 I833: batch_learn MCP tool")
+
+_mcp833_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
+
+# I833-01: TOOLS list contains batch_learn
+try:
+    test(
+        "I833-01: TOOLS list contains batch_learn",
+        '"name": "batch_learn"' in _mcp833_src or "'name': 'batch_learn'" in _mcp833_src,
+        "batch_learn not found in TOOLS list",
+    )
+except Exception as _e833_01:
+    test("I833-01: batch_learn in TOOLS", False, str(_e833_01))
+
+# I833-02: _run_batch_learn function defined
+try:
+    test("I833-02: _run_batch_learn function defined", "def _run_batch_learn(" in _mcp833_src, "_run_batch_learn not found")
+except Exception as _e833_02:
+    test("I833-02: _run_batch_learn defined", False, str(_e833_02))
+
+# I833-03: batch_learn dispatched in _handle_tools_call
+try:
+    _dispatch833 = _mcp833_src.split("def _handle_tools_call(")[1].split("def _read_exact(")[0]
+    test(
+        "I833-03: batch_learn dispatched in _handle_tools_call",
+        "_run_batch_learn" in _dispatch833,
+        "_run_batch_learn not dispatched",
+    )
+except Exception as _e833_03:
+    test("I833-03: batch_learn dispatched", False, str(_e833_03))
+
+# I833-04: schema declares maxItems 50 and required entries
+try:
+    test(
+        "I833-04a: batch_learn schema has maxItems 50",
+        '"maxItems": 50' in _mcp833_src or "maxItems.*50" in _mcp833_src,
+        "maxItems 50 not found in schema",
+    )
+    test(
+        "I833-04b: batch_learn schema requires entries",
+        '"required": ["entries"]' in _mcp833_src or "'required': ['entries']" in _mcp833_src,
+        "entries not in required list",
+    )
+except Exception as _e833_04:
+    test("I833-04: schema shape", False, str(_e833_04))
+
+# I833-05: live MCP roundtrip — batch insert and rollback on validation error
+import importlib as _imp833
+import sqlite3 as _sq833
+import subprocess as _sp833
+import sys as _sys833
+import json as _json833
+import tempfile as _tf833
+import os as _os833
+
+print("  I833-05..06: live roundtrip")
+try:
+    with _tf833.TemporaryDirectory(prefix="mcp-i833-") as _td833:
+        _home833 = Path(_td833)
+        _state833 = _home833 / ".copilot" / "session-state"
+        _state833.mkdir(parents=True, exist_ok=True)
+        _db833 = _sq833.connect(str(_state833 / "knowledge.db"))
+        _db833.executescript("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                source TEXT DEFAULT 'copilot',
+                indexed_at TEXT
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stable_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT,
+                last_seen TEXT,
+                est_tokens INTEGER DEFAULT 0
+            );
+            CREATE VIRTUAL TABLE ke_fts USING fts5(title, content);
+            CREATE VIRTUAL TABLE sessions_fts USING fts5(session_id UNINDEXED, title, user_messages, assistant_messages, tool_names);
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, doc_type TEXT NOT NULL, title TEXT NOT NULL);
+        """)
+        _db833.commit()
+        _db833.close()
+
+        _env833 = _os833.environ.copy()
+        _env833["HOME"] = str(_home833)
+        _env833["USERPROFILE"] = str(_home833)
+
+        def _mcp833_roundtrip(method, params):
+            proc = _sp833.Popen(
+                [_sys833.executable, str(REPO / "mcp-server.py")],
+                stdin=_sp833.PIPE,
+                stdout=_sp833.PIPE,
+                stderr=_sp833.PIPE,
+                env=_env833,
+            )
+            try:
+                init_msg = _json833.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }).encode()
+                notif = _json833.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+                req = _json833.dumps({"jsonrpc": "2.0", "id": 2, "method": method, "params": params}).encode()
+                shutdown_msg = _json833.dumps({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}).encode()
+                for msg in [init_msg, notif, req, shutdown_msg]:
+                    proc.stdin.write(f"Content-Length: {len(msg)}\r\n\r\n".encode() + msg)
+                proc.stdin.flush()
+                proc.stdin.close()
+                out = proc.stdout.read()
+                proc.wait(timeout=15)
+            finally:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            responses = []
+            remaining = out
+            while remaining:
+                if b"Content-Length:" not in remaining:
+                    break
+                hdr_end = remaining.find(b"\r\n\r\n")
+                if hdr_end == -1:
+                    break
+                hdr = remaining[:hdr_end].decode("ascii", errors="replace")
+                cl = int([l.split(":")[1].strip() for l in hdr.split("\r\n") if "content-length" in l.lower()][0])
+                body_start = hdr_end + 4
+                body = remaining[body_start: body_start + cl]
+                remaining = remaining[body_start + cl:]
+                try:
+                    responses.append(_json833.loads(body))
+                except Exception:
+                    pass
+            return [r for r in responses if r.get("id") == 2]
+
+        # I833-05: successful batch of 2 entries
+        _resp833 = _mcp833_roundtrip(
+            "tools/call",
+            {
+                "name": "batch_learn",
+                "arguments": {
+                    "entries": [
+                        {"type": "mistake", "title": "I833 Test Mistake", "content": "batch test body A", "tags": "test,i833"},
+                        {"type": "pattern", "title": "I833 Test Pattern", "content": "batch test body B", "confidence": 0.9},
+                    ]
+                },
+            },
+        )
+        if _resp833 and "result" in _resp833[0]:
+            _r833 = _resp833[0]["result"]
+            _text833 = _r833.get("content", [{}])[0].get("text", "{}")
+            _parsed833 = _json833.loads(_text833)
+            test("I833-05a: batch_learn returns count=2", _parsed833.get("count") == 2, str(_parsed833))
+            test("I833-05b: batch_learn returns 2 created IDs", len(_parsed833.get("created", [])) == 2, str(_parsed833))
+            # Verify rows in DB
+            _dbv833 = _sq833.connect(str(_state833 / "knowledge.db"))
+            _rows833 = _dbv833.execute("SELECT id, category, title FROM knowledge_entries ORDER BY id").fetchall()
+            _dbv833.close()
+            test("I833-05c: DB contains 2 rows after batch", len(_rows833) == 2, str(_rows833))
+            if len(_rows833) >= 2:
+                test("I833-05d: first row category is mistake", _rows833[0][1] == "mistake", str(_rows833[0]))
+                test("I833-05e: second row category is pattern", _rows833[1][1] == "pattern", str(_rows833[1]))
+        elif _resp833 and "error" in _resp833[0]:
+            _err833 = _resp833[0]["error"]
+            test("I833-05a: batch_learn returns count=2", False, str(_err833))
+            for _lbl in ["05b", "05c", "05d", "05e"]:
+                test(f"I833-{_lbl}: batch_learn", False, "tool returned error")
+        else:
+            test("I833-05a: batch_learn returns count=2", False, f"no response: {_resp833}")
+            for _lbl in ["05b", "05c", "05d", "05e"]:
+                test(f"I833-{_lbl}: batch_learn", False, "no response")
+
+        # I833-06: validation error — invalid type should return JSON-RPC error (no DB rows added)
+        _resp833b = _mcp833_roundtrip(
+            "tools/call",
+            {
+                "name": "batch_learn",
+                "arguments": {
+                    "entries": [
+                        {"type": "invalid_type", "title": "Bad", "content": "bad entry"},
+                    ]
+                },
+            },
+        )
+        if _resp833b and "error" in _resp833b[0]:
+            test("I833-06a: invalid type returns error", True)
+        elif _resp833b and "result" in _resp833b[0]:
+            _err_text = _resp833b[0]["result"].get("content", [{}])[0].get("text", "")
+            # Some MCP implementations wrap errors in result.isError
+            _is_err = _resp833b[0]["result"].get("isError", False)
+            test("I833-06a: invalid type returns error or isError", _is_err, f"got result: {_err_text}")
+        else:
+            test("I833-06a: invalid type returns error", False, str(_resp833b))
+
+        # I833-07: exceeding max 50 entries returns error
+        _big_entries = [{"type": "pattern", "title": f"T{i}", "content": f"C{i}"} for i in range(51)]
+        _resp833c = _mcp833_roundtrip(
+            "tools/call",
+            {"name": "batch_learn", "arguments": {"entries": _big_entries}},
+        )
+        _got_err833c = (
+            (_resp833c and "error" in _resp833c[0])
+            or (_resp833c and _resp833c[0].get("result", {}).get("isError", False))
+        )
+        test("I833-07: >50 entries rejected", _got_err833c, str(_resp833c[0] if _resp833c else "no response"))
+
+except Exception as _e833_live:
+    for _lbl833 in ["05a", "05b", "05c", "05d", "05e", "06a", "07"]:
+        test(f"I833-{_lbl833}: batch_learn live", False, str(_e833_live))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

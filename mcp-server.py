@@ -309,6 +309,43 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "batch_learn",
+        "description": "Record multiple knowledge entries in a single atomic transaction. Max 50 entries per batch. Issue #833.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": sorted(VALID_LEARN_CATEGORIES),
+                                "description": "Knowledge category.",
+                            },
+                            "title": {"type": "string", "description": "Short title for the knowledge entry."},
+                            "content": {"type": "string", "description": "Content / body of the knowledge entry."},
+                            "tags": {"type": "string", "description": "Comma-separated tags (optional)."},
+                            "confidence": {
+                                "type": "number",
+                                "minimum": 0.1,
+                                "maximum": 1.0,
+                                "description": "Confidence score (optional, 0.1–1.0).",
+                            },
+                        },
+                        "required": ["type", "title", "content"],
+                        "additionalProperties": False,
+                    },
+                    "description": "Array of knowledge entries to write atomically.",
+                }
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -623,6 +660,150 @@ def _run_learn(arguments: dict[str, Any]) -> dict[str, Any]:
     return {
         "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
         "structuredContent": body,
+    }
+
+
+# ---------------------------------------------------------------------------
+# batch_learn — bulk atomic knowledge writes (issue #833)
+# ---------------------------------------------------------------------------
+
+_BATCH_LEARN_MAX = 50
+
+
+def _run_batch_learn(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Write multiple knowledge entries in a single SQLite transaction."""
+    _check_auth(arguments)
+
+    raw_entries = arguments.get("entries")
+    if not isinstance(raw_entries, list):
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'entries' must be an array")
+    if len(raw_entries) == 0:
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'entries' must not be empty")
+    if len(raw_entries) > _BATCH_LEARN_MAX:
+        raise JsonRpcError(
+            JSONRPC_INVALID_PARAMS,
+            f"'entries' exceeds max batch size of {_BATCH_LEARN_MAX}",
+        )
+
+    # Validate all entries before touching the DB
+    validated: list[dict] = []
+    for idx, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}] must be an object")
+        entry_type = item.get("type", "")
+        if not isinstance(entry_type, str) or entry_type not in VALID_LEARN_CATEGORIES:
+            raise JsonRpcError(
+                JSONRPC_INVALID_PARAMS,
+                f"entries[{idx}].type must be one of: {', '.join(sorted(VALID_LEARN_CATEGORIES))}",
+            )
+        title = item.get("title", "")
+        if not isinstance(title, str) or not title.strip():
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].title must be a non-empty string")
+        if len(title) > 500:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].title exceeds 500 characters")
+        content = item.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].content must be a non-empty string")
+        if len(content) > 10_000:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].content exceeds 10000 characters")
+        tags = item.get("tags", "")
+        if not isinstance(tags, str):
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].tags must be a string")
+        confidence = item.get("confidence")
+        if confidence is not None:
+            if not isinstance(confidence, (int, float)):
+                raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"entries[{idx}].confidence must be a number")
+            confidence = float(confidence)
+            if not (0.1 <= confidence <= 1.0):
+                raise JsonRpcError(
+                    JSONRPC_INVALID_PARAMS,
+                    f"entries[{idx}].confidence must be between 0.1 and 1.0",
+                )
+        validated.append(
+            {
+                "category": entry_type,
+                "title": title.strip(),
+                "content": content.strip(),
+                "tags": tags.strip(),
+                "confidence": confidence if confidence is not None else 1.0,
+            }
+        )
+
+    if not _DB_PATH.exists():
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"Knowledge DB not found: {_DB_PATH}")
+
+    import datetime as _dt
+
+    now = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+
+    created_ids: list[int] = []
+    try:
+        db = sqlite3.connect(str(_DB_PATH), timeout=30.0)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
+        try:
+            ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+            has_stable_id = "stable_id" in ke_columns
+
+            with db:
+                for entry in validated:
+                    cat = entry["category"]
+                    ttl = entry["title"]
+                    body = entry["content"]
+                    tgs = entry["tags"]
+                    conf = entry["confidence"]
+                    est_tokens = len(f"{ttl} {body}") // 4
+
+                    if has_stable_id:
+                        import hashlib as _hl
+
+                        stable_id = _hl.sha256(f"knowledge||{cat}||{ttl}||".encode()).hexdigest()[:16]
+                        db.execute(
+                            """
+                            INSERT INTO knowledge_entries
+                                (category, title, stable_id, content, tags, confidence,
+                                 session_id, occurrence_count, first_seen, last_seen,
+                                 est_tokens)
+                            VALUES (?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)
+                            """,
+                            (cat, ttl, stable_id, body, tgs, conf, now, now, est_tokens),
+                        )
+                    else:
+                        db.execute(
+                            """
+                            INSERT INTO knowledge_entries
+                                (category, title, content, tags, confidence,
+                                 session_id, occurrence_count, first_seen, last_seen,
+                                 est_tokens)
+                            VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?)
+                            """,
+                            (cat, ttl, body, tgs, conf, now, now, est_tokens),
+                        )
+                    entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                    # Update FTS index inside the same transaction
+                    try:
+                        db.execute(
+                            "INSERT INTO ke_fts (rowid, title, content) VALUES (?, ?, ?)",
+                            (entry_id, ttl, body),
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # ke_fts may not exist on older schemas
+
+                    created_ids.append(entry_id)
+        finally:
+            db.close()
+    except JsonRpcError:
+        raise
+    except sqlite3.OperationalError as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"DB error: {exc}") from exc
+    except Exception as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"batch_learn error: {exc}") from exc
+
+    body_out = {"created": created_ids, "count": len(created_ids)}
+    return {
+        "content": [{"type": "text", "text": json.dumps(body_out, ensure_ascii=False)}],
+        "structuredContent": body_out,
     }
 
 
@@ -955,6 +1136,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_rate_entry(arguments)
     if name == "sk_compact_session":
         return _run_compact_session(arguments)
+    if name == "batch_learn":
+        return _run_batch_learn(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 
