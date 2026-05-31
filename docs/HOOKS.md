@@ -455,6 +455,7 @@ security gates are never suppressed.
 > (`sk-rust/src/commands/hooks.rs`) do not implement debounce yet. A follow-up
 > issue will track the native-runner port.
 
+## preToolUse Routing-Flip Specification
 
 This section records the verified state of the managed routing flip for `preToolUse`.
 The flip **has occurred** for Rust-binary installs as of wave13. The Python `sk.py` shim

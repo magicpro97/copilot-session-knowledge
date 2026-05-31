@@ -1223,6 +1223,12 @@ RESOURCES = [
         "description": "List of all knowledge entry IDs and titles",
         "mimeType": "application/json",
     },
+    {
+        "uri": "sk://sessions/diff",
+        "name": "Session diff",
+        "description": "Structured diff of knowledge entries between two sessions. URI template: sk://sessions/diff?a={id}&b={id}",
+        "mimeType": "application/json",
+    },
 ]
 
 
@@ -1283,6 +1289,53 @@ def _resource_knowledge_list() -> list:
     except (sqlite3.Error, OSError) as exc:
         _log_resource_error(exc)
         return []
+
+
+def _resource_sessions_diff(a: str, b: str) -> dict:
+    result: dict = {
+        "session_a": a,
+        "session_b": b,
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "added_count": 0,
+        "removed_count": 0,
+        "changed_count": 0,
+    }
+    if not _DB_PATH.exists():
+        return result
+    try:
+        with sqlite3.connect(_DB_PATH.as_uri() + "?mode=ro", uri=True) as db:
+            db.row_factory = sqlite3.Row
+
+            def _fetch_titles(session_id: str) -> dict[str, dict]:
+                rows = db.execute(
+                    "SELECT title, category, content, priority FROM knowledge_entries WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+                return {f"{r['category']}::{r['title']}": dict(r) for r in rows}
+
+            entries_a = _fetch_titles(a)
+            entries_b = _fetch_titles(b)
+
+        keys_a, keys_b = set(entries_a), set(entries_b)
+        added_keys = keys_b - keys_a
+        removed_keys = keys_a - keys_b
+        changed_keys = {
+            k
+            for k in keys_a & keys_b
+            if entries_a[k].get("content") != entries_b[k].get("content")
+            or entries_a[k].get("priority") != entries_b[k].get("priority")
+        }
+        result["added"] = sorted(entries_b[k]["title"] for k in added_keys)
+        result["removed"] = sorted(entries_a[k]["title"] for k in removed_keys)
+        result["changed"] = sorted(entries_a[k]["title"] for k in changed_keys)
+        result["added_count"] = len(added_keys)
+        result["removed_count"] = len(removed_keys)
+        result["changed_count"] = len(changed_keys)
+    except (sqlite3.Error, OSError) as exc:
+        _log_resource_error(exc)
+    return result
 
 
 def _resource_knowledge_entry(entry_id: str) -> dict | None:
@@ -1360,6 +1413,19 @@ def _handle_resources_read(params: dict) -> dict:
 
     if uri == "sk://knowledge/list":
         data = _resource_knowledge_list()
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
+
+    if uri == "sk://sessions/diff" or uri.startswith("sk://sessions/diff?"):
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(uri)
+        qs = parse_qs(parsed.query)
+        a = (qs.get("a") or [""])[0]
+        b = (qs.get("b") or [""])[0]
+        if not a or not b:
+            raise JsonRpcError(JSONRPC_INVALID_PARAMS, "sk://sessions/diff requires ?a=<id>&b=<id>")
+        data = _resource_sessions_diff(a, b)
         text = json.dumps(data, ensure_ascii=False, indent=2)
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}
 
