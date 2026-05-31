@@ -247,6 +247,7 @@ TOOL_FILES = [
     "coverage.py",
     "entity-extract.py",
     "trace.py",
+    "knowledge-broadcast.py",
 ]
 
 SUPPORT_FILES = [

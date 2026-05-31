@@ -265,6 +265,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "unpin": "knowledge-health.py",
         "pins": "knowledge-health.py",
         "bulk-tag": "knowledge-health.py",
+        "broadcast": "knowledge-broadcast.py",
     },
     "entity": {
         "extract": "entity-extract.py",

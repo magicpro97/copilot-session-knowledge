@@ -211,6 +211,28 @@ def _replay_queued_payload(payload: dict) -> tuple[int, int]:
     return entry_id, cerebrum_rc
 
 
+def _broadcast_new_entry(entry_id: int, category: str, title: str, session_id: str) -> None:
+    """Append lightweight notification to broadcast log for parallel agents."""
+    import json
+    import time
+
+    markers_dir = Path.home() / ".copilot" / "markers"
+    markers_dir.mkdir(parents=True, exist_ok=True)
+    broadcast_path = markers_dir / "knowledge-broadcast.jsonl"
+    record = {
+        "ts": time.time(),
+        "entry_id": entry_id,
+        "category": category,
+        "title": title[:100],
+        "session_id": session_id or "",
+    }
+    try:
+        with broadcast_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass  # fail-open
+
+
 def _write_learn_entry(
     entry_kwargs: dict,
     *,
@@ -1655,6 +1677,7 @@ def add_entry(
 
     db.commit()
     db.close()
+    _broadcast_new_entry(entry_id, category, title, session_id)
     return entry_id
 
 
