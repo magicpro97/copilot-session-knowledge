@@ -16696,6 +16696,212 @@ except Exception as _e744:
 
 
 # ---------------------------------------------------------------------------
+# I852: Sync federation — namespace scoping and visibility flags
+# ---------------------------------------------------------------------------
+try:
+    import json as _json852
+    import sqlite3 as _sq852
+    import sys as _sys852
+    from pathlib import Path as _Path852
+
+    _REPO852 = Path(__file__).parent
+
+    # Test 1: Migration v47 — namespace column exists
+    _db852 = _Path852(_REPO852 / "tests" / "_i852_test.db")
+    _db852.parent.mkdir(exist_ok=True)
+    try:
+        _con852 = _sq852.connect(str(_db852))
+        _con852.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT, title TEXT, content TEXT, tags TEXT, stable_id TEXT
+            );
+        """)
+        _con852.commit()
+        _con852.close()
+        import subprocess as _sp852
+
+        _sp852.run(
+            [_sys852.executable, str(_REPO852 / "migrate.py"), str(_db852)],
+            capture_output=True,
+            text=True,
+        )
+        _con852 = _sq852.connect(str(_db852))
+        _cols852 = {row[1] for row in _con852.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        _con852.close()
+        test("I852-1a: migration v47 adds namespace column", "namespace" in _cols852, str(_cols852))
+        test("I852-1b: migration v47 adds visibility column", "visibility" in _cols852, str(_cols852))
+        _con852 = _sq852.connect(str(_db852))
+        _idx852 = {row[0] for row in _con852.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+        _con852.close()
+        test(
+            "I852-1c: migration v47 creates namespace_visibility index",
+            "idx_ke_namespace_visibility" in _idx852,
+            str(_idx852),
+        )
+    finally:
+        try:
+            _db852.unlink()
+        except Exception:
+            pass
+
+    # Test 2: Default namespace detection (_detect_namespace returns string)
+    import importlib.util as _ilu852
+
+    _spec852 = _ilu852.spec_from_file_location("sync_daemon852", str(_REPO852 / "sync-daemon.py"))
+    _sd852 = _ilu852.module_from_spec(_spec852)
+    _spec852.loader.exec_module(_sd852)
+    _ns852 = _sd852._detect_namespace()
+    test("I852-2a: _detect_namespace returns a string", isinstance(_ns852, str), repr(_ns852))
+    test("I852-2b: _detect_namespace returns non-empty string", len(_ns852) > 0, repr(_ns852))
+
+    # Test 3: _should_apply_ke_op visibility filtering
+    test(
+        "I852-3a: public visibility always applied",
+        _sd852._should_apply_ke_op({"namespace": "other/repo", "visibility": "public"}, "my/repo"),
+        "",
+    )
+    test(
+        "I852-3b: team visibility always applied",
+        _sd852._should_apply_ke_op({"namespace": "other/repo", "visibility": "team"}, "my/repo"),
+        "",
+    )
+    test(
+        "I852-3c: private same namespace applied",
+        _sd852._should_apply_ke_op({"namespace": "my/repo", "visibility": "private"}, "my/repo"),
+        "",
+    )
+    test(
+        "I852-3d: private different namespace rejected",
+        not _sd852._should_apply_ke_op({"namespace": "other/repo", "visibility": "private"}, "my/repo"),
+        "",
+    )
+    test(
+        "I852-3e: missing visibility defaults to private same-ns",
+        _sd852._should_apply_ke_op({"namespace": "my/repo"}, "my/repo"),
+        "",
+    )
+    test(
+        "I852-3f: missing visibility defaults to private different-ns rejected",
+        not _sd852._should_apply_ke_op({"namespace": "other/repo"}, "my/repo"),
+        "",
+    )
+
+    # Test 4: sync-config namespace/visibility setters
+    import importlib.util as _ilu852c
+
+    _spec852c = _ilu852c.spec_from_file_location("sync_config852", str(_REPO852 / "sync-config.py"))
+    _sc852 = _ilu852c.module_from_spec(_spec852c)
+    _spec852c.loader.exec_module(_sc852)
+    _orig_cfg_path852 = _sc852.CONFIG_PATH
+    _tmp_cfg852 = _Path852(_REPO852 / "tests" / "_i852_sync_config.json")
+    _tmp_cfg852.parent.mkdir(exist_ok=True)
+    _sc852.CONFIG_PATH = _tmp_cfg852
+    try:
+        _sc852.set_namespace("owner/test-repo")
+        _loaded852 = _sc852.load_config()
+        test("I852-4a: set_namespace persists slug", _loaded852.get("namespace") == "owner/test-repo", str(_loaded852))
+
+        _sc852.set_default_visibility("team")
+        _loaded852b = _sc852.load_config()
+        test(
+            "I852-4b: set_default_visibility persists team",
+            _loaded852b.get("default_visibility") == "team",
+            str(_loaded852b),
+        )
+
+        _sc852.set_default_visibility("public")
+        _loaded852c = _sc852.load_config()
+        test(
+            "I852-4c: set_default_visibility persists public",
+            _loaded852c.get("default_visibility") == "public",
+            str(_loaded852c),
+        )
+
+        try:
+            _sc852.set_default_visibility("invalid")
+            test("I852-4d: invalid visibility rejected", False, "no ValueError raised")
+        except ValueError:
+            test("I852-4d: invalid visibility rejected", True, "")
+    finally:
+        _sc852.CONFIG_PATH = _orig_cfg_path852
+        try:
+            _tmp_cfg852.unlink()
+        except Exception:
+            pass
+
+    # Test 5: learn.py --visibility flag
+    import importlib.util as _ilu852l
+
+    _spec852l = _ilu852l.spec_from_file_location("learn852", str(_REPO852 / "learn.py"))
+    _lm852 = _ilu852l.module_from_spec(_spec852l)
+    _spec852l.loader.exec_module(_lm852)
+    _db852l = _Path852(_REPO852 / "tests" / "_i852_learn.db")
+    _db852l.parent.mkdir(exist_ok=True)
+    try:
+        _orig_db852l = _lm852.DB_PATH
+        _lm852.DB_PATH = _db852l
+        _sp852.run(
+            [_sys852.executable, str(_REPO852 / "migrate.py"), str(_db852l)],
+            capture_output=True,
+            text=True,
+        )
+        _eid852 = _lm852.add_entry(
+            "mistake", "I852 vis test", "testing visibility flag", visibility="team", skip_gate=True, skip_scan=True
+        )
+        test("I852-5a: add_entry with visibility=team returns valid id", _eid852 >= 0, str(_eid852))
+        if _eid852 >= 0:
+            _con852l = _sq852.connect(str(_db852l))
+            _row852 = _con852l.execute("SELECT visibility FROM knowledge_entries WHERE id = ?", (_eid852,)).fetchone()
+            _con852l.close()
+            test("I852-5b: visibility=team stored in DB", _row852 is not None and _row852[0] == "team", str(_row852))
+        _eid852p = _lm852.add_entry(
+            "mistake", "I852 vis default test", "testing default visibility", skip_gate=True, skip_scan=True
+        )
+        if _eid852p >= 0:
+            _con852l2 = _sq852.connect(str(_db852l))
+            _row852p = _con852l2.execute(
+                "SELECT visibility FROM knowledge_entries WHERE id = ?", (_eid852p,)
+            ).fetchone()
+            _con852l2.close()
+            test(
+                "I852-5c: default visibility is private",
+                _row852p is not None and _row852p[0] == "private",
+                str(_row852p),
+            )
+    finally:
+        _lm852.DB_PATH = _orig_db852l
+        try:
+            _db852l.unlink()
+        except Exception:
+            pass
+
+except Exception as _e852:
+    for _lbl852 in [
+        "1a",
+        "1b",
+        "1c",
+        "2a",
+        "2b",
+        "3a",
+        "3b",
+        "3c",
+        "3d",
+        "3e",
+        "3f",
+        "4a",
+        "4b",
+        "4c",
+        "4d",
+        "5a",
+        "5b",
+        "5c",
+    ]:
+        test(f"I852-{_lbl852}: sync federation", False, str(_e852))
+
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

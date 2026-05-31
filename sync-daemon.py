@@ -52,6 +52,42 @@ DEFAULT_DREAM_MIN_RECALL_COUNT = 3
 DEFAULT_DREAM_MIN_UNIQUE_QUERIES = 2
 DEFAULT_DREAM_MEMORY_PATH = "MEMORY.md"
 MAX_SYNC_LIMIT = 1000
+_NAMESPACE_OVERRIDE: str = ""
+
+
+def _detect_namespace() -> str:
+    """Return repo slug from git remote origin, or 'local' if unavailable."""
+    import re as _re
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            # Parse slug from https://github.com/owner/repo or git@github.com:owner/repo
+            url = url.rstrip("/").rstrip(".git")
+            if ":" in url and url.count("/") == 1:
+                # git@github.com:owner/repo
+                slug = url.split(":")[-1]
+            else:
+                parts = url.split("/")
+                if len(parts) >= 2:
+                    slug = "/".join(parts[-2:])
+                else:
+                    slug = url
+            # Sanitize: only keep safe chars
+            slug = _re.sub(r"[^a-zA-Z0-9_.\-/]", "-", slug)
+            return slug or "local"
+    except Exception:
+        pass
+    return "local"
+
+
 MAX_PULL_PAGES_PER_CYCLE = 10
 PUSH_TIMEOUT_SECONDS = 120
 SYNC_COMPACTION_PENDING_TXN_THRESHOLD = 5000
@@ -1057,7 +1093,8 @@ def push_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
         return {"attempted": 0, "accepted": 0, "duplicates": 0}
 
     sent_txn_ids = {str(t.get("txn_id", "") or "") for t in txns}
-    payload = {"replica_id": replica_id, "txns": txns}
+    ns = _NAMESPACE_OVERRIDE or _detect_namespace()
+    payload = {"replica_id": replica_id, "txns": txns, "namespace": ns}
     endpoint = base_url.rstrip("/") + "/sync/push"
     try:
         response = _request_json(
@@ -1501,6 +1538,18 @@ def _refresh_local_retrieval_surfaces(
         record_failure(db, "local_ke_fts_refresh", str(exc))
 
 
+def _should_apply_ke_op(row_payload: dict, local_namespace: str) -> bool:
+    """Return True if a remote knowledge_entries op should be applied locally."""
+    ns = str(row_payload.get("namespace", "") or "local")
+    vis = str(row_payload.get("visibility", "") or "private")
+    if vis == "public":
+        return True
+    if vis == "team":
+        return True
+    # private: only apply if same namespace
+    return ns == local_namespace
+
+
 def pull_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int = 50) -> dict:
     row = db.execute(
         "SELECT last_txn_id FROM sync_cursors WHERE replica_id = ?",
@@ -1546,6 +1595,7 @@ def pull_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
 
         txns = response.get("txns", []) or []
         last_seen = next_after
+        local_ns = _NAMESPACE_OVERRIDE or _detect_namespace()
         for txn in txns:
             for op in txn.get("ops", []) or []:
                 table_name = str(op.get("table_name", "") or "")
@@ -1560,8 +1610,20 @@ def pull_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
                         local_entry_id = _lookup_local_id_by_stable_id(db, "knowledge_entries", row_stable_id)
                         if local_entry_id is not None:
                             touched_entry_ids.add(local_entry_id)
-            apply_remote_txn(db, txn)
+            # Filter knowledge_entries ops by namespace/visibility before applying
+            filtered_ops = []
             for op in txn.get("ops", []) or []:
+                if str(op.get("table_name", "")) == "knowledge_entries":
+                    rp = op.get("row_payload", {})
+                    if not isinstance(rp, dict):
+                        rp = {}
+                    if not _should_apply_ke_op(rp, local_ns):
+                        continue
+                filtered_ops.append(op)
+            txn_filtered = dict(txn)
+            txn_filtered["ops"] = filtered_ops
+            apply_remote_txn(db, txn_filtered)
+            for op in txn_filtered.get("ops", []) or []:
                 table_name = str(op.get("table_name", "") or "")
                 row_stable_id = str(op.get("row_stable_id", "") or "")
                 row_payload = op.get("row_payload", {})
@@ -1871,6 +1933,10 @@ def main() -> None:
         elif arg == "--pull-only":
             pull_only = True
             i += 1
+        elif arg == "--namespace" and i + 1 < len(args):
+            global _NAMESPACE_OVERRIDE
+            _NAMESPACE_OVERRIDE = args[i + 1]
+            i += 2
         elif arg in ("--help", "-h"):
             print(__doc__)
             return

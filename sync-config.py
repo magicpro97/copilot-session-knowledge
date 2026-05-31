@@ -3,7 +3,8 @@
 sync-config.py — Manage local sync connection string configuration.
 
 Stores a single gateway connection string in ~/.copilot/tools/sync-config.json.
-Also manages the dream scheduler settings (issue #162 contract).
+Also manages the dream scheduler settings (issue #162 contract) and sync
+federation namespace/visibility settings (issue #852).
 
 Usage:
     python sync-config.py --setup <url>
@@ -22,6 +23,10 @@ Usage:
     python sync-config.py --dream-min-recall-count 5  # gate: min recall count (default: 3)
     python sync-config.py --dream-min-unique-queries 3  # gate: min unique queries (default: 2)
     python sync-config.py --dream-memory-path /path/to/MEMORY.md  # output path (default: MEMORY.md)
+
+    # Sync federation config (issue #852)
+    python sync-config.py --set-namespace owner/repo   # set namespace slug (empty = auto-detect)
+    python sync-config.py --set-visibility private     # default visibility: private|team|public
 """
 
 import json
@@ -44,6 +49,8 @@ DEFAULT_DREAM_MIN_SCORE = 0.75
 DEFAULT_DREAM_MIN_RECALL_COUNT = 3
 DEFAULT_DREAM_MIN_UNIQUE_QUERIES = 2
 DEFAULT_DREAM_MEMORY_PATH = "MEMORY.md"
+DEFAULT_NAMESPACE = ""  # empty = auto-detect
+DEFAULT_VISIBILITY = "private"
 
 
 def _check_permissions() -> None:
@@ -93,6 +100,8 @@ def load_config() -> dict:
         "dream_min_recall_count": DEFAULT_DREAM_MIN_RECALL_COUNT,
         "dream_min_unique_queries": DEFAULT_DREAM_MIN_UNIQUE_QUERIES,
         "dream_memory_path": DEFAULT_DREAM_MEMORY_PATH,
+        "namespace": DEFAULT_NAMESPACE,
+        "default_visibility": DEFAULT_VISIBILITY,
     }
     if CONFIG_PATH.exists():
         try:
@@ -126,6 +135,12 @@ def load_config() -> dict:
                     val = str(obj["dream_memory_path"] or "").strip()
                     if val:
                         config["dream_memory_path"] = val
+                if "namespace" in obj:
+                    config["namespace"] = str(obj["namespace"] or "").strip()
+                if "default_visibility" in obj:
+                    raw_vis = str(obj["default_visibility"] or "").strip()
+                    if raw_vis in ("private", "team", "public"):
+                        config["default_visibility"] = raw_vis
         except (json.JSONDecodeError, OSError):
             pass
     _check_permissions()
@@ -163,6 +178,12 @@ def save_config(config: dict) -> None:
         val = str(config["dream_memory_path"] or "").strip()
         if val:
             payload["dream_memory_path"] = val
+    if "namespace" in config:
+        payload["namespace"] = str(config["namespace"] or "").strip()
+    if "default_visibility" in config:
+        raw_vis = str(config["default_visibility"] or "").strip()
+        if raw_vis in ("private", "team", "public"):
+            payload["default_visibility"] = raw_vis
     CONFIG_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     if os.name != "nt":
         os.chmod(CONFIG_PATH, 0o600)
@@ -240,6 +261,31 @@ def set_dream_enabled(enabled: bool) -> None:
     save_config(cfg)
 
 
+def set_namespace(slug: str) -> str:
+    """Set the sync namespace slug. Empty string = auto-detect."""
+    cfg = load_config()
+    cfg["namespace"] = str(slug or "").strip()
+    save_config(cfg)
+    return cfg["namespace"]
+
+
+def set_default_visibility(vis: str) -> str:
+    """Set default visibility for new entries. Must be private|team|public."""
+    valid = ("private", "team", "public")
+    if vis not in valid:
+        raise ValueError(f"visibility must be one of: {', '.join(valid)}")
+    cfg = load_config()
+    cfg["default_visibility"] = vis
+    save_config(cfg)
+    return vis
+
+
+def get_default_visibility() -> str:
+    """Return configured default visibility, falling back to 'private'."""
+    cfg = load_config()
+    return str(cfg.get("default_visibility", "private") or "private")
+
+
 def get_dream_config() -> dict:
     """Return the current dream scheduler config."""
     cfg = load_config()
@@ -295,6 +341,11 @@ def main() -> None:
         dcfg = get_dream_config()
         print(f"  Dream sweeps: {'enabled' if dcfg['dream_enabled'] else 'disabled'}")
         print(f"  Dream interval: {dcfg['dream_interval_hours']}h")
+        cfg = load_config()
+        ns = cfg.get("namespace", "") or "(auto-detect)"
+        dvis = cfg.get("default_visibility", "private") or "private"
+        print(f"  Namespace:   {ns}")
+        print(f"  Visibility:  {dvis}")
         return
 
     if "--help" in args or "-h" in args:
@@ -432,6 +483,29 @@ def main() -> None:
             sys.exit(1)
         print(f"✓ Saved connection string from ${env_name} to {CONFIG_PATH}")
         print(f"  {normalized}")
+        return
+
+    if "--set-namespace" in args:
+        idx = args.index("--set-namespace")
+        if idx + 1 >= len(args):
+            print("Error: --set-namespace requires a slug value", file=sys.stderr)
+            sys.exit(1)
+        stored = set_namespace(args[idx + 1])
+        ns_display = stored if stored else "(auto-detect)"
+        print(f"✓ Namespace set to {ns_display!r} in {CONFIG_PATH}")
+        return
+
+    if "--set-visibility" in args:
+        idx = args.index("--set-visibility")
+        if idx + 1 >= len(args):
+            print("Error: --set-visibility requires a value: private|team|public", file=sys.stderr)
+            sys.exit(1)
+        try:
+            stored = set_default_visibility(args[idx + 1])
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"✓ Default visibility set to {stored!r} in {CONFIG_PATH}")
         return
 
     print("Error: unknown arguments", file=sys.stderr)

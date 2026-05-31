@@ -61,6 +61,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 if os.name == "nt":
@@ -79,6 +80,60 @@ DEFAULT_LEARN_QUEUE_BUSY_TIMEOUT_MS = 250
 
 _DISPATCHED_MARKER_PATH = Path.home() / ".copilot" / "markers" / "dispatched-subagent-active"
 _MARKER_ENTRY_TTL = 4 * 3600  # 4 hours
+
+# Predefined relation types (predicate → inverse).  "related_to" is its own inverse.
+RELATION_TYPES: dict[str, str] = {
+    "causes": "caused_by",
+    "fixes": "fixed_by",
+    "requires": "required_by",
+    "SUPERSEDES": "superseded_by",
+    "related_to": "related_to",
+    "navigates_to": "navigated_from",
+    "uses": "used_by",
+    "implements": "implemented_by",
+    "documents": "documented_by",
+    "tests": "tested_by",
+}
+
+
+def _llm_suggest_tags(title: str, content: str) -> list[str]:
+    """Call LLM API to suggest tags. Returns list of lowercase tag strings."""
+    api_key = os.environ.get("SK_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    if not api_key:
+        print(
+            "Error: LLM API key not set. Set SK_LLM_API_KEY or OPENAI_API_KEY.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    model = os.environ.get("SK_LLM_MODEL", "gpt-4o-mini")
+    prompt = (
+        f"Given this knowledge entry title and content, suggest 3-5 relevant tags "
+        f"as a JSON array of lowercase strings. Title: {title}. "
+        f"Content: {content[:500]}. Respond with only a JSON array."
+    )
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 100,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    raw = data["choices"][0]["message"]["content"].strip()
+    m = re.search(r"\[.*?\]", raw, re.DOTALL)
+    if not m:
+        return []
+    tags = json.loads(m.group(0))
+    return [str(t).lower().strip() for t in tags if isinstance(t, str)]
 
 
 def _should_use_writer_broker() -> bool:
@@ -209,6 +264,28 @@ def _replay_queued_payload(payload: dict) -> tuple[int, int]:
             json_mode=True,
         )
     return entry_id, cerebrum_rc
+
+
+def _broadcast_new_entry(entry_id: int, category: str, title: str, session_id: str) -> None:
+    """Append lightweight notification to broadcast log for parallel agents."""
+    import json
+    import time
+
+    markers_dir = Path.home() / ".copilot" / "markers"
+    markers_dir.mkdir(parents=True, exist_ok=True)
+    broadcast_path = markers_dir / "knowledge-broadcast.jsonl"
+    record = {
+        "ts": time.time(),
+        "entry_id": entry_id,
+        "category": category,
+        "title": title[:100],
+        "session_id": session_id or "",
+    }
+    try:
+        with broadcast_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass  # fail-open
 
 
 def _write_learn_entry(
@@ -543,6 +620,54 @@ _ROOM_RULES = [
     ({"python", "pip", "venv", "conda"}, "python"),
     ({"rust", "cargo", "tokio", "wasm"}, "rust"),
 ]
+
+
+def _detect_recurrence(db: sqlite3.Connection, entry_id: int, category: str) -> bool:
+    """Return True if this entry was already served in the current session (recurrence)."""
+    if category != "mistake":
+        return False
+    try:
+        rows = db.execute(
+            "SELECT selected_entry_ids FROM recall_events "
+            "WHERE created_at > unixepoch('now', '-8 hours') "
+            "ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+        for row in rows:
+            if row[0]:
+                try:
+                    ids = json.loads(row[0])
+                    if entry_id in ids or str(entry_id) in ids:
+                        return True
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    except Exception:
+        pass
+    return False
+
+
+def _handle_recurrence(db: sqlite3.Connection, entry_id: int) -> None:
+    """Escalate entry to P0 and tag as recurring if recurrence_count >= 2."""
+    db.execute(
+        "UPDATE knowledge_entries SET recurrence_count = recurrence_count + 1 WHERE id = ?",
+        (entry_id,),
+    )
+    row = db.execute(
+        "SELECT recurrence_count, tags, priority FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        return
+    count, tags, priority = row
+    if count >= 2:
+        new_tags = tags or ""
+        if "recurring" not in new_tags:
+            new_tags = (new_tags + ",recurring").strip(",")
+        db.execute(
+            "UPDATE knowledge_entries SET priority = 'P0', tags = ? WHERE id = ?",
+            (new_tags, entry_id),
+        )
+        print(f"⚠️  Recurrence detected (count={count})! Entry #{entry_id} escalated to P0 with tag 'recurring'.")
+    db.commit()
 
 
 def _detect_wing(tags: str, title: str, content: str) -> str:
@@ -1171,6 +1296,7 @@ def add_entry(
     certainty: str = "",
     caveats: str = "",
     db_busy_timeout_ms: int | None = None,
+    visibility: str = "",
 ) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
 
@@ -1200,6 +1326,23 @@ def add_entry(
     has_epistemic_humility_columns = all(c in ke_columns for c in ("certainty", "caveats"))
     has_deleted_at_column = "deleted_at" in ke_columns
     has_recurrence_column = "recurrence_after_briefing" in ke_columns
+    has_recurrence_count_column = "recurrence_count" in ke_columns
+    has_visibility_column = "visibility" in ke_columns
+    # Resolve effective visibility: parameter → sync-config default → 'private'
+    if has_visibility_column and not visibility:
+        try:
+            _sc_path = Path(__file__).with_name("sync-config.py")
+            if _sc_path.is_file():
+                import importlib.util as _ilu
+
+                _spec = _ilu.spec_from_file_location("_sync_config_vis", str(_sc_path))
+                _scmod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_scmod)
+                visibility = _scmod.get_default_visibility()
+        except Exception:
+            pass
+    if not visibility:
+        visibility = "private"
     has_briefing_deliveries = (
         db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='briefing_deliveries'").fetchone()
         is not None
@@ -1287,7 +1430,7 @@ def add_entry(
 
     # Check for existing entry with same title in same category (exclude soft-deleted rows)
     existing_sql = """
-        SELECT id, occurrence_count, content, session_id
+        SELECT id, occurrence_count, content, session_id, confidence
     """
     if has_topic_key_column:
         existing_sql += ", COALESCE(topic_key, '') AS topic_key"
@@ -1387,10 +1530,36 @@ def add_entry(
                 " caveats = CASE WHEN ? != '' THEN ? ELSE caveats END,"
             )
             update_params.extend([certainty or "", certainty or "", caveats or "", caveats or ""])
+        if has_visibility_column and visibility:
+            update_sql += " visibility = CASE WHEN ? != '' THEN ? ELSE visibility END,"
+            update_params.extend([visibility, visibility])
         update_sql += " est_tokens = ? WHERE id = ?"
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
         entry_id = existing["id"]
+        # Record version history when content changes (fail-open: non-critical)
+        _has_entry_history = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entry_history'"
+        ).fetchone()
+        if _has_entry_history and new_content != existing["content"]:
+            try:
+                db.execute(
+                    """INSERT INTO knowledge_entry_history
+                       (entry_id, changed_at, content_before, content_after,
+                        confidence_before, confidence_after, change_source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        entry_id,
+                        now,
+                        existing["content"],
+                        new_content,
+                        float(existing["confidence"] or 0.0),
+                        new_confidence,
+                        "learn",
+                    ),
+                )
+            except Exception:
+                pass  # fail-open: history tracking is non-critical
         # Recurrence auto-bump: if this entry was already delivered in a briefing for
         # the current session, the mistake recurred after being shown — bump counter.
         if has_recurrence_column and has_briefing_deliveries and session_id and session_id != "manual":
@@ -1429,6 +1598,7 @@ def add_entry(
                     "task_id": task_id,
                     "affected_files": files_json,
                     "est_tokens": est_tokens,
+                    "visibility": visibility if has_visibility_column else "private",
                 },
             )
         loc = f" [{wing}/{room}]" if wing or room else ""
@@ -1594,6 +1764,30 @@ def add_entry(
                 "UPDATE knowledge_entries SET certainty = ?, caveats = ? WHERE id = ?",
                 (certainty or "", caveats or "", entry_id),
             )
+        # Set visibility column if available (#852)
+        if has_visibility_column:
+            db.execute(
+                "UPDATE knowledge_entries SET visibility = ? WHERE id = ?",
+                (visibility, entry_id),
+            )
+        # Recurrence detection (#799): for new mistake entries, check if a similar
+        # existing entry was recently served via recall_events. Escalate it to P0 if so.
+        if has_recurrence_count_column and category == "mistake":
+            _sim_sql2 = "SELECT id, title, content FROM knowledge_entries WHERE category = ? AND id != ?"
+            if has_deleted_at_column:
+                _sim_sql2 += " AND deleted_at IS NULL"
+            _sim_sql2 += " ORDER BY id DESC LIMIT 50"
+            _sim_rows2 = db.execute(_sim_sql2, (category, entry_id)).fetchall()
+            _new_tokens2 = {t for t in re.findall(r"[a-z0-9]+", (title + " " + content).lower()) if t}
+            for _sim_row2 in _sim_rows2:
+                _row_text2 = (_sim_row2[1] or "") + " " + (_sim_row2[2] or "")
+                _row_tokens2 = {t for t in re.findall(r"[a-z0-9]+", _row_text2.lower()) if t}
+                if not _new_tokens2 or not _row_tokens2:
+                    continue
+                _sim_score2 = len(_new_tokens2 & _row_tokens2) / len(_new_tokens2 | _row_tokens2)
+                if _sim_score2 >= 0.6 and _detect_recurrence(db, _sim_row2[0], category):
+                    _handle_recurrence(db, _sim_row2[0])
+                    break
         if has_stable_id_column:
             inserted_stable_id = db.execute(
                 "SELECT COALESCE(stable_id, '') FROM knowledge_entries WHERE id = ?",
@@ -1625,6 +1819,7 @@ def add_entry(
                     "end_line": end_line if has_code_location_columns else 0,
                     "code_language": code_language if has_code_location_columns else "",
                     "code_snippet": code_snippet if has_code_location_columns else "",
+                    "visibility": visibility if has_visibility_column else "private",
                 },
             )
         loc = f" [{wing}/{room}]" if wing or room else ""
@@ -1655,6 +1850,7 @@ def add_entry(
 
     db.commit()
     db.close()
+    _broadcast_new_entry(entry_id, category, title, session_id)
     return entry_id
 
 
@@ -2286,11 +2482,62 @@ def mark_resolved(entry_id: int, fix_steps: str = "", prevention_hook: str = "")
     if prevention_hook and "prevention_hook" in ke_columns:
         set_parts.append("prevention_hook = ?")
         params.append(prevention_hook)
+    # FSRS stability: resolving a mistake signals strong recall — boost half-life.
+    if "stability_factor" in ke_columns and row["category"] == "mistake":
+        cur_sf = db.execute(
+            "SELECT COALESCE(stability_factor, 1.0) FROM knowledge_entries WHERE id = ?", (entry_id,)
+        ).fetchone()[0]
+        new_sf = min(4.0, (cur_sf or 1.0) * 1.5)
+        set_parts.append("stability_factor = ?")
+        params.append(new_sf)
     params.append(entry_id)
     db.execute(f"UPDATE knowledge_entries SET {', '.join(set_parts)} WHERE id = ?", params)
     db.commit()
     db.close()
     print(f"  ✅ Resolved #{entry_id} [{row['category']}] {row['title'][:60]}")
+    return True
+
+
+def update_stability_factor(entry_id: int, verdict: str) -> bool:
+    """Update FSRS stability_factor for an entry based on recall feedback (issue #797).
+
+    verdict: 'good' multiplies by 1.3 (capped at 4.0) — slower decay.
+             'bad'  multiplies by 0.8 (floored at 0.5) — faster decay.
+    Returns True on success, False when entry not found or schema is pre-v37.
+    """
+    if verdict not in ("good", "bad"):
+        print(f"  ⚠ --feedback verdict must be 'good' or 'bad' (got {verdict!r})", file=sys.stderr)
+        return False
+    db = get_db()
+    ke_columns = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    if "stability_factor" not in ke_columns:
+        print(
+            "  ⚠ DB schema missing stability_factor column. Run migrate.py to enable FSRS stability.",
+            file=sys.stderr,
+        )
+        db.close()
+        return False
+    row = db.execute(
+        "SELECT id, title, COALESCE(stability_factor, 1.0) AS stability_factor FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        print(f"  ⚠ Entry #{entry_id} not found.", file=sys.stderr)
+        db.close()
+        return False
+    cur_sf = float(row["stability_factor"] or 1.0)
+    if verdict == "good":
+        new_sf = min(4.0, cur_sf * 1.3)
+    else:
+        new_sf = max(0.5, cur_sf * 0.8)
+    db.execute(
+        "UPDATE knowledge_entries SET stability_factor = ? WHERE id = ?",
+        (new_sf, entry_id),
+    )
+    db.commit()
+    db.close()
+    label = "↑" if verdict == "good" else "↓"
+    print(f"  {label} stability_factor #{entry_id}: {cur_sf:.3f} → {new_sf:.3f} ({verdict})")
     return True
 
 
@@ -2457,6 +2704,110 @@ def soft_delete_entry(entry_id: int) -> bool:
     return True
 
 
+def amend_entry(
+    entry_id: int,
+    *,
+    content: str | None = None,
+    title: str | None = None,
+    tags: str | None = None,
+    confidence: float | None = None,
+) -> bool:
+    """Update specific fields of an existing knowledge entry in-place (#837).
+
+    Only the supplied keyword arguments are modified; omitted fields are left unchanged.
+    A history row is written to ``knowledge_entry_history`` when content or confidence
+    changes (fail-open: non-critical if the table is absent).
+
+    Returns True on success, False when the entry does not exist.
+    """
+    db = get_db()
+    row = db.execute(
+        "SELECT id, title, content, tags, confidence, category, stable_id, session_id FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        print(f"  ⚠ Entry #{entry_id} not found.", file=sys.stderr)
+        db.close()
+        return False
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    updates: dict[str, object] = {}
+    if content is not None:
+        updates["content"] = content[:10000]
+    if title is not None:
+        updates["title"] = title[:200]
+    if tags is not None:
+        updates["tags"] = tags
+    if confidence is not None:
+        updates["confidence"] = confidence
+    updates["last_seen"] = now
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    db.execute(
+        f"UPDATE knowledge_entries SET {set_clause} WHERE id = ?",  # noqa: S608
+        list(updates.values()) + [entry_id],
+    )
+    db.commit()
+
+    # Refresh FTS index so amended title/content/tags are searchable
+    try:
+        db.execute("DELETE FROM ke_fts WHERE rowid = ?", (entry_id,))
+        _new_title = updates.get("title", row["title"])
+        _new_content = updates.get("content", row["content"])
+        _new_tags = updates.get("tags", row["tags"] or "")
+        _new_cat = row["category"]
+        db.execute(
+            "INSERT INTO ke_fts(rowid, title, content, tags, category) VALUES (?, ?, ?, ?, ?)",
+            (entry_id, _new_title, _new_content, _new_tags, _new_cat),
+        )
+        db.commit()
+    except sqlite3.OperationalError:
+        pass  # ke_fts may not exist on older schemas
+
+    # Enqueue sync op so amended entries propagate to replicas
+    _amend_stable_id = row["stable_id"] if "stable_id" in row.keys() else ""
+    if _amend_stable_id:
+        _enqueue_sync_op_fail_open(
+            db,
+            "knowledge_entries",
+            _amend_stable_id,
+            {
+                "category": row["category"],
+                "title": str(updates.get("title", row["title"])),
+                "content": str(updates.get("content", row["content"])),
+                "tags": str(updates.get("tags", row["tags"] or "")),
+                "confidence": float(updates.get("confidence", row["confidence"] or 1.0)),
+            },
+            op_type="upsert",
+        )
+
+    # Write history row when content or confidence changes (fail-open)
+    _has_history = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_entry_history'"
+    ).fetchone()
+    if _has_history:
+        try:
+            old_content = row["content"] or ""
+            new_content = str(updates.get("content", old_content))
+            old_conf = float(row["confidence"] or 0.0)
+            new_conf = float(updates.get("confidence", old_conf))
+            if new_content != old_content or new_conf != old_conf:
+                db.execute(
+                    """INSERT INTO knowledge_entry_history
+                       (entry_id, changed_at, content_before, content_after,
+                        confidence_before, confidence_after, change_source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (entry_id, now, old_content, new_content, old_conf, new_conf, "amend"),
+                )
+                db.commit()
+        except Exception:
+            pass  # fail-open: history tracking is non-critical
+
+    db.close()
+    print(f"  ✏ Amended #{entry_id} [{row['category']}] {row['title'][:60]}")
+    return True
+
+
 def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str | None = None) -> None:
     """Insert a SUPERSEDES relation from source_id to target_id in knowledge_relations.
 
@@ -2477,7 +2828,9 @@ def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str 
             db.close()
             sys.exit(1)
 
-        now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         sid = session_id or ""
         db.execute(
             """
@@ -2491,6 +2844,156 @@ def _insert_supersedes_relation(source_id: int, target_id: int, session_id: str 
         print(f"  ↩ Supersedes #{target_id}: {target_row['title'][:60]}")
     except Exception as exc:  # noqa: BLE001
         print(f"  ⚠ Could not record SUPERSEDES relation: {exc}", file=sys.stderr)
+    finally:
+        db.close()
+
+
+# ---- Typed relation helpers (Issue #858) -----------------------------------
+
+
+def _insert_typed_relation(
+    source_id: int,
+    predicate: str,
+    target_id: int,
+    session_id: str | None = None,
+) -> None:
+    """Insert a typed relation between two knowledge_entries IDs.
+
+    Warns if predicate is not in RELATION_TYPES (but still writes it).
+    Auto-creates the inverse relation when a known inverse exists.
+    """
+    predicate = predicate.strip()
+    if predicate not in RELATION_TYPES:
+        print(
+            f"  ⚠ Unknown predicate '{predicate}'. Known types: {', '.join(sorted(RELATION_TYPES))}",
+            file=sys.stderr,
+        )
+    db = get_db()
+    try:
+        source_row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (source_id,)).fetchone()
+        target_row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (target_id,)).fetchone()
+        if not source_row:
+            print(f"Error: source ID {source_id} not found in knowledge_entries", file=sys.stderr)
+            db.close()
+            sys.exit(1)
+        if not target_row:
+            print(f"Error: target ID {target_id} not found in knowledge_entries", file=sys.stderr)
+            db.close()
+            sys.exit(1)
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        sid = session_id or ""
+
+        # Check if stable_id columns exist
+        _cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_relations)").fetchall()}
+        _has_stable = "stable_id" in _cols
+
+        if _has_stable:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO knowledge_relations
+                    (source_id, target_id, relation_type, confidence, created_at, session_id,
+                     source_stable_id, target_stable_id, stable_id)
+                VALUES (?, ?, ?, 1.0, ?, ?,
+                        (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                        (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                        lower(hex(randomblob(8))))
+                """,
+                (source_id, target_id, predicate, now, sid, source_id, target_id),
+            )
+        else:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO knowledge_relations
+                    (source_id, target_id, relation_type, confidence, created_at, session_id)
+                VALUES (?, ?, ?, 1.0, ?, ?)
+                """,
+                (source_id, target_id, predicate, now, sid),
+            )
+        print(f"  ✅ #{source_id} --[{predicate}]--> #{target_id}: {target_row['title'][:50]}")
+
+        # Auto-create inverse relation when predicate has a known, distinct inverse.
+        inverse = RELATION_TYPES.get(predicate)
+        if inverse and inverse != predicate:
+            if _has_stable:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_relations
+                        (source_id, target_id, relation_type, confidence, created_at, session_id,
+                         source_stable_id, target_stable_id, stable_id)
+                    VALUES (?, ?, ?, 1.0, ?, ?,
+                            (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                            (SELECT stable_id FROM knowledge_entries WHERE id = ?),
+                            lower(hex(randomblob(8))))
+                    """,
+                    (target_id, source_id, inverse, now, sid, target_id, source_id),
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_relations
+                        (source_id, target_id, relation_type, confidence, created_at, session_id)
+                    VALUES (?, ?, ?, 1.0, ?, ?)
+                    """,
+                    (target_id, source_id, inverse, now, sid),
+                )
+            print(f"  ↩  #{target_id} --[{inverse}]--> #{source_id} (auto-inverse)")
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠ Could not record typed relation: {exc}", file=sys.stderr)
+    finally:
+        db.close()
+
+
+def show_relate_list(entry_id: int) -> None:
+    """Print all outgoing and incoming knowledge_relations for an entry."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT id, title FROM knowledge_entries WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            print(f"Error: ID {entry_id} not found in knowledge_entries", file=sys.stderr)
+            sys.exit(1)
+        print(f"\nRelations for #{entry_id} [{row['title'][:60]}]")
+        print("=" * 60)
+
+        outgoing = db.execute(
+            """
+            SELECT kr.relation_type, ke.id, ke.title, ke.category
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON ke.id = kr.target_id
+            WHERE kr.source_id = ?
+            ORDER BY kr.relation_type, ke.id
+            """,
+            (entry_id,),
+        ).fetchall()
+
+        incoming = db.execute(
+            """
+            SELECT kr.relation_type, ke.id, ke.title, ke.category
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON ke.id = kr.source_id
+            WHERE kr.target_id = ?
+            ORDER BY kr.relation_type, ke.id
+            """,
+            (entry_id,),
+        ).fetchall()
+
+        if outgoing:
+            print("\nOutgoing:")
+            for r in outgoing:
+                print(f"  #{entry_id} --[{r['relation_type']}]--> #{r['id']} [{r['category']}] {r['title'][:50]}")
+        if incoming:
+            print("\nIncoming:")
+            for r in incoming:
+                print(f"  #{r['id']} --[{r['relation_type']}]--> #{entry_id} [{r['category']}] {r['title'][:50]}")
+        if not outgoing and not incoming:
+            print("  (no relations)")
+        total = len(outgoing) + len(incoming)
+        print(f"\n--- {total} relation(s) ---")
+    except sqlite3.OperationalError as exc:
+        print(f"⚠ knowledge_relations table not found: {exc}", file=sys.stderr)
     finally:
         db.close()
 
@@ -2808,6 +3311,20 @@ def main():
         show_stats()
         return
 
+    if "--feedback" in args:
+        idx = args.index("--feedback")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        raw_verdict = args[idx + 2] if idx + 2 < len(args) else ""
+        try:
+            fb_id = int(raw_id)
+        except (ValueError, TypeError):
+            print(f"Error: --feedback requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        ok = update_stability_factor(fb_id, raw_verdict)
+        if not ok:
+            sys.exit(1)
+        return
+
     if "--mark-resolved" in args:
         idx = args.index("--mark-resolved")
         raw_id = args[idx + 1] if idx + 1 < len(args) else ""
@@ -3004,6 +3521,18 @@ def main():
             sys.exit(1)
         return
 
+    # Handle --relate-list command (#858)
+    if "--relate-list" in args:
+        idx = args.index("--relate-list")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        try:
+            entry_id = int(raw_id)
+        except (ValueError, TypeError):
+            print(f"Error: --relate-list requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        show_relate_list(entry_id)
+        return
+
     # Handle --relate command
     if "--relate" in args:
         idx = args.index("--relate")
@@ -3011,8 +3540,16 @@ def main():
         if len(positional) < 3:
             print("Error: --relate needs 3 args: subject predicate object")
             print('  Example: python learn.py --relate "copyToGroup" "reads_from" "config.json"')
+            print("  Example (typed, by ID): python learn.py --relate 3 causes 1")
             return
-        add_relation(positional[0], positional[1], positional[2])
+        # Detect typed relation: both subject and object are integer IDs → knowledge_relations
+        try:
+            src_id = int(positional[0])
+            tgt_id = int(positional[2])
+            _insert_typed_relation(src_id, positional[1], tgt_id)
+        except ValueError:
+            # Fall back to entity_relations path (string subjects/objects)
+            add_relation(positional[0], positional[1], positional[2])
         return
 
     # Handle --soft-delete command (#387)
@@ -3026,6 +3563,49 @@ def main():
             sys.exit(1)
         result = soft_delete_entry(entry_id)
         if not result:
+            sys.exit(1)
+        return
+
+    # --amend <id>: update specific fields of an existing entry without creating a duplicate (#837)
+    if "--amend" in args:
+        idx = args.index("--amend")
+        raw_id = args[idx + 1] if idx + 1 < len(args) else ""
+        if not raw_id or raw_id.startswith("--"):
+            print("Error: --amend requires an integer entry ID", file=sys.stderr)
+            sys.exit(1)
+        try:
+            amend_id = int(raw_id)
+        except ValueError:
+            print(f"Error: --amend value must be an integer ID (got {raw_id!r})", file=sys.stderr)
+            sys.exit(1)
+        _amend_content: str | None = None
+        if "--content" in args:
+            _ci = args.index("--content")
+            _amend_content = args[_ci + 1] if _ci + 1 < len(args) else None
+        _amend_title: str | None = None
+        if "--title" in args:
+            _ti2 = args.index("--title")
+            _amend_title = args[_ti2 + 1] if _ti2 + 1 < len(args) else None
+        _amend_tags: str | None = None
+        if "--tags" in args:
+            _tgi = args.index("--tags")
+            _amend_tags = args[_tgi + 1] if _tgi + 1 < len(args) else None
+        _amend_conf: float | None = None
+        if "--confidence" in args:
+            _confi = args.index("--confidence")
+            if _confi + 1 >= len(args) or args[_confi + 1].startswith("--"):
+                print("Error: --confidence requires a float value", file=sys.stderr)
+                sys.exit(1)
+            try:
+                _amend_conf = float(args[_confi + 1])
+            except (ValueError, TypeError):
+                print("Error: --confidence requires a float value", file=sys.stderr)
+                sys.exit(1)
+        if _amend_content is None and _amend_title is None and _amend_tags is None and _amend_conf is None:
+            print("No fields to update. Use --content, --title, --tags, or --confidence with --amend.")
+            return
+        ok = amend_entry(amend_id, content=_amend_content, title=_amend_title, tags=_amend_tags, confidence=_amend_conf)
+        if not ok:
             sys.exit(1)
         return
 
@@ -3191,6 +3771,19 @@ def main():
         idx = args.index("--caveats")
         caveats = args[idx + 1] if idx + 1 < len(args) else ""
 
+    visibility = ""
+    if "--visibility" in args:
+        idx = args.index("--visibility")
+        raw_vis = args[idx + 1] if idx + 1 < len(args) else ""
+        _valid_vis = ("private", "team", "public")
+        if raw_vis not in _valid_vis:
+            print(
+                f"Error: --visibility must be one of: private, team, public (got {raw_vis!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        visibility = raw_vis
+
     # --dedupe: warn (default), block, or off
     dedupe = "warn"
     if "--dedupe" in args:
@@ -3277,6 +3870,7 @@ def main():
             "--agent-id",
             "--certainty",
             "--caveats",
+            "--visibility",
             "--supersedes",
             "--cerebrum-output",
             "--cerebrum-sections",
@@ -3308,6 +3902,7 @@ def main():
 
     # Auto-PR flags (Issue #612)
     auto_pr = "--auto-pr" in args
+    use_llm = "--llm" in args
     auto_pr_threshold: float | None = None
     if "--confidence-threshold" in args:
         _ct_idx = args.index("--confidence-threshold")
@@ -3392,6 +3987,7 @@ def main():
         "agent_id": agent_id,
         "certainty": certainty,
         "caveats": caveats,
+        "visibility": visibility,
     }
 
     # --merge: UPDATE existing entry instead of INSERT
@@ -3402,7 +3998,7 @@ def main():
             print(f"Error: --merge entry #{merge_id} not found", file=sys.stderr)
             _db.close()
             sys.exit(1)
-        now = __import__("datetime").datetime.now().isoformat()
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
         _db.execute(
             """UPDATE knowledge_entries
                SET title = ?, content = ?, category = ?, tags = ?,
@@ -3586,6 +4182,46 @@ def main():
     if affected_files:
         print(f"  Affecting {len(affected_files)} file(s): {', '.join(affected_files[:3])}")
     print("Done.")
+    if use_llm and entry_id >= 0:
+        try:
+            suggested = _llm_suggest_tags(title, content)
+            if suggested:
+                print(f"  LLM suggested tags: {', '.join(suggested)}")
+                _db = get_db()
+                now = time.strftime("%Y-%m-%dT%H:%M:%S")
+                _db.execute("SAVEPOINT _llm_tag")
+                try:
+                    _db.execute(
+                        "UPDATE knowledge_entries SET tags = ? WHERE id = ?",
+                        (", ".join(suggested), entry_id),
+                    )
+                    has_table = _db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'"
+                    ).fetchone()
+                    if has_table:
+                        _db.execute(
+                            "DELETE FROM entry_concept_tags WHERE entry_id = ? AND source = 'llm'",
+                            (entry_id,),
+                        )
+                        _db.executemany(
+                            """INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at)
+                            VALUES (?, ?, 'llm', ?)
+                            ON CONFLICT(entry_id, tag) DO UPDATE SET
+                                source = 'llm', tagged_at = excluded.tagged_at""",
+                            [(entry_id, tag, now) for tag in suggested],
+                        )
+                    _db.execute("RELEASE _llm_tag")
+                except Exception:
+                    _db.execute("ROLLBACK TO _llm_tag")
+                    _db.execute("RELEASE _llm_tag")
+                    raise
+                _db.commit()
+                _db.close()
+                print(f"  Tags applied to entry #{entry_id}")
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"  [warn] LLM tagging failed, keeping auto tags: {exc}", file=sys.stderr)
     if update_cerebrum and entry_id >= 0:
         rc = _auto_update_cerebrum(cerebrum_output, cerebrum_sections)
         if rc != 0:

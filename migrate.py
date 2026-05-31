@@ -1918,9 +1918,9 @@ if __name__ == "__main__":
                 END""",
             ],
         ),
-        # v46: issue #852 — sync federation namespace scoping and visibility flags.
+        # v47: issue #852 — sync federation namespace scoping and visibility flags.
         (
-            46,
+            47,
             "namespace_visibility",
             [
                 "ALTER TABLE knowledge_entries ADD COLUMN namespace TEXT DEFAULT 'local'",
