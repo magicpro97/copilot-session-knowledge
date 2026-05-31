@@ -1774,6 +1774,27 @@ if __name__ == "__main__":
                 )""",
             ],
         ),
+        # v36: issue #771 — FTS5 trigram tokenizer for partial-symbol and error-string search.
+        # code_fts_trigram uses content= for low-overhead storage; 3 triggers keep it in sync.
+        (
+            36,
+            "code_fts_trigram_index",
+            [
+                """CREATE VIRTUAL TABLE IF NOT EXISTS code_fts_trigram USING fts5(
+                    symbol_name,
+                    content_snippet,
+                    file_path UNINDEXED,
+                    language UNINDEXED,
+                    project_id UNINDEXED,
+                    tokenize='trigram',
+                    content='code_index',
+                    content_rowid='id'
+                )""",
+                "CREATE TRIGGER IF NOT EXISTS code_fts_trigram_ai AFTER INSERT ON code_index BEGIN INSERT INTO code_fts_trigram(rowid, symbol_name, content_snippet, file_path, language, project_id) VALUES (new.id, new.symbol_name, new.content_snippet, new.file_path, new.language, new.project_id); END",
+                "CREATE TRIGGER IF NOT EXISTS code_fts_trigram_ad AFTER DELETE ON code_index BEGIN INSERT INTO code_fts_trigram(code_fts_trigram, rowid, symbol_name, content_snippet, file_path, language, project_id) VALUES ('delete', old.id, old.symbol_name, old.content_snippet, old.file_path, old.language, old.project_id); END",
+                "CREATE TRIGGER IF NOT EXISTS code_fts_trigram_au AFTER UPDATE ON code_index BEGIN INSERT INTO code_fts_trigram(code_fts_trigram, rowid, symbol_name, content_snippet, file_path, language, project_id) VALUES ('delete', old.id, old.symbol_name, old.content_snippet, old.file_path, old.language, old.project_id); INSERT INTO code_fts_trigram(rowid, symbol_name, content_snippet, file_path, language, project_id) VALUES (new.id, new.symbol_name, new.content_snippet, new.file_path, new.language, new.project_id); END",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
