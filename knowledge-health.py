@@ -1556,6 +1556,130 @@ def compute_confidence_decay(stale_days: int = 90, decay_rate: float = 0.05) -> 
     return {"decayed_count": len(updated), "entries": updated}
 
 
+def compute_decay_preview(limit: int = 20, half_life_days: float = 30.0) -> dict:
+    """Read-only decay preview for knowledge entries (#854).
+
+    Computes recency_decay for every active entry using the Ebbinghaus formula
+    exp(-ln(2) * age_days / half_life_days).  Entries are ranked ascending by
+    recency_decay (most-decayed first).  No DB writes are performed.
+
+    Returns:
+        {
+          "entries": [{"id", "title", "category", "age_days", "recency_decay",
+                        "confidence", "projected_delta"}, ...],  # capped at limit
+          "total": int,      # total active entries considered
+          "tiers": {"fresh": int, "stale": int, "decaying": int, "dead": int,
+                    "unknown": int},
+          "half_life_days": float,
+        }
+    """
+    import math
+
+    db = get_db()
+    _ke_cols = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    _nd = "AND (deleted_at IS NULL)" if "deleted_at" in _ke_cols else ""
+    _has_last_accessed = "last_accessed_at" in _ke_cols
+    _last_accessed_sel = ", last_accessed_at" if _has_last_accessed else ""
+
+    try:
+        rows = db.execute(
+            f"""
+            SELECT id, title, category, confidence, last_seen{_last_accessed_sel}
+            FROM knowledge_entries
+            WHERE confidence > 0 {_nd}
+            ORDER BY id
+            """,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        db.close()
+        return {"entries": [], "total": 0, "tiers": {}, "half_life_days": half_life_days}
+    db.close()
+
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    def _age(ts_str: str | None) -> float | None:
+        if not ts_str:
+            return None
+        try:
+            s = str(ts_str)[:19].replace("T", " ")
+            ts = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+            return max(0.0, (now_dt - ts).total_seconds() / 86400.0)
+        except Exception:
+            return None
+
+    def _decay(age_days: float | None) -> float:
+        if age_days is None or half_life_days <= 0:
+            return 1.0
+        return math.exp(-math.log(2) * age_days / half_life_days)
+
+    entries = []
+    for row in rows:
+        ts = (row["last_accessed_at"] if _has_last_accessed and row["last_accessed_at"] else None) or row["last_seen"]
+        age_days = _age(ts)
+        conf = float(row["confidence"] or 0.0)
+        rd = _decay(age_days)
+        entries.append(
+            {
+                "id": int(row["id"]),
+                "title": str(row["title"] or ""),
+                "category": str(row["category"] or ""),
+                "age_days": round(age_days, 1) if age_days is not None else None,
+                "recency_decay": round(rd, 4),
+                "confidence": conf,
+                "projected_delta": round(conf * (rd - 1.0), 4),
+            }
+        )
+
+    entries.sort(key=lambda e: e["recency_decay"])
+
+    fresh = sum(1 for e in entries if e["age_days"] is not None and e["age_days"] < 7)
+    stale = sum(1 for e in entries if e["age_days"] is not None and 7 <= e["age_days"] < 30)
+    decaying = sum(1 for e in entries if e["age_days"] is not None and 30 <= e["age_days"] < 90)
+    dead = sum(1 for e in entries if e["age_days"] is not None and e["age_days"] >= 90)
+    unknown = sum(1 for e in entries if e["age_days"] is None)
+
+    return {
+        "entries": entries[:limit],
+        "total": len(entries),
+        "tiers": {"fresh": fresh, "stale": stale, "decaying": decaying, "dead": dead, "unknown": unknown},
+        "half_life_days": half_life_days,
+    }
+
+
+def format_decay_preview(result: dict) -> str:
+    """Format compute_decay_preview() output as a human-readable dashboard."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    tiers = result.get("tiers", {})
+    entries = result.get("entries", [])
+    hl = result.get("half_life_days", 30.0)
+    lines = [
+        f"Knowledge Decay Dashboard ({today})  [half-life={hl:.0f}d]",
+        "━" * 50,
+        f"🟢 Fresh     (accessed <  7d):  {tiers.get('fresh', 0):4d} entries",
+        f"🟡 Stale     ( 7–30d no access): {tiers.get('stale', 0):4d} entries",
+        f"🔴 Decaying  (30–90d no access): {tiers.get('decaying', 0):4d} entries",
+        f"💀 Dead      (90d+  no access):  {tiers.get('dead', 0):4d} entries",
+        "",
+    ]
+    if entries:
+        lines.append(f"Top {len(entries)} entries needing refresh (most decayed first):")
+        for e in entries:
+            age_str = f"{e['age_days']}d" if e["age_days"] is not None else "n/a"
+            conf = e["confidence"]
+            proj = conf + e["projected_delta"]
+            delta_str = f"{e['projected_delta']:+.4f}"
+            lines.append(
+                f"  #{e['id']:<6d} [{e['category']:<10s}] {e['title'][:45]:<45}"
+                f"  last={age_str:<5}  decay={e['recency_decay']:.4f}"
+                f"  conf={conf:.2f}→{max(0.0, proj):.2f} (Δ{delta_str})"
+            )
+    else:
+        lines.append("  ✅ No active entries found.")
+    lines.append("")
+    lines.append("Run `sk learn --amend <id> --confidence <val>` to refresh entries.")
+    return "\n".join(lines)
+
+
 def compute_eviction_candidates(limit: int = 20) -> dict:
     """Score active entries and return low-value eviction candidates (#401).
 
@@ -2547,6 +2671,21 @@ def main():
         return
 
     if "--decay-confidence" in args:
+        if "--preview" in args:
+            limit = 20
+            half_life = 30.0
+            if "--limit" in args:
+                idx = args.index("--limit")
+                limit = int(args[idx + 1]) if idx + 1 < len(args) else 20
+            if "--half-life" in args:
+                idx = args.index("--half-life")
+                half_life = float(args[idx + 1]) if idx + 1 < len(args) else 30.0
+            result = compute_decay_preview(limit=limit, half_life_days=half_life)
+            if "--json" in args:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(format_decay_preview(result))
+            return
         stale_days = 90
         decay_rate = 0.05
         if "--stale" in args:

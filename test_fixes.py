@@ -11529,6 +11529,207 @@ except Exception as _e759:
         test(f"I759-{_label759}: tag-entries TF-IDF opt-in", False, str(_e759))
 
 # ---------------------------------------------------------------------------
+# === I854: sk knowledge decay --preview dashboard ===
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu854
+    import math as _math854
+    import sqlite3 as _sq854
+    import tempfile as _tf854
+    from pathlib import Path as _Path854
+
+    _kh_spec854 = _ilu854.spec_from_file_location("kh854", REPO / "knowledge-health.py")
+    _kh854 = _ilu854.module_from_spec(_kh_spec854)
+    _kh_spec854.loader.exec_module(_kh854)
+
+    def _make_decay_db854(*, with_last_accessed: bool = True) -> Path:
+        """Create a temp knowledge.db with entries at varying ages."""
+        _p = Path(_tf854.mktemp(suffix=".db"))
+        _db = _sq854.connect(str(_p))
+        _db.row_factory = _sq854.Row
+        _cols = (
+            "id INTEGER PRIMARY KEY, title TEXT, category TEXT, confidence REAL,"
+            " last_seen TEXT, deleted_at TEXT"
+            + (", last_accessed_at TEXT, access_count INTEGER DEFAULT 0" if with_last_accessed else "")
+        )
+        _db.execute(f"CREATE TABLE knowledge_entries ({_cols})")
+
+        from datetime import datetime as _dt854, timezone as _tz854, timedelta as _td854
+
+        _now = _dt854.now(_tz854.utc)
+
+        def _ts(days_ago: float) -> str:
+            return (_now - _td854(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+        _entries = [
+            (1, "Fresh entry", "pattern", 0.9, _ts(2), None, _ts(2) if with_last_accessed else None),
+            (2, "Stale entry", "mistake", 0.8, _ts(15), None, _ts(15) if with_last_accessed else None),
+            (3, "Decaying entry", "pattern", 0.7, _ts(60), None, _ts(60) if with_last_accessed else None),
+            (4, "Dead entry", "mistake", 0.6, _ts(95), None, _ts(95) if with_last_accessed else None),
+            (5, "Very dead entry", "feature", 0.5, _ts(200), None, _ts(200) if with_last_accessed else None),
+        ]
+        if with_last_accessed:
+            for _r in _entries:
+                _db.execute(
+                    "INSERT INTO knowledge_entries (id, title, category, confidence, last_seen, deleted_at, last_accessed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    _r,
+                )
+        else:
+            for _r in _entries:
+                _db.execute(
+                    "INSERT INTO knowledge_entries (id, title, category, confidence, last_seen, deleted_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    _r[:6],
+                )
+        _db.commit()
+        _db.close()
+        return _p
+
+    # Test I854-1: compute_decay_preview returns correct structure
+    _p854 = _make_decay_db854()
+    _orig_db_path854 = _kh854.DB_PATH
+    try:
+        _kh854.DB_PATH = _p854
+        _res854 = _kh854.compute_decay_preview(limit=20, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+
+    test(
+        "I854-1a: compute_decay_preview returns entries list",
+        isinstance(_res854.get("entries"), list) and len(_res854["entries"]) == 5,
+        str(_res854.get("total")),
+    )
+    test(
+        "I854-1b: entries sorted ascending by recency_decay (most decayed first)",
+        all(
+            _res854["entries"][i]["recency_decay"] <= _res854["entries"][i + 1]["recency_decay"]
+            for i in range(len(_res854["entries"]) - 1)
+        ),
+        str([e["recency_decay"] for e in _res854["entries"]]),
+    )
+    test(
+        "I854-1c: tiers dict has expected keys",
+        {"fresh", "stale", "decaying", "dead", "unknown"} == set(_res854.get("tiers", {}).keys()),
+        str(_res854.get("tiers")),
+    )
+    test(
+        "I854-1d: dead tier counts 90d+ entries",
+        _res854["tiers"]["dead"] == 2,
+        str(_res854["tiers"]),
+    )
+    test(
+        "I854-1e: fresh tier counts <7d entries",
+        _res854["tiers"]["fresh"] == 1,
+        str(_res854["tiers"]),
+    )
+
+    # Test I854-2: --limit respected
+    _p854b = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854b
+        _res854_lim = _kh854.compute_decay_preview(limit=3, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+
+    test(
+        "I854-2a: --limit 3 returns exactly 3 entries",
+        len(_res854_lim["entries"]) == 3,
+        str(len(_res854_lim["entries"])),
+    )
+    test(
+        "I854-2b: total reflects all entries not the limited slice",
+        _res854_lim["total"] == 5,
+        str(_res854_lim["total"]),
+    )
+
+    # Test I854-3: no DB writes (confidence unchanged after preview)
+    _p854c = _make_decay_db854()
+    _db854c_before = _sq854.connect(str(_p854c))
+    _confs_before = {
+        r[0]: r[1] for r in _db854c_before.execute("SELECT id, confidence FROM knowledge_entries").fetchall()
+    }
+    _db854c_before.close()
+    try:
+        _kh854.DB_PATH = _p854c
+        _kh854.compute_decay_preview(limit=20, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _db854c_after = _sq854.connect(str(_p854c))
+    _confs_after = {
+        r[0]: r[1] for r in _db854c_after.execute("SELECT id, confidence FROM knowledge_entries").fetchall()
+    }
+    _db854c_after.close()
+    test(
+        "I854-3a: preview does not modify confidence values in DB",
+        _confs_before == _confs_after,
+        f"before={_confs_before} after={_confs_after}",
+    )
+
+    # Test I854-4: --json output has required fields
+    _p854d = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854d
+        _res854_json = _kh854.compute_decay_preview(limit=5, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _required_fields = {"id", "title", "age_days", "recency_decay", "confidence", "projected_delta"}
+    _entry_fields = set(_res854_json["entries"][0].keys()) if _res854_json["entries"] else set()
+    test(
+        "I854-4a: JSON entries contain all required fields",
+        _required_fields.issubset(_entry_fields),
+        f"missing={_required_fields - _entry_fields}",
+    )
+
+    # Test I854-5: half-life override affects decay scores
+    _p854e = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854e
+        _res_short = _kh854.compute_decay_preview(limit=20, half_life_days=10.0)
+        _res_long = _kh854.compute_decay_preview(limit=20, half_life_days=180.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _dead_short = next((e for e in _res_short["entries"] if e["id"] == 4), None)
+    _dead_long = next((e for e in _res_long["entries"] if e["id"] == 4), None)
+    test(
+        "I854-5a: shorter half-life produces lower recency_decay for old entries",
+        _dead_short is not None
+        and _dead_long is not None
+        and _dead_short["recency_decay"] < _dead_long["recency_decay"],
+        f"short={_dead_short['recency_decay'] if _dead_short else 'N/A'} long={_dead_long['recency_decay'] if _dead_long else 'N/A'}",
+    )
+
+    # Test I854-6: format_decay_preview output contains expected tier symbols
+    _p854f = _make_decay_db854()
+    try:
+        _kh854.DB_PATH = _p854f
+        _res854f = _kh854.compute_decay_preview(limit=5, half_life_days=30.0)
+    finally:
+        _kh854.DB_PATH = _orig_db_path854
+    _dashboard = _kh854.format_decay_preview(_res854f)
+    test(
+        "I854-6a: dashboard output contains tier emoji symbols",
+        all(sym in _dashboard for sym in ["🟢", "🟡", "🔴", "💀"]),
+        _dashboard[:200],
+    )
+    test(
+        "I854-6b: dashboard output contains refresh hint",
+        "sk learn --amend" in _dashboard,
+        _dashboard[-100:],
+    )
+
+    # Clean up temp DBs
+    for _p_cleanup in (_p854, _p854b, _p854c, _p854d, _p854e, _p854f):
+        try:
+            _p_cleanup.unlink()
+        except Exception:
+            pass
+
+except Exception as _e854:
+    for _lbl854 in ["1a", "1b", "1c", "1d", "1e", "2a", "2b", "3a", "4a", "5a", "6a", "6b"]:
+        test(f"I854-{_lbl854}: sk knowledge decay --preview dashboard", False, str(_e854))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
