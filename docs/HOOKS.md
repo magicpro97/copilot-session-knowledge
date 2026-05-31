@@ -54,6 +54,7 @@ hooks/
 | `verification-gate` | preToolUse + postToolUse | Tracks dirty Python / `browse-ui` TS/JS surfaces, records successful verification commands, and blocks closeout-style actions (`task_complete`, `gh issue close/comment`, tentacle `handoff --status DONE`, tentacle `complete`) until the required fresh evidence exists. |
 | `file-size-advisory` | preToolUse | Warns when an `edit`/`create` payload would leave a Python file over 400 lines. Advisory-only and fail-open: emits information but never denies the tool call. |
 | `new-file-advisory` | preToolUse | Warns when a `create` payload targets a new root Python script. Advisory-only and fail-open: cites Rule 11 and asks agents to justify the new file, reuse an existing home when possible, and update tests/lint coverage. |
+| `post-commit-briefing` | postToolUse | Emits a scoped mini-briefing when `git commit` completes in `bash`. Queries `knowledge_entries` for entries referencing committed files, then returns relevant past mistakes and patterns as `additionalContext`. Fail-open and silent when no entries match. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete; writes `learn-done` for `learn.py` and `sk learn`; also surfaces [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) plus a skill-creator standards follow-up when lessons should update reusable skills |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |

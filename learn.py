@@ -567,6 +567,54 @@ _ROOM_RULES = [
 ]
 
 
+def _detect_recurrence(db: sqlite3.Connection, entry_id: int, category: str) -> bool:
+    """Return True if this entry was already served in the current session (recurrence)."""
+    if category != "mistake":
+        return False
+    try:
+        rows = db.execute(
+            "SELECT selected_entry_ids FROM recall_events "
+            "WHERE created_at > unixepoch('now', '-8 hours') "
+            "ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+        for row in rows:
+            if row[0]:
+                try:
+                    ids = json.loads(row[0])
+                    if entry_id in ids or str(entry_id) in ids:
+                        return True
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    except Exception:
+        pass
+    return False
+
+
+def _handle_recurrence(db: sqlite3.Connection, entry_id: int) -> None:
+    """Escalate entry to P0 and tag as recurring if recurrence_count >= 2."""
+    db.execute(
+        "UPDATE knowledge_entries SET recurrence_count = recurrence_count + 1 WHERE id = ?",
+        (entry_id,),
+    )
+    row = db.execute(
+        "SELECT recurrence_count, tags, priority FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        return
+    count, tags, priority = row
+    if count >= 2:
+        new_tags = tags or ""
+        if "recurring" not in new_tags:
+            new_tags = (new_tags + ",recurring").strip(",")
+        db.execute(
+            "UPDATE knowledge_entries SET priority = 'P0', tags = ? WHERE id = ?",
+            (new_tags, entry_id),
+        )
+        print(f"⚠️  Recurrence detected (count={count})! Entry #{entry_id} escalated to P0 with tag 'recurring'.")
+    db.commit()
+
+
 def _detect_wing(tags: str, title: str, content: str) -> str:
     """Auto-detect wing from tags/title/content."""
     tag_set = {t.strip().lower() for t in tags.split(",") if t.strip()}
@@ -1222,6 +1270,7 @@ def add_entry(
     has_epistemic_humility_columns = all(c in ke_columns for c in ("certainty", "caveats"))
     has_deleted_at_column = "deleted_at" in ke_columns
     has_recurrence_column = "recurrence_after_briefing" in ke_columns
+    has_recurrence_count_column = "recurrence_count" in ke_columns
     has_briefing_deliveries = (
         db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='briefing_deliveries'").fetchone()
         is not None
@@ -1616,6 +1665,24 @@ def add_entry(
                 "UPDATE knowledge_entries SET certainty = ?, caveats = ? WHERE id = ?",
                 (certainty or "", caveats or "", entry_id),
             )
+        # Recurrence detection (#799): for new mistake entries, check if a similar
+        # existing entry was recently served via recall_events. Escalate it to P0 if so.
+        if has_recurrence_count_column and category == "mistake":
+            _sim_sql2 = "SELECT id, title, content FROM knowledge_entries WHERE category = ? AND id != ?"
+            if has_deleted_at_column:
+                _sim_sql2 += " AND deleted_at IS NULL"
+            _sim_sql2 += " ORDER BY id DESC LIMIT 50"
+            _sim_rows2 = db.execute(_sim_sql2, (category, entry_id)).fetchall()
+            _new_tokens2 = {t for t in re.findall(r"[a-z0-9]+", (title + " " + content).lower()) if t}
+            for _sim_row2 in _sim_rows2:
+                _row_text2 = (_sim_row2[1] or "") + " " + (_sim_row2[2] or "")
+                _row_tokens2 = {t for t in re.findall(r"[a-z0-9]+", _row_text2.lower()) if t}
+                if not _new_tokens2 or not _row_tokens2:
+                    continue
+                _sim_score2 = len(_new_tokens2 & _row_tokens2) / len(_new_tokens2 | _row_tokens2)
+                if _sim_score2 >= 0.6 and _detect_recurrence(db, _sim_row2[0], category):
+                    _handle_recurrence(db, _sim_row2[0])
+                    break
         if has_stable_id_column:
             inserted_stable_id = db.execute(
                 "SELECT COALESCE(stable_id, '') FROM knowledge_entries WHERE id = ?",

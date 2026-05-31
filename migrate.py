@@ -1839,6 +1839,16 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_tool_spans_tool ON tool_spans (tool_name)",
             ],
         ),
+        # v37: issue #799 — mistake recurrence detection.
+        # recurrence_count tracks how many times a mistake entry was re-learned after
+        # a similar entry was recently served via recall_events (8-hour window).
+        (
+            40,
+            "add_recurrence_count",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN recurrence_count INTEGER DEFAULT 0",
+            ],
+        ),
         # v37: issue #797 — FSRS-style recall stability factor.
         # stability_factor scales the Ebbinghaus half-life in briefing decay scoring.
         # Default 1.0 = unchanged; ×1.3 on good feedback, ×0.8 on bad feedback,
