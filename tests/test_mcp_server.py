@@ -102,8 +102,8 @@ class TestToolsList(unittest.TestCase):
         self.tools = {t["name"]: t for t in mcp.TOOLS}
 
     def test_exactly_two_tools(self):
-        # Updated: wave 8 added learn, status, session_list; now 6 tools total
-        self.assertEqual(len(mcp.TOOLS), 6)
+        # Updated: wave 8 added learn, status, session_list; code_search added later; now 7 tools total
+        self.assertEqual(len(mcp.TOOLS), 7)
 
     def test_briefing_tool_present(self):
         self.assertIn("briefing", self.tools)
@@ -1059,11 +1059,17 @@ class TestQueryMemoryTool(unittest.TestCase):
                 mcp._run_query_memory({"token": "bad"})
         self.assertEqual(ctx.exception.code, mcp._MCP_AUTH_ERROR)
 
-    # -- six tools total ---
+    # -- seven tools total (code_search added) ---
+
+    def test_code_search_tool_present(self):
+        self.assertIn("code_search", self.tools)
+
+    def test_code_search_tool_has_description(self):
+        self.assertTrue(self.tools["code_search"]["description"])
 
     def test_exactly_three_tools(self):
-        # Updated: wave 8 added learn, status, session_list; now 6 tools total
-        self.assertEqual(len(mcp.TOOLS), 6)
+        # Updated: wave 8 added learn, status, session_list; code_search added later; now 7 tools total
+        self.assertEqual(len(mcp.TOOLS), 7)
 
 
 # ---------------------------------------------------------------------------
