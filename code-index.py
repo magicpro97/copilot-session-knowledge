@@ -292,6 +292,57 @@ def _index_file(
     return len(symbols)
 
 
+def _get_git_changed_files(ref: str, root: Path) -> tuple[list[Path], list[Path]]:
+    """Get changed and deleted files from git diff-tree or git diff."""
+    import subprocess
+
+    if ".." in ref:
+        cmd = ["git", "diff", "--name-status", ref]
+    else:
+        cmd = ["git", "diff-tree", "--no-commit-id", "-r", "--name-status", ref]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(root), timeout=30)
+        if result.returncode != 0:
+            return [], []
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return [], []
+
+    changed, deleted = [], []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split("\t", 1)
+        if len(parts) != 2:
+            continue
+        status, filepath = parts[0].strip(), parts[1].strip()
+        full = root / filepath
+        if status == "D":
+            deleted.append(full)
+        elif status in ("A", "M", "R", "C"):
+            changed.append(full)
+    return changed, deleted
+
+
+def _prune_deleted_files(db: sqlite3.Connection, file_paths: list[Path], project_id: str) -> int:
+    """Remove deleted files from code_index and FTS tables. Returns count deleted."""
+    count = 0
+    for fp in file_paths:
+        path_str = str(fp)
+        rows = db.execute(
+            "SELECT id FROM code_index WHERE file_path = ? AND project_id = ?",
+            (path_str, project_id),
+        ).fetchall()
+        for row in rows:
+            for tbl in ("code_fts", "code_fts_trigram"):
+                try:
+                    db.execute(f"DELETE FROM {tbl} WHERE rowid = ?", (row[0],))  # noqa: S608
+                except sqlite3.OperationalError:
+                    pass
+            db.execute("DELETE FROM code_index WHERE id = ?", (row[0],))
+            count += 1
+    db.commit()
+    return count
+
+
 def cmd_index(args: argparse.Namespace) -> None:
     root = Path(args.path).resolve() if args.path else Path.cwd()
     if not root.exists():
@@ -305,9 +356,45 @@ def cmd_index(args: argparse.Namespace) -> None:
     db = _get_db()
     _check_tables(db)
     project_id = _ensure_project(db, root)
+    t0 = time.monotonic()
+
+    if args.git_diff is not None:
+        changed_files, deleted_files = _get_git_changed_files(args.git_diff, root)
+        # Filter changed files to supported extensions (and optional lang filter)
+        indexable = [
+            fp
+            for fp in changed_files
+            if fp.suffix.lower() in EXT_TO_LANG
+            and (lang_filter is None or EXT_TO_LANG.get(fp.suffix.lower(), "") in lang_filter)
+        ]
+        total_symbols = 0
+        for fp in indexable:
+            total_symbols += _index_file(db, fp, project_id, rebuild=True)
+        db.commit()
+        pruned = _prune_deleted_files(db, deleted_files, project_id)
+        db.close()
+        elapsed = time.monotonic() - t0
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "project_id": project_id,
+                        "root": str(root),
+                        "git_diff_ref": args.git_diff,
+                        "files_reindexed": len(indexable),
+                        "files_pruned": pruned,
+                        "symbols_extracted": total_symbols,
+                        "elapsed_s": round(elapsed, 3),
+                    }
+                )
+            )
+        else:
+            print(f"Re-indexed {len(indexable)} files, pruned {pruned} deleted files (git-diff: {args.git_diff})")
+            print(f"Project: {project_id}")
+            print("Tip: use as post-commit hook — sk code-index --git-diff HEAD")
+        return
 
     files = _iter_files(root, lang_filter)
-    t0 = time.monotonic()
     total_files = 0
     total_symbols = 0
     skipped = 0
@@ -381,6 +468,15 @@ def main() -> None:
     parser.add_argument("--status", action="store_true", help="Show index stats")
     parser.add_argument("--languages", default=None, help="Comma-separated language filter")
     parser.add_argument("--json", action="store_true", help="JSON output")
+    parser.add_argument(
+        "--git-diff",
+        metavar="REF",
+        nargs="?",
+        const="HEAD~1",
+        help="Re-index only files changed in git diff (default: HEAD~1). "
+        "Supports HEAD, HEAD~3, origin/main..HEAD. "
+        "Post-commit hook example: sk code-index --git-diff HEAD",
+    )
 
     args = parser.parse_args()
 
