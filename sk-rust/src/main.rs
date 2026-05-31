@@ -183,6 +183,12 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Index code symbols using tree-sitter (or Python fallback)
+    #[command(name = "code-index")]
+    CodeIndex {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -351,6 +357,7 @@ fn main() -> ExitCode {
         Some(Commands::AuditLog { args }) => commands::audit_log::run_audit_log_command(&args),
         Some(Commands::Retry { args }) => commands::retry::run_retry_command(&args),
         Some(Commands::Mcp { args }) => commands::mcp::run_mcp_command(&args),
+        Some(Commands::CodeIndex { args }) => commands::code_index::run_code_index_command(&args),
     };
 
     if cli.time {

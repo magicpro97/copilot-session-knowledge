@@ -1,5 +1,6 @@
 pub mod audit_log;
 pub mod briefing;
+pub mod code_index;
 pub mod embed;
 pub mod fallback;
 pub mod hooks;
