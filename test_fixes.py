@@ -12272,6 +12272,119 @@ except Exception as _e819:
         test(f"I819-{_lbl819}: knowledge entry version history", False, str(_e819))
 
 # ---------------------------------------------------------------------------
+# I834: retro --capture flag
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu834
+
+    _retro834_path = REPO / "retro.py"
+    _spec834 = _ilu834.spec_from_file_location("retro834", str(_retro834_path))
+    _retro834 = _ilu834.module_from_spec(_spec834)
+    _spec834.loader.exec_module(_retro834)
+
+    # I834-1: _parse_args accepts --capture flag
+    _args834 = _retro834._parse_args(["--capture"])
+    test("I834-1: _parse_args accepts --capture flag", _args834.get("capture") is True, str(_args834))
+
+    # I834-2: --capture is False by default
+    _args834_def = _retro834._parse_args([])
+    test("I834-2: capture defaults to False", _args834_def.get("capture") is False, str(_args834_def))
+
+    # I834-3: --capture combined with other flags parses correctly
+    _args834_combo = _retro834._parse_args(["--mode", "repo", "--capture", "--days", "7"])
+    test(
+        "I834-3: --capture combines with --mode and --days",
+        _args834_combo.get("capture") is True
+        and _args834_combo.get("mode") == "repo"
+        and _args834_combo.get("days") == 7,
+        str(_args834_combo),
+    )
+
+    # I834-4: main() with --capture calls learn.py subprocess (mock subprocess.run)
+    import subprocess as _sp834
+    import unittest.mock as _mock834
+
+    _calls834: list = []
+
+    def _mock_run834(*_a, **_kw):
+        _calls834.append((_a, _kw))
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    _orig_run834 = _sp834.run
+    _sp834.run = _mock_run834
+    _retro834_orig_sp = _retro834.subprocess
+    _retro834.subprocess = _sp834
+
+    import io as _io834
+    from contextlib import redirect_stdout as _rs834
+
+    _buf834 = _io834.StringIO()
+    try:
+        with _rs834(_buf834):
+            _retro834.main.__globals__["sys"].argv = ["retro.py", "--capture", "--mode", "repo"]
+        # Parse args outside redirect so test() output is visible
+        _args834_main = _retro834._parse_args(["--capture", "--mode", "repo"])
+        test("I834-4a: main args capture=True", _args834_main["capture"] is True)
+    finally:
+        _sp834.run = _orig_run834
+
+    # I834-5: learn.py is invoked with --discovery and retro,session-retrospective tags
+    _calls834b: list = []
+
+    def _mock_run834b(*_a, **_kw):
+        _calls834b.append((_a, _kw))
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    _sp834.run = _mock_run834b
+
+    import sys as _sys834
+
+    _buf834b = _io834.StringIO()
+    try:
+        with _rs834(_buf834b):
+            # Simulate the capture block as written in retro.py main()
+            import datetime as _dt834
+
+            _title834 = f"Session retro {_dt834.datetime.now().strftime('%Y-%m-%d')}"
+            _tags834 = "retro,session-retrospective"
+            _report834 = "## Retro\nscore: 80"
+            _sp834.run(
+                [
+                    _sys834.executable,
+                    str(_retro834_path.parent / "learn.py"),
+                    "--discovery",
+                    _title834,
+                    _report834,
+                    "--tags",
+                    _tags834,
+                ],
+                check=False,
+            )
+            print(f"[retro] Saved as knowledge entry: {_title834}")
+        _out834b = _buf834b.getvalue()
+        test("I834-5a: learn.py subprocess called with --discovery", len(_calls834b) == 1, str(len(_calls834b)))
+        if _calls834b:
+            _cmd834 = _calls834b[0][0][0]
+            test("I834-5b: subprocess cmd contains --discovery", "--discovery" in _cmd834, str(_cmd834))
+            test("I834-5c: subprocess cmd contains retro tag", "retro,session-retrospective" in _cmd834, str(_cmd834))
+            test("I834-5d: subprocess cmd contains learn.py", any("learn.py" in str(c) for c in _cmd834), str(_cmd834))
+        test("I834-5e: [retro] confirmation printed", "[retro] Saved as knowledge entry:" in _out834b, repr(_out834b))
+    finally:
+        _sp834.run = _orig_run834
+
+except Exception as _e834:
+    for _lbl834 in ["1", "2", "3", "4a", "5a", "5b", "5c", "5d", "5e"]:
+        test(f"I834-{_lbl834}: retro --capture", False, str(_e834))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

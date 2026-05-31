@@ -1333,6 +1333,7 @@ def _parse_args(argv: list) -> dict:
         "by_wing": False,
         "by_tag": None,
         "by_room": None,
+        "capture": False,
     }
     i = 0
     while i < len(argv):
@@ -1378,6 +1379,8 @@ def _parse_args(argv: list) -> dict:
             if i + 1 < len(argv):
                 i += 1
                 args["by_room"] = argv[i]
+        elif a == "--capture":
+            args["capture"] = True
         i += 1
     return args
 
@@ -1452,6 +1455,24 @@ def main() -> None:
             except Exception:
                 pass
         print(report)
+        if args["capture"]:
+            import datetime as _dt834
+
+            title = f"Session retro {_dt834.datetime.now().strftime('%Y-%m-%d')}"
+            tags = "retro,session-retrospective"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).parent / "learn.py"),
+                    "--discovery",
+                    title,
+                    report,
+                    "--tags",
+                    tags,
+                ],
+                check=False,
+            )
+            print(f"[retro] Saved as knowledge entry: {title}")
 
 
 if __name__ == "__main__":
