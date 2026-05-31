@@ -4868,26 +4868,63 @@ def _synthesize_category_section(category: str, entries: list[dict], mode: str, 
     return header + "\n" + "\n".join(lines)
 
 
+def _fetch_rag_entries(db: sqlite3.Connection, query: str) -> list[dict]:
+    """Retrieve entries for RAG via the filtered briefing pipeline."""
+    superseded_ids = _get_superseded_ids(db)
+    entries: list[dict] = []
+    for cat in ("mistake", "pattern", "insight", "context"):
+        cat_entries = search_knowledge_entries(db, query, cat, limit=5)
+        entries.extend(cat_entries)
+    entries = [
+        e for e in entries
+        if not _briefing_entry_is_unsafe(e) and e.get("id") not in superseded_ids
+    ]
+    return entries
+
+
+def _group_by_relations(db: sqlite3.Connection, entries: list[dict]) -> dict[str, list[dict]]:
+    """Group entries using knowledge_relations graph, fallback to category."""
+    entry_ids = [e["id"] for e in entries]
+    leaders: dict[int, int] = {}
+    if entry_ids:
+        try:
+            ph = ",".join("?" * len(entry_ids))
+            rels = db.execute(
+                f"SELECT source_id, target_id FROM knowledge_relations "
+                f"WHERE source_id IN ({ph}) OR target_id IN ({ph})",
+                entry_ids + entry_ids,
+            ).fetchall()
+            for row in rels:
+                src, tgt = int(row[0]), int(row[1])
+                leader = min(src, tgt)
+                leaders[src] = min(leaders.get(src, leader), leader)
+                leaders[tgt] = min(leaders.get(tgt, leader), leader)
+        except Exception:
+            pass
+    groups: dict[str, list[dict]] = {}
+    for e in entries:
+        eid = e["id"]
+        key = f"related-{leaders[eid]}" if eid in leaders else e.get("category", "other")
+        groups.setdefault(key, []).append(e)
+    return groups
+
+
 def _run_rag_briefing(db_path: str, query: str, mode: str = "auto") -> None:
     """RAG synthesis mode: retrieve top entries then synthesize into prose."""
     db = sqlite3.connect(db_path)
-    entries = _fetch_reflect_entries(db, query, limit=15)
-    db.close()
-
+    db.row_factory = sqlite3.Row
+    entries = _fetch_rag_entries(db, query)
     if not entries:
+        db.close()
         print("No relevant entries found for RAG synthesis.")
         return
-
+    by_group = _group_by_relations(db, entries)
+    db.close()
     sections = []
-    by_cat: dict = {}
-    for e in entries:
-        by_cat.setdefault(e.get("category", "other"), []).append(e)
-
-    for cat, cat_entries in sorted(by_cat.items()):
-        section = _synthesize_category_section(cat, cat_entries, mode, query)
+    for label, grp in sorted(by_group.items()):
+        section = _synthesize_category_section(label, grp, mode, query)
         if section:
             sections.append(section)
-
     print("\n".join(sections) if sections else "No synthesis available.")
 
 
@@ -5020,7 +5057,12 @@ def main():
 
     # Handle --rag / --synthesize mode (issue #815)
     if "--rag" in args or "--synthesize" in args:
-        _rag_query_parts = [a for a in args if not a.startswith("--")]
+        _opt_flags = {"--mode", "--limit", "--agent-tag", "--code-tokens", "--available-tokens"}
+        _skip_idx: set[int] = set()
+        for _i, _a in enumerate(args):
+            if _a in _opt_flags and _i + 1 < len(args):
+                _skip_idx.add(_i + 1)
+        _rag_query_parts = [a for i, a in enumerate(args) if not a.startswith("--") and i not in _skip_idx]
         _rag_query = " ".join(_rag_query_parts)
         _rag_mode = "auto"
         if "--mode" in args:
