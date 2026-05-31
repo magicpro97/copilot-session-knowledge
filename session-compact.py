@@ -10,6 +10,7 @@ Usage:
     python session-compact.py --dry-run          # preview without writing
     python session-compact.py --list             # list existing checkpoints
     python session-compact.py --json             # JSON output
+    python session-compact.py --incremental      # only compact entries since last checkpoint
 """
 
 import argparse
@@ -59,14 +60,78 @@ def _get_entries(conn: sqlite3.Connection, session_id: str) -> list[dict]:
 
 
 def _existing_checkpoint(conn: sqlite3.Connection, session_id: str) -> dict | None:
-    """Return existing session_checkpoint for this session if any."""
+    """Return existing session_checkpoint for this session if any (includes last_seen watermark)."""
     row = conn.execute(
-        """SELECT id, title, content FROM knowledge_entries
+        """SELECT id, title, content, last_seen FROM knowledge_entries
            WHERE session_id = ? AND category = 'session_checkpoint'
+           ORDER BY last_seen DESC
            LIMIT 1""",
         (session_id,),
     ).fetchone()
-    return dict(zip(["id", "title", "content"], row, strict=False)) if row else None
+    return dict(zip(["id", "title", "content", "last_seen"], row, strict=False)) if row else None
+
+
+def _get_new_entries(conn: sqlite3.Connection, session_id: str, since: str) -> list[dict]:
+    """Get knowledge entries added after the watermark timestamp (incremental mode).
+
+    Uses strftime to normalize both sides to ``YYYY-MM-DD HH:MM:SS`` so the
+    comparison is safe regardless of whether timestamps contain a ``T``
+    separator or timezone suffixes.
+    """
+    rows = conn.execute(
+        """SELECT id, category, title, content, tags, priority
+           FROM knowledge_entries
+           WHERE session_id = ?
+             AND category != 'session_checkpoint'
+             AND strftime('%Y-%m-%d %H:%M:%S', first_seen) > strftime('%Y-%m-%d %H:%M:%S', ?)
+           ORDER BY category, priority""",
+        (session_id, since),
+    ).fetchall()
+    return [dict(zip(["id", "category", "title", "content", "tags", "priority"], r, strict=False)) for r in rows]
+
+
+def _build_incremental_prompt(session_id: str, new_entries: list[dict], existing_content: str) -> str:
+    """Build LLM prompt for incremental checkpoint update."""
+    entry_text = "\n".join(
+        f"[{e['category']}|{e['priority']}] {e['title']}: {e['content'][:200]}" for e in new_entries[:30]
+    )
+    return f"""You are updating an existing session checkpoint with new knowledge entries.
+Session: {session_id}
+New entries since last checkpoint: {len(new_entries)}
+
+Existing checkpoint:
+{existing_content[:800]}
+
+New knowledge entries:
+{entry_text}
+
+Append a concise incremental update block at the end with only NEW information.
+Format:
+## Incremental Update
+[changed/new items only, max 150 words]
+
+Do not repeat existing content."""
+
+
+def _template_incremental(new_entries: list[dict], existing_content: str) -> str:
+    """Append template-based incremental section to existing checkpoint."""
+    by_cat: dict[str, list] = {}
+    for e in new_entries:
+        by_cat.setdefault(e["category"], []).append(e)
+
+    parts = [existing_content.rstrip(), f"\n## Incremental Update ({len(new_entries)} new entries)"]
+
+    for cat in ("mistake", "feature", "pattern", "discovery"):
+        if cat in by_cat:
+            titles = [e["title"][:60] for e in by_cat[cat][:3]]
+            parts.append(f"**{cat.capitalize()}:** " + "; ".join(titles))
+
+    other_cats = set(by_cat) - {"mistake", "feature", "pattern", "discovery"}
+    for cat in sorted(other_cats):
+        titles = [e["title"][:60] for e in by_cat[cat][:2]]
+        parts.append(f"**{cat}:** " + "; ".join(titles))
+
+    return "\n\n".join(parts)
 
 
 def _build_compact_prompt(session_id: str, entries: list[dict]) -> str:
@@ -321,7 +386,7 @@ def _list_checkpoints(conn: sqlite3.Connection) -> list[dict]:
     return [dict(zip(["id", "session_id", "title", "first_seen", "chars"], r, strict=False)) for r in rows]
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Compact session knowledge into structured checkpoint")
     parser.add_argument("session_id", nargs="?", help="Session ID (default: most recent)")
     parser.add_argument("--dry-run", action="store_true")
@@ -348,7 +413,12 @@ def main() -> None:
     parser.add_argument(
         "--session-id", dest="session_id_flag", default=None, help="Session ID (alternative to positional arg)"
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Only compact entries added since the last checkpoint (watermark-based); falls back to full compaction when no prior checkpoint exists",
+    )
+    args = parser.parse_args(argv)
 
     db_path = _db_path()
     if not db_path.exists():
@@ -431,18 +501,44 @@ def main() -> None:
 
     existing = _existing_checkpoint(conn, session_id)
 
-    if args.no_llm:
-        content = _template_compact(session_id, entries)
+    # --incremental: only process entries added since last checkpoint watermark
+    incremental_mode = bool(args.incremental and existing and existing.get("last_seen"))
+    if incremental_mode:
+        watermark = existing["last_seen"]
+        new_entries = _get_new_entries(conn, session_id, watermark)
+        if not new_entries:
+            msg = f"No new entries since last checkpoint ({watermark[:19]}). Nothing to do."
+            if args.as_json:
+                print(json.dumps({"session_id": session_id, "incremental": True, "new_entries": 0, "message": msg}))
+            else:
+                print(msg)
+            conn.close()
+            return
+        if args.no_llm:
+            content = _template_incremental(new_entries, existing["content"])
+        else:
+            prompt = _build_incremental_prompt(session_id, new_entries, existing["content"])
+            llm_result = _call_llm(prompt)
+            content = llm_result if llm_result else _template_incremental(new_entries, existing["content"])
+        compact_count = len(new_entries)
     else:
-        prompt = _build_compact_prompt(session_id, entries)
-        llm_result = _call_llm(prompt)
-        content = llm_result if llm_result else _template_compact(session_id, entries)
+        # Full compaction (also used as fallback when --incremental has no prior checkpoint)
+        if args.incremental and not existing:
+            print(f"No existing checkpoint for {session_id[:30]}... — falling back to full compaction.")
+        if args.no_llm:
+            content = _template_compact(session_id, entries)
+        else:
+            prompt = _build_compact_prompt(session_id, entries)
+            llm_result = _call_llm(prompt)
+            content = llm_result if llm_result else _template_compact(session_id, entries)
+        compact_count = len(entries)
 
     est_tokens = len(content) // 4
 
     if args.dry_run:
-        print(f"DRY RUN — would compact session {session_id[:30]}...")
-        print(f"Entries: {len(entries)}, Checkpoint: {len(content)} chars (~{est_tokens} tokens)")
+        mode_label = "incremental" if incremental_mode else "full"
+        print(f"DRY RUN — would compact session {session_id[:30]}... ({mode_label})")
+        print(f"Entries: {compact_count}, Checkpoint: {len(content)} chars (~{est_tokens} tokens)")
         if existing:
             print(f"Would UPDATE existing checkpoint #{existing['id']}")
         else:
@@ -460,17 +556,19 @@ def main() -> None:
                 {
                     "session_id": session_id,
                     "entry_id": entry_id,
-                    "entries_compacted": len(entries),
+                    "entries_compacted": compact_count,
                     "checkpoint_chars": len(content),
                     "est_tokens": est_tokens,
                     "updated": existing is not None,
+                    "incremental": incremental_mode,
                 }
             )
         )
     else:
         action = "Updated" if existing else "Created"
-        print(f"✅ {action} checkpoint #{entry_id} for session {session_id[:30]}...")
-        print(f"   Compacted {len(entries)} entries → {len(content)} chars (~{est_tokens} tokens)")
+        mode_label = " (incremental)" if incremental_mode else ""
+        print(f"✅ {action} checkpoint #{entry_id} for session {session_id[:30]}...{mode_label}")
+        print(f"   Compacted {compact_count} entries → {len(content)} chars (~{est_tokens} tokens)")
 
     conn.close()
 

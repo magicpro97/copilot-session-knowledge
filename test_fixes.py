@@ -15217,6 +15217,209 @@ except Exception as _e872:
         test(f"I872-{_label872}: cross-session recurrence auto-tagging", False, str(_e872))
 
 # ---------------------------------------------------------------------------
+# I866: sk session compact --incremental (watermark-based compaction)
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu866
+    import sqlite3 as _sq866
+
+    _spec866 = _ilu866.spec_from_file_location("session_compact866", REPO / "session-compact.py")
+    _sc866 = _ilu866.module_from_spec(_spec866)
+    _spec866.loader.exec_module(_sc866)
+
+    def _make_db866(path):
+        """Create a minimal in-memory-style DB at *path* with schema needed by session-compact."""
+        conn = _sq866.connect(str(path))
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                indexed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                category TEXT,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                priority TEXT,
+                source TEXT,
+                first_seen TEXT,
+                last_seen TEXT
+            );
+            """
+        )
+        return conn
+
+    def _insert_entry866(conn, session_id, category, title, content, first_seen, priority="P1"):
+        conn.execute(
+            """INSERT INTO knowledge_entries
+               (session_id, category, title, content, priority, source, first_seen, last_seen)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (session_id, category, title, content, priority, "test", first_seen, first_seen),
+        )
+        conn.commit()
+
+    _db866 = REPO / "test_i866_compact.db"
+    try:
+        # --- I866-01: --incremental flag is defined in argparse ---
+        _sc866_src = (REPO / "session-compact.py").read_text()
+        test(
+            "I866-01: --incremental flag present in session-compact.py argparse",
+            "--incremental" in _sc866_src,
+            "Flag not found in source",
+        )
+
+        # --- I866-02: _get_new_entries function exists ---
+        test(
+            "I866-02: _get_new_entries helper defined",
+            hasattr(_sc866, "_get_new_entries"),
+            "Function not found",
+        )
+
+        # --- I866-03: _existing_checkpoint returns last_seen ---
+        _conn866 = _make_db866(_db866)
+        _conn866.execute("INSERT INTO sessions (id, indexed_at) VALUES ('sess-866', datetime('now'))")
+        _conn866.commit()
+        _insert_entry866(_conn866, "sess-866", "session_checkpoint", "chk", "content", "2024-01-01T10:00:00")
+        _conn866.execute(
+            "UPDATE knowledge_entries SET last_seen='2024-01-01T12:00:00' WHERE category='session_checkpoint'"
+        )
+        _conn866.commit()
+        _chk866 = _sc866._existing_checkpoint(_conn866, "sess-866")
+        test(
+            "I866-03: _existing_checkpoint returns last_seen watermark",
+            _chk866 is not None and "last_seen" in _chk866 and _chk866["last_seen"] == "2024-01-01T12:00:00",
+            repr(_chk866),
+        )
+
+        # --- I866-04: _get_new_entries filters by first_seen > watermark ---
+        # Insert entries: one before and one after the watermark
+        _insert_entry866(_conn866, "sess-866", "mistake", "Old entry", "old content", "2024-01-01T09:00:00")
+        _insert_entry866(_conn866, "sess-866", "feature", "New entry", "new content", "2024-01-01T13:00:00")
+        _new866 = _sc866._get_new_entries(_conn866, "sess-866", "2024-01-01T12:00:00")
+        test(
+            "I866-04: _get_new_entries only returns entries after watermark",
+            len(_new866) == 1 and _new866[0]["title"] == "New entry",
+            f"Got {[e['title'] for e in _new866]}",
+        )
+
+        # --- I866-05: _get_new_entries excludes session_checkpoint entries ---
+        _insert_entry866(_conn866, "sess-866", "session_checkpoint", "Another chk", "more", "2024-01-01T14:00:00")
+        _new866b = _sc866._get_new_entries(_conn866, "sess-866", "2024-01-01T12:00:00")
+        test(
+            "I866-05: _get_new_entries excludes session_checkpoint category",
+            all(e["category"] != "session_checkpoint" for e in _new866b),
+            f"Got categories: {[e['category'] for e in _new866b]}",
+        )
+
+        # --- I866-06: _template_incremental appends to existing content ---
+        _existing_content866 = "## Goal\nTest session\n\n## Progress\nDone things"
+        _inc_entries866 = [{"category": "mistake", "title": "Bug fixed", "content": "details", "priority": "P0"}]
+        _inc_result866 = _sc866._template_incremental(_inc_entries866, _existing_content866)
+        test(
+            "I866-06: _template_incremental preserves existing content",
+            _existing_content866.strip() in _inc_result866,
+            f"Content not preserved in: {_inc_result866[:200]}",
+        )
+        test(
+            "I866-07: _template_incremental appends Incremental Update section",
+            "Incremental Update" in _inc_result866,
+            f"Section not found in: {_inc_result866[:200]}",
+        )
+        test(
+            "I866-08: _template_incremental includes new entry title",
+            "Bug fixed" in _inc_result866,
+            f"Entry title not found in: {_inc_result866[:200]}",
+        )
+
+        # --- I866-09: incremental fallback to full when no prior checkpoint ---
+        _conn866b = _make_db866(REPO / "test_i866b_compact.db")
+        _conn866b.execute("INSERT INTO sessions (id, indexed_at) VALUES ('sess-866b', datetime('now'))")
+        _conn866b.commit()
+        _insert_entry866(_conn866b, "sess-866b", "mistake", "Some mistake", "content", "2024-01-01T10:00:00")
+        import io as _io866
+        import os as _os866
+
+        _orig_env866 = _os866.environ.get("SK_DB_PATH")
+        _os866.environ["SK_DB_PATH"] = str(REPO / "test_i866b_compact.db")
+        _stdout866 = _io866.StringIO()
+        _orig_stdout866 = sys.stdout
+        sys.stdout = _stdout866
+        try:
+            _sc866.main(["sess-866b", "--incremental", "--no-llm"])
+        except SystemExit:
+            pass
+        finally:
+            sys.stdout = _orig_stdout866
+        _out866b = _stdout866.getvalue()
+        if _orig_env866 is None:
+            _os866.environ.pop("SK_DB_PATH", None)
+        else:
+            _os866.environ["SK_DB_PATH"] = _orig_env866
+        _conn866b.close()
+        try:
+            (REPO / "test_i866b_compact.db").unlink()
+        except Exception:
+            pass
+        test(
+            "I866-09: --incremental falls back to full compaction when no prior checkpoint",
+            "falling back to full compaction" in _out866b or "Created checkpoint" in _out866b or "✅" in _out866b,
+            f"Output: {repr(_out866b)}",
+        )
+
+        # --- I866-10: --incremental reports nothing-to-do when no new entries ---
+        _os866.environ["SK_DB_PATH"] = str(_db866)
+        _stdout866c = _io866.StringIO()
+        sys.stdout = _stdout866c
+        try:
+            # All entries for sess-866 are at or before watermark 2024-01-01T14:00:00
+            # Update the checkpoint last_seen to a future time
+            _conn866.execute(
+                "UPDATE knowledge_entries SET last_seen='2099-01-01T00:00:00' WHERE category='session_checkpoint' AND session_id='sess-866'"
+            )
+            _conn866.commit()
+            _sc866.main(["sess-866", "--incremental", "--no-llm"])
+        except SystemExit:
+            pass
+        finally:
+            sys.stdout = _orig_stdout866
+        _out866c = _stdout866c.getvalue()
+        if _orig_env866 is None:
+            _os866.environ.pop("SK_DB_PATH", None)
+        else:
+            _os866.environ["SK_DB_PATH"] = _orig_env866
+        test(
+            "I866-10: --incremental reports nothing-to-do when no new entries",
+            "Nothing to do" in _out866c or "No new entries" in _out866c,
+            f"Output: {repr(_out866c)}",
+        )
+
+        _conn866.close()
+        try:
+            _db866.unlink()
+        except Exception:
+            pass
+
+    except Exception as _e866_inner:
+        for _lbl866 in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]:
+            test(f"I866-{_lbl866}: incremental compact", False, str(_e866_inner))
+        try:
+            _conn866.close()
+        except Exception:
+            pass
+        for _p866 in [_db866, REPO / "test_i866b_compact.db"]:
+            try:
+                _p866.unlink()
+            except Exception:
+                pass
+
+except Exception as _e866:
+    for _lbl866 in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]:
+        test(f"I866-{_lbl866}: incremental compact", False, str(_e866))
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
