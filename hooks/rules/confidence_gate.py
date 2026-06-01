@@ -88,7 +88,7 @@ class ConfidenceGateRule(Rule):
 
     def evaluate(self, event, data):
         tool_name = data.get("toolName", "")
-        tool_args = data.get("toolArgs", {})
+        tool_args = data.get("toolArgs") or data.get("toolInput") or {}
         if not isinstance(tool_args, dict):
             tool_args = {}
 
