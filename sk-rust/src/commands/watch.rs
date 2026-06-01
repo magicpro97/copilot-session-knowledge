@@ -96,6 +96,8 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
     }
 
     // --daemon: fork to background, write PID file, parent exits immediately.
+    // On non-Unix platforms daemon mode is unsupported; warn and fall through
+    // to run in the foreground instead of exiting with an error.
     if opts.daemon {
         if !session_state.exists() {
             eprintln!(
@@ -104,7 +106,10 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
             );
             return ExitCode::from(1);
         }
+        #[cfg(unix)]
         return handle_daemon_command(args, &pid_file);
+        #[cfg(not(unix))]
+        eprintln!("[watch] Warning: daemon mode not supported on Windows, running in foreground");
     }
 
     if !session_state.exists() {
@@ -601,12 +606,19 @@ fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn daemon_stop_impl(pid_file: &Path) -> ExitCode {
+    ExitCode::from(daemon_stop_result(pid_file))
+}
+
+/// Inner stop logic that returns a plain `u8` exit code so unit tests can
+/// assert the result without needing `ExitCode: PartialEq`.
+#[cfg(unix)]
+fn daemon_stop_result(pid_file: &Path) -> u8 {
     let Some(pid) = read_pid_file(pid_file) else {
         eprintln!(
             "[watch] No daemon running (PID file not found: {})",
             pid_file.display()
         );
-        return ExitCode::from(1);
+        return 1;
     };
     let status = std::process::Command::new("kill")
         .arg("-TERM")
@@ -616,11 +628,11 @@ fn daemon_stop_impl(pid_file: &Path) -> ExitCode {
     match status {
         Ok(s) if s.success() => {
             println!("[watch] Stopped daemon (PID {pid})");
-            ExitCode::SUCCESS
+            0
         }
         _ => {
             eprintln!("[watch] Daemon (PID {pid}) was not running; PID file removed");
-            ExitCode::SUCCESS
+            0
         }
     }
 }
@@ -633,6 +645,8 @@ fn daemon_stop_impl(_pid_file: &Path) -> ExitCode {
 
 #[cfg(unix)]
 fn daemon_start_impl(args: &[String], pid_file: &Path) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+
     // Check for an already-running daemon; handle stale PID files.
     if let Some(existing_pid) = read_pid_file(pid_file) {
         if is_process_alive(existing_pid) {
@@ -654,15 +668,37 @@ fn daemon_start_impl(args: &[String], pid_file: &Path) -> ExitCode {
                 .cloned(),
         )
         .collect();
-    match std::process::Command::new(&exe)
-        .args(&child_args)
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(&child_args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+        .stderr(std::process::Stdio::null());
+    // Call setsid in the child before exec so it becomes the leader of a new
+    // session, detaching it from the parent's controlling terminal.  Without
+    // this the child remains in the same process group and will receive SIGHUP
+    // when the terminal closes.
+    // SAFETY: setsid(2) is async-signal-safe.  The freshly-forked child is
+    // never a process-group leader, so the call always succeeds.
+    unsafe {
+        cmd.pre_exec(|| {
+            extern "C" {
+                fn setsid() -> i32;
+            }
+            setsid();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
         Ok(child) => {
             let pid = child.id();
+            // Wait briefly to confirm the child is still alive after setsid
+            // before writing the PID file.  This avoids recording a PID for a
+            // process that exited immediately (e.g. due to an exec error).
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            if !is_process_alive(pid) {
+                eprintln!("[watch] Daemon process exited immediately; PID file not written");
+                return ExitCode::from(1);
+            }
             if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
                 eprintln!("[watch] Warning: could not write PID file: {e}");
             }
@@ -680,8 +716,11 @@ fn daemon_start_impl(args: &[String], pid_file: &Path) -> ExitCode {
 
 #[cfg(not(unix))]
 fn daemon_start_impl(_args: &[String], _pid_file: &Path) -> ExitCode {
-    eprintln!("sk watch --daemon is not supported on Windows");
-    ExitCode::from(1)
+    // Caller in run_watch already printed the warning and falls through to the
+    // foreground loop.  This stub exists only so handle_daemon_command compiles
+    // on all platforms.
+    eprintln!("[watch] Warning: daemon mode not supported on Windows, running in foreground");
+    ExitCode::SUCCESS
 }
 
 fn print_install_hint() {
@@ -1043,6 +1082,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn stop_returns_error_when_no_pid_file() {
+        // --stop must return exit code 1 when no PID file exists.
+        let path = PathBuf::from("/nonexistent/path/watch.pid");
+        assert_eq!(
+            daemon_stop_result(&path),
+            1u8,
+            "--stop should return exit code 1 when PID file is missing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn daemon_stop_no_pid_file_returns_error() {
         let path = PathBuf::from("/nonexistent/path/watch.pid");
         let code = daemon_stop_impl(&path);
@@ -1061,10 +1112,13 @@ mod tests {
 
     #[cfg(not(unix))]
     #[test]
-    fn daemon_windows_start_returns_error() {
+    fn daemon_windows_start_warns_runs_foreground() {
+        // On Windows --daemon prints a warning and returns SUCCESS so the
+        // foreground watch loop continues normally.
         let args: Vec<String> = vec![];
         let path = PathBuf::from("watch.pid");
         let _code = daemon_start_impl(&args, &path);
+        // No assertion on ExitCode (no PartialEq); the test verifies no panic.
     }
 
     #[test]
