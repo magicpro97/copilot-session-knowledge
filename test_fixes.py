@@ -16702,6 +16702,123 @@ except Exception as _e743_int:
 
 
 # ---------------------------------------------------------------------------
+# I895: Expanded quota/rate-limit pattern matrix (Anthropic, Azure, Gemini, Mistral, Ollama)
+# ---------------------------------------------------------------------------
+try:
+    import importlib as _importlib895
+    import sys as _sys895
+    import types as _types895
+
+    _tent895_spec = _importlib895.util.spec_from_file_location("tentacle895", REPO / "tentacle.py")
+    _tent895 = _importlib895.util.module_from_spec(_tent895_spec)  # type: ignore[arg-type]
+    _tent895_spec.loader.exec_module(_tent895)  # type: ignore[union-attr]
+    _cls = _tent895._classify_quota_signal
+
+    # Anthropic patterns
+    test(
+        "I895-1: overloaded_error → provider_overloaded",
+        _cls("overloaded_error") == "provider_overloaded",
+        _cls("overloaded_error"),
+    )
+    test(
+        "I895-2: 529 Overloaded → provider_overloaded",
+        _cls("529 Overloaded") == "provider_overloaded",
+        _cls("529 Overloaded"),
+    )
+    test("I895-3: rate_limit_error → rate_limit", _cls("rate_limit_error") == "rate_limit", _cls("rate_limit_error"))
+    test(
+        "I895-4: Request too large → context_limit",
+        _cls("Request too large") == "context_limit",
+        _cls("Request too large"),
+    )
+
+    # Azure OpenAI patterns
+    test("I895-5: BillingIssue → billing_issue", _cls("BillingIssue") == "billing_issue", _cls("BillingIssue"))
+    test(
+        "I895-6: DeploymentNotFound → deployment_unavailable",
+        _cls("DeploymentNotFound") == "deployment_unavailable",
+        _cls("DeploymentNotFound"),
+    )
+    test("I895-7: content_filter → content_filter", _cls("content_filter") == "content_filter", _cls("content_filter"))
+
+    # Google Gemini patterns
+    test(
+        "I895-8: RESOURCE_EXHAUSTED → quota_exceeded",
+        _cls("RESOURCE_EXHAUSTED") == "quota_exceeded",
+        _cls("RESOURCE_EXHAUSTED"),
+    )
+    test("I895-9: rateLimitExceeded → rate_limit", _cls("rateLimitExceeded") == "rate_limit", _cls("rateLimitExceeded"))
+    test(
+        "I895-10: User location is not supported → region_blocked",
+        _cls("User location is not supported") == "region_blocked",
+        _cls("User location is not supported"),
+    )
+
+    # Mistral patterns
+    test(
+        "I895-11: insufficient_quota → quota_exceeded",
+        _cls("insufficient_quota") == "quota_exceeded",
+        _cls("insufficient_quota"),
+    )
+    test(
+        "I895-12: tokens_per_second exceeded → rate_limit",
+        _cls("tokens_per_second exceeded") == "rate_limit",
+        _cls("tokens_per_second exceeded"),
+    )
+    test(
+        "I895-13: capacity exceeded → provider_overloaded",
+        _cls("capacity exceeded") == "provider_overloaded",
+        _cls("capacity exceeded"),
+    )
+
+    # Ollama local patterns
+    test(
+        "I895-14: model is loading → model_loading",
+        _cls("model is loading") == "model_loading",
+        _cls("model is loading"),
+    )
+    test(
+        "I895-15: no available runners → provider_overloaded",
+        _cls("no available runners") == "provider_overloaded",
+        _cls("no available runners"),
+    )
+    test("I895-16: out of memory → out_of_memory", _cls("out of memory") == "out_of_memory", _cls("out of memory"))
+
+    # Regression: existing generic patterns still match
+    test(
+        "I895-17: regression rate-limit → rate_limit",
+        _cls("rate-limit exceeded") == "rate_limit",
+        _cls("rate-limit exceeded"),
+    )
+    test(
+        "I895-18: regression quota_exceeded",
+        _cls("quota exceeded for this project") == "quota_exceeded",
+        _cls("quota exceeded for this project"),
+    )
+    test(
+        "I895-19: regression context_window",
+        _cls("context window exceeded") == "context_limit",
+        _cls("context window exceeded"),
+    )
+
+    # Non-matching text returns None
+    test("I895-20: no match → None", _cls("everything is fine") is None, repr(_cls("everything is fine")))
+    test("I895-21: empty string → None", _cls("") is None, repr(_cls("")))
+
+except Exception as _e895:
+    for _lbl895 in [str(i) for i in range(1, 22)]:
+        test(f"I895-{_lbl895}: quota pattern matrix", False, str(_e895))
+# ---------------------------------------------------------------------------
+if FAIL == 0:
+    print("🎉 All tests passed!")
+else:
+    print(f"⚠️  {FAIL} test(s) need attention")
+    for _fn in FAIL_NAMES:
+        print(f"    ❌ {_fn}")
+sys.exit(0 if FAIL == 0 else 1)
+
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
