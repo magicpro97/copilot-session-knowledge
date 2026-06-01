@@ -89,7 +89,7 @@ jobs:
           python3 benchmark.py startup --runs 7 --warmups 2 --timeout 10 --baseline-file .benchmarks/sk-startup-baseline.json --regression-threshold 20 -- sk-rust/target/release/sk --help
       - name: Upload startup benchmark baseline
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sk-startup-baseline
           path: .benchmarks/sk-startup-baseline.json

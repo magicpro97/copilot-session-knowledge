@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload startup baseline artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sk-python-startup-baseline
           path: .benchmarks/sk-python-startup-baseline.json
@@ -333,7 +333,7 @@ jobs:
 
       - name: Upload Playwright smoke report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-smoke-report
           path: |
@@ -343,7 +343,7 @@ jobs:
 
       - name: Upload Playwright smoke test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-smoke-test-results
           path: browse-ui/test-results/
@@ -403,7 +403,7 @@ jobs:
 
       - name: Upload Playwright visual report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-visual-report
           path: |
@@ -474,7 +474,7 @@ jobs:
 
       - name: Upload Playwright report (trace + screenshot evidence)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pairing-e2e-report
           path: |
