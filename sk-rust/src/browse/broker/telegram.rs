@@ -170,11 +170,11 @@ impl DbKnowledge {
     /// Open `knowledge.db` and return a new instance, or `None` on failure.
     pub fn open() -> Option<Self> {
         match KnowledgeDb::open() {
-            Ok(db) => Some(Self {
-                db: Mutex::new(db),
-            }),
+            Ok(db) => Some(Self { db: Mutex::new(db) }),
             Err(e) => {
-                warn!("DbKnowledge: failed to open knowledge.db, falling back to NoopKnowledge: {e}");
+                warn!(
+                    "DbKnowledge: failed to open knowledge.db, falling back to NoopKnowledge: {e}"
+                );
                 None
             }
         }
@@ -183,9 +183,7 @@ impl DbKnowledge {
     /// Construct from an existing [`KnowledgeDb`] — used in tests.
     #[cfg(test)]
     pub(crate) fn from_db(db: KnowledgeDb) -> Self {
-        Self {
-            db: Mutex::new(db),
-        }
+        Self { db: Mutex::new(db) }
     }
 }
 
@@ -248,7 +246,10 @@ impl KnowledgeSource for DbKnowledge {
                 .filter_map(|r| r.ok())
                 .map(|(id, title, content)| SearchResult {
                     id: id.to_string(),
-                    summary: format!("{title} — {}", &content.chars().take(80).collect::<String>()),
+                    summary: format!(
+                        "{title} — {}",
+                        &content.chars().take(80).collect::<String>()
+                    ),
                 })
                 .collect(),
             Err(e) => {
@@ -288,7 +289,10 @@ impl KnowledgeSource for DbKnowledge {
                 .filter_map(|r| r.ok())
                 .map(|(id, title, content)| SearchResult {
                     id: id.to_string(),
-                    summary: format!("{title} — {}", &content.chars().take(80).collect::<String>()),
+                    summary: format!(
+                        "{title} — {}",
+                        &content.chars().take(80).collect::<String>()
+                    ),
                 })
                 .collect(),
             Err(e) => {
@@ -306,7 +310,12 @@ impl KnowledgeSource for DbKnowledge {
         }
         let mut lines = vec![format!("*Briefing: {topic}*\n")];
         for (i, r) in results.iter().enumerate() {
-            let summary = r.summary.chars().take(120).collect::<String>().replace(['*', '_'], "");
+            let summary = r
+                .summary
+                .chars()
+                .take(120)
+                .collect::<String>()
+                .replace(['*', '_'], "");
             lines.push(format!("{}. `{}`\n   {}", i + 1, r.id, summary));
         }
         lines.join("\n")
