@@ -190,6 +190,16 @@ pub fn app(state: AppState) -> Router {
             "/api/operator/sessions/:id/delete",
             post(crate::browse::api::operator::handle_delete_session_post),
         )
+        // ── Active-run registry endpoints (issue #451 PR-B) ─────────────────
+        // Real-time consumers: poll GET /api/operator/runs (SSE not available).
+        .route(
+            "/api/operator/runs",
+            get(crate::browse::api::operator::handle_list_active_runs),
+        )
+        .route(
+            "/api/operator/runs/:id",
+            get(crate::browse::api::operator::handle_get_active_run),
+        )
         // ── Workflow API (issue #453 PR-B) ──────────────────────────────
         .route(
             "/api/workflow/health",

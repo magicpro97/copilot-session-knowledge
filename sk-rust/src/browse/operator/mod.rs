@@ -8,6 +8,7 @@
 //!   (issue #451 PR-B)
 
 pub mod actions;
+pub mod active_runs;
 pub mod console;
 pub mod redaction;
 pub mod runs;

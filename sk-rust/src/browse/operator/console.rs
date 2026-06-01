@@ -448,10 +448,11 @@ pub fn update_session(
 
 /// Check whether the session has a currently-active (non-terminal) run.
 ///
-/// Dormant for PR-A — the in-memory run registry will be wired in PR-B.
-// TODO(#451 PR-B): wire to the active-run registry.
-fn has_active_run(_session_id: &str) -> bool {
-    false
+/// Consults the in-memory active-run registry introduced in PR-B.
+/// A run is considered to belong to this session when its `tentacle_name`
+/// starts with `session_id` (see `active_runs::has_run_for_session`).
+fn has_active_run(session_id: &str) -> bool {
+    super::active_runs::has_run_for_session(session_id)
 }
 
 // ── I/O helpers ────────────────────────────────────────────────────────────────

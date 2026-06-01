@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
+use crate::browse::operator::active_runs;
 use crate::browse::operator::console::{
     create_session, delete_session, get_session, list_sessions, update_session, CreateError,
     CreateSessionParams, UpdateError,
@@ -311,4 +312,31 @@ fn str_field(obj: &serde_json::Map<String, Value>, key: &str, max_len: usize) ->
         .chars()
         .take(max_len)
         .collect()
+}
+
+// ── Active-run endpoints ───────────────────────────────────────────────────────
+//
+// Real-time consumers: the existing HTTP server does not support SSE streams.
+// Poll `GET /api/operator/runs` for live progress updates.
+
+/// `GET /api/operator/runs` — list all in-memory active runs.
+pub async fn handle_list_active_runs() -> Response {
+    let runs = active_runs::list();
+    let count = runs.len();
+    let arr = serde_json::to_value(runs).unwrap_or(Value::Array(vec![]));
+    json_ok_val(json!({ "runs": arr, "count": count }))
+}
+
+/// `GET /api/operator/runs/:id` — fetch a single active run by ID.
+///
+/// Returns 404 when the run is not found in the in-memory registry.
+pub async fn handle_get_active_run(Path(run_id): Path<String>) -> Response {
+    match active_runs::get(&run_id) {
+        Some(run) => json_ok_val(serde_json::to_value(run).unwrap_or(Value::Null)),
+        None => json_err(
+            &format!("run '{run_id}' not found"),
+            "RUN_NOT_FOUND",
+            StatusCode::NOT_FOUND,
+        ),
+    }
 }
