@@ -13,6 +13,10 @@ native-embed   = ["dep:reqwest", "dep:tokio"]
 native-sync    = ["dep:reqwest", "dep:tokio"]
 native-watch   = ["dep:notify"]
 native-hooks   = []
+# Enables SK_MARKERS_DIR env override in markers_dir() for integration tests
+# that must not write to the real ~/.copilot/markers/ directory.
+# Never enable in production builds.
+test-helpers   = []
 # Wave-14/16/17/19: hot-path classification/write loop, deterministic relation
 # extraction, native residual helpers, and SEMANTIC_PROXIMITY (TF-IDF cosine).
 # In scope: knowledge_entries write, ke_fts sync, knowledge_relations for
