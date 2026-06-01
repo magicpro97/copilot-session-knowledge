@@ -355,7 +355,13 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some(Commands::SkillSuggest { args }) => run_fallback("skill-suggest.py", &args),
+        Some(Commands::SkillSuggest { args }) => {
+            if std::env::var("SK_SKILL_SUGGEST_NATIVE").unwrap_or_default() == "1" {
+                commands::skill_suggest::run_skill_suggest_command(&args)
+            } else {
+                run_fallback("skill-suggest.py", &args)
+            }
+        }
         Some(Commands::Statusline { args }) => commands::status::run_statusline_command(&args),
         Some(Commands::Status { args }) => commands::status::run_status_command(&args),
         Some(Commands::SkillPatch { args }) => run_fallback("skill-patch.py", &args),

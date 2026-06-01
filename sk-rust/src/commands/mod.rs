@@ -11,6 +11,7 @@ pub mod project;
 pub mod query;
 pub mod retro;
 pub mod retry;
+pub mod skill_suggest;
 pub mod status;
 pub mod sync_native;
 pub mod sync_run;
