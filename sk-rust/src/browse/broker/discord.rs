@@ -113,7 +113,9 @@ impl ChannelRateLimiter {
 
                 // Evict timestamps outside the current window.
                 let now = Instant::now();
-                while queue.front().is_some_and(|t| now.duration_since(*t) >= RATE_LIMIT_WINDOW)
+                while queue
+                    .front()
+                    .is_some_and(|t| now.duration_since(*t) >= RATE_LIMIT_WINDOW)
                 {
                     queue.pop_front();
                 }
@@ -167,8 +169,11 @@ impl CommandDispatcher {
                     if results.is_empty() {
                         format!("No results for: {arg}")
                     } else {
-                        let mut lines =
-                            vec![format!("**Search: {}** — {} result(s)\n", arg, results.len())];
+                        let mut lines = vec![format!(
+                            "**Search: {}** — {} result(s)\n",
+                            arg,
+                            results.len()
+                        )];
                         for (i, r) in results.iter().enumerate().take(SEARCH_LIMIT) {
                             let summary = r
                                 .summary
@@ -209,9 +214,7 @@ impl CommandDispatcher {
                 }
             }
             "/help" | "/start" => HELP_TEXT.to_owned(),
-            _ => format!(
-                "Unknown command: {cmd_raw}\nSend /help to see available commands."
-            ),
+            _ => format!("Unknown command: {cmd_raw}\nSend /help to see available commands."),
         }
     }
 }
@@ -354,11 +357,7 @@ impl DiscordClient {
     /// `POST /channels/{id}/messages`
     ///
     /// Retries on 429 (respecting `Retry-After`) up to 5 times.
-    async fn send_message(
-        &self,
-        channel_id: &str,
-        content: &str,
-    ) -> Result<(), BrokerError> {
+    async fn send_message(&self, channel_id: &str, content: &str) -> Result<(), BrokerError> {
         let url = format!("{}/channels/{}/messages", self.base_url, channel_id);
         let payload = json!({ "content": content });
         let mut rate_limit_retries: u32 = 0;
@@ -491,9 +490,7 @@ impl DiscordBroker {
         }
 
         // Auth: drop messages from unauthorized users.
-        if !self.authorized_user_id.is_empty()
-            && msg.author.id != self.authorized_user_id
-        {
+        if !self.authorized_user_id.is_empty() && msg.author.id != self.authorized_user_id {
             debug!(
                 author_id = %msg.author.id,
                 authorized = %self.authorized_user_id,
@@ -726,9 +723,7 @@ mod tests {
     fn dispatch_status() {
         let d = make_dispatcher();
         let resp = d.dispatch("/status");
-        assert!(
-            resp.to_lowercase().contains("uptime") || resp.to_lowercase().contains("status")
-        );
+        assert!(resp.to_lowercase().contains("uptime") || resp.to_lowercase().contains("status"));
     }
 
     #[test]
@@ -759,8 +754,7 @@ mod tests {
     fn discord_broker_new_fails_on_empty_token() {
         // Empty / whitespace-only tokens must fail fast before sending requests.
         for bad in &["", "   ", "\t"] {
-            let result =
-                DiscordBroker::new(bad, "chan", "user", Arc::new(NoopKnowledge), None);
+            let result = DiscordBroker::new(bad, "chan", "user", Arc::new(NoopKnowledge), None);
             assert!(
                 result.is_err(),
                 "empty/blank token {:?} should be rejected",
@@ -779,7 +773,10 @@ mod tests {
             Arc::new(NoopKnowledge),
             Some("http://localhost:9999"),
         );
-        assert!(result.is_ok(), "broker should construct with base_url_override");
+        assert!(
+            result.is_ok(),
+            "broker should construct with base_url_override"
+        );
     }
 
     #[test]
@@ -816,17 +813,26 @@ mod tests {
             DiscordMessage {
                 id: "1000000000000000003".to_owned(),
                 content: "newest".to_owned(),
-                author: DiscordUser { id: "u1".to_owned(), bot: false },
+                author: DiscordUser {
+                    id: "u1".to_owned(),
+                    bot: false,
+                },
             },
             DiscordMessage {
                 id: "1000000000000000001".to_owned(),
                 content: "oldest".to_owned(),
-                author: DiscordUser { id: "u1".to_owned(), bot: false },
+                author: DiscordUser {
+                    id: "u1".to_owned(),
+                    bot: false,
+                },
             },
             DiscordMessage {
                 id: "1000000000000000002".to_owned(),
                 content: "middle".to_owned(),
-                author: DiscordUser { id: "u1".to_owned(), bot: false },
+                author: DiscordUser {
+                    id: "u1".to_owned(),
+                    bot: false,
+                },
             },
         ];
 
