@@ -363,6 +363,44 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "bulk_learn",
+        "description": (
+            "Import many knowledge entries at once from an inline NDJSON array. "
+            "Each entry must have 'category', 'title', 'description'; optional: 'tags', 'confidence', 'wing', 'room'. "
+            "Invalid records are skipped without aborting. Issue #898."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "description": "Array of knowledge entry objects to import.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "category": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "tags": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "wing": {"type": "string"},
+                            "room": {"type": "string"},
+                        },
+                        "required": ["category", "title", "description"],
+                    },
+                    "minItems": 1,
+                    "maxItems": 500,
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate without writing (default false).",
+                },
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -1193,6 +1231,62 @@ def _run_compact_session(arguments: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
 
 
+# ---------------------------------------------------------------------------
+# bulk_learn — import many knowledge entries from an inline array (issue #898)
+# ---------------------------------------------------------------------------
+
+
+def _run_bulk_learn_ndjson(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Process an inline array of knowledge entry objects (issue #898)."""
+    _check_auth(arguments)
+
+    raw_entries = arguments.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'entries' must be a non-empty array")
+    if len(raw_entries) > 500:
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'entries' array exceeds 500-item limit")
+    dry_run = _optional_bool(arguments, "dry_run", default=False)
+
+    learn_py = TOOLS_DIR / "learn.py"
+    if not learn_py.exists():
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, "learn.py not found")
+
+    import tempfile
+
+    ndjson_lines = []
+    for item in raw_entries:
+        if isinstance(item, dict):
+            ndjson_lines.append(json.dumps(item, ensure_ascii=False))
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".ndjson",
+        delete=False,
+        encoding="utf-8",
+        dir=str(TOOLS_DIR),
+    ) as tmp:
+        tmp.write("\n".join(ndjson_lines))
+        tmp_path = tmp.name
+
+    try:
+        learn_spec = importlib.util.spec_from_file_location("learn_bulk_mod", learn_py)
+        learn_module = importlib.util.module_from_spec(learn_spec)
+        learn_spec.loader.exec_module(learn_module)
+        result = learn_module._import_bulk(tmp_path, dry_run=dry_run)
+    except Exception as exc:
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, f"bulk import failed: {exc}") from exc
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return {
+        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+        "structuredContent": result,
+    }
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -1224,6 +1318,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_compact_session(arguments)
     if name == "batch_learn":
         return _run_batch_learn(arguments, progress_token=progress_token)
+    if name == "bulk_learn":
+        return _run_bulk_learn_ndjson(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

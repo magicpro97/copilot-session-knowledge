@@ -3263,6 +3263,153 @@ def _maybe_autopr(
 
 # ---- End Auto-PR helpers ---------------------------------------------------
 
+_BULK_VALID_CATEGORIES = frozenset({"mistake", "pattern", "decision", "tool", "feature", "refactor", "discovery"})
+_BULK_MAX_CONTENT = 10_000
+
+
+def _import_bulk(filepath: str, dry_run: bool = False) -> dict:
+    """Parse an NDJSON file and import each line as a knowledge entry.
+
+    Each line must be a JSON object with at minimum:
+      - category (str, one of the valid learn categories)
+      - title    (str, non-empty)
+      - description (str, non-empty; truncated to 10 000 chars)
+
+    Optional fields: tags (str), confidence (float 0-1), wing (str), room (str).
+
+    Blank lines and lines starting with # are silently skipped.
+    Invalid records are tallied but never raise exceptions.
+
+    Returns: {imported, skipped, errors, error_details}
+    """
+    imported = 0
+    skipped = 0
+    errors = 0
+    error_details: list[dict] = []
+
+    path = Path(filepath)
+    if not path.exists():
+        return {
+            "imported": 0,
+            "skipped": 0,
+            "errors": 1,
+            "error_details": [{"line": 0, "reason": f"File not found: {filepath}"}],
+        }
+
+    try:
+        raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return {
+            "imported": 0,
+            "skipped": 0,
+            "errors": 1,
+            "error_details": [{"line": 0, "reason": f"Cannot read file: {exc}"}],
+        }
+
+    for lineno, line in enumerate(raw_lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            errors += 1
+            error_details.append({"line": lineno, "reason": f"JSON parse error: {exc}"})
+            print(f"  [warn] line {lineno}: JSON parse error — {exc}", file=sys.stderr)
+            continue
+
+        if not isinstance(obj, dict):
+            errors += 1
+            error_details.append({"line": lineno, "reason": "Expected a JSON object"})
+            print(f"  [warn] line {lineno}: expected JSON object, got {type(obj).__name__}", file=sys.stderr)
+            continue
+
+        category = obj.get("category", "")
+        title = obj.get("title", "")
+        description = obj.get("description", "")
+        validation_error = None
+
+        if not isinstance(category, str) or not category.strip():
+            validation_error = "missing required field 'category'"
+        elif category not in _BULK_VALID_CATEGORIES:
+            validation_error = (
+                f"invalid category {category!r}; must be one of: {', '.join(sorted(_BULK_VALID_CATEGORIES))}"
+            )
+        elif not isinstance(title, str) or not title.strip():
+            validation_error = "missing required field 'title'"
+        elif not isinstance(description, str) or not description.strip():
+            validation_error = "missing required field 'description'"
+        elif len(description) > _BULK_MAX_CONTENT:
+            skipped += 1
+            print(
+                f"  [skip] line {lineno}: description exceeds {_BULK_MAX_CONTENT} chars — skipped",
+                file=sys.stderr,
+            )
+            continue
+
+        if validation_error:
+            errors += 1
+            error_details.append({"line": lineno, "reason": validation_error})
+            print(f"  [warn] line {lineno}: {validation_error}", file=sys.stderr)
+            continue
+
+        tags = obj.get("tags", "")
+        if not isinstance(tags, str):
+            tags = ""
+
+        confidence = obj.get("confidence", None)
+        if confidence is not None:
+            try:
+                confidence = float(confidence)
+                if not (0.0 <= confidence <= 1.0):
+                    confidence = None
+            except (TypeError, ValueError):
+                confidence = None
+
+        wing = obj.get("wing", "")
+        if not isinstance(wing, str):
+            wing = ""
+
+        room = obj.get("room", "")
+        if not isinstance(room, str):
+            room = ""
+
+        if dry_run:
+            imported += 1
+            continue
+
+        try:
+            eid = with_retry(
+                add_entry,
+                category,
+                title.strip(),
+                description.strip(),
+                tags=tags,
+                session_id="bulk-import",
+                confidence=confidence,
+                wing=wing,
+                room=room,
+                skip_gate=True,
+                skip_scan=False,
+                quiet=True,
+            )
+            if eid >= 0:
+                imported += 1
+            else:
+                skipped += 1
+        except Exception as exc:
+            errors += 1
+            error_details.append({"line": lineno, "reason": f"Insert failed: {exc}"})
+            print(f"  [warn] line {lineno}: insert failed — {exc}", file=sys.stderr)
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+        "error_details": error_details,
+    }
+
 
 def main():
     args = sys.argv[1:]
@@ -3503,6 +3650,27 @@ def main():
             print(f"Error: --relate-list requires an integer entry ID (got {raw_id!r})", file=sys.stderr)
             sys.exit(1)
         show_relate_list(entry_id)
+        return
+
+    # Handle --bulk NDJSON import (issue #898)
+    if "--bulk" in args:
+        idx = args.index("--bulk")
+        if idx + 1 >= len(args) or args[idx + 1].startswith("--"):
+            print("Error: --bulk requires a filepath", file=sys.stderr)
+            sys.exit(1)
+        _bulk_path = args[idx + 1]
+        _bulk_dry = "--dry-run" in args
+        _bulk_json = "--json" in args
+        result = _import_bulk(_bulk_path, dry_run=_bulk_dry)
+        if _bulk_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _verb = "Would import" if _bulk_dry else "Imported"
+            print(f"{_verb} {result['imported']} / skipped {result['skipped']} / errors {result['errors']}")
+            for _ed in result.get("error_details", []):
+                print(f"  ✗ line {_ed['line']}: {_ed['reason']}", file=sys.stderr)
+        if result["errors"] and not result["imported"] and not result["skipped"]:
+            sys.exit(1)
         return
 
     # Handle --relate command
