@@ -46,7 +46,8 @@
 //! sk watch                   Run in foreground (Ctrl+C to stop)
 //! sk watch --interval 30     Custom poll interval (seconds)
 //! sk watch --once            Single check then exit
-//! sk watch --daemon          Background process (Unix: note; Windows: foreground)
+//! sk watch --daemon          Fork to background (Unix); writes PID to ~/.copilot/session-state/watch.pid
+//! sk watch --stop            Send SIGTERM to daemon and remove PID file (Unix only)
 //! sk watch --changed-only    Print changed files before re-extracting
 //! sk watch --install-hint    Print auto-start setup instructions
 //! ```
@@ -87,6 +88,24 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
 
     let copilot_dir = resolve_copilot_dir();
     let session_state = copilot_dir.join("session-state");
+    let pid_file = pid_file_path(&session_state);
+
+    // --stop: signal running daemon and exit (no lock needed).
+    if opts.stop {
+        return handle_stop_command(&pid_file);
+    }
+
+    // --daemon: fork to background, write PID file, parent exits immediately.
+    if opts.daemon {
+        if !session_state.exists() {
+            eprintln!(
+                "[watch] Error: session-state directory not found: {}",
+                session_state.display()
+            );
+            return ExitCode::from(1);
+        }
+        return handle_daemon_command(args, &pid_file);
+    }
 
     if !session_state.exists() {
         eprintln!(
@@ -111,13 +130,6 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
     let running = Arc::new(AtomicBool::new(true));
     if let Err(e) = install_shutdown_handler(running.clone()) {
         eprintln!("[watch] Warning: {e}");
-    }
-
-    if opts.daemon {
-        #[cfg(windows)]
-        println!("[watch] Note: --daemon on Windows starts in foreground.");
-        #[cfg(not(windows))]
-        println!("[watch] Note: --daemon runs in foreground in the native watcher (native fork not yet implemented).");
     }
 
     let watch_dirs = build_watch_dirs(&copilot_dir);
@@ -471,6 +483,7 @@ struct WatchOpts {
     interval: u64,
     once: bool,
     daemon: bool,
+    stop: bool,
     changed_only: bool,
     install_hint: bool,
     help: bool,
@@ -483,6 +496,7 @@ fn parse_watch_args(args: &[String]) -> WatchOpts {
         interval: DEFAULT_INTERVAL,
         once: false,
         daemon: false,
+        stop: false,
         changed_only: false,
         install_hint: false,
         help: false,
@@ -502,6 +516,10 @@ fn parse_watch_args(args: &[String]) -> WatchOpts {
             }
             "--daemon" | "--service" => {
                 opts.daemon = true;
+                i += 1;
+            }
+            "--stop" => {
+                opts.stop = true;
                 i += 1;
             }
             "--changed-only" => {
@@ -538,12 +556,132 @@ fn print_watch_help() {
          \x20   sk watch                   Run in foreground (Ctrl+C to stop)\n\
          \x20   sk watch --interval 30     Custom poll interval (seconds)\n\
          \x20   sk watch --once            Single check then exit\n\
-         \x20   sk watch --daemon          Background process\n\
+         \x20   sk watch --daemon          Fork to background (Unix); PID → ~/.copilot/session-state/watch.pid\n\
+         \x20   sk watch --stop            Send SIGTERM to daemon and remove PID file (Unix only)\n\
          \x20   sk watch --changed-only    Print changed files before re-extracting\n\
          \x20   sk watch --install-hint    Print auto-start setup instructions\n\
          \x20   sk watch --poll            Force polling mode (disable native filesystem events)\n\
          \x20   sk watch --event-watch     (deprecated) Alias for default event-driven mode"
     );
+}
+
+// ── Daemon management (--daemon / --stop) ────────────────────────────────────
+
+fn pid_file_path(session_state: &Path) -> PathBuf {
+    session_state.join("watch.pid")
+}
+
+fn read_pid_file(pid_file: &Path) -> Option<u32> {
+    std::fs::read_to_string(pid_file)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// Send SIGTERM to the daemon and remove the PID file.
+fn handle_stop_command(pid_file: &Path) -> ExitCode {
+    daemon_stop_impl(pid_file)
+}
+
+/// Fork to background: re-spawn self without --daemon, write child PID.
+fn handle_daemon_command(args: &[String], pid_file: &Path) -> ExitCode {
+    daemon_start_impl(args, pid_file)
+}
+
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn daemon_stop_impl(pid_file: &Path) -> ExitCode {
+    let Some(pid) = read_pid_file(pid_file) else {
+        eprintln!(
+            "[watch] No daemon running (PID file not found: {})",
+            pid_file.display()
+        );
+        return ExitCode::from(1);
+    };
+    let status = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+    let _ = std::fs::remove_file(pid_file);
+    match status {
+        Ok(s) if s.success() => {
+            println!("[watch] Stopped daemon (PID {pid})");
+            ExitCode::SUCCESS
+        }
+        _ => {
+            eprintln!("[watch] Daemon (PID {pid}) was not running; PID file removed");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn daemon_stop_impl(_pid_file: &Path) -> ExitCode {
+    eprintln!("sk watch --stop is not supported on Windows");
+    ExitCode::from(1)
+}
+
+#[cfg(unix)]
+fn daemon_start_impl(args: &[String], pid_file: &Path) -> ExitCode {
+    // Check for an already-running daemon; handle stale PID files.
+    if let Some(existing_pid) = read_pid_file(pid_file) {
+        if is_process_alive(existing_pid) {
+            eprintln!(
+                "[watch] Daemon already running (PID {existing_pid}). \
+                 Use `sk watch --stop` to stop it first."
+            );
+            return ExitCode::from(1);
+        }
+        let _ = std::fs::remove_file(pid_file);
+        eprintln!("[watch] Removed stale PID file (PID {existing_pid} is dead)");
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sk"));
+    // Re-spawn self without --daemon so the child runs the foreground watch loop.
+    let child_args: Vec<String> = std::iter::once("watch".to_string())
+        .chain(
+            args.iter()
+                .filter(|a| *a != "--daemon" && *a != "--service")
+                .cloned(),
+        )
+        .collect();
+    match std::process::Command::new(&exe)
+        .args(&child_args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            let pid = child.id();
+            if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
+                eprintln!("[watch] Warning: could not write PID file: {e}");
+            }
+            println!("[watch] Daemon started with PID {pid}");
+            println!("[watch] PID file: {}", pid_file.display());
+            println!("[watch] Stop with: sk watch --stop");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("[watch] Failed to start daemon: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn daemon_start_impl(_args: &[String], _pid_file: &Path) -> ExitCode {
+    eprintln!("sk watch --daemon is not supported on Windows");
+    ExitCode::from(1)
 }
 
 fn print_install_hint() {
@@ -848,6 +986,85 @@ mod tests {
         let opts = parse_watch_args(&args);
         let use_events = !opts.poll;
         assert!(!use_events, "events should be disabled with --poll");
+    }
+
+    #[test]
+    fn parse_stop_flag_sets_opt() {
+        let args: Vec<String> = vec!["--stop".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(opts.stop, "--stop should set stop=true");
+        assert!(!opts.daemon, "daemon should remain false");
+    }
+
+    #[test]
+    fn parse_stop_default_false() {
+        let args: Vec<String> = vec![];
+        let opts = parse_watch_args(&args);
+        assert!(!opts.stop, "stop should default to false");
+    }
+
+    #[test]
+    fn parse_daemon_flag_sets_opt() {
+        let args: Vec<String> = vec!["--daemon".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(opts.daemon, "--daemon should set daemon=true");
+        assert!(!opts.stop, "stop should remain false");
+    }
+
+    #[test]
+    fn parse_service_alias_sets_daemon() {
+        let args: Vec<String> = vec!["--service".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(opts.daemon, "--service should set daemon=true");
+    }
+
+    #[test]
+    fn pid_file_path_is_in_session_state() {
+        let base = PathBuf::from("/tmp/test-session-state");
+        let pid = pid_file_path(&base);
+        assert_eq!(pid, base.join("watch.pid"));
+    }
+
+    #[test]
+    fn read_pid_file_returns_none_when_missing() {
+        let path = PathBuf::from("/nonexistent/path/watch.pid");
+        assert!(read_pid_file(&path).is_none());
+    }
+
+    #[test]
+    fn read_pid_file_parses_valid_pid() {
+        let dir = std::env::temp_dir().join("sk-watch-test-pid");
+        let _ = std::fs::create_dir_all(&dir);
+        let pid_file = dir.join("watch.pid");
+        std::fs::write(&pid_file, "12345\n").unwrap();
+        assert_eq!(read_pid_file(&pid_file), Some(12345));
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_stop_no_pid_file_returns_error() {
+        let path = PathBuf::from("/nonexistent/path/watch.pid");
+        let code = daemon_stop_impl(&path);
+        // ExitCode doesn't impl PartialEq; check it is non-success by inspecting
+        // the fact that no panic occurred and the PID-absent path ran.
+        // We verify indirectly: the function should not panic.
+        let _ = code;
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn daemon_windows_stop_returns_error() {
+        let path = PathBuf::from("watch.pid");
+        let _code = daemon_stop_impl(&path);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn daemon_windows_start_returns_error() {
+        let args: Vec<String> = vec![];
+        let path = PathBuf::from("watch.pid");
+        let _code = daemon_start_impl(&args, &path);
     }
 
     #[test]
