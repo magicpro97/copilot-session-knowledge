@@ -16,7 +16,13 @@ export interface EntryEditorProps {
   entry: KnowledgeInsightsEntry & { tags?: string; description?: string };
   host?: HostProfile;
   /** Called after a successful save so the parent can update its local state. */
-  onSaved?: (updated: { id: number; title: string; description: string; tags: string; confidence: number }) => void;
+  onSaved?: (updated: {
+    id: number;
+    title: string;
+    description: string;
+    tags: string;
+    confidence: number;
+  }) => void;
   className?: string;
 }
 
@@ -88,9 +94,12 @@ export function EntryEditor({ entry, host = LOCAL_HOST, onSaved, className }: En
 
   if (isEditing) {
     return (
-      <div className={cn("rounded border px-2 py-1.5 space-y-2", className)} data-testid="entry-editor-form">
+      <div
+        className={cn("space-y-2 rounded border px-2 py-1.5", className)}
+        data-testid="entry-editor-form"
+      >
         <div>
-          <label className="text-[10px] text-muted-foreground uppercase tracking-wide">Title</label>
+          <label className="text-muted-foreground text-[10px] tracking-wide uppercase">Title</label>
           <Input
             value={editState.title}
             onChange={(e) => setEditState((s) => ({ ...s, title: e.target.value }))}
@@ -99,17 +108,21 @@ export function EntryEditor({ entry, host = LOCAL_HOST, onSaved, className }: En
           />
         </div>
         <div>
-          <label className="text-[10px] text-muted-foreground uppercase tracking-wide">Description</label>
+          <label className="text-muted-foreground text-[10px] tracking-wide uppercase">
+            Description
+          </label>
           <textarea
             value={editState.description}
             onChange={(e) => setEditState((s) => ({ ...s, description: e.target.value }))}
             rows={4}
-            className="mt-0.5 w-full rounded-lg border border-input bg-transparent px-2.5 py-1 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 resize-none"
+            className="border-input focus-visible:border-ring focus-visible:ring-ring/50 mt-0.5 w-full resize-none rounded-lg border bg-transparent px-2.5 py-1 text-xs outline-none focus-visible:ring-2"
             data-testid="entry-editor-description"
           />
         </div>
         <div>
-          <label className="text-[10px] text-muted-foreground uppercase tracking-wide">Tags (comma-separated)</label>
+          <label className="text-muted-foreground text-[10px] tracking-wide uppercase">
+            Tags (comma-separated)
+          </label>
           <Input
             value={editState.tags}
             onChange={(e) => setEditState((s) => ({ ...s, tags: e.target.value }))}
@@ -119,8 +132,9 @@ export function EntryEditor({ entry, host = LOCAL_HOST, onSaved, className }: En
           />
         </div>
         <div>
-          <label className="text-[10px] text-muted-foreground uppercase tracking-wide">
-            Confidence: <span className="font-medium tabular-nums">{editState.confidence.toFixed(2)}</span>
+          <label className="text-muted-foreground text-[10px] tracking-wide uppercase">
+            Confidence:{" "}
+            <span className="font-medium tabular-nums">{editState.confidence.toFixed(2)}</span>
           </label>
           <input
             type="range"
@@ -128,12 +142,14 @@ export function EntryEditor({ entry, host = LOCAL_HOST, onSaved, className }: En
             max={1}
             step={0.05}
             value={editState.confidence}
-            onChange={(e) => setEditState((s) => ({ ...s, confidence: parseFloat(e.target.value) }))}
-            className="mt-0.5 w-full h-4 accent-primary"
+            onChange={(e) =>
+              setEditState((s) => ({ ...s, confidence: parseFloat(e.target.value) }))
+            }
+            className="accent-primary mt-0.5 h-4 w-full"
             data-testid="entry-editor-confidence"
           />
         </div>
-        <div className="flex gap-1 justify-end pt-0.5">
+        <div className="flex justify-end gap-1 pt-0.5">
           <Button
             variant="ghost"
             size="xs"
@@ -157,7 +173,10 @@ export function EntryEditor({ entry, host = LOCAL_HOST, onSaved, className }: En
   }
 
   return (
-    <div className={cn("group rounded border px-2 py-1.5 relative", className)} data-testid="entry-editor-display">
+    <div
+      className={cn("group relative rounded border px-2 py-1.5", className)}
+      data-testid="entry-editor-display"
+    >
       <div className="flex items-start gap-2">
         <span className="text-foreground min-w-0 flex-1 truncate text-xs font-medium">
           {displayState.title}
@@ -168,7 +187,7 @@ export function EntryEditor({ entry, host = LOCAL_HOST, onSaved, className }: En
         <button
           onClick={handleEditClick}
           aria-label="Edit entry"
-          className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+          className="text-muted-foreground hover:text-foreground shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
           data-testid="entry-editor-edit-btn"
         >
           ✏️
