@@ -1,20 +1,31 @@
 //! Retry-event listener hook — spawn an external script, parse its decision.
 //!
-//! Path resolution order:
-//!   1. `$SK_RETRY_LISTENER` env var (absolute path to an existing file).
-//!   2. `~/.copilot/hooks/sk-retry-listener.ps1` (Windows) or `.sh` (Unix).
+//! # Configuration
 //!
-//! If no listener file exists the call is a silent no-op.
+//! Set `SK_RETRY_LISTENER` to the absolute path of an executable script to
+//! opt in.  When the variable is unset (or points to a nonexistent file) the
+//! hook is a silent no-op and all retry behaviour is unchanged.
 //!
-//! The listener receives a JSON payload on stdin, and may respond on stdout with
-//! `{"abort":true}` or `{"delay_override_seconds": N}`.  Any other output
-//! (including empty or non-JSON) is treated as `ListenerDecision::Observe`.
+//! Alternatively, place a default listener at:
+//!   - Unix:    `~/.copilot/hooks/sk-retry-listener.sh`
+//!   - Windows: `~/.copilot/hooks/sk-retry-listener.ps1`
 //!
-//! Timeout: 2 seconds.  After the timeout the child is left to finish in its own
-//! time (fire-and-forget) and `listener_timeout: true` is set in the result.
-
-// New module — public API not yet wired into a binary call site.
-#![allow(dead_code)]
+//! # Protocol
+//!
+//! The listener receives a JSON payload on stdin describing the pending retry,
+//! and may respond on stdout with one of:
+//!
+//! | stdout                              | effect                              |
+//! |-------------------------------------|-------------------------------------|
+//! | `{"abort":true}`                    | stop the retry sequence immediately |
+//! | `{"delay_override_seconds": N}`     | sleep N seconds (clamped 0–300)     |
+//! | *(empty, non-JSON, or other fields)*| proceed with the computed delay     |
+//!
+//! # Timeout
+//!
+//! The listener must respond within **2 seconds**.  After the deadline the
+//! child is left to finish in its own time (fire-and-forget) and the retry
+//! sequence continues with the default computed delay.
 
 use std::env;
 use std::io::{Read, Write};
@@ -381,6 +392,17 @@ pub fn decide_with_listener(
     };
 
     let result = invoke_retry_listener(&payload);
+
+    if result.listener_timeout {
+        if let Some(path) = &result.listener_path {
+            eprintln!("sk-retry-listener: {path}: timed out (>2 s) — using computed delay");
+        }
+    }
+    if let Some(stderr) = &result.listener_stderr {
+        if env::var("SK_RETRY_DEBUG").as_deref() == Ok("1") {
+            eprintln!("sk-retry-listener: stderr: {stderr}");
+        }
+    }
 
     match result.decision {
         ListenerDecision::Abort => RetryDecision::Stop(StopReason::ListenerAbort),
