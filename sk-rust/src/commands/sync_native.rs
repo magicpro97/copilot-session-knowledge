@@ -174,6 +174,11 @@ pub fn run_sync_status_command(args: &[String]) -> ExitCode {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::sync::Mutex;
+
+    /// Serialise tests that mutate `SK_TOOLS_DIR` so they don't race each other
+    /// when the test suite runs with the default thread-per-test parallelism.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Create an in-memory DB with the real Python sync schema.
     fn make_sync_db() -> Connection {
@@ -269,6 +274,7 @@ mod tests {
     #[test]
     fn load_sync_config_file_parses_connection_string() {
         use std::fs;
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = std::env::temp_dir().join(format!(
             "sk_sync_cfg_parse_{}",
             std::time::SystemTime::now()
@@ -285,7 +291,6 @@ mod tests {
         .unwrap();
 
         let prev = std::env::var("SK_TOOLS_DIR").ok();
-        // SAFETY: single-threaded test context; no concurrent env access.
         unsafe { std::env::set_var("SK_TOOLS_DIR", &temp) };
         let (conn_str, dream_enabled) = load_sync_config_file();
         match prev {
@@ -301,6 +306,7 @@ mod tests {
     #[test]
     fn load_sync_config_file_returns_empty_when_absent() {
         use std::fs;
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = std::env::temp_dir().join(format!(
             "sk_sync_cfg_absent_{}",
             std::time::SystemTime::now()
@@ -312,7 +318,6 @@ mod tests {
         fs::create_dir_all(&temp).unwrap();
 
         let prev = std::env::var("SK_TOOLS_DIR").ok();
-        // SAFETY: single-threaded test context; no concurrent env access.
         unsafe { std::env::set_var("SK_TOOLS_DIR", &temp) };
         let (conn_str, _) = load_sync_config_file();
         match prev {
