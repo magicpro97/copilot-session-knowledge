@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::resolve_tools_dir;
+use crate::config::{resolve_copilot_dir, resolve_tools_dir};
 use crate::db::connection::KnowledgeDb;
 
 // ── Knowledge signals ─────────────────────────────────────────────────────────
@@ -246,33 +246,48 @@ fn collect_skills_signals() -> serde_json::Value {
         "score": 0.0,
     });
 
-    let tools_dir = resolve_tools_dir();
-    let skills_dir = tools_dir.join("skills");
-    if !skills_dir.is_dir() {
+    // Check both user-level (~/.copilot/skills/) and project-level (.github/skills/)
+    let copilot_dir = resolve_copilot_dir();
+    let user_skills_dir = copilot_dir.join("skills");
+    let project_skills_dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".github")
+        .join("skills");
+
+    let candidate_dirs = [&user_skills_dir, &project_skills_dir];
+    if !candidate_dirs.iter().any(|d| d.is_dir()) {
         return base;
     }
-
-    let entries = match std::fs::read_dir(&skills_dir) {
-        Ok(e) => e,
-        Err(_) => return base,
-    };
 
     let mut skill_count = 0u64;
     let mut with_skill_md = 0u64;
     let mut with_metadata = 0u64;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        skill_count += 1;
-        if path.join("SKILL.md").exists() {
-            with_skill_md += 1;
-        }
-        // Accept either metadata.json or skill.json as metadata presence
-        if path.join("metadata.json").exists() || path.join("skill.json").exists() {
-            with_metadata += 1;
+    for skills_dir in candidate_dirs.iter().filter(|d| d.is_dir()) {
+        let entries = match std::fs::read_dir(skills_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Only count actual skill directories (must contain SKILL.md or skill.yaml)
+            let has_skill_md = path.join("SKILL.md").exists();
+            let has_skill_yaml = path.join("skill.yaml").exists();
+            if !has_skill_md && !has_skill_yaml {
+                continue;
+            }
+            skill_count += 1;
+            if has_skill_md {
+                with_skill_md += 1;
+            }
+            // Accept either metadata.json or skill.json as metadata presence
+            if path.join("metadata.json").exists() || path.join("skill.json").exists() {
+                with_metadata += 1;
+            }
         }
     }
 
@@ -309,8 +324,20 @@ fn collect_hooks_signals() -> serde_json::Value {
         "score": 0.0,
     });
 
-    let tools_dir = resolve_tools_dir();
-    let hooks_dir = tools_dir.join("hooks");
+    // Hooks JSON lives at ~/.copilot/hooks/hooks.json.
+    // SK_TOOLS_DIR may redirect for test overrides: treat its parent as the copilot dir.
+    let hooks_dir = if let Ok(override_dir) = std::env::var("SK_TOOLS_DIR") {
+        let p = std::path::PathBuf::from(override_dir);
+        if p.exists() {
+            p.parent()
+                .map(|parent| parent.join("hooks"))
+                .unwrap_or_else(|| resolve_copilot_dir().join("hooks"))
+        } else {
+            resolve_copilot_dir().join("hooks")
+        }
+    } else {
+        resolve_copilot_dir().join("hooks")
+    };
     if !hooks_dir.is_dir() {
         return base;
     }
