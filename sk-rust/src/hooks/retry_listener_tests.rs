@@ -3,6 +3,7 @@
 //! Each test that modifies env vars takes the `TEST_LOCK` mutex to avoid
 //! races when the test suite runs tests in parallel.
 
+#[cfg(unix)]
 use std::sync::Mutex;
 
 #[cfg(unix)]
@@ -18,13 +19,16 @@ use crate::retry::{RetryDecision, RetryPolicy, StopReason};
 #[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(unix)]
 fn lock_test() -> std::sync::MutexGuard<'static, ()> {
     // Recover from poison — a prior panicking test must not block other tests.
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+#[cfg(unix)]
 fn sample_payload() -> RetryListenerPayload {
     RetryListenerPayload {
         ts: "2025-01-01T00:00:00Z".to_string(),
@@ -357,6 +361,7 @@ fn test_decide_with_listener_timeout_fallthrough() {
 /// Returns the directory path (the directory will NOT be auto-cleaned — tests
 /// are short-lived and the OS will reclaim space).  We avoid the `tempfile`
 /// crate to keep this stdlib-only.
+#[cfg(unix)]
 fn tempdir() -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
