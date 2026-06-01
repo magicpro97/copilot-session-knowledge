@@ -9,6 +9,11 @@ use crate::commands::fallback::run_fallback;
 #[cfg(feature = "native-code-index")]
 const MAX_FILE_BYTES: u64 = 1_024 * 1_024;
 
+/// Default debounce / poll-watcher interval for `--watch` mode (milliseconds).
+/// Override at runtime with `--poll-interval <ms>`.
+#[cfg(feature = "native-code-index")]
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+
 // ── Feature-gated tree-sitter implementation ───────────────────────
 #[cfg(feature = "native-code-index")]
 mod native {
@@ -27,7 +32,7 @@ mod native {
     use crate::daemon::install_shutdown_handler;
     use crate::db::connection::knowledge_db_path;
 
-    use super::MAX_FILE_BYTES;
+    use super::{DEFAULT_POLL_INTERVAL_MS, MAX_FILE_BYTES};
 
     struct Symbol {
         kind: String,
@@ -420,11 +425,48 @@ mod native {
         Ok(symbols.len())
     }
 
+    /// Remove all index entries for a deleted file.
+    pub fn delete_file_entries(file_path: &Path, root: &Path, project_id: &str) -> Result<(), String> {
+        let rel_path = file_path
+            .strip_prefix(root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .to_string();
+
+        let conn = open_db()?;
+        conn.execute(
+            "DELETE FROM code_index WHERE project_id = ? AND file_path = ?",
+            rusqlite::params![project_id, rel_path],
+        )
+        .map_err(|e| format!("delete index: {e}"))?;
+        conn.execute(
+            "DELETE FROM code_fts WHERE file_path = ? AND project_id = ?",
+            rusqlite::params![rel_path, project_id],
+        )
+        .ok();
+        Ok(())
+    }
+
+    /// Parse `--poll-interval <ms>` from args, falling back to DEFAULT_POLL_INTERVAL_MS.
+    fn parse_poll_interval(args: &[String]) -> u64 {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "--poll-interval" {
+                if let Some(v) = it.next() {
+                    if let Ok(ms) = v.parse::<u64>() {
+                        return ms;
+                    }
+                }
+            }
+        }
+        DEFAULT_POLL_INTERVAL_MS
+    }
+
     /// Watch `root` for file changes and re-index incrementally.
     ///
     /// Requires the `native-watch` Cargo feature (provides the `notify` crate).
     #[cfg(feature = "native-watch")]
-    pub fn run_watch(root: &Path, project_id: &str) -> ExitCode {
+    pub fn run_watch(root: &Path, project_id: &str, poll_interval_ms: u64) -> ExitCode {
         use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
         use std::collections::HashSet;
         use std::sync::mpsc;
@@ -438,7 +480,7 @@ mod native {
 
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
 
-        let debounce = std::time::Duration::from_millis(500);
+        let debounce = std::time::Duration::from_millis(poll_interval_ms);
         let notify_cfg = NotifyConfig::default().with_poll_interval(debounce);
         let mut watcher = match RecommendedWatcher::new(tx, notify_cfg) {
             Ok(w) => w,
@@ -453,8 +495,9 @@ mod native {
             return ExitCode::FAILURE;
         }
 
-        // Debounce loop: accumulate changed paths for 500ms of silence, then re-index.
+        // Debounce loop: accumulate changed paths for `poll_interval_ms` of silence, then re-index.
         let mut pending: HashSet<PathBuf> = HashSet::new();
+        let mut removed: HashSet<PathBuf> = HashSet::new();
 
         while running.load(Ordering::SeqCst) {
             match rx.recv_timeout(debounce) {
@@ -467,6 +510,13 @@ mod native {
                                 if path.is_file() {
                                     pending.insert(path);
                                 }
+                            }
+                        }
+                        EventKind::Remove(_) => {
+                            for path in event.paths {
+                                // A removed path no longer exists on disk; track it
+                                // so we can purge stale DB entries after the debounce.
+                                removed.insert(path);
                             }
                         }
                         _ => {}
@@ -493,6 +543,27 @@ mod native {
                                 Err(e) => {
                                     eprintln!(
                                         "error re-indexing {}: {e}",
+                                        file.display()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    if !removed.is_empty() {
+                        let batch: Vec<PathBuf> = removed.drain().collect();
+                        for file in &batch {
+                            match delete_file_entries(file, root, project_id) {
+                                Ok(()) => {
+                                    let rel = file
+                                        .strip_prefix(root)
+                                        .unwrap_or(file)
+                                        .display()
+                                        .to_string();
+                                    println!("Removed stale index entries for {rel}");
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "error removing index for {}: {e}",
                                         file.display()
                                     );
                                 }
@@ -594,8 +665,9 @@ mod native {
         let project_id = derive_project_id(&canonical);
 
         if args.iter().any(|a| a == "--watch") {
+            let poll_ms = parse_poll_interval(args);
             #[cfg(feature = "native-watch")]
-            return run_watch(&canonical, &project_id);
+            return run_watch(&canonical, &project_id, poll_ms);
 
             #[cfg(not(feature = "native-watch"))]
             {
