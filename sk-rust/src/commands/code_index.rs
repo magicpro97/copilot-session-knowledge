@@ -16,12 +16,15 @@ mod native {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::SystemTime;
 
     use rusqlite::Connection;
     use sha2::{Digest, Sha256};
     use streaming_iterator::StreamingIterator;
 
+    use crate::daemon::install_shutdown_handler;
     use crate::db::connection::knowledge_db_path;
 
     use super::MAX_FILE_BYTES;
@@ -336,6 +339,179 @@ mod native {
         Ok((files_indexed, symbols_total))
     }
 
+    /// Incrementally re-index a single file (used by watch mode).
+    ///
+    /// Returns the number of symbols indexed, or 0 if the file is skipped
+    /// (unsupported language, too large, unreadable).
+    pub fn index_single_file(file_path: &Path, root: &Path, project_id: &str) -> Result<usize, String> {
+        // Skip files exceeding MAX_FILE_BYTES
+        if let Ok(meta) = file_path.metadata() {
+            if meta.len() > MAX_FILE_BYTES {
+                return Ok(0);
+            }
+        }
+
+        let lang = match detect_language(file_path) {
+            Some(l) => l,
+            None => return Ok(0),
+        };
+
+        let rel_path = file_path
+            .strip_prefix(root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .to_string();
+
+        let mtime = file_mtime(file_path);
+
+        let source = match fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(e) => return Err(format!("read {}: {e}", file_path.display())),
+        };
+
+        let symbols = extract_symbols(&source, lang);
+        if symbols.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = open_db()?;
+
+        conn.execute(
+            "DELETE FROM code_index WHERE project_id = ? AND file_path = ?",
+            rusqlite::params![project_id, rel_path],
+        )
+        .ok();
+        conn.execute(
+            "DELETE FROM code_fts WHERE file_path = ? AND project_id = ?",
+            rusqlite::params![rel_path, project_id],
+        )
+        .ok();
+
+        for sym in &symbols {
+            conn.execute(
+                "INSERT OR REPLACE INTO code_index \
+                 (project_id, file_path, language, symbol_kind, symbol_name, \
+                  start_line, end_line, content_snippet, file_mtime) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    project_id,
+                    rel_path,
+                    lang,
+                    sym.kind,
+                    sym.name,
+                    sym.start_line as i64,
+                    sym.end_line as i64,
+                    sym.snippet,
+                    mtime,
+                ],
+            )
+            .map_err(|e| format!("insert: {e}"))?;
+
+            let rowid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO code_fts (rowid, symbol_name, content_snippet, \
+                 file_path, language, project_id) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                rusqlite::params![rowid, sym.name, sym.snippet, rel_path, lang, project_id],
+            )
+            .ok();
+        }
+
+        Ok(symbols.len())
+    }
+
+    /// Watch `root` for file changes and re-index incrementally.
+    ///
+    /// Requires the `native-watch` Cargo feature (provides the `notify` crate).
+    #[cfg(feature = "native-watch")]
+    pub fn run_watch(root: &Path, project_id: &str) -> ExitCode {
+        use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+        use std::collections::HashSet;
+        use std::sync::mpsc;
+
+        let running = Arc::new(AtomicBool::new(true));
+        if let Err(e) = install_shutdown_handler(running.clone()) {
+            eprintln!("warning: could not install shutdown handler: {e}");
+        }
+
+        println!("Watching {} for changes...", root.display());
+
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+
+        let debounce = std::time::Duration::from_millis(500);
+        let notify_cfg = NotifyConfig::default().with_poll_interval(debounce);
+        let mut watcher = match RecommendedWatcher::new(tx, notify_cfg) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("error: failed to create watcher: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+
+        if let Err(e) = watcher.watch(root, RecursiveMode::Recursive) {
+            eprintln!("error: failed to watch {}: {e}", root.display());
+            return ExitCode::FAILURE;
+        }
+
+        // Debounce loop: accumulate changed paths for 500ms of silence, then re-index.
+        let mut pending: HashSet<PathBuf> = HashSet::new();
+
+        while running.load(Ordering::SeqCst) {
+            match rx.recv_timeout(debounce) {
+                Ok(Ok(event)) => {
+                    // Accumulate changed / created paths
+                    use notify::EventKind;
+                    match event.kind {
+                        EventKind::Create(_) | EventKind::Modify(_) => {
+                            for path in event.paths {
+                                if path.is_file() {
+                                    pending.insert(path);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("watch error: {e}");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // No event within debounce window — flush pending files
+                    if !pending.is_empty() {
+                        let batch: Vec<PathBuf> = pending.drain().collect();
+                        for file in &batch {
+                            match index_single_file(file, root, project_id) {
+                                Ok(0) => {} // skipped (unsupported lang, empty)
+                                Ok(n) => {
+                                    let rel = file
+                                        .strip_prefix(root)
+                                        .unwrap_or(file)
+                                        .display()
+                                        .to_string();
+                                    println!("Re-indexed {rel} ({n} symbols)");
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "error re-indexing {}: {e}",
+                                        file.display()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Sender dropped — watcher gone
+                    break;
+                }
+            }
+        }
+
+        drop(watcher);
+        println!("Stopped watching {}.", root.display());
+        ExitCode::SUCCESS
+    }
+
     /// Show index statistics.
     pub fn show_status() -> Result<(), String> {
         let conn = open_db()?;
@@ -417,6 +593,18 @@ mod native {
 
         let project_id = derive_project_id(&canonical);
 
+        if args.iter().any(|a| a == "--watch") {
+            #[cfg(feature = "native-watch")]
+            return run_watch(&canonical, &project_id);
+
+            #[cfg(not(feature = "native-watch"))]
+            {
+                // native-watch feature not compiled in; fall back handled by caller
+                eprintln!("note: --watch requires the native-watch feature; falling back to Python");
+                return ExitCode::FAILURE;
+            }
+        }
+
         eprintln!(
             "Indexing {} (project: {project_id}) ...",
             canonical.display()
@@ -441,15 +629,24 @@ mod native {
 ///
 /// With `native-code-index` feature: uses tree-sitter for symbol extraction.
 /// Without: falls back to Python `code-search.py --index`.
+///
+/// `--watch` mode requires both `native-code-index` and `native-watch` features.
+/// When only `native-code-index` is present, `--watch` falls back to Python.
 pub fn run_code_index_command(args: &[String]) -> ExitCode {
     #[cfg(feature = "native-code-index")]
     {
-        // --watch mode is not yet implemented in native; fall back to Python
+        // --watch: native when native-watch is also compiled in; Python otherwise.
         if args.iter().any(|a| a == "--watch") {
-            eprintln!("note: --watch mode not yet native; falling back to Python");
-            let mut v = vec!["--index".to_string()];
-            v.extend(args.iter().cloned());
-            return run_fallback("code-search.py", &v);
+            #[cfg(feature = "native-watch")]
+            return native::run(args); // run() handles --watch internally
+
+            #[cfg(not(feature = "native-watch"))]
+            {
+                eprintln!("note: --watch mode not yet native (native-watch feature absent); falling back to Python");
+                let mut v = vec!["--index".to_string()];
+                v.extend(args.iter().cloned());
+                return run_fallback("code-search.py", &v);
+            }
         }
         native::run(args)
     }
