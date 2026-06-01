@@ -17114,6 +17114,49 @@ except Exception as _e911:
 
 
 # ---------------------------------------------------------------------------
+# I909: knowledge_health MCP tool
+# ---------------------------------------------------------------------------
+try:
+    import importlib as _il909
+
+    _mcp909 = _il909.import_module("mcp-server")
+    _names909 = [t["name"] for t in _mcp909.TOOLS]
+    test("I909-1: knowledge_health tool registered", "knowledge_health" in _names909, _names909)
+
+    _kh909 = next(t for t in _mcp909.TOOLS if t["name"] == "knowledge_health")
+    _props909 = _kh909["inputSchema"]["properties"]
+    test("I909-2: include_recall param present", "include_recall" in _props909, list(_props909.keys()))
+    test("I909-3: verbose param present", "verbose" in _props909, list(_props909.keys()))
+    test(
+        "I909-4: no required params",
+        len(_kh909["inputSchema"].get("required", [])) == 0,
+        _kh909["inputSchema"].get("required", []),
+    )
+    test(
+        "I909-5: additionalProperties is False",
+        _kh909["inputSchema"].get("additionalProperties") is False,
+        _kh909["inputSchema"].get("additionalProperties"),
+    )
+    test("I909-6: _run_knowledge_health callable", callable(getattr(_mcp909, "_run_knowledge_health", None)))
+
+    _src909 = open(_mcp909.__file__).read()
+    test("I909-7: knowledge_health wired in dispatch", 'name == "knowledge_health"' in _src909, "dispatch check")
+
+    # I909-8: invoking returns an MCP-shaped envelope with structuredContent (never raises)
+    _res909 = _mcp909._run_knowledge_health({})
+    test(
+        "I909-8: returns content + structuredContent envelope",
+        isinstance(_res909, dict)
+        and isinstance(_res909.get("content"), list)
+        and isinstance(_res909.get("structuredContent"), dict),
+        _res909,
+    )
+except Exception as _e909:
+    for _i909 in range(1, 9):
+        test(f"I909-{_i909}: knowledge_health MCP tool", False, str(_e909))
+
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

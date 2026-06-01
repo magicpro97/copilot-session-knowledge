@@ -84,6 +84,11 @@ except Exception as exc:  # pragma: no cover - startup failure path
     print(f"Failed to load tool modules: {exc}", file=sys.stderr)
     raise
 
+try:
+    knowledge_health_mod = _load_script_module("mcp_knowledge_health", "knowledge-health.py")
+except Exception:  # pragma: no cover - optional module path
+    knowledge_health_mod = None
+
 
 TOOLS = [
     {
@@ -442,6 +447,19 @@ TOOLS = [
                     "description": "Output format: text (default), json (structured), or markdown.",
                 },
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "knowledge_health",
+        "description": "Check knowledge base health: entry counts, orphans, FTS sync, embedding coverage, recall telemetry",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_recall": {"type": "boolean", "default": False},
+                "verbose": {"type": "boolean", "default": False},
+            },
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -1399,6 +1417,28 @@ def _run_retro_summary(arguments: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
 
 
+def _run_knowledge_health(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Delegate to knowledge-health.py --json and return the parsed health dict."""
+    include_recall = _optional_bool(arguments, "include_recall", default=False)
+    verbose = _optional_bool(arguments, "verbose", default=False)
+    try:
+        if knowledge_health_mod is None:
+            raise RuntimeError("knowledge-health.py could not be loaded")
+        argv = ["--json"]
+        if include_recall:
+            argv.append("--recall")
+        if verbose:
+            argv.append("--verbose")
+        _exit, stdout, _stderr = _capture_module_main(knowledge_health_mod, argv)
+        body = json.loads(stdout)
+    except Exception as exc:
+        body = {"error": str(exc), "healthy": False}
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+        "structuredContent": body,
+    }
+
+
 def _run_diff_brief(arguments: dict[str, Any]) -> dict[str, Any]:
     """Return knowledge entries relevant to the current git diff (issue #894)."""
     budget = _optional_int(arguments, "budget", default=2000, minimum=100, maximum=50000)
@@ -1469,6 +1509,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_diff_brief(arguments)
     if name == "retro_summary":
         return _run_retro_summary(arguments)
+    if name == "knowledge_health":
+        return _run_knowledge_health(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

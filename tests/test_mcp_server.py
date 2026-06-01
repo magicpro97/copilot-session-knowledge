@@ -104,7 +104,7 @@ class TestToolsList(unittest.TestCase):
 
     def test_exactly_two_tools(self):
         # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry (#820); batch_learn (#833); sk_compact_session; bulk_learn (#898); now 11 tools total
-        self.assertEqual(len(mcp.TOOLS), 13)
+        self.assertEqual(len(mcp.TOOLS), 14)
 
     def test_briefing_tool_present(self):
         self.assertIn("briefing", self.tools)
@@ -1099,7 +1099,7 @@ class TestQueryMemoryTool(unittest.TestCase):
 
     def test_exactly_three_tools(self):
         # Updated: wave 8 added learn, status, session_list; code_search added later; rate_entry (#820); batch_learn (#833); sk_compact_session; bulk_learn (#898); now 11 tools total
-        self.assertEqual(len(mcp.TOOLS), 13)
+        self.assertEqual(len(mcp.TOOLS), 14)
 
     def test_rate_entry_tool_present(self):
         self.assertIn("rate_entry", self.tools)
