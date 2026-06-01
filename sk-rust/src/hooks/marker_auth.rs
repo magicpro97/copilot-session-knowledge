@@ -52,7 +52,11 @@ fn secret_path() -> PathBuf {
 }
 
 /// Path to `~/.copilot/markers/` directory.
+/// Override with `SK_MARKERS_DIR` env var (used in tests to avoid writing to real dir).
 pub fn markers_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("SK_MARKERS_DIR") {
+        return PathBuf::from(dir);
+    }
     resolve_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".copilot")
@@ -817,8 +821,13 @@ mod tests {
 
     #[test]
     fn create_tamper_marker_does_not_panic() {
-        // Best-effort — must not panic.
+        // Use a temp dir via SK_MARKERS_DIR to avoid writing to real ~/.copilot/markers/.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("SK_MARKERS_DIR", tmp.path());
         create_tamper_marker();
+        std::env::remove_var("SK_MARKERS_DIR");
+        // Marker file must exist in the temp dir (not the real markers dir).
+        assert!(tmp.path().join("hooks-tampered").exists());
     }
 
     // -----------------------------------------------------------------------
