@@ -28,6 +28,7 @@ Usage:
     sk code-search [<args>...]    Search source code (ripgrep + FTS5 index)
     sk code-index [<args>...]     Extract code symbols into SQLite index
     sk code-search-benchmark [<args>...]  Benchmark 4 code-search approaches (--profile for full metrics)
+    sk code-embed [<args>...]     Hybrid semantic code search with embeddings
     sk cost     [<args>...]       Historical token-cost analytics
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
@@ -170,6 +171,9 @@ _DIRECT: dict[str, CommandMeta] = {
         "code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")
     ),
     "code-index": CommandMeta("code-index.py", "Extract and index code symbols (regex + FTS5)", ("search", "index")),
+    "code-embed": CommandMeta(
+        "code-embed.py", "Hybrid BM25+vector semantic code search (sqlite-vec + embeddings)", ("search", "index")
+    ),
     "code-search-benchmark": CommandMeta(
         "tests/test_code_search_benchmark.py",
         "Benchmark 4 code-search approaches (--profile for full metrics)",

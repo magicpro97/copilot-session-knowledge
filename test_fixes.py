@@ -16603,6 +16603,104 @@ except Exception as _e856:
         test(f"I856-{_label856}: LLM tag inference", False, str(_e856))
 
 
+# ─── I743: code-embed command ─────────────────────────────────────────────
+
+print("\n🧠 I743: code-embed command")
+
+_code_embed_path = REPO / "code-embed.py"
+_code_embed_text = _code_embed_path.read_text(encoding="utf-8") if _code_embed_path.exists() else ""
+
+try:
+    import ast as _ast743
+
+    _ast743.parse(_code_embed_text)
+    test("I743-01: code-embed.py exists and parses cleanly", _code_embed_path.exists())
+except Exception as _e743_parse:
+    test("I743-01: code-embed.py exists and parses cleanly", False, str(_e743_parse))
+
+test(
+    "I743-02: Has Windows UTF-8 block",
+    'if os.name == "nt":\n    sys.stdout.reconfigure(encoding="utf-8")' in _code_embed_text,
+)
+test("I743-03: No pickle usage", "pickle" not in _code_embed_text)
+test("I743-04: No datetime.utcnow usage", "datetime.utcnow" not in _code_embed_text)
+test("I743-05: Uses struct.pack for embedding", "struct.pack" in _code_embed_text)
+test("I743-06: Has --provider flag in argparse", '"--provider"' in _code_embed_text)
+test("I743-07: Has --batch-size flag", '"--batch-size"' in _code_embed_text)
+test("I743-08: FTS5 sanitization function exists", "def _sanitize_fts" in _code_embed_text)
+test("I743-09: RRF fusion function exists", "def _rrf_fusion" in _code_embed_text)
+test(
+    "I743-10: Graceful fallback to BM25-only when no provider",
+    "return bm25_rows[:limit]" in _code_embed_text and "provider is None" in _code_embed_text,
+)
+_migrate_text743 = (REPO / "migrate.py").read_text(encoding="utf-8")
+test(
+    "I743-11: migration v47 exists in migrate.py",
+    "47" in _migrate_text743 and "code_index_embedding" in _migrate_text743 and "embedding BLOB" in _migrate_text743,
+)
+
+# --- I743-12: SQLite-backed BM25 fallback integration test ---
+try:
+    import importlib.util as _ilu743
+    import sqlite3 as _sql743
+    import tempfile as _tmp743
+
+    _spec743 = _ilu743.spec_from_file_location("code_embed743", REPO / "code-embed.py")
+    _ce743 = importlib.util.module_from_spec(_spec743)
+    _spec743.loader.exec_module(_ce743)
+
+    with _tmp743.TemporaryDirectory() as _td743:
+        _db743_path = Path(_td743) / "test_ce.db"
+        _conn743 = _sql743.connect(str(_db743_path))
+        _conn743.execute(
+            """CREATE TABLE code_index (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL DEFAULT '',
+                file_path TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT '',
+                symbol_kind TEXT NOT NULL DEFAULT '',
+                symbol_name TEXT NOT NULL DEFAULT '',
+                start_line INTEGER NOT NULL DEFAULT 0,
+                end_line INTEGER NOT NULL DEFAULT 0,
+                content_snippet TEXT NOT NULL DEFAULT '',
+                file_mtime REAL NOT NULL DEFAULT 0.0,
+                indexed_at TEXT DEFAULT (datetime('now')),
+                embedding BLOB
+            )"""
+        )
+        _conn743.execute(
+            """CREATE VIRTUAL TABLE code_fts USING fts5(
+                symbol_name, content_snippet, file_path UNINDEXED,
+                language UNINDEXED, project_id UNINDEXED,
+                tokenize='porter unicode61 remove_diacritics 2'
+            )"""
+        )
+        _conn743.execute(
+            "INSERT INTO code_index(project_id, file_path, language, symbol_kind, symbol_name, "
+            "start_line, end_line, content_snippet) VALUES "
+            "('proj1', 'auth.py', 'python', 'function', 'verify_token', 1, 10, 'def verify_token(jwt): ...')"
+        )
+        _conn743.execute(
+            "INSERT INTO code_fts(rowid, symbol_name, content_snippet, file_path, language, project_id) "
+            "VALUES (1, 'verify_token', 'def verify_token(jwt): ...', 'auth.py', 'python', 'proj1')"
+        )
+        _conn743.commit()
+
+        # Monkey-patch DB path and provider
+        _orig_db743 = _ce743.DB_PATH
+        _ce743.DB_PATH = _db743_path
+        _results743 = _ce743.search_code("verify_token", None, "", "", "", 10)
+        _ce743.DB_PATH = _orig_db743
+        _conn743.close()
+
+        test(
+            "I743-12: BM25-only fallback returns results from SQLite",
+            len(_results743) >= 1 and _results743[0]["symbol_name"] == "verify_token",
+        )
+except Exception as _e743_int:
+    test("I743-12: BM25-only fallback returns results from SQLite", False, str(_e743_int))
+
+
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")

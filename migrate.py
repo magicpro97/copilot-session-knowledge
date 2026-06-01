@@ -1926,6 +1926,13 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_ke_visibility ON knowledge_entries (visibility)",
             ],
         ),
+        (
+            47,
+            "code_index_embedding",
+            [
+                "ALTER TABLE code_index ADD COLUMN embedding BLOB",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
