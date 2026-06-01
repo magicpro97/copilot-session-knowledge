@@ -17002,6 +17002,53 @@ try:
 except Exception as _e908_outer:
     for _i908 in range(1, 9):
         test(f"I908-0{_i908}: repo-map caching", False, str(_e908_outer))
+# ---------------------------------------------------------------------------
+# I907: retro_summary MCP tool
+# ---------------------------------------------------------------------------
+try:
+    import importlib as _il907
+
+    _mcp907 = _il907.import_module("mcp-server")
+    _names907 = [t["name"] for t in _mcp907.TOOLS]
+    test("I907-1: retro_summary tool registered", "retro_summary" in _names907, _names907)
+
+    _rs907 = next(t for t in _mcp907.TOOLS if t["name"] == "retro_summary")
+    _props907 = _rs907["inputSchema"]["properties"]
+    test("I907-2: period param present", "period" in _props907, list(_props907.keys()))
+    test("I907-3: format param present", "format" in _props907, list(_props907.keys()))
+    test(
+        "I907-4: period enum is day/week/month/all",
+        set(_props907["period"]["enum"]) == {"day", "week", "month", "all"},
+        _props907["period"]["enum"],
+    )
+    test(
+        "I907-5: no required params (period/format optional)",
+        len(_rs907["inputSchema"].get("required", [])) == 0,
+        _rs907["inputSchema"].get("required", []),
+    )
+    test("I907-6: _run_retro_summary callable", callable(getattr(_mcp907, "_run_retro_summary", None)))
+
+    _src907 = open(_mcp907.__file__).read()
+    test("I907-7: retro_summary wired in dispatch", 'name == "retro_summary"' in _src907, "dispatch check")
+
+    # I907-8: invalid period returns structured error without invoking retro.py
+    _bad907 = _mcp907._run_retro_summary({"period": "decade"})
+    test(
+        "I907-8: invalid period -> error status",
+        _bad907.get("structuredContent", {}).get("status") == "error",
+        _bad907,
+    )
+
+    # I907-9: invalid format returns structured error
+    _badfmt907 = _mcp907._run_retro_summary({"format": "yaml"})
+    test(
+        "I907-9: invalid format -> error status",
+        _badfmt907.get("structuredContent", {}).get("status") == "error",
+        _badfmt907,
+    )
+except Exception as _e907:
+    for _i907 in range(1, 10):
+        test(f"I907-{_i907}: retro_summary MCP tool", False, str(_e907))
 
 
 # ---------------------------------------------------------------------------
