@@ -89,6 +89,11 @@ try:
 except Exception:  # pragma: no cover - optional module path
     knowledge_health_mod = None
 
+try:
+    repo_map_mod = _load_script_module("mcp_repo_map", "repo-map.py")
+except Exception:  # pragma: no cover - optional module path
+    repo_map_mod = None
+
 
 TOOLS = [
     {
@@ -458,6 +463,46 @@ TOOLS = [
             "properties": {
                 "include_recall": {"type": "boolean", "default": False},
                 "verbose": {"type": "boolean", "default": False},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "repo_map",
+        "description": (
+            "Generate a PageRank-ranked symbol map for a directory to inject into AI context. "
+            "Uses code_index DB when available, falls back to filesystem scan."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Root directory to map (default: '.').",
+                },
+                "top": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "description": "Number of top symbols to show (default 30).",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "project_id in code_index table (default: auto-detect from dir).",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "concise", "full"],
+                    "default": "markdown",
+                    "description": "Output format: markdown (default), concise, or full.",
+                },
+                "tokens": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 100000,
+                    "description": "Approximate output token budget (default 4000).",
+                },
             },
             "required": [],
             "additionalProperties": False,
@@ -1439,6 +1484,40 @@ def _run_knowledge_health(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_repo_map(arguments: dict) -> dict:
+    """Generate PageRank-ranked symbol map via repo-map.py."""
+    path = _optional_string(arguments, "path", max_length=500) or "."
+    top = _optional_int(arguments, "top", default=30, minimum=1, maximum=500)
+    project_id = _optional_string(arguments, "project_id", max_length=200)
+    fmt = arguments.get("format", "markdown")
+    if not isinstance(fmt, str) or fmt not in ("markdown", "concise", "full"):
+        fmt = "markdown"
+    tokens = _optional_int(arguments, "tokens", default=4000, minimum=100, maximum=100000)
+
+    argv = [path, "--format", fmt, "--top", str(top), "--tokens", str(tokens)]
+    if project_id:
+        argv += ["--project-id", project_id]
+
+    try:
+        if repo_map_mod is None:
+            raise RuntimeError("repo-map.py could not be loaded")
+        exit_code, stdout_text, stderr_text = _capture_module_main(repo_map_mod, argv)
+    except Exception as exc:
+        body: dict = {"error": str(exc), "path": path}
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+    if exit_code != 0:
+        body = {"error": stderr_text.strip() or stdout_text.strip() or "repo-map failed", "path": path}
+        return {"content": [{"type": "text", "text": json.dumps(body)}], "structuredContent": body}
+
+    text = stdout_text.strip()
+    body = {"output": text, "path": path, "format": fmt, "top": top}
+    return {
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": body,
+    }
+
+
 def _run_diff_brief(arguments: dict[str, Any]) -> dict[str, Any]:
     """Return knowledge entries relevant to the current git diff (issue #894)."""
     budget = _optional_int(arguments, "budget", default=2000, minimum=100, maximum=50000)
@@ -1511,6 +1590,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_retro_summary(arguments)
     if name == "knowledge_health":
         return _run_knowledge_health(arguments)
+    if name == "repo_map":
+        return _run_repo_map(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

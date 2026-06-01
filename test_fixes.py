@@ -17157,6 +17157,51 @@ except Exception as _e909:
 
 
 # ---------------------------------------------------------------------------
+# I922: repo_map MCP tool
+# ---------------------------------------------------------------------------
+try:
+    import importlib as _il922
+
+    _mcp922 = _il922.import_module("mcp-server")
+    _names922 = [t["name"] for t in _mcp922.TOOLS]
+    test("I922-1: repo_map tool registered", "repo_map" in _names922, _names922)
+
+    _rm922 = next(t for t in _mcp922.TOOLS if t["name"] == "repo_map")
+    _props922 = _rm922["inputSchema"]["properties"]
+    test("I922-2: path param present", "path" in _props922, list(_props922.keys()))
+    test("I922-3: top param present", "top" in _props922, list(_props922.keys()))
+    test("I922-4: format param present", "format" in _props922, list(_props922.keys()))
+    test("I922-5: tokens param present", "tokens" in _props922, list(_props922.keys()))
+    test(
+        "I922-6: no required params",
+        len(_rm922["inputSchema"].get("required", [])) == 0,
+        _rm922["inputSchema"].get("required", []),
+    )
+    test(
+        "I922-7: additionalProperties is False",
+        _rm922["inputSchema"].get("additionalProperties") is False,
+        _rm922["inputSchema"].get("additionalProperties"),
+    )
+    test("I922-8: _run_repo_map callable", callable(getattr(_mcp922, "_run_repo_map", None)))
+
+    _src922 = open(_mcp922.__file__).read()
+    test("I922-9: repo_map wired in dispatch", 'name == "repo_map"' in _src922, "dispatch check")
+
+    # I922-10: invoking returns an MCP-shaped envelope with content + structuredContent
+    _res922 = _mcp922._run_repo_map({})
+    test(
+        "I922-10: returns content + structuredContent envelope",
+        isinstance(_res922, dict)
+        and isinstance(_res922.get("content"), list)
+        and isinstance(_res922.get("structuredContent"), dict),
+        _res922,
+    )
+except Exception as _e922:
+    for _i922 in range(1, 11):
+        test(f"I922-{_i922}: repo_map MCP tool", False, str(_e922))
+
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
