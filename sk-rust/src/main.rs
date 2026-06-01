@@ -259,7 +259,13 @@ fn main() -> ExitCode {
         Some(Commands::Update { args }) => run_fallback("auto-update-tools.py", &args),
         Some(Commands::Browse { args }) => run_fallback("browse.py", &args),
         Some(Commands::Benchmark { args }) => run_fallback("benchmark.py", &args),
-        Some(Commands::Retro { args }) => run_fallback("retro.py", &args),
+        Some(Commands::Retro { args }) => {
+            if std::env::var("SK_RETRO_NATIVE").unwrap_or_default() == "1" {
+                commands::retro::run_retro_command(&args)
+            } else {
+                run_fallback("retro.py", &args)
+            }
+        }
         Some(Commands::Heal { args }) => run_fallback("copilot-cli-healer.py", &args),
 
         Some(Commands::Index { args }) => {
