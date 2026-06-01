@@ -9,6 +9,7 @@ pub mod learn;
 pub mod mcp;
 pub mod project;
 pub mod query;
+pub mod retro;
 pub mod retry;
 pub mod status;
 pub mod sync_native;
