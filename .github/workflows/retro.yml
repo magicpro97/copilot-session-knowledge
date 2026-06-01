@@ -106,6 +106,26 @@ jobs:
                   print(f"- {action}")
           PY
 
+      - name: Build native sk binary
+        run: |
+          cd sk-rust
+          cargo build --release -q 2>&1 | tail -5
+          echo "sk binary size: $(du -sh target/release/sk | cut -f1)"
+
+      - name: Smoke-test native retro (SK_RETRO_NATIVE=1)
+        env:
+          SK_RETRO_NATIVE: "1"
+        run: |
+          ./sk-rust/target/release/sk retro --score 2>&1
+          echo "Exit code: $?"
+          ./sk-rust/target/release/sk retro --json 2>&1 | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert 'retro_score' in d, 'missing retro_score'
+          assert 'subscores' in d, 'missing subscores'
+          print(f'native retro score: {d[\"retro_score\"]} (sections: {d[\"available_sections\"]})')
+          "
+
       - name: Upload retro artifact
         uses: actions/upload-artifact@v4
         with:
