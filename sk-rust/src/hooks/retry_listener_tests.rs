@@ -11,6 +11,7 @@ use std::io::Write;
 #[cfg(unix)]
 use std::time::Instant;
 
+#[cfg(unix)]
 use super::RetryListenerPayload;
 #[cfg(unix)]
 use super::{decide_with_listener, invoke_retry_listener, ListenerDecision, RetryListenerContext};

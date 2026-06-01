@@ -1057,12 +1057,14 @@ mod tests {
         assert_eq!(pid, base.join("watch.pid"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_pid_file_returns_none_when_missing() {
         let path = PathBuf::from("/nonexistent/path/watch.pid");
         assert!(read_pid_file(&path).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_pid_file_parses_valid_pid() {
         let dir = std::env::temp_dir().join("sk-watch-test-pid");
@@ -1106,12 +1108,11 @@ mod tests {
     #[cfg(not(unix))]
     #[test]
     fn daemon_windows_start_warns_runs_foreground() {
-        // On Windows --daemon prints a warning and returns SUCCESS so the
-        // foreground watch loop continues normally.
-        let args: Vec<String> = vec![];
-        let path = PathBuf::from("watch.pid");
-        let _code = daemon_start_impl(&args, &path);
-        // No assertion on ExitCode (no PartialEq); the test verifies no panic.
+        // On Windows --daemon flag is parsed but daemon_start_impl is Unix-only.
+        // Verify that --daemon is recognized in arg parsing without panicking.
+        let args: Vec<String> = vec!["--daemon".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(opts.daemon, "--daemon flag should be recognized on Windows");
     }
 
     #[test]
