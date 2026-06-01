@@ -576,6 +576,7 @@ fn pid_file_path(session_state: &Path) -> PathBuf {
     session_state.join("watch.pid")
 }
 
+#[cfg(unix)]
 fn read_pid_file(pid_file: &Path) -> Option<u32> {
     std::fs::read_to_string(pid_file)
         .ok()
@@ -588,6 +589,7 @@ fn handle_stop_command(pid_file: &Path) -> ExitCode {
 }
 
 /// Fork to background: re-spawn self without --daemon, write child PID.
+#[cfg(unix)]
 fn handle_daemon_command(args: &[String], pid_file: &Path) -> ExitCode {
     daemon_start_impl(args, pid_file)
 }
@@ -712,15 +714,6 @@ fn daemon_start_impl(args: &[String], pid_file: &Path) -> ExitCode {
             ExitCode::from(1)
         }
     }
-}
-
-#[cfg(not(unix))]
-fn daemon_start_impl(_args: &[String], _pid_file: &Path) -> ExitCode {
-    // Caller in run_watch already printed the warning and falls through to the
-    // foreground loop.  This stub exists only so handle_daemon_command compiles
-    // on all platforms.
-    eprintln!("[watch] Warning: daemon mode not supported on Windows, running in foreground");
-    ExitCode::SUCCESS
 }
 
 fn print_install_hint() {
