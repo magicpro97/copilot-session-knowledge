@@ -53,7 +53,9 @@ class EnforceLearnRule(Rule):
 
     def evaluate(self, event, data):
         tool_name = data.get("toolName", "")
-        tool_args = data.get("toolArgs", {})
+        _ta = data.get("toolArgs")
+        _ti = data.get("toolInput")
+        tool_args = {**(_ta if isinstance(_ta, dict) else {}), **(_ti if isinstance(_ti, dict) else {})}
         if not isinstance(tool_args, dict):
             tool_args = {}
 
