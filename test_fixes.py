@@ -17188,7 +17188,13 @@ try:
     test("I922-9: repo_map wired in dispatch", 'name == "repo_map"' in _src922, "dispatch check")
 
     # I922-10: invoking returns an MCP-shaped envelope with content + structuredContent
-    _res922 = _mcp922._run_repo_map({})
+    import tempfile as _tempfile922
+    import os as _os922
+
+    with _tempfile922.TemporaryDirectory() as _td922:
+        _os922.path.join(_td922, "test.py")
+        open(_os922.path.join(_td922, "test.py"), "w").write("def hello(): pass\n")
+        _res922 = _mcp922._run_repo_map({"path": _td922, "format": "markdown"})
     test(
         "I922-10: returns content + structuredContent envelope",
         isinstance(_res922, dict)

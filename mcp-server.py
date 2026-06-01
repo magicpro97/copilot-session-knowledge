@@ -1491,12 +1491,16 @@ def _run_repo_map(arguments: dict) -> dict:
     project_id = _optional_string(arguments, "project_id", max_length=200)
     fmt = arguments.get("format", "markdown")
     if not isinstance(fmt, str) or fmt not in ("markdown", "concise", "full"):
-        fmt = "markdown"
+        raise JsonRpcError(
+            JSONRPC_INVALID_PARAMS,
+            f"invalid format: {fmt!r}; accepted values: 'markdown', 'concise', 'full'",
+        )
     tokens = _optional_int(arguments, "tokens", default=4000, minimum=100, maximum=100000)
 
-    argv = [path, "--format", fmt, "--top", str(top), "--tokens", str(tokens)]
+    argv = ["--format", fmt, "--top", str(top), "--tokens", str(tokens)]
     if project_id:
         argv += ["--project-id", project_id]
+    argv += ["--", path]
 
     try:
         if repo_map_mod is None:
