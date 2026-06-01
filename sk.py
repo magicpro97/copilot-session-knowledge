@@ -1136,6 +1136,9 @@ def main(argv: list[str] | None = None) -> int:
         if meta.script is None:
             # Native-binary-only command: exec the sk binary directly.
             return _run_native_binary(cmd, rest)
+        # Opt-in native routing: SK_RETRO_NATIVE=1 bypasses retro.py (issue #899).
+        if cmd == "retro" and os.environ.get("SK_RETRO_NATIVE") == "1":
+            return _run_native_binary("retro", rest)
         return _run(str(meta), rest, cmd=cmd)
 
     # Grouped namespace?
