@@ -17049,6 +17049,68 @@ try:
 except Exception as _e907:
     for _i907 in range(1, 10):
         test(f"I907-{_i907}: retro_summary MCP tool", False, str(_e907))
+# ---------------------------------------------------------------------------
+# I911: Briefing pack / code-context budget edge cases (ref #754)
+# ---------------------------------------------------------------------------
+try:
+    import importlib.util as _ilu911
+
+    _spec911 = _ilu911.spec_from_file_location("briefing911", REPO / "briefing.py")
+    _brief911 = _ilu911.module_from_spec(_spec911)
+    _spec911.loader.exec_module(_brief911)
+    _select911 = _brief911._select_pack_snippets
+
+    _payload911 = {"summary": "x"}
+    _small911 = [{"file_path": "a.py", "content": "short"}]
+    _big911 = [{"file_path": "b.py", "content": "Z" * 5000}]
+
+    # I911-1: helper exists and is callable
+    test("I911-1: _select_pack_snippets callable", callable(_select911))
+
+    # I911-2: empty sources return empty selection (no crash)
+    test("I911-2: empty snippets -> []", _select911(_payload911, [], 1000) == [])
+
+    # I911-3: zero/falsy budget treated as unbounded (all selected)
+    test(
+        "I911-3: budget=0 selects all snippets",
+        _select911(_payload911, _small911 + _big911, 0) == _small911 + _big911,
+    )
+
+    # I911-4: budget exhaustion stops adding once over budget
+    _fit911 = _select911(_payload911, _small911, 1000)
+    test("I911-4: small snippet fits within ample budget", _fit911 == _small911, _fit911)
+
+    # I911-5: single entry larger than budget is skipped, not fatal
+    _skip911 = _select911(_payload911, _big911, 200)
+    test("I911-5: oversized single snippet skipped", _skip911 == [], _skip911)
+
+    # I911-6: oversized snippet does not starve a smaller following snippet
+    _mixed911 = _select911(_payload911, _big911 + _small911, 400)
+    test(
+        "I911-6: smaller snippet still selected after oversized one",
+        _small911[0] in _mixed911 and _big911[0] not in _mixed911,
+        _mixed911,
+    )
+
+    # I911-7: unicode content counted by serialized length without crashing
+    _uni911 = [{"file_path": "u.py", "content": "café ünïcode 🚀" * 3}]
+    _ures911 = _select911(_payload911, _uni911, 100000)
+    test("I911-7: unicode snippet handled", _ures911 == _uni911, _ures911)
+
+    # I911-8: selection never exceeds the budget on serialized output
+    import json as _json911
+
+    _budget911 = 600
+    _sel911 = _select911(_payload911, _small911 * 20, _budget911)
+    _serial911 = _json911.dumps({**_payload911, "code_context": _sel911}, indent=2, ensure_ascii=False)
+    test(
+        "I911-8: serialized selection within budget",
+        len(_serial911) <= _budget911 or _sel911 == [],
+        len(_serial911),
+    )
+except Exception as _e911:
+    for _i911 in range(1, 9):
+        test(f"I911-{_i911}: briefing pack budget edge cases", False, str(_e911))
 
 
 # ---------------------------------------------------------------------------
