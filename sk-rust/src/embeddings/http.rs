@@ -16,7 +16,8 @@
 use std::time::{Duration, Instant};
 
 use crate::embeddings::config::{get_api_key, ProviderConfig};
-use crate::retry::{decide, RetryDecision, RetryPolicy, StopReason};
+use crate::hooks::retry_listener::{decide_with_listener, RetryListenerContext};
+use crate::retry::{RetryDecision, RetryPolicy, StopReason};
 
 // ── Error types ──────────────────────────────────────────────────────────
 
@@ -126,7 +127,14 @@ pub fn call_embedding_api_with_client(
             Err(e) => {
                 let msg = e.to_string();
                 last_err = format!("Network error: {msg}");
-                match decide(&policy, attempt, started.elapsed(), &last_err, None) {
+                match decide_with_listener(
+                    &policy,
+                    attempt,
+                    started.elapsed(),
+                    &last_err,
+                    None,
+                    &RetryListenerContext::default(),
+                ) {
                     RetryDecision::Retry(wait, _kind) => {
                         eprintln!(
                             "    🌐 {last_err} — retry {}/{max_retries} in {}s",
@@ -199,7 +207,17 @@ pub fn call_embedding_api_with_client(
                     let body_txt = resp.text().unwrap_or_default();
                     last_err =
                         format!("API error {code}: {}", &body_txt[..body_txt.len().min(200)]);
-                    match decide(&policy, attempt, started.elapsed(), &last_err, None) {
+                    match decide_with_listener(
+                        &policy,
+                        attempt,
+                        started.elapsed(),
+                        &last_err,
+                        None,
+                        &RetryListenerContext {
+                            status_code: Some(u32::from(code)),
+                            ..Default::default()
+                        },
+                    ) {
                         RetryDecision::Retry(wait, _kind) => {
                             eprintln!(
                                 "    {} {last_err} — retry {}/{max_retries} in {}s",
