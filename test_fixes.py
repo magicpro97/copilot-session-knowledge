@@ -16843,6 +16843,168 @@ except Exception as _e894:
     for _lbl894 in [str(i) for i in range(1, 9)]:
         test(f"I894-{_lbl894}: diff_brief MCP tool", False, str(_e894))
 # ---------------------------------------------------------------------------
+# I908: Repo-map content-hash caching
+# ---------------------------------------------------------------------------
+
+_repo_map_path = REPO / "repo-map.py"
+_repo_map_text = _repo_map_path.read_text(encoding="utf-8") if _repo_map_path.exists() else ""
+
+test("I908-00: repo-map.py exists", _repo_map_path.exists())
+
+try:
+    import ast as _ast908
+    import importlib.util as _ilu908
+    import shutil as _shutil908
+    import tempfile as _tmp908
+
+    _ast908.parse(_repo_map_text)
+
+    # Load module for direct function testing
+    _spec908 = _ilu908.spec_from_file_location("repo_map908", _repo_map_path)
+    _rm908 = importlib.util.module_from_spec(_spec908)
+    _spec908.loader.exec_module(_rm908)
+
+    # ---------------------------------------------------------------------------
+    # I908-01: Cache miss on first run creates cache file
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_01:
+            _root908 = Path(_td908_01)
+            (_root908 / "mod.py").write_text("def hello(): pass\n", encoding="utf-8")
+            _fh908 = _rm908._compute_file_hashes(_root908)
+            _ph908 = _rm908._make_project_hash(list(_fh908.keys()))
+            _cp908 = _rm908._get_cache_path(_root908, _ph908)
+            test("I908-01: Cache file does not exist before first run", not _cp908.exists())
+            # Simulate first run: save cache
+            _rm908._save_cache(_cp908, _fh908, "map output")
+            test("I908-01: Cache miss on first run generates cache file", _cp908.exists())
+    except Exception as _e908_01:
+        test("I908-01: Cache miss on first run generates cache file", False, str(_e908_01))
+
+    # ---------------------------------------------------------------------------
+    # I908-02: Cache hit on second run returns cached output
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_02:
+            _root908b = Path(_td908_02)
+            (_root908b / "mod.py").write_text("def hello(): pass\n", encoding="utf-8")
+            _fh908b = _rm908._compute_file_hashes(_root908b)
+            _ph908b = _rm908._make_project_hash(list(_fh908b.keys()))
+            _cp908b = _rm908._get_cache_path(_root908b, _ph908b)
+            _rm908._save_cache(_cp908b, _fh908b, "cached map output")
+            # Load and verify hit
+            _cached908b = _rm908._load_cache(_cp908b)
+            _is_hit = _cached908b is not None and _cached908b.get("file_hashes") == _fh908b
+            test("I908-02: Cache hit on second run (identical files) skips regeneration", _is_hit)
+    except Exception as _e908_02:
+        test("I908-02: Cache hit on second run (identical files) skips regeneration", False, str(_e908_02))
+
+    # ---------------------------------------------------------------------------
+    # I908-03: Changed file content invalidates cache
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_03:
+            _root908c = Path(_td908_03)
+            _f908c = _root908c / "mod.py"
+            _f908c.write_text("def hello(): pass\n", encoding="utf-8")
+            _fh908c_orig = _rm908._compute_file_hashes(_root908c)
+            _ph908c = _rm908._make_project_hash(list(_fh908c_orig.keys()))
+            _cp908c = _rm908._get_cache_path(_root908c, _ph908c)
+            _rm908._save_cache(_cp908c, _fh908c_orig, "original output")
+            # Mutate file content
+            _f908c.write_text("def hello(): return 42\n", encoding="utf-8")
+            _fh908c_new = _rm908._compute_file_hashes(_root908c)
+            _cached908c = _rm908._load_cache(_cp908c)
+            _still_hit = _cached908c is not None and _cached908c.get("file_hashes") == _fh908c_new
+            test("I908-03: Changed file content invalidates cache", not _still_hit)
+    except Exception as _e908_03:
+        test("I908-03: Changed file content invalidates cache", False, str(_e908_03))
+
+    # ---------------------------------------------------------------------------
+    # I908-04: Added file invalidates cache (project_hash changes)
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_04:
+            _root908d = Path(_td908_04)
+            (_root908d / "a.py").write_text("def a(): pass\n", encoding="utf-8")
+            _fh908d_orig = _rm908._compute_file_hashes(_root908d)
+            _ph908d_orig = _rm908._make_project_hash(list(_fh908d_orig.keys()))
+            # Add a new file — project hash changes
+            (_root908d / "b.py").write_text("def b(): pass\n", encoding="utf-8")
+            _fh908d_new = _rm908._compute_file_hashes(_root908d)
+            _ph908d_new = _rm908._make_project_hash(list(_fh908d_new.keys()))
+            test("I908-04: Added file invalidates cache (project hash differs)", _ph908d_orig != _ph908d_new)
+    except Exception as _e908_04:
+        test("I908-04: Added file invalidates cache", False, str(_e908_04))
+
+    # ---------------------------------------------------------------------------
+    # I908-05: --no-cache flag bypasses cache
+    # ---------------------------------------------------------------------------
+    test(
+        "I908-05: --no-cache flag exists in argparse",
+        '"--no-cache"' in _repo_map_text or "'--no-cache'" in _repo_map_text,
+    )
+    test(
+        "I908-05: no_cache attribute used in main()",
+        "args.no_cache" in _repo_map_text,
+    )
+
+    # ---------------------------------------------------------------------------
+    # I908-06: Cache file has correct structure (version, file_hashes, map_output)
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_06:
+            _root908e = Path(_td908_06)
+            (_root908e / "mod.py").write_text("def f(): pass\n", encoding="utf-8")
+            _fh908e = _rm908._compute_file_hashes(_root908e)
+            _ph908e = _rm908._make_project_hash(list(_fh908e.keys()))
+            _cp908e = _rm908._get_cache_path(_root908e, _ph908e)
+            _rm908._save_cache(_cp908e, _fh908e, "map output here")
+            _data908e = json.loads(_cp908e.read_text(encoding="utf-8"))
+            _has_version = _data908e.get("version") == 1
+            _has_hashes = isinstance(_data908e.get("file_hashes"), dict)
+            _has_output = isinstance(_data908e.get("map_output"), str)
+            test(
+                "I908-06: Cache file has correct structure (version, file_hashes, map_output)",
+                _has_version and _has_hashes and _has_output,
+            )
+    except Exception as _e908_06:
+        test("I908-06: Cache file has correct structure", False, str(_e908_06))
+
+    # ---------------------------------------------------------------------------
+    # I908-07: Cache dir .sk-cache/ created automatically if missing
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_07:
+            _root908f = Path(_td908_07)
+            _cache_dir = _root908f / ".sk-cache"
+            test("I908-07: Cache dir does not pre-exist", not _cache_dir.exists())
+            _cp908f = _root908f / ".sk-cache" / "repomap-abcd1234.json"
+            _rm908._save_cache(_cp908f, {}, "output")
+            test("I908-07: Cache dir created automatically if missing", _cache_dir.exists())
+    except Exception as _e908_07:
+        test("I908-07: Cache dir created automatically if missing", False, str(_e908_07))
+
+    # ---------------------------------------------------------------------------
+    # I908-08: Corrupted cache file triggers regeneration (no crash)
+    # ---------------------------------------------------------------------------
+    try:
+        with _tmp908.TemporaryDirectory() as _td908_08:
+            _root908g = Path(_td908_08)
+            (_root908g / ".sk-cache").mkdir()
+            _cp908g = _root908g / ".sk-cache" / "repomap-corrupt.json"
+            _cp908g.write_text("{not valid json!!!", encoding="utf-8")
+            _result908g = _rm908._load_cache(_cp908g)
+            test("I908-08: Corrupted cache file returns None (no crash)", _result908g is None)
+    except Exception as _e908_08:
+        test("I908-08: Corrupted cache file triggers regeneration (no crash)", False, str(_e908_08))
+
+except Exception as _e908_outer:
+    for _i908 in range(1, 9):
+        test(f"I908-0{_i908}: repo-map caching", False, str(_e908_outer))
+
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:
