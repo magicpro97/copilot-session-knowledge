@@ -267,42 +267,93 @@ impl DiscordClient {
     }
 
     /// `GET /channels/{id}/messages?after={after}&limit=100`
+    ///
+    /// Retries on 429 (respecting `Retry-After`), up to `max_rate_retries`
+    /// times before propagating the error to the outer backoff loop.
     async fn get_messages(
         &self,
         channel_id: &str,
         after: &str,
     ) -> Result<Vec<DiscordMessage>, BrokerError> {
         let url = format!("{}/channels/{}/messages", self.base_url, channel_id);
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[("after", after), ("limit", "100")])
-            .send()
-            .await
-            .map_err(BrokerError::from)?;
+        let mut rate_limit_retries: u32 = 0;
+        const MAX_RATE_RETRIES: u32 = 5;
 
-        let status = resp.status();
-        if status.as_u16() == 429 || status.is_server_error() {
-            return Err(BrokerError::Api(format!(
-                "HTTP {} from Discord",
-                status.as_u16()
-            )));
-        }
-        if !status.is_success() {
-            let body: Value = resp.json().await.unwrap_or(Value::Null);
-            return Err(BrokerError::Api(format!(
-                "Discord API error {}: {}",
-                status.as_u16(),
-                body
-            )));
-        }
+        loop {
+            let resp = self
+                .client
+                .get(&url)
+                .query(&[("after", after), ("limit", "100")])
+                .send()
+                .await
+                .map_err(BrokerError::from)?;
 
-        resp.json()
-            .await
-            .map_err(|e| BrokerError::Json(e.to_string()))
+            let status = resp.status();
+
+            if status.as_u16() == 429 {
+                rate_limit_retries += 1;
+                if rate_limit_retries > MAX_RATE_RETRIES {
+                    return Err(BrokerError::Api(
+                        "Discord rate limit (429) exceeded retry budget".to_owned(),
+                    ));
+                }
+                let retry_after_secs = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(1.0)
+                    .clamp(0.1, MAX_BACKOFF_SECS as f64);
+                warn!(
+                    retry_after = retry_after_secs,
+                    attempt = rate_limit_retries,
+                    "Discord rate limited (429); sleeping before retry"
+                );
+                tokio::time::sleep(Duration::from_secs_f64(retry_after_secs)).await;
+                continue;
+            }
+
+            if matches!(status.as_u16(), 401 | 403) {
+                return Err(BrokerError::Api(format!(
+                    "Discord auth error HTTP {}: \
+                     check DISCORD_BOT_TOKEN and bot channel permissions",
+                    status.as_u16()
+                )));
+            }
+
+            if status.as_u16() == 404 {
+                return Err(BrokerError::Api(format!(
+                    "Discord channel not found (404 channel_id={channel_id}): \
+                     check DISCORD_CHANNEL_ID configuration"
+                )));
+            }
+
+            if status.is_server_error() {
+                return Err(BrokerError::Api(format!(
+                    "Discord server error HTTP {}",
+                    status.as_u16()
+                )));
+            }
+
+            if !status.is_success() {
+                let body: Value = resp.json().await.unwrap_or(Value::Null);
+                return Err(BrokerError::Api(format!(
+                    "Discord API error {}: {}",
+                    status.as_u16(),
+                    body
+                )));
+            }
+
+            return resp
+                .json()
+                .await
+                .map_err(|e| BrokerError::Json(e.to_string()));
+        }
     }
 
     /// `POST /channels/{id}/messages`
+    ///
+    /// Retries on 429 (respecting `Retry-After`) up to 5 times.
     async fn send_message(
         &self,
         channel_id: &str,
@@ -310,23 +361,60 @@ impl DiscordClient {
     ) -> Result<(), BrokerError> {
         let url = format!("{}/channels/{}/messages", self.base_url, channel_id);
         let payload = json!({ "content": content });
+        let mut rate_limit_retries: u32 = 0;
+        const MAX_RATE_RETRIES: u32 = 5;
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(BrokerError::from)?;
+        loop {
+            let resp = self
+                .client
+                .post(&url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(BrokerError::from)?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 || status.is_server_error() {
-            return Err(BrokerError::Api(format!(
-                "HTTP {} from Discord (sendMessage)",
-                status.as_u16()
-            )));
+            let status = resp.status();
+
+            if status.as_u16() == 429 {
+                rate_limit_retries += 1;
+                if rate_limit_retries > MAX_RATE_RETRIES {
+                    return Err(BrokerError::Api(
+                        "Discord send rate limit (429) exceeded retry budget".to_owned(),
+                    ));
+                }
+                let retry_after_secs = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(1.0)
+                    .clamp(0.1, MAX_BACKOFF_SECS as f64);
+                warn!(
+                    retry_after = retry_after_secs,
+                    attempt = rate_limit_retries,
+                    "Discord send rate limited (429); sleeping before retry"
+                );
+                tokio::time::sleep(Duration::from_secs_f64(retry_after_secs)).await;
+                continue;
+            }
+
+            if matches!(status.as_u16(), 401 | 403) {
+                return Err(BrokerError::Api(format!(
+                    "Discord send auth error HTTP {}: \
+                     check DISCORD_BOT_TOKEN and bot channel permissions",
+                    status.as_u16()
+                )));
+            }
+
+            if status.is_server_error() {
+                return Err(BrokerError::Api(format!(
+                    "Discord server error HTTP {} (sendMessage)",
+                    status.as_u16()
+                )));
+            }
+
+            return Ok(());
         }
-        Ok(())
     }
 }
 
@@ -376,6 +464,14 @@ impl DiscordBroker {
         knowledge: Arc<dyn KnowledgeSource>,
         base_url_override: Option<&str>,
     ) -> Result<Self> {
+        // Fail fast: an empty token would silently send unauthenticated requests.
+        if token.trim().is_empty() {
+            anyhow::bail!(
+                "DISCORD_BOT_TOKEN is missing or empty; \
+                 refusing to start with an unauthenticated client"
+            );
+        }
+
         let config = BrokerConfig::default();
         Ok(Self {
             client: DiscordClient::new(token, base_url_override)?,
@@ -468,14 +564,26 @@ impl super::Broker for DiscordBroker {
             };
 
             match poll_result {
-                Ok(messages) => {
+                Ok(mut messages) => {
                     consecutive_errors = 0;
                     error_streak_start = None;
 
-                    for msg in &messages {
-                        // Messages are ordered oldest-first; track the newest snowflake.
-                        last_message_id = msg.id.clone();
+                    // Discord REST API returns messages newest-first.  Sort
+                    // ascending by snowflake ID so we process oldest→newest
+                    // and advance the cursor to the true maximum ID seen.
+                    messages.sort_by_key(|m| m.id.parse::<u64>().unwrap_or(0));
 
+                    // Advance the cursor to the newest (maximum) ID in this
+                    // batch before processing, so a mid-batch shutdown still
+                    // moves the window forward correctly on the next poll.
+                    if let Some(newest) = messages
+                        .iter()
+                        .max_by_key(|m| m.id.parse::<u64>().unwrap_or(0))
+                    {
+                        last_message_id = newest.id.clone();
+                    }
+
+                    for msg in &messages {
                         if token.is_cancelled() {
                             info!("Discord broker shutting down (mid-batch cancellation)");
                             return Ok(());
@@ -648,6 +756,20 @@ mod tests {
     }
 
     #[test]
+    fn discord_broker_new_fails_on_empty_token() {
+        // Empty / whitespace-only tokens must fail fast before sending requests.
+        for bad in &["", "   ", "\t"] {
+            let result =
+                DiscordBroker::new(bad, "chan", "user", Arc::new(NoopKnowledge), None);
+            assert!(
+                result.is_err(),
+                "empty/blank token {:?} should be rejected",
+                bad
+            );
+        }
+    }
+
+    #[test]
     fn discord_broker_new_ok_with_override() {
         // Smoke test: broker constructs without error given a mock base URL.
         let result = DiscordBroker::new(
@@ -685,5 +807,41 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.len() <= MAX_MESSAGE_CHARS);
         }
+    }
+
+    #[test]
+    fn messages_sorted_ascending_by_snowflake() {
+        // Discord REST API returns newest-first; verify our sort produces oldest-first.
+        let mut messages = vec![
+            DiscordMessage {
+                id: "1000000000000000003".to_owned(),
+                content: "newest".to_owned(),
+                author: DiscordUser { id: "u1".to_owned(), bot: false },
+            },
+            DiscordMessage {
+                id: "1000000000000000001".to_owned(),
+                content: "oldest".to_owned(),
+                author: DiscordUser { id: "u1".to_owned(), bot: false },
+            },
+            DiscordMessage {
+                id: "1000000000000000002".to_owned(),
+                content: "middle".to_owned(),
+                author: DiscordUser { id: "u1".to_owned(), bot: false },
+            },
+        ];
+
+        messages.sort_by_key(|m| m.id.parse::<u64>().unwrap_or(0));
+
+        assert_eq!(messages[0].content, "oldest");
+        assert_eq!(messages[1].content, "middle");
+        assert_eq!(messages[2].content, "newest");
+
+        // Cursor must advance to the maximum (newest) ID.
+        let max_id = messages
+            .iter()
+            .max_by_key(|m| m.id.parse::<u64>().unwrap_or(0))
+            .map(|m| m.id.as_str())
+            .unwrap_or("0");
+        assert_eq!(max_id, "1000000000000000003");
     }
 }
