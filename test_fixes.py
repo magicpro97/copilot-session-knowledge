@@ -17050,6 +17050,328 @@ except Exception as _e743:
 
 
 # ---------------------------------------------------------------------------
+# I894: diff_brief MCP tool
+# ---------------------------------------------------------------------------
+_mcp894_src = (REPO / "mcp-server.py").read_text(encoding="utf-8")
+
+# I894-01: diff_brief appears in TOOLS list
+try:
+    test(
+        "I894-01: diff_brief in TOOLS list",
+        '"name": "diff_brief"' in _mcp894_src or "'name': 'diff_brief'" in _mcp894_src,
+        "diff_brief not found in TOOLS list",
+    )
+except Exception as _e894_01:
+    test("I894-01: diff_brief in TOOLS", False, str(_e894_01))
+
+# I894-02: _run_diff_brief function is defined
+try:
+    test(
+        "I894-02: _run_diff_brief function defined",
+        "def _run_diff_brief(" in _mcp894_src,
+        "_run_diff_brief not defined in mcp-server.py",
+    )
+except Exception as _e894_02:
+    test("I894-02: _run_diff_brief defined", False, str(_e894_02))
+
+# I894-03: diff_brief is wired in _handle_tools_call
+try:
+    test(
+        "I894-03: diff_brief wired in _handle_tools_call",
+        '_run_diff_brief(' in _mcp894_src,
+        "_run_diff_brief not called in _handle_tools_call",
+    )
+except Exception as _e894_03:
+    test("I894-03: diff_brief wired", False, str(_e894_03))
+
+# I894-04: budget parameter in tool schema
+try:
+    test(
+        "I894-04: budget param in diff_brief schema",
+        '"budget"' in _mcp894_src,
+        "budget param not found in mcp-server.py",
+    )
+except Exception as _e894_04:
+    test("I894-04: budget param", False, str(_e894_04))
+
+# I894-05: compact parameter in tool schema
+try:
+    test(
+        "I894-05: compact param in diff_brief schema",
+        '"compact"' in _mcp894_src,
+        "compact param not found in mcp-server.py",
+    )
+except Exception as _e894_05:
+    test("I894-05: compact param", False, str(_e894_05))
+
+# I894-06: non-git directory returns warning not exception
+try:
+    import importlib.util as _ilu894
+    import sys as _sys894
+    import types as _types894
+    import unittest.mock as _mock894
+
+    _spec894 = _ilu894.spec_from_file_location("mcp894", REPO / "mcp-server.py")
+    _mod894 = _ilu894.module_from_spec(_spec894)
+    _spec894.loader.exec_module(_mod894)
+
+    def _fake_qs894_no_git(argv):
+        # Simulate query-session failing when not in a git repo
+        return (1, "", "fatal: not a git repository")
+
+    with _mock894.patch.object(_mod894, "_capture_module_main", side_effect=lambda m, a: _fake_qs894_no_git(a)):
+        _res894_nogit = _mod894._run_diff_brief({})
+
+    _sc894_nogit = _res894_nogit.get("structuredContent", {})
+    test(
+        "I894-06: non-git returns warning not exception",
+        _sc894_nogit.get("warning") is not None and _sc894_nogit.get("entries") == [],
+        str(_sc894_nogit),
+    )
+except Exception as _e894_06:
+    test("I894-06: non-git warning", False, str(_e894_06))
+
+# I894-07: empty diff returns empty entries
+try:
+    import importlib.util as _ilu894b
+    import unittest.mock as _mock894b
+
+    _spec894b = _ilu894b.spec_from_file_location("mcp894b", REPO / "mcp-server.py")
+    _mod894b = _ilu894b.module_from_spec(_spec894b)
+    _spec894b.loader.exec_module(_mod894b)
+
+    _empty_diff_json = json.dumps({"changed_files": [], "entries": []})
+
+    with _mock894b.patch.object(_mod894b, "_capture_module_main", return_value=(0, _empty_diff_json, "")):
+        _res894_empty = _mod894b._run_diff_brief({})
+
+    _sc894_empty = _res894_empty.get("structuredContent", {})
+    test(
+        "I894-07: empty diff returns empty entries",
+        _sc894_empty.get("entries") == [] and _sc894_empty.get("file_count") == 0,
+        str(_sc894_empty),
+    )
+except Exception as _e894_07:
+    test("I894-07: empty diff", False, str(_e894_07))
+
+# I894-08: populated diff returns entries with file_count
+try:
+    import importlib.util as _ilu894c
+    import unittest.mock as _mock894c
+
+    _spec894c = _ilu894c.spec_from_file_location("mcp894c", REPO / "mcp-server.py")
+    _mod894c = _ilu894c.module_from_spec(_spec894c)
+    _spec894c.loader.exec_module(_mod894c)
+
+    _populated_diff_json = json.dumps({
+        "changed_files": ["src/auth.py", "src/db.py"],
+        "entries": [{"id": 1, "title": "auth pattern", "category": "pattern"}],
+    })
+
+    with _mock894c.patch.object(_mod894c, "_capture_module_main", return_value=(0, _populated_diff_json, "")):
+        _res894_pop = _mod894c._run_diff_brief({})
+
+    _sc894_pop = _res894_pop.get("structuredContent", {})
+    test(
+        "I894-08: populated diff returns entries + file_count",
+        len(_sc894_pop.get("entries", [])) == 1 and _sc894_pop.get("file_count") == 2,
+        str(_sc894_pop),
+    )
+except Exception as _e894_08:
+    test("I894-08: populated diff", False, str(_e894_08))
+
+
+# ---------------------------------------------------------------------------
+# I895: Expanded quota/rate-limit pattern matrix (Anthropic, Azure, Gemini, Mistral, Ollama)
+# ---------------------------------------------------------------------------
+try:
+    import importlib as _importlib895
+    import sys as _sys895
+    import types as _types895
+
+    _tent895_spec = _importlib895.util.spec_from_file_location("tentacle895", REPO / "tentacle.py")
+    _tent895 = _importlib895.util.module_from_spec(_tent895_spec)  # type: ignore[arg-type]
+    _tent895_spec.loader.exec_module(_tent895)  # type: ignore[union-attr]
+    _cls = _tent895._classify_quota_signal
+
+    # Anthropic patterns
+    test("I895-1: overloaded_error → provider_overloaded", _cls("overloaded_error") == "provider_overloaded", _cls("overloaded_error"))
+    test("I895-2: 529 Overloaded → provider_overloaded", _cls("529 Overloaded") == "provider_overloaded", _cls("529 Overloaded"))
+    test("I895-3: rate_limit_error → rate_limit", _cls("rate_limit_error") == "rate_limit", _cls("rate_limit_error"))
+    test("I895-4: Request too large → context_limit", _cls("Request too large") == "context_limit", _cls("Request too large"))
+
+    # Azure OpenAI patterns
+    test("I895-5: BillingIssue → billing_issue", _cls("BillingIssue") == "billing_issue", _cls("BillingIssue"))
+    test("I895-6: DeploymentNotFound → deployment_unavailable", _cls("DeploymentNotFound") == "deployment_unavailable", _cls("DeploymentNotFound"))
+    test("I895-7: content_filter → content_filter", _cls("content_filter") == "content_filter", _cls("content_filter"))
+
+    # Google Gemini patterns
+    test("I895-8: RESOURCE_EXHAUSTED → quota_exceeded", _cls("RESOURCE_EXHAUSTED") == "quota_exceeded", _cls("RESOURCE_EXHAUSTED"))
+    test("I895-9: rateLimitExceeded → rate_limit", _cls("rateLimitExceeded") == "rate_limit", _cls("rateLimitExceeded"))
+    test("I895-10: User location is not supported → region_blocked", _cls("User location is not supported") == "region_blocked", _cls("User location is not supported"))
+
+    # Mistral patterns
+    test("I895-11: insufficient_quota → quota_exceeded", _cls("insufficient_quota") == "quota_exceeded", _cls("insufficient_quota"))
+    test("I895-12: tokens_per_second exceeded → rate_limit", _cls("tokens_per_second exceeded") == "rate_limit", _cls("tokens_per_second exceeded"))
+    test("I895-13: capacity exceeded → provider_overloaded", _cls("capacity exceeded") == "provider_overloaded", _cls("capacity exceeded"))
+
+    # Ollama local patterns
+    test("I895-14: model is loading → model_loading", _cls("model is loading") == "model_loading", _cls("model is loading"))
+    test("I895-15: no available runners → provider_overloaded", _cls("no available runners") == "provider_overloaded", _cls("no available runners"))
+    test("I895-16: out of memory → out_of_memory", _cls("out of memory") == "out_of_memory", _cls("out of memory"))
+
+    # Regression: existing generic patterns still match
+    test("I895-17: regression rate-limit → rate_limit", _cls("rate-limit exceeded") == "rate_limit", _cls("rate-limit exceeded"))
+    test("I895-18: regression quota_exceeded", _cls("quota exceeded for this project") == "quota_exceeded", _cls("quota exceeded for this project"))
+    test("I895-19: regression context_window", _cls("context window exceeded") == "context_limit", _cls("context window exceeded"))
+
+    # Non-matching text returns None
+    test("I895-20: no match → None", _cls("everything is fine") is None, repr(_cls("everything is fine")))
+    test("I895-21: empty string → None", _cls("") is None, repr(_cls("")))
+
+except Exception as _e895:
+    for _lbl895 in [str(i) for i in range(1, 22)]:
+        test(f"I895-{_lbl895}: quota pattern matrix", False, str(_e895))
+
+
+# ---------------------------------------------------------------------------
+# === I893: compact_session MCP tool ===
+print("\n🗜️  I893: compact_session MCP tool")
+try:
+    import importlib.util as _ilu893
+    import os as _os893
+    import sqlite3 as _sq893
+    import tempfile as _tf893
+
+    _mcp893_path = _tools_dir / "mcp-server.py"
+    _mcp893_src = _mcp893_path.read_text()
+
+    # I893-01: compact_session entry in TOOLS list
+    test(
+        "I893-01: compact_session in TOOLS list",
+        '"compact_session"' in _mcp893_src or "'compact_session'" in _mcp893_src,
+        "compact_session not found in TOOLS",
+    )
+
+    # I893-02: _run_compact_session function exists
+    test(
+        "I893-02: _run_compact_session function defined",
+        "def _run_compact_session(" in _mcp893_src,
+        "_run_compact_session not found",
+    )
+
+    # I893-03: _handle_compact_session function exists
+    test(
+        "I893-03: _handle_compact_session function defined",
+        "def _handle_compact_session(" in _mcp893_src,
+        "_handle_compact_session not found",
+    )
+
+    # I893-04: compact_session is dispatched in _handle_tools_call
+    _893_dispatch_idx = _mcp893_src.find("def _handle_tools_call(")
+    _893_dispatch_body = _mcp893_src[_893_dispatch_idx:] if _893_dispatch_idx >= 0 else ""
+    test(
+        "I893-04: compact_session dispatched in _handle_tools_call",
+        "_handle_compact_session" in _893_dispatch_body or "_run_compact_session" in _893_dispatch_body,
+        "compact_session not dispatched",
+    )
+
+    # I893-05: session_compact_mod loaded at startup
+    test(
+        "I893-05: session_compact_mod loaded at startup",
+        "session_compact_mod" in _mcp893_src,
+        "session_compact_mod not found in mcp-server.py",
+    )
+
+    # I893-06: dry_run=True returns dry_run status without writing
+    _spec893 = _ilu893.spec_from_file_location("mcp_server_893", _mcp893_path)
+    _mod893 = _ilu893.module_from_spec(_spec893)
+    # Build a minimal in-memory DB for session-compact to query
+    _db893_path = _tools_dir / "sessions_i893_test.db"
+    try:
+        _db893 = _sq893.connect(str(_db893_path))
+        _db893.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                summary TEXT,
+                source TEXT,
+                indexed_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                category TEXT,
+                title TEXT,
+                content TEXT,
+                first_seen TEXT DEFAULT (datetime('now')),
+                last_seen TEXT DEFAULT (datetime('now')),
+                priority INTEGER DEFAULT 0,
+                source TEXT DEFAULT ''
+            );
+            INSERT OR IGNORE INTO sessions(id, summary) VALUES('test-session-893', 'test summary for i893');
+            INSERT OR IGNORE INTO knowledge_entries(session_id, category, title, content)
+                VALUES('test-session-893', 'mistake', 'Test entry', 'Some content for compaction');
+            """
+        )
+        _db893.commit()
+        _db893.close()
+        _os893.environ["SK_DB_PATH"] = str(_db893_path)
+        _spec893.loader.exec_module(_mod893)
+        _dry893 = _mod893._run_compact_session(session_id="test-session-893", dry_run=True)
+        test(
+            "I893-06: dry_run returns dry_run status",
+            isinstance(_dry893, dict) and _dry893.get("structuredContent", {}).get("status") == "dry_run",
+            str(_dry893),
+        )
+        test(
+            "I893-07: dry_run returns token_count=0",
+            isinstance(_dry893, dict) and _dry893.get("structuredContent", {}).get("token_count") == 0,
+            str(_dry893),
+        )
+        # I893-08: Valid session produces ok or error (no exception thrown)
+        _ok893 = _mod893._run_compact_session(session_id="test-session-893", dry_run=False)
+        test(
+            "I893-08: valid session_id returns dict result",
+            isinstance(_ok893, dict) and "structuredContent" in _ok893,
+            str(_ok893),
+        )
+        test(
+            "I893-08b: valid session result has status key",
+            isinstance(_ok893.get("structuredContent"), dict) and "status" in _ok893["structuredContent"],
+            str(_ok893),
+        )
+        # I893-09: Invalid session_id returns error status gracefully
+        _err893 = _mod893._run_compact_session(session_id="nonexistent-session-xyz", dry_run=False)
+        test(
+            "I893-09: invalid session_id returns error gracefully (no exception)",
+            isinstance(_err893, dict) and "structuredContent" in _err893,
+            str(_err893),
+        )
+        test(
+            "I893-09b: invalid session error has status key",
+            isinstance(_err893.get("structuredContent"), dict) and "status" in _err893["structuredContent"],
+            str(_err893),
+        )
+    finally:
+        _os893.environ.pop("SK_DB_PATH", None)
+        if _db893_path.exists():
+            _db893_path.unlink()
+
+    # I893-10: compact_session inputSchema has session_id and dry_run properties
+    _tools893 = _mod893.TOOLS
+    _cs893_tool = next((t for t in _tools893 if t.get("name") == "compact_session"), None)
+    test("I893-10: compact_session tool entry exists in TOOLS", _cs893_tool is not None, str(_tools893))
+    _cs893_props = (_cs893_tool or {}).get("inputSchema", {}).get("properties", {})
+    test("I893-10b: session_id in compact_session schema", "session_id" in _cs893_props, str(_cs893_props))
+    test("I893-10c: dry_run in compact_session schema", "dry_run" in _cs893_props, str(_cs893_props))
+
+except Exception as _e893:
+    for _lbl893 in ["01", "02", "03", "04", "05", "06", "07", "08", "08b", "09", "09b", "10", "10b", "10c"]:
+        test(f"I893-{_lbl893}: compact_session MCP tool", False, str(_e893))
+
+
+# ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
 else:

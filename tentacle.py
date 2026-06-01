@@ -2306,10 +2306,9 @@ def cmd_todo(args):
 # SEAM: handoff-complete quota / rate-limit signal classification
 # ---------------------------------------------------------------------------
 
-# Minimal pattern list for classifying quota/rate-limit signals in dispatch output.
-# TODO(#183): Expand this pattern set once the fuller failure-mode matrix (#183) is
-# available.  The current list covers the most common quota/rate-limit signals only.
+# Vendor patterns: Anthropic, Azure, Gemini, Mistral, Ollama (issue #895)
 _QUOTA_SIGNAL_PATTERNS: list[tuple[str, str]] = [
+    # Generic rate-limit / quota signals
     (r"(?i)rate.?limit", "rate_limit"),
     (r"(?i)too.many.requests", "rate_limit"),
     (r"(?i)\b429\b", "rate_limit"),
@@ -2320,6 +2319,29 @@ _QUOTA_SIGNAL_PATTERNS: list[tuple[str, str]] = [
     (r"(?i)quota.?exceed", "quota_exceeded"),
     (r"(?i)resource.?exhausted", "quota_exceeded"),
     (r"(?i)credits?.?exhausted", "quota_exceeded"),
+    # Anthropic
+    (r"(?i)overloaded_error", "provider_overloaded"),
+    (r"(?i)\b529\b.*[Oo]verload", "provider_overloaded"),
+    (r"(?i)rate_limit_error", "rate_limit"),
+    (r"(?i)request too large", "context_limit"),
+    # Azure OpenAI
+    (r"(?i)BillingIssue", "billing_issue"),
+    (r"(?i)DeploymentNotFound", "deployment_unavailable"),
+    (r"(?i)\b429\b.*azure", "rate_limit"),
+    (r"(?i)content_filter", "content_filter"),
+    # Google Gemini
+    (r"(?i)RESOURCE_EXHAUSTED", "quota_exceeded"),
+    (r"(?i)quota exceeded", "quota_exceeded"),
+    (r"(?i)rateLimitExceeded", "rate_limit"),
+    (r"(?i)User location is not supported", "region_blocked"),
+    # Mistral
+    (r"(?i)insufficient_quota", "quota_exceeded"),
+    (r"(?i)tokens_per_second exceeded", "rate_limit"),
+    (r"(?i)capacity exceeded", "provider_overloaded"),
+    # Ollama local
+    (r"(?i)model is loading", "model_loading"),
+    (r"(?i)no available runners", "provider_overloaded"),
+    (r"(?i)out of memory", "out_of_memory"),
 ]
 
 
@@ -2329,9 +2351,6 @@ def _classify_quota_signal(text: str) -> "str | None":
     Returns a short reason string (e.g. ``"rate_limit"``, ``"quota_exceeded"``)
     when the text matches a known quota pattern, or ``None`` when no signal is
     detected.
-
-    TODO(#183): Pattern list is intentionally minimal pending the fuller
-    failure-mode matrix.
     """
     if not text:
         return None
