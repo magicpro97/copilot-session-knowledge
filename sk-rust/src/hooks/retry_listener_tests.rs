@@ -3,6 +3,7 @@
 //! Each test that modifies env vars takes the `TEST_LOCK` mutex to avoid
 //! races when the test suite runs tests in parallel.
 
+#[cfg(unix)]
 use std::sync::Mutex;
 
 #[cfg(unix)]
@@ -10,17 +11,25 @@ use std::io::Write;
 #[cfg(unix)]
 use std::time::Instant;
 
+#[cfg(unix)]
 use super::RetryListenerPayload;
 #[cfg(unix)]
-use super::{invoke_retry_listener, ListenerDecision};
+use super::{decide_with_listener, invoke_retry_listener, ListenerDecision, RetryListenerContext};
+#[cfg(unix)]
+use crate::retry::{RetryDecision, RetryPolicy, StopReason};
+#[cfg(unix)]
+use std::time::Duration;
 
+#[cfg(unix)]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(unix)]
 fn lock_test() -> std::sync::MutexGuard<'static, ()> {
     // Recover from poison — a prior panicking test must not block other tests.
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+#[cfg(unix)]
 fn sample_payload() -> RetryListenerPayload {
     RetryListenerPayload {
         ts: "2025-01-01T00:00:00Z".to_string(),
@@ -183,12 +192,177 @@ fn test_slow_listener_timeout() {
     );
 }
 
+// ── decide_with_listener integration tests ────────────────────────────────────
+
+/// A no-jitter policy for deterministic delay assertions.
+#[cfg(unix)]
+fn no_jitter_policy() -> RetryPolicy {
+    RetryPolicy {
+        base: Duration::from_secs(5),
+        cap: Duration::from_secs(60),
+        multiplier: 1.0,
+        jitter: (1.0, 1.0), // lo == hi → no jitter
+        max_attempts: 5,
+        budget: None,
+    }
+}
+
+/// No listener configured → decide_with_listener returns the same decision as
+/// decide() (behaviour is entirely unchanged).
+#[test]
+#[cfg(unix)]
+fn test_decide_with_listener_no_listener_unchanged() {
+    let _guard = lock_test();
+    let tmp = tempdir();
+    let orig_home = std::env::var("HOME").ok();
+    let orig_listener = std::env::var("SK_RETRY_LISTENER").ok();
+
+    std::env::set_var("HOME", &tmp);
+    std::env::remove_var("SK_RETRY_LISTENER");
+
+    let policy = no_jitter_policy();
+    let result = decide_with_listener(
+        &policy,
+        0,
+        Duration::ZERO,
+        "429 rate_limit_exceeded",
+        None,
+        &RetryListenerContext::default(),
+    );
+
+    // Restore environment.
+    match orig_home {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
+    match orig_listener {
+        Some(v) => std::env::set_var("SK_RETRY_LISTENER", v),
+        None => std::env::remove_var("SK_RETRY_LISTENER"),
+    }
+
+    // With no listener, the result must equal the plain decide() output.
+    match result {
+        RetryDecision::Retry(d, _) => {
+            // base=5s, multiplier=1.0, attempt=0, no jitter → 5s
+            assert_eq!(d, Duration::from_secs(5), "expected 5s default delay");
+        }
+        other => panic!("expected Retry, got {other:?}"),
+    }
+}
+
+/// Listener script writes `{{"abort":true}}` → ListenerAbort stop reason.
+#[test]
+#[cfg(unix)]
+fn test_decide_with_listener_abort() {
+    let _guard = lock_test();
+    let tmp = tempdir();
+
+    let script = write_script(&tmp, "abort_dwl.sh", r#"printf '{"abort":true}\n'"#);
+    std::env::set_var("SK_RETRY_LISTENER", &script);
+
+    let policy = no_jitter_policy();
+    let result = decide_with_listener(
+        &policy,
+        0,
+        Duration::ZERO,
+        "429 rate_limit_exceeded",
+        None,
+        &RetryListenerContext::default(),
+    );
+    std::env::remove_var("SK_RETRY_LISTENER");
+
+    match result {
+        RetryDecision::Stop(StopReason::ListenerAbort) => {}
+        other => panic!("expected Stop(ListenerAbort), got {other:?}"),
+    }
+}
+
+/// Listener script overrides the delay → decide_with_listener returns the
+/// overridden duration, not the policy-computed one.
+#[test]
+#[cfg(unix)]
+fn test_decide_with_listener_delay_override() {
+    let _guard = lock_test();
+    let tmp = tempdir();
+
+    let script = write_script(
+        &tmp,
+        "delay_dwl.sh",
+        r#"printf '{"delay_override_seconds":12.0}\n'"#,
+    );
+    std::env::set_var("SK_RETRY_LISTENER", &script);
+
+    let policy = no_jitter_policy();
+    let result = decide_with_listener(
+        &policy,
+        0,
+        Duration::ZERO,
+        "429 rate_limit_exceeded",
+        None,
+        &RetryListenerContext::default(),
+    );
+    std::env::remove_var("SK_RETRY_LISTENER");
+
+    match result {
+        RetryDecision::Retry(d, _) => {
+            assert!(
+                (d.as_secs_f64() - 12.0).abs() < 1e-9,
+                "expected 12s override, got {d:?}"
+            );
+        }
+        other => panic!("expected Retry with 12s override, got {other:?}"),
+    }
+}
+
+/// Slow listener (5 s) → 2 s timeout fires, decide_with_listener falls
+/// through to the default computed delay.
+#[test]
+#[cfg(unix)]
+fn test_decide_with_listener_timeout_fallthrough() {
+    let _guard = lock_test();
+    let tmp = tempdir();
+
+    let script = write_script(&tmp, "slow_dwl.sh", "sleep 5");
+    std::env::set_var("SK_RETRY_LISTENER", &script);
+
+    let policy = no_jitter_policy();
+    let start = Instant::now();
+    let result = decide_with_listener(
+        &policy,
+        0,
+        Duration::ZERO,
+        "429 rate_limit_exceeded",
+        None,
+        &RetryListenerContext::default(),
+    );
+    let elapsed = start.elapsed();
+    std::env::remove_var("SK_RETRY_LISTENER");
+
+    // Must complete within the 2 s timeout window (≤3 s with CI slack).
+    assert!(
+        elapsed.as_secs() <= 3,
+        "decide_with_listener should return within 3 s, took {elapsed:.2?}"
+    );
+    // Timed-out listener → fall through to the default delay (5 s).
+    match result {
+        RetryDecision::Retry(d, _) => {
+            assert_eq!(
+                d,
+                Duration::from_secs(5),
+                "expected fallthrough to default 5s delay"
+            );
+        }
+        other => panic!("expected Retry (timeout fallthrough), got {other:?}"),
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Create a temporary directory; panics on failure.
 /// Returns the directory path (the directory will NOT be auto-cleaned — tests
 /// are short-lived and the OS will reclaim space).  We avoid the `tempfile`
 /// crate to keep this stdlib-only.
+#[cfg(unix)]
 fn tempdir() -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
