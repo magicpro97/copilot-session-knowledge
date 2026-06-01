@@ -132,8 +132,9 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
     } else {
         "adaptive".to_string()
     };
+    let use_events = !opts.poll; // Default: native events; --poll forces polling
     println!("[watch] Watching: {dirs_str}");
-    let event_note = if opts.event_watch {
+    let event_note = if use_events {
         " (event-wake enabled)"
     } else {
         ""
@@ -170,13 +171,7 @@ pub fn run_watch_command(args: &[String]) -> ExitCode {
         age
     };
 
-    if !run_event_watch_if_requested(
-        opts.event_watch,
-        &running,
-        &loop_cfg,
-        &watch_dirs,
-        &mut do_tick,
-    ) {
+    if !run_event_watch_if_requested(use_events, &running, &loop_cfg, &watch_dirs, &mut do_tick) {
         run_daemon_loop(&running, &loop_cfg, &mut do_tick);
     }
 
@@ -480,6 +475,7 @@ struct WatchOpts {
     install_hint: bool,
     help: bool,
     event_watch: bool,
+    poll: bool,
 }
 
 fn parse_watch_args(args: &[String]) -> WatchOpts {
@@ -491,6 +487,7 @@ fn parse_watch_args(args: &[String]) -> WatchOpts {
         install_hint: false,
         help: false,
         event_watch: false,
+        poll: false,
     };
     let mut i = 0;
     while i < args.len() {
@@ -523,6 +520,10 @@ fn parse_watch_args(args: &[String]) -> WatchOpts {
                 opts.event_watch = true;
                 i += 1;
             }
+            "--poll" => {
+                opts.poll = true;
+                i += 1;
+            }
             _ => i += 1,
         }
     }
@@ -540,7 +541,8 @@ fn print_watch_help() {
          \x20   sk watch --daemon          Background process\n\
          \x20   sk watch --changed-only    Print changed files before re-extracting\n\
          \x20   sk watch --install-hint    Print auto-start setup instructions\n\
-         \x20   sk watch --event-watch     Use filesystem events to wake the loop early (opt-in)"
+         \x20   sk watch --poll            Force polling mode (disable native filesystem events)\n\
+         \x20   sk watch --event-watch     (deprecated) Alias for default event-driven mode"
     );
 }
 
@@ -659,7 +661,9 @@ where
         }
     };
 
-    let mut watcher = match RecommendedWatcher::new(handler, NotifyConfig::default()) {
+    let debounce = std::time::Duration::from_millis(500);
+    let notify_cfg = NotifyConfig::default().with_poll_interval(debounce);
+    let mut watcher = match RecommendedWatcher::new(handler, notify_cfg) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("[watch] event-watch setup failed ({e}); falling back to polling");
@@ -817,5 +821,41 @@ mod tests {
                 "if event watch ran, tick should have been called"
             );
         }
+    }
+
+    #[test]
+    fn parse_poll_flag_sets_opt() {
+        let args: Vec<String> = vec!["--poll".to_string()];
+        let opts = parse_watch_args(&args);
+        assert!(opts.poll, "--poll should set poll=true");
+        assert!(!opts.event_watch, "event_watch should remain false");
+    }
+
+    #[test]
+    fn parse_poll_default_false() {
+        let args: Vec<String> = vec![];
+        let opts = parse_watch_args(&args);
+        assert!(
+            !opts.poll,
+            "poll should default to false (events are default)"
+        );
+    }
+
+    #[test]
+    fn poll_flag_disables_events() {
+        // When --poll is set, use_events should be false
+        let args: Vec<String> = vec!["--poll".to_string()];
+        let opts = parse_watch_args(&args);
+        let use_events = !opts.poll;
+        assert!(!use_events, "events should be disabled with --poll");
+    }
+
+    #[test]
+    fn default_events_enabled() {
+        // Without --poll, events are the default
+        let args: Vec<String> = vec![];
+        let opts = parse_watch_args(&args);
+        let use_events = !opts.poll;
+        assert!(use_events, "events should be enabled by default");
     }
 }
