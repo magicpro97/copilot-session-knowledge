@@ -14,7 +14,6 @@ Notes:
 """
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -63,8 +62,13 @@ def _sanitize_fts(query: str) -> str:
 
 
 def _make_project_id(path_text: str) -> str:
+    """Derive project_id the same way as code-index.py (_ensure_project).
+
+    Strips non-alphanumeric characters and truncates to 64 chars so it
+    matches the id that ``sk code-index`` stores in code_index.project_id.
+    """
     path = Path(path_text).expanduser().resolve()
-    return hashlib.sha256(str(path).encode()).hexdigest()[:16]
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", str(path))[-64:]
 
 
 def _has_embedding_column(conn: sqlite3.Connection) -> bool:
@@ -136,12 +140,12 @@ def _embed_texts(texts: list[str], provider: str | None, model: str) -> list[lis
 
 
 def _pack_embedding(vector: list[float]) -> bytes:
-    return struct.pack(f"{len(vector)}f", *[float(value) for value in vector])
+    return struct.pack(f"<{len(vector)}f", *[float(value) for value in vector])
 
 
 def _unpack_embedding(blob: bytes) -> tuple[float, ...]:
     dims = len(blob) // 4
-    return struct.unpack(f"{dims}f", blob)
+    return struct.unpack(f"<{dims}f", blob)
 
 
 def _cosine_similarity(left: tuple[float, ...], right: tuple[float, ...]) -> float:
@@ -242,6 +246,47 @@ def _bm25_rows(conn: sqlite3.Connection, query: str, project_id: str, language: 
 
 
 def _vector_rows(conn: sqlite3.Connection, query_vec: tuple[float, ...], project_id: str, language: str) -> list[dict]:
+    """Return top-K rows ranked by cosine similarity to *query_vec*.
+
+    Uses sqlite-vec KNN when the extension is loaded; otherwise falls back to
+    in-process cosine similarity which is portable but O(N×D) per query.
+    """
+    if sqlite_vec is not None:
+        return _vector_rows_sqlitevec(conn, query_vec, project_id, language)
+    return _vector_rows_cosine(conn, query_vec, project_id, language)
+
+
+def _vector_rows_sqlitevec(
+    conn: sqlite3.Connection, query_vec: tuple[float, ...], project_id: str, language: str
+) -> list[dict]:
+    """KNN via sqlite-vec virtual table (vec_code) when available."""
+    try:
+        sqlite_vec.load(conn)
+        query_blob = struct.pack(f"<{len(query_vec)}f", *query_vec)
+        clauses = []
+        params: list[object] = [query_blob, CANDIDATE_K]
+        if project_id:
+            clauses.append("ci.project_id = ?")
+            params.append(project_id)
+        if language:
+            clauses.append("ci.language = ?")
+            params.append(language)
+        where_extra = ("AND " + " AND ".join(clauses)) if clauses else ""
+        sql = f"""SELECT ci.id, ci.file_path, ci.language, ci.symbol_name, ci.symbol_kind,
+                         ci.start_line, ci.end_line, ci.content_snippet, v.distance AS vector_score
+                  FROM vec_code v JOIN code_index ci ON v.rowid = ci.id
+                  WHERE v.embedding MATCH ? AND k = ? {where_extra}
+                  ORDER BY v.distance"""
+        rows = conn.execute(sql, params).fetchall()
+        return [{**dict(r), "vector_score": 1.0 - r["vector_score"]} for r in rows]
+    except Exception:
+        return _vector_rows_cosine(conn, query_vec, project_id, language)
+
+
+def _vector_rows_cosine(
+    conn: sqlite3.Connection, query_vec: tuple[float, ...], project_id: str, language: str
+) -> list[dict]:
+    """In-process cosine similarity fallback (portable, no extension needed)."""
     clauses = ["embedding IS NOT NULL"]
     params: list[object] = []
     if project_id:
@@ -342,7 +387,10 @@ def _print_results(results: list[dict]) -> None:
     for row in results:
         print(f"\n{row['file_path']}:{row['start_line']}-{row['end_line']} [{row.get('language', '')}]")
         print(f"  {row.get('symbol_name', '')} ({row.get('symbol_kind', '')})")
-        print(f"  RRF: {row.get('rrf_score', 0.0):.4f}")
+        if "rrf_score" in row:
+            print(f"  RRF: {row['rrf_score']:.4f}")
+        elif "bm25_score" in row:
+            print(f"  BM25: {row['bm25_score']:.4f}")
         snippet = (row.get("content_snippet") or "").strip().splitlines()
         if snippet:
             print(f"  {snippet[0][:200]}")

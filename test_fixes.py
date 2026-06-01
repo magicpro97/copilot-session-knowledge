@@ -16639,6 +16639,67 @@ test(
     "47" in _migrate_text743 and "code_index_embedding" in _migrate_text743 and "embedding BLOB" in _migrate_text743,
 )
 
+# --- I743-12: SQLite-backed BM25 fallback integration test ---
+try:
+    import importlib.util as _ilu743
+    import sqlite3 as _sql743
+    import tempfile as _tmp743
+
+    _spec743 = _ilu743.spec_from_file_location("code_embed743", REPO / "code-embed.py")
+    _ce743 = importlib.util.module_from_spec(_spec743)
+    _spec743.loader.exec_module(_ce743)
+
+    with _tmp743.TemporaryDirectory() as _td743:
+        _db743_path = Path(_td743) / "test_ce.db"
+        _conn743 = _sql743.connect(str(_db743_path))
+        _conn743.execute(
+            """CREATE TABLE code_index (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL DEFAULT '',
+                file_path TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT '',
+                symbol_kind TEXT NOT NULL DEFAULT '',
+                symbol_name TEXT NOT NULL DEFAULT '',
+                start_line INTEGER NOT NULL DEFAULT 0,
+                end_line INTEGER NOT NULL DEFAULT 0,
+                content_snippet TEXT NOT NULL DEFAULT '',
+                file_mtime REAL NOT NULL DEFAULT 0.0,
+                indexed_at TEXT DEFAULT (datetime('now')),
+                embedding BLOB
+            )"""
+        )
+        _conn743.execute(
+            """CREATE VIRTUAL TABLE code_fts USING fts5(
+                symbol_name, content_snippet, file_path UNINDEXED,
+                language UNINDEXED, project_id UNINDEXED,
+                tokenize='porter unicode61 remove_diacritics 2'
+            )"""
+        )
+        _conn743.execute(
+            "INSERT INTO code_index(project_id, file_path, language, symbol_kind, symbol_name, "
+            "start_line, end_line, content_snippet) VALUES "
+            "('proj1', 'auth.py', 'python', 'function', 'verify_token', 1, 10, 'def verify_token(jwt): ...')"
+        )
+        _conn743.execute(
+            "INSERT INTO code_fts(rowid, symbol_name, content_snippet, file_path, language, project_id) "
+            "VALUES (1, 'verify_token', 'def verify_token(jwt): ...', 'auth.py', 'python', 'proj1')"
+        )
+        _conn743.commit()
+
+        # Monkey-patch DB path and provider
+        _orig_db743 = _ce743.DB_PATH
+        _ce743.DB_PATH = _db743_path
+        _results743 = _ce743.search_code("verify_token", None, "", "", "", 10)
+        _ce743.DB_PATH = _orig_db743
+        _conn743.close()
+
+        test(
+            "I743-12: BM25-only fallback returns results from SQLite",
+            len(_results743) >= 1 and _results743[0]["symbol_name"] == "verify_token",
+        )
+except Exception as _e743_int:
+    test("I743-12: BM25-only fallback returns results from SQLite", False, str(_e743_int))
+
 
 # ---------------------------------------------------------------------------
 if FAIL == 0:

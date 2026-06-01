@@ -242,6 +242,7 @@ TOOL_FILES = [
     "doctor.py",
     "code-search.py",
     "code-index.py",
+    "code-embed.py",
     "cost-analytics.py",
     "session-compare.py",
     "session-compact.py",
