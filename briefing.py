@@ -4632,6 +4632,30 @@ def _format_code_context(snippets: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _select_pack_snippets(pack_payload: dict, snippets: list[dict], budget: int) -> list[dict]:
+    """Select as many code snippets as fit within the serialized pack budget (issue #911).
+
+    Edge cases handled:
+    - budget <= 0 (or falsy): treated as unbounded; all snippets selected
+    - a single snippet whose addition exceeds the budget is *skipped*, not used as a
+      hard stop, so one oversized snippet cannot starve smaller relevant ones that follow
+    - empty snippet list returns an empty selection
+    """
+    selected: list[dict] = []
+    for snippet in snippets:
+        candidate = selected + [snippet]
+        candidate_output = json.dumps(
+            {**pack_payload, "code_context": candidate},
+            indent=2,
+            ensure_ascii=False,
+        )
+        if budget and len(candidate_output) > budget:
+            # Skip this snippet but keep evaluating subsequent (possibly smaller) ones.
+            continue
+        selected = candidate
+    return selected
+
+
 def _parse_window(window: str) -> int:
     """Parse duration string like 1d, 7d, 24h, 2w into seconds."""
     import re
@@ -5813,7 +5837,7 @@ def main():
             },
         )
 
-    # TODO(issue #754): add focused coverage for pack/code-context budget interactions.
+    # Code-context budget allocation with edge-case coverage (issue #911, ref #754).
     if with_code_context and query and fmt != "json":
         snippets = _query_code_context(DB_PATH, query, token_budget=code_tokens)
         if snippets:
@@ -5823,17 +5847,7 @@ def main():
                 except json.JSONDecodeError:
                     pack_payload = None
                 if isinstance(pack_payload, dict):
-                    selected_snippets = []
-                    for snippet in snippets:
-                        candidate_snippets = selected_snippets + [snippet]
-                        candidate_output = json.dumps(
-                            {**pack_payload, "code_context": candidate_snippets},
-                            indent=2,
-                            ensure_ascii=False,
-                        )
-                        if budget and len(candidate_output) > budget:
-                            break
-                        selected_snippets = candidate_snippets
+                    selected_snippets = _select_pack_snippets(pack_payload, snippets, budget)
                     if selected_snippets:
                         output = json.dumps(
                             {**pack_payload, "code_context": selected_snippets},
