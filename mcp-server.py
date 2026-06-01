@@ -401,6 +401,28 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "diff_brief",
+        "description": (
+            "Return knowledge entries relevant to the files changed in the current git diff. "
+            "Useful during PR review or before committing to recall past mistakes and patterns. "
+            "Issue #894."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "budget": {
+                    "type": "integer",
+                    "description": "Max output characters (default 2000).",
+                },
+                "compact": {
+                    "type": "boolean",
+                    "description": "Titles-only compact format (default true).",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -1287,6 +1309,39 @@ def _run_bulk_learn_ndjson(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_diff_brief(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return knowledge entries relevant to the current git diff (issue #894)."""
+    budget = _optional_int(arguments, "budget", default=2000, minimum=100, maximum=50000)
+    compact = _optional_bool(arguments, "compact", default=True)
+    argv = ["--diff", "--export", "json", "--budget", str(budget)]
+    if compact:
+        argv.append("--compact")
+    exit_code, stdout_text, stderr_text = _capture_module_main(query_session_mod, argv)
+    if exit_code != 0:
+        # Non-git directory or other expected failures — return gracefully
+        msg = stderr_text.strip() or stdout_text.strip() or "diff_brief failed"
+        if "not a git" in msg.lower() or "git diff failed" in msg.lower():
+            result: dict[str, Any] = {"entries": [], "file_count": 0, "error": msg}
+            return {
+                "content": [{"type": "text", "text": json.dumps(result)}],
+                "structuredContent": result,
+            }
+        raise JsonRpcError(JSONRPC_INTERNAL_ERROR, msg)
+    text = stdout_text.strip()
+    # Parse JSON output from query-session.py --export json
+    try:
+        parsed = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    entries = parsed.get("entries", [])
+    file_count = len(parsed.get("changed_files", []))
+    result = {"entries": entries, "file_count": file_count}
+    return {
+        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+        "structuredContent": result,
+    }
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -1320,6 +1375,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_batch_learn(arguments, progress_token=progress_token)
     if name == "bulk_learn":
         return _run_bulk_learn_ndjson(arguments)
+    if name == "diff_brief":
+        return _run_diff_brief(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

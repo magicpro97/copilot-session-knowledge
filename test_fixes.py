@@ -16809,15 +16809,39 @@ except Exception as _e895:
     for _lbl895 in [str(i) for i in range(1, 22)]:
         test(f"I895-{_lbl895}: quota pattern matrix", False, str(_e895))
 # ---------------------------------------------------------------------------
-if FAIL == 0:
-    print("🎉 All tests passed!")
-else:
-    print(f"⚠️  {FAIL} test(s) need attention")
-    for _fn in FAIL_NAMES:
-        print(f"    ❌ {_fn}")
-sys.exit(0 if FAIL == 0 else 1)
+# === I894: diff_brief MCP tool =============================================
+# ---------------------------------------------------------------------------
+try:
+    import importlib
 
+    _mcp894 = importlib.import_module("mcp-server")
 
+    # I894-1: diff_brief tool exists in TOOLS list
+    _diff_names = [t["name"] for t in _mcp894.TOOLS]
+    test("I894-1: diff_brief in TOOLS", "diff_brief" in _diff_names, _diff_names)
+
+    # I894-2: diff_brief schema has budget (integer) and compact (boolean) params
+    _diff_schema = next(t for t in _mcp894.TOOLS if t["name"] == "diff_brief")
+    _diff_props = _diff_schema["inputSchema"]["properties"]
+    test("I894-2: diff_brief has budget param", "budget" in _diff_props, list(_diff_props.keys()))
+    test("I894-3: budget type is integer", _diff_props["budget"]["type"] == "integer", _diff_props["budget"])
+    test("I894-4: diff_brief has compact param", "compact" in _diff_props, list(_diff_props.keys()))
+    test("I894-5: compact type is boolean", _diff_props["compact"]["type"] == "boolean", _diff_props["compact"])
+
+    # I894-6: _run_diff_brief function exists
+    test("I894-6: _run_diff_brief callable", callable(getattr(_mcp894, "_run_diff_brief", None)), dir(_mcp894))
+
+    # I894-7: diff_brief wired in dispatch
+    _src894 = open(_mcp894.__file__).read()
+    test("I894-7: diff_brief in dispatch", 'name == "diff_brief"' in _src894, "dispatch check")
+
+    # I894-8: no required params (budget and compact are optional)
+    _diff_required = _diff_schema["inputSchema"].get("required", [])
+    test("I894-8: no required params", len(_diff_required) == 0, _diff_required)
+
+except Exception as _e894:
+    for _lbl894 in [str(i) for i in range(1, 9)]:
+        test(f"I894-{_lbl894}: diff_brief MCP tool", False, str(_e894))
 # ---------------------------------------------------------------------------
 if FAIL == 0:
     print("🎉 All tests passed!")
