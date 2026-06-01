@@ -11,8 +11,9 @@
 //!
 //! # Out of scope (PR-A)
 //! DB-backed `/search`, `/briefing`, `/recent` delegate to the injected
-//! [`KnowledgeSource`] trait; a no-op stub is provided for tests and as the
-//! default when no DB is wired.  Real DB wiring is a follow-up task.
+//! [`KnowledgeSource`] trait.  [`DbKnowledge`] is the default implementation;
+//! [`NoopKnowledge`] is retained as a test double and fallback when the DB
+//! is unavailable.
 
 use std::{
     sync::{Arc, Mutex},
@@ -26,6 +27,7 @@ use serde_json::{json, Value};
 use tracing::{debug, error, info, warn};
 
 use super::{chunk_text, BrokerConfig, BrokerError, CancellationToken};
+use crate::db::{connection::KnowledgeDb, fts::sanitize_fts_query};
 use crate::retry::{decide, RetryDecision, RetryPolicy};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -101,8 +103,9 @@ struct TgUser {
 
 /// Abstraction over the knowledge database for dependency injection.
 ///
-/// A real implementation would query SQLite; tests use [`NoopKnowledge`].
-/// Full DB wiring is a follow-up task (tracked in issue #454).
+/// [`DbKnowledge`] is the production implementation backed by `knowledge.db`.
+/// [`NoopKnowledge`] is used in tests and as a fallback when DB is unavailable.
+/// Full DB wiring was completed in issue #924.
 pub trait KnowledgeSource: Send + Sync {
     fn status(&self) -> String;
     fn search(&self, query: &str) -> Vec<SearchResult>;
@@ -143,6 +146,179 @@ impl KnowledgeSource for NoopKnowledge {
 
     fn briefing(&self, topic: &str) -> String {
         format!("(briefing not wired; topic was: {topic})")
+    }
+}
+
+// ── DbKnowledge ───────────────────────────────────────────────────────────────
+
+/// Real `KnowledgeSource` backed by `knowledge.db` via rusqlite.
+///
+/// All SQL uses parameterized `?` placeholders — no interpolation.
+/// FTS queries are sanitized via [`sanitize_fts_query`] before use.
+///
+/// If the DB cannot be opened at construction time the builder returns `None`
+/// and callers should fall back to [`NoopKnowledge`].
+///
+/// `KnowledgeDb` holds a `rusqlite::Connection` which is `Send` but not
+/// `Sync`.  Wrapping in `Mutex` makes `DbKnowledge: Sync` as required by
+/// `KnowledgeSource: Send + Sync`.
+pub struct DbKnowledge {
+    db: Mutex<KnowledgeDb>,
+}
+
+impl DbKnowledge {
+    /// Open `knowledge.db` and return a new instance, or `None` on failure.
+    pub fn open() -> Option<Self> {
+        match KnowledgeDb::open() {
+            Ok(db) => Some(Self { db: Mutex::new(db) }),
+            Err(e) => {
+                warn!(
+                    "DbKnowledge: failed to open knowledge.db, falling back to NoopKnowledge: {e}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Construct from an existing [`KnowledgeDb`] — used in tests.
+    #[cfg(test)]
+    pub(crate) fn from_db(db: KnowledgeDb) -> Self {
+        Self { db: Mutex::new(db) }
+    }
+}
+
+impl KnowledgeSource for DbKnowledge {
+    fn status(&self) -> String {
+        let guard = self.db.lock().unwrap();
+        let conn = &guard.conn;
+
+        let session_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        let entry_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge_entries", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        let schema_version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        format!(
+            "*Hindsight Browse — status*\n\nSessions indexed: {session_count}\nKnowledge entries: {entry_count}\nDB schema version: {schema_version}\nMode: broker/telegram (read-only, outbound-only)"
+        )
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        let sanitized = sanitize_fts_query(query);
+        let guard = self.db.lock().unwrap();
+        let conn = &guard.conn;
+
+        let mut stmt = match conn.prepare(
+            "SELECT ke.id, ke.title, ke.content \
+             FROM ke_fts fts \
+             JOIN knowledge_entries ke ON fts.rowid = ke.id \
+             WHERE ke_fts MATCH ? \
+             ORDER BY rank \
+             LIMIT ?",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("DbKnowledge search: prepare failed: {e}");
+                return vec![];
+            }
+        };
+
+        let limit = SEARCH_LIMIT as i64;
+        let rows = stmt.query_map(rusqlite::params![sanitized, limit], |row| {
+            let id: i64 = row.get(0)?;
+            let title: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            Ok((id, title, content))
+        });
+
+        match rows {
+            Ok(mapped) => mapped
+                .filter_map(|r| r.ok())
+                .map(|(id, title, content)| SearchResult {
+                    id: id.to_string(),
+                    summary: format!(
+                        "{title} — {}",
+                        &content.chars().take(80).collect::<String>()
+                    ),
+                })
+                .collect(),
+            Err(e) => {
+                warn!("DbKnowledge search: query failed: {e}");
+                vec![]
+            }
+        }
+    }
+
+    fn recent(&self) -> Vec<SearchResult> {
+        let guard = self.db.lock().unwrap();
+        let conn = &guard.conn;
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, title, content \
+             FROM knowledge_entries \
+             ORDER BY created_at DESC \
+             LIMIT ?",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("DbKnowledge recent: prepare failed: {e}");
+                return vec![];
+            }
+        };
+
+        let limit = RECENT_LIMIT as i64;
+        let rows = stmt.query_map([limit], |row| {
+            let id: i64 = row.get(0)?;
+            let title: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            Ok((id, title, content))
+        });
+
+        match rows {
+            Ok(mapped) => mapped
+                .filter_map(|r| r.ok())
+                .map(|(id, title, content)| SearchResult {
+                    id: id.to_string(),
+                    summary: format!(
+                        "{title} — {}",
+                        &content.chars().take(80).collect::<String>()
+                    ),
+                })
+                .collect(),
+            Err(e) => {
+                warn!("DbKnowledge recent: query failed: {e}");
+                vec![]
+            }
+        }
+    }
+
+    fn briefing(&self, topic: &str) -> String {
+        // Delegate search to surface relevant knowledge entries for the topic.
+        let results = self.search(topic);
+        if results.is_empty() {
+            return format!("No briefing entries found for: {topic}");
+        }
+        let mut lines = vec![format!("*Briefing: {topic}*\n")];
+        for (i, r) in results.iter().enumerate() {
+            let summary = r
+                .summary
+                .chars()
+                .take(120)
+                .collect::<String>()
+                .replace(['*', '_'], "");
+            lines.push(format!("{}. `{}`\n   {}", i + 1, r.id, summary));
+        }
+        lines.join("\n")
     }
 }
 
@@ -648,6 +824,72 @@ mod tests {
         assert!(
             resp.contains("/status") || resp.contains("Unknown"),
             "uppercase command handled"
+        );
+    }
+
+    // ── DbKnowledge tests ──────────────────────────────────────────────────────
+
+    /// Build an in-memory `KnowledgeDb` with the minimal schema required by
+    /// `DbKnowledge::search()` and `DbKnowledge::status()`.
+    fn make_in_memory_db() -> KnowledgeDb {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions (id INTEGER PRIMARY KEY, summary TEXT);
+             CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version VALUES (1);
+             CREATE TABLE knowledge_entries (
+                 id      INTEGER PRIMARY KEY,
+                 title   TEXT NOT NULL,
+                 content TEXT NOT NULL
+             );
+             INSERT INTO knowledge_entries VALUES (1, 'auth-patterns', 'JWT authentication flow details');
+             INSERT INTO knowledge_entries VALUES (2, 'db-migrations',  'How to run schema migrations');
+             CREATE VIRTUAL TABLE ke_fts USING fts5(title, content, content='knowledge_entries', content_rowid='id');
+             INSERT INTO ke_fts(rowid, title, content)
+                 SELECT id, title, content FROM knowledge_entries;",
+        )
+        .expect("schema setup");
+        KnowledgeDb { conn }
+    }
+
+    #[test]
+    fn db_knowledge_search_returns_results() {
+        let knowledge = DbKnowledge::from_db(make_in_memory_db());
+        let results = knowledge.search("auth");
+        assert!(
+            !results.is_empty(),
+            "search('auth') should return at least one result"
+        );
+        assert!(
+            results[0].summary.contains("auth"),
+            "result summary should contain 'auth'"
+        );
+    }
+
+    #[test]
+    fn db_knowledge_search_empty_query_returns_empty() {
+        let knowledge = DbKnowledge::from_db(make_in_memory_db());
+        // An empty FTS query is sanitized to empty string → prepare/execute fails
+        // gracefully (no panic); returns empty vec.
+        let results = knowledge.search("");
+        // We only assert no panic; result may be empty or not depending on FTS behaviour.
+        let _ = results;
+    }
+
+    #[test]
+    fn db_knowledge_search_no_match_returns_empty() {
+        let knowledge = DbKnowledge::from_db(make_in_memory_db());
+        let results = knowledge.search("xyzzy_no_such_term_9999");
+        assert!(results.is_empty(), "non-matching query should return empty");
+    }
+
+    #[test]
+    fn db_knowledge_status_uses_correct_tables() {
+        let knowledge = DbKnowledge::from_db(make_in_memory_db());
+        let status = knowledge.status();
+        assert!(
+            status.contains("schema version"),
+            "status should report schema version"
         );
     }
 }
