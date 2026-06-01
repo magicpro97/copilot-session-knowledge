@@ -9,6 +9,7 @@ Usage:
     python repo-map.py --format full        # Include content snippet
     python repo-map.py --project-id <id>    # Use project_id in code_index
     python repo-map.py --tokens 4000        # Approximate output token budget
+    python repo-map.py --no-cache           # Force regeneration, skip cache
 """
 
 import argparse
@@ -30,8 +31,9 @@ EXTENSIONS = {".py", ".ts", ".js", ".go", ".rs", ".java"}
 IDENTIFIER_RE = re.compile(r"\b[A-Za-z_]\w+\b")
 SYMBOL_DEF_RE = re.compile(r"^(?:class|def|function|fn|func)\s+(\w+)", re.MULTILINE)
 
-# TODO(#742): cache by file content hash for incremental updates
-# TODO(#742): MCP tool registration in mcp-server.py
+# Cache constants
+CACHE_DIR_NAME = ".sk-cache"
+CACHE_VERSION = 1
 
 
 def _db_path() -> Path | None:
@@ -43,6 +45,67 @@ def _db_path() -> Path | None:
 
 def _make_project_id(root: Path) -> str:
     return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+
+
+def _compute_file_hashes(root: Path, max_files: int = 200) -> dict[str, str]:
+    """Return {relative_path: sha256_hex} for all source files under root."""
+    hashes: dict[str, str] = {}
+    count = 0
+    for fpath in sorted(root.rglob("*")):
+        if count >= max_files:
+            break
+        if not fpath.is_file() or fpath.suffix not in EXTENSIONS:
+            continue
+        if ".git" in fpath.parts or "node_modules" in fpath.parts:
+            continue
+        try:
+            digest = hashlib.sha256(fpath.read_bytes()).hexdigest()
+            hashes[str(fpath.relative_to(root))] = digest
+            count += 1
+        except OSError:
+            continue
+    return hashes
+
+
+def _make_project_hash(file_paths: list[str]) -> str:
+    """Stable 8-char hash of the sorted file path list (cache filename key)."""
+    key = "\n".join(sorted(file_paths))
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+def _get_cache_path(root: Path, project_hash: str) -> Path:
+    return root / CACHE_DIR_NAME / f"repomap-{project_hash}.json"
+
+
+def _load_cache(cache_path: Path) -> dict | None:
+    """Load and validate cache; return None on any error or schema mismatch."""
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        if data.get("version") != CACHE_VERSION:
+            return None
+        if not isinstance(data.get("file_hashes"), dict):
+            return None
+        if not isinstance(data.get("map_output"), str):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _save_cache(cache_path: Path, file_hashes: dict[str, str], map_output: str) -> None:
+    """Persist cache file; silently ignore write errors."""
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": CACHE_VERSION,
+            "file_hashes": file_hashes,
+            "map_output": map_output,
+        }
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _load_from_db(project_id: str) -> list[dict]:
@@ -224,6 +287,7 @@ def main() -> None:
         default=4000,
         help="Approximate output token budget for non-JSON formats",
     )
+    parser.add_argument("--no-cache", action="store_true", dest="no_cache", help="Force regeneration, bypass cache")
     args = parser.parse_args()
 
     root = Path(args.path).resolve()
@@ -232,6 +296,17 @@ def main() -> None:
         sys.exit(1)
 
     project_id = args.project_id or _make_project_id(root)
+
+    # --- content-hash cache check ---
+    file_hashes = _compute_file_hashes(root)
+    project_hash = _make_project_hash(list(file_hashes.keys()))
+    cache_path = _get_cache_path(root, project_hash)
+
+    if not args.no_cache:
+        cached = _load_cache(cache_path)
+        if cached is not None and cached.get("file_hashes") == file_hashes:
+            print(cached["map_output"])
+            return
 
     symbols = _load_from_db(project_id)
     source = "code_index"
@@ -252,7 +327,7 @@ def main() -> None:
 
     if args.as_json:
         ranked = _ranked_symbols(symbols, ranks, top=args.top)
-        output = {
+        output_obj = {
             "root": str(root),
             "source": source,
             "total_symbols": len(symbols),
@@ -261,7 +336,9 @@ def main() -> None:
                 {**symbol, "pagerank_score": round(ranks.get(symbol["symbol_name"], 0.0), 6)} for symbol in ranked
             ],
         }
-        print(json.dumps(output, indent=2))
+        map_output = json.dumps(output_obj, indent=2)
+        _save_cache(cache_path, file_hashes, map_output)
+        print(map_output)
         return
 
     header = [
@@ -275,7 +352,9 @@ def main() -> None:
     ]
     body = _format_map(symbols, ranks, top=args.top, fmt=args.format)
     footer = f"\n\n[{args.top} of {len(symbols)} total symbols shown, ranked by PageRank]"
-    print(_truncate_output("\n".join(header) + body + footer, args.tokens))
+    map_output = _truncate_output("\n".join(header) + body + footer, args.tokens)
+    _save_cache(cache_path, file_hashes, map_output)
+    print(map_output)
 
 
 if __name__ == "__main__":
