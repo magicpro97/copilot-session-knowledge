@@ -52,8 +52,13 @@ fn secret_path() -> PathBuf {
 }
 
 /// Path to `~/.copilot/markers/` directory.
-/// Override with `SK_MARKERS_DIR` env var (used in tests to avoid writing to real dir).
+///
+/// In test builds the `SK_MARKERS_DIR` environment variable may override the
+/// directory so tests do not write to the real `~/.copilot/markers/`.  The
+/// override is **not** compiled into production binaries; setting
+/// `SK_MARKERS_DIR` at runtime has no effect outside of test builds.
 pub fn markers_dir() -> PathBuf {
+    #[cfg(any(test, feature = "test-helpers"))]
     if let Ok(dir) = std::env::var("SK_MARKERS_DIR") {
         return PathBuf::from(dir);
     }
@@ -431,6 +436,7 @@ pub fn create_tamper_marker() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::path::PathBuf;
 
     // -----------------------------------------------------------------------
@@ -820,6 +826,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn create_tamper_marker_does_not_panic() {
         // Use a temp dir via SK_MARKERS_DIR to avoid writing to real ~/.copilot/markers/.
         let tmp = tempfile::tempdir().expect("tempdir");
