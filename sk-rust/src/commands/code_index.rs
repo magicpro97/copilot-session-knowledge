@@ -348,7 +348,11 @@ mod native {
     ///
     /// Returns the number of symbols indexed, or 0 if the file is skipped
     /// (unsupported language, too large, unreadable).
-    pub fn index_single_file(file_path: &Path, root: &Path, project_id: &str) -> Result<usize, String> {
+    pub fn index_single_file(
+        file_path: &Path,
+        root: &Path,
+        project_id: &str,
+    ) -> Result<usize, String> {
         // Skip files exceeding MAX_FILE_BYTES
         if let Ok(meta) = file_path.metadata() {
             if meta.len() > MAX_FILE_BYTES {
@@ -426,7 +430,11 @@ mod native {
     }
 
     /// Remove all index entries for a deleted file.
-    pub fn delete_file_entries(file_path: &Path, root: &Path, project_id: &str) -> Result<(), String> {
+    pub fn delete_file_entries(
+        file_path: &Path,
+        root: &Path,
+        project_id: &str,
+    ) -> Result<(), String> {
         let rel_path = file_path
             .strip_prefix(root)
             .unwrap_or(file_path)
@@ -541,10 +549,7 @@ mod native {
                                     println!("Re-indexed {rel} ({n} symbols)");
                                 }
                                 Err(e) => {
-                                    eprintln!(
-                                        "error re-indexing {}: {e}",
-                                        file.display()
-                                    );
+                                    eprintln!("error re-indexing {}: {e}", file.display());
                                 }
                             }
                         }
@@ -562,10 +567,7 @@ mod native {
                                     println!("Removed stale index entries for {rel}");
                                 }
                                 Err(e) => {
-                                    eprintln!(
-                                        "error removing index for {}: {e}",
-                                        file.display()
-                                    );
+                                    eprintln!("error removing index for {}: {e}", file.display());
                                 }
                             }
                         }
@@ -672,7 +674,9 @@ mod native {
             #[cfg(not(feature = "native-watch"))]
             {
                 // native-watch feature not compiled in; fall back handled by caller
-                eprintln!("note: --watch requires the native-watch feature; falling back to Python");
+                eprintln!(
+                    "note: --watch requires the native-watch feature; falling back to Python"
+                );
                 return ExitCode::FAILURE;
             }
         }
