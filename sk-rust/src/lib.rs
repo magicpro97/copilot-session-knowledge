@@ -17,6 +17,15 @@ mod config;
 #[allow(dead_code)]
 mod db;
 
+// Expose retry_listener for embeddings/http.rs (browse-server builds).
+// Only retry_listener.rs is needed; the rest of hooks is binary-only.
+#[cfg(feature = "browse-server")]
+#[allow(dead_code)]
+mod hooks {
+    #[path = "../hooks/retry_listener.rs"]
+    pub mod retry_listener;
+}
+
 // Required by db::fts hybrid TF-IDF retrieval (§611) when compiled via lib.rs.
 #[cfg(feature = "browse-server")]
 #[allow(dead_code)]
