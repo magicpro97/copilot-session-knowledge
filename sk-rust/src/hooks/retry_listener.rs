@@ -3,8 +3,9 @@
 //! # Configuration
 //!
 //! Set `SK_RETRY_LISTENER` to the absolute path of an executable script to
-//! opt in.  When the variable is unset (or points to a nonexistent file) the
-//! hook is a silent no-op and all retry behaviour is unchanged.
+//! opt in.  If the variable points to a nonexistent file, a warning is printed
+//! and sk falls back to the default listener path.  When no listener file is
+//! found, the hook is a silent no-op and all retry behaviour is unchanged.
 //!
 //! Alternatively, place a default listener at:
 //!   - Unix:    `~/.copilot/hooks/sk-retry-listener.sh`
