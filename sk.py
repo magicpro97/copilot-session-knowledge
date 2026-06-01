@@ -164,6 +164,11 @@ _DIRECT: dict[str, CommandMeta] = {
     "code-search": CommandMeta(
         "code-search.py", "Search source code with ripgrep + SQLite FTS5 index", ("search", "index")
     ),
+    "code-embed": CommandMeta(
+        "code-search.py",
+        "Batch-embed code symbols for hybrid semantic search (requires API key)",
+        ("search", "index"),
+    ),
     "code-index": CommandMeta("code-index.py", "Extract and index code symbols (regex + FTS5)", ("search", "index")),
     "cost": CommandMeta(
         "cost-analytics.py", "Historical token-cost analytics across sessions and models", ("session", "cost")
@@ -1005,6 +1010,9 @@ def main(argv: list[str] | None = None) -> int:
         if meta.script is None:
             # Native-binary-only command: exec the sk binary directly.
             return _run_native_binary(cmd, rest)
+        # code-embed is a convenience alias that always passes --embed-all
+        if cmd == "code-embed":
+            return _run(str(meta), ["--embed-all"] + rest, cmd=cmd)
         return _run(str(meta), rest, cmd=cmd)
 
     # Grouped namespace?

@@ -1846,6 +1846,38 @@ if __name__ == "__main__":
                 "ALTER TABLE search_feedback ADD COLUMN note TEXT",
             ],
         ),
+        (
+            43,
+            "code_symbols",
+            [
+                # Issue #744 / Wave 14: native tree-sitter code indexer.
+                """CREATE TABLE IF NOT EXISTS code_symbols (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_path TEXT NOT NULL,
+                    symbol_name TEXT NOT NULL,
+                    symbol_kind TEXT NOT NULL,
+                    line_number INTEGER,
+                    project_id TEXT,
+                    indexed_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(file_path, symbol_name, symbol_kind)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_cs_file ON code_symbols(file_path)",
+                "CREATE INDEX IF NOT EXISTS idx_cs_name ON code_symbols(symbol_name)",
+            ],
+        ),
+        (
+            44,
+            "code_embeddings",
+            [
+                # Issue #743: hybrid BM25+vector semantic code search.
+                """CREATE TABLE IF NOT EXISTS code_embeddings (
+                    symbol_id INTEGER PRIMARY KEY REFERENCES code_symbols(id) ON DELETE CASCADE,
+                    embedding BLOB,
+                    model TEXT,
+                    embedded_at TEXT DEFAULT (datetime('now'))
+                )""",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

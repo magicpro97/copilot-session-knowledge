@@ -775,6 +775,17 @@ def main() -> None:
         action="store_true",
         help="Use trigram FTS5 index for partial-symbol and error-string matching (requires 3+ char query)",
     )
+    parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help="Hybrid BM25+vector search over code_symbols (vector path requires API key)",
+    )
+    parser.add_argument(
+        "--embed-all",
+        action="store_true",
+        dest="embed_all",
+        help="Batch-embed all unembedded code_symbols entries (requires SK_LLM_API_KEY or OPENAI_API_KEY)",
+    )
 
     args = parser.parse_args()
 
@@ -784,9 +795,40 @@ def main() -> None:
     if args.index:
         do_index(args.index)
         return
+    if args.embed_all:
+        _conn = sqlite3.connect(str(DB_PATH))
+        _conn.row_factory = sqlite3.Row
+        try:
+            n = embed_symbols(_conn)
+            print(f"Embedded {n} symbols.")
+        finally:
+            _conn.close()
+        return
     if not args.query:
         parser.print_help()
         sys.exit(1)
+
+    if args.semantic:
+        _conn2 = sqlite3.connect(str(DB_PATH))
+        _conn2.row_factory = sqlite3.Row
+        try:
+            use_emb = bool(os.environ.get("SK_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+            results_sem = hybrid_search(args.query, _conn2, limit=args.limit, use_embeddings=use_emb)
+        finally:
+            _conn2.close()
+        if args.as_json:
+            print(
+                json.dumps({"results": results_sem, "count": len(results_sem), "query": args.query}, ensure_ascii=False)
+            )
+        else:
+            if not results_sem:
+                print(f"No results for: {args.query}")
+            else:
+                for r in results_sem:
+                    print(f"\n{r['file_path']}:{r.get('line_number', 0)}")
+                    if r.get("symbol_name"):
+                        print(f"  Symbol: {r['symbol_name']} [{r.get('symbol_kind', '')}]")
+        return
 
     results = search(
         args.query,
@@ -820,3 +862,277 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Hybrid BM25 + vector semantic search over code_symbols (issue #743)
+# ---------------------------------------------------------------------------
+
+import struct as _struct
+import urllib.request as _urllib_request
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Try to load sqlite-vec extension. Returns True if available."""
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension("sqlite_vec")
+        return True
+    except (AttributeError, sqlite3.OperationalError):
+        return False
+
+
+def bm25_search(query: str, conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """BM25 search over code_symbols using FTS5 virtual table or LIKE fallback."""
+    has_symbols = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_symbols'").fetchone()
+    if not has_symbols:
+        return []
+
+    # Create FTS5 virtual table on demand (content= keeps storage lean)
+    _fts_created = False
+    try:
+        before = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_symbols_fts'").fetchone()
+        conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS code_symbols_fts USING fts5(
+            symbol_name,
+            file_path UNINDEXED,
+            content='code_symbols',
+            content_rowid='id',
+            tokenize='porter unicode61'
+        )""")
+        conn.commit()
+        after = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_symbols_fts'").fetchone()
+        _fts_created = after is not None and before is None
+    except sqlite3.OperationalError:
+        pass
+
+    # Populate FTS if freshly created or empty while code_symbols has rows
+    try:
+        if _fts_created:
+            conn.execute("INSERT INTO code_symbols_fts(code_symbols_fts) VALUES('rebuild')")
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    safe = _sanitize_fts(query)
+    if not safe:
+        safe = query.replace('"', "")
+
+    single_word = " " not in safe.strip()
+    fts_q = f'"{safe}"*' if single_word else f'"{safe}"'
+
+    def _run(q: str) -> list:
+        return conn.execute(
+            """SELECT cs.id, cs.file_path, cs.symbol_name, cs.symbol_kind, cs.line_number,
+                      bm25(code_symbols_fts) AS rank_score
+               FROM code_symbols_fts fts
+               JOIN code_symbols cs ON cs.id = fts.rowid
+               WHERE code_symbols_fts MATCH ?
+               ORDER BY rank_score LIMIT ?""",
+            (q, limit),
+        ).fetchall()
+
+    try:
+        rows = _run(fts_q)
+        if not rows and " " in safe:
+            words = [w for w in safe.split() if w]
+            try:
+                rows = _run(" OR ".join(f'"{w}"' for w in words))
+            except sqlite3.OperationalError:
+                rows = []
+    except sqlite3.OperationalError:
+        # FTS unavailable — LIKE fallback
+        like = f"%{query.lower()}%"
+        rows = conn.execute(
+            """SELECT id, file_path, symbol_name, symbol_kind, line_number, 0.0 AS rank_score
+               FROM code_symbols
+               WHERE LOWER(symbol_name) LIKE ? OR LOWER(file_path) LIKE ?
+               ORDER BY symbol_name LIMIT ?""",
+            (like, like, limit),
+        ).fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "file_path": r[1],
+            "symbol_name": r[2],
+            "symbol_kind": r[3],
+            "line_number": r[4],
+            "rank_score": r[5],
+            "source": "bm25",
+        }
+        for r in rows
+    ]
+
+
+def vector_search(query_embedding: list[float], conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Cosine similarity search over code_embeddings via sqlite-vec.
+
+    Returns [] gracefully if sqlite-vec is unavailable or no embeddings exist.
+    """
+    if not _load_sqlite_vec(conn):
+        return []
+
+    has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_embeddings'").fetchone()
+    if not has_table:
+        return []
+
+    count = conn.execute("SELECT COUNT(*) FROM code_embeddings WHERE embedding IS NOT NULL").fetchone()[0]
+    if count == 0:
+        return []
+
+    try:
+        dim = len(query_embedding)
+        q_blob = _struct.pack(f"{dim}f", *query_embedding)
+        rows = conn.execute(
+            """SELECT ce.symbol_id, cs.file_path, cs.symbol_name, cs.symbol_kind, cs.line_number,
+                      vec_distance_cosine(ce.embedding, ?) AS dist
+               FROM code_embeddings ce
+               JOIN code_symbols cs ON cs.id = ce.symbol_id
+               WHERE ce.embedding IS NOT NULL
+               ORDER BY dist LIMIT ?""",
+            (q_blob, limit),
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "file_path": r[1],
+                "symbol_name": r[2],
+                "symbol_kind": r[3],
+                "line_number": r[4],
+                "rank_score": 1.0 - float(r[5]),
+                "source": "vector",
+            }
+            for r in rows
+        ]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _rrf_fuse(bm25_results: list[dict], vec_results: list[dict], k: int = 60) -> list[dict]:
+    """Reciprocal Rank Fusion of two ranked lists."""
+    scores: dict[tuple, float] = {}
+    meta: dict[tuple, dict] = {}
+
+    for rank, r in enumerate(bm25_results):
+        key = (r["file_path"], r["symbol_name"])
+        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+        meta[key] = r
+
+    for rank, r in enumerate(vec_results):
+        key = (r["file_path"], r["symbol_name"])
+        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+        if key not in meta:
+            meta[key] = r
+
+    fused = sorted(scores.keys(), key=lambda kk: scores[kk], reverse=True)
+    results = []
+    for key in fused:
+        entry = dict(meta[key])
+        entry["rrf_score"] = scores[key]
+        entry["source"] = "hybrid"
+        results.append(entry)
+    return results
+
+
+def _get_query_embedding(text: str) -> list[float] | None:
+    """Embed a query string via OpenAI-compatible API. Returns None if no API key."""
+    import json as _json
+
+    api_key = os.environ.get("SK_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        url = "https://api.openai.com/v1/embeddings"
+        payload = _json.dumps({"input": text, "model": "text-embedding-3-small"}).encode()
+        req = _urllib_request.Request(url, data=payload, method="POST")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Content-Type", "application/json")
+        with _urllib_request.urlopen(req, timeout=30) as resp:
+            data = _json.loads(resp.read())
+        return data["data"][0]["embedding"]
+    except Exception:
+        return None
+
+
+def hybrid_search(
+    query: str,
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    use_embeddings: bool = False,
+) -> list[dict]:
+    """Hybrid BM25 + optional vector search with RRF fusion.
+
+    Falls back gracefully to BM25-only when sqlite-vec is unavailable
+    or no API key is configured.
+    """
+    bm25_results = bm25_search(query, conn, limit=limit * 2)
+
+    vec_results: list[dict] = []
+    if use_embeddings:
+        q_emb = _get_query_embedding(query)
+        if q_emb:
+            vec_results = vector_search(q_emb, conn, limit=limit * 2)
+
+    if not vec_results:
+        return bm25_results[:limit]
+
+    return _rrf_fuse(bm25_results, vec_results)[:limit]
+
+
+def embed_symbols(conn: sqlite3.Connection, batch_size: int = 50) -> int:
+    """Batch-embed all unembedded code_symbols entries.
+
+    Requires SK_LLM_API_KEY or OPENAI_API_KEY to be set.
+    Returns the number of symbols successfully embedded.
+    """
+    import json as _json
+
+    api_key = os.environ.get("SK_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Skipping embed_symbols: no SK_LLM_API_KEY or OPENAI_API_KEY set", file=sys.stderr)
+        return 0
+
+    has_symbols = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_symbols'").fetchone()
+    has_emb = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_embeddings'").fetchone()
+    if not has_symbols or not has_emb:
+        return 0
+
+    rows = conn.execute(
+        """SELECT cs.id, cs.symbol_name, cs.symbol_kind, cs.file_path
+           FROM code_symbols cs
+           LEFT JOIN code_embeddings ce ON ce.symbol_id = cs.id
+           WHERE ce.symbol_id IS NULL""",
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    embedded = 0
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        texts = [f"{r[1]} {r[2]} {r[3]}" for r in batch]
+        try:
+            url = "https://api.openai.com/v1/embeddings"
+            payload = _json.dumps({"input": texts, "model": "text-embedding-3-small"}).encode()
+            req = _urllib_request.Request(url, data=payload, method="POST")
+            req.add_header("Authorization", f"Bearer {api_key}")
+            req.add_header("Content-Type", "application/json")
+            with _urllib_request.urlopen(req, timeout=120) as resp:
+                data = _json.loads(resp.read())
+            embeddings = [item["embedding"] for item in data["data"]]
+            for (sym_id, *_), emb in zip(batch, embeddings, strict=False):
+                dim = len(emb)
+                blob = _struct.pack(f"{dim}f", *emb)
+                conn.execute(
+                    """INSERT OR REPLACE INTO code_embeddings (symbol_id, embedding, model)
+                       VALUES (?, ?, ?)""",
+                    (sym_id, blob, "text-embedding-3-small"),
+                )
+            conn.commit()
+            embedded += len(batch)
+            print(f"  Embedded {embedded}/{len(rows)} symbols...")
+        except Exception as exc:
+            print(f"  Embedding batch failed: {exc}", file=sys.stderr)
+            break
+
+    return embedded
