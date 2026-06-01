@@ -72,6 +72,7 @@ def _load_script_module(module_name: str, filename: str):
 try:
     briefing_mod = _load_script_module("mcp_briefing", "briefing.py")
     query_session_mod = _load_script_module("mcp_query_session", "query-session.py")
+    session_compact_mod = _load_script_module("mcp_session_compact", "session-compact.py")
 except Exception as exc:  # pragma: no cover - startup failure path
     print(f"Failed to load tool modules: {exc}", file=sys.stderr)
     raise
@@ -282,6 +283,25 @@ TOOLS = [
                 "note": {"type": "string", "description": "Optional note (max 500 chars)", "maxLength": 500},
             },
             "required": ["entry_id", "verdict"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "compact_session",
+        "description": "Create a structured checkpoint for the given session. Issue #893.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to compact (default: most recent session).",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview the checkpoint without writing it (default false).",
+                },
+            },
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -876,6 +896,64 @@ def _run_rate_entry(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "structuredContent": body}
 
 
+# ---------------------------------------------------------------------------
+# compact_session — create a structured checkpoint for a session (issue #893)
+# ---------------------------------------------------------------------------
+
+
+def _run_compact_session(session_id: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Create a structured checkpoint for the given session via session-compact.py."""
+    argv = ["--json", "--no-llm"]
+    if session_id:
+        argv += ["--session-id", session_id]
+    if dry_run:
+        argv.append("--dry-run")
+    exit_code, stdout_text, stderr_text = _capture_module_main(session_compact_mod, argv)
+    if dry_run:
+        resolved_id = session_id or ""
+        body: dict[str, Any] = {"status": "dry_run", "session_id": resolved_id, "token_count": 0}
+        return {
+            "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+            "structuredContent": body,
+        }
+    if exit_code != 0:
+        message = stderr_text.strip() or stdout_text.strip() or "compact_session failed"
+        body = {"status": "error", "message": message}
+        return {
+            "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+            "structuredContent": body,
+        }
+    text = stdout_text.strip()
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        body = {"status": "error", "message": f"Unexpected output: {text[:200]}"}
+        return {
+            "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+            "structuredContent": body,
+        }
+    body = {
+        "status": "ok",
+        "session_id": parsed.get("session_id", session_id or ""),
+        "checkpoint_id": parsed.get("entry_id"),
+        "token_count": parsed.get("est_tokens", 0),
+    }
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
+        "structuredContent": body,
+    }
+
+
+def _handle_compact_session(arguments: dict[str, Any]) -> dict[str, Any]:
+    session_id_raw = arguments.get("session_id")
+    if session_id_raw is not None and not isinstance(session_id_raw, str):
+        raise JsonRpcError(JSONRPC_INVALID_PARAMS, "'session_id' must be a string")
+    session_id = session_id_raw.strip() if isinstance(session_id_raw, str) else None
+    dry_run = _optional_bool(arguments, "dry_run", default=False)
+    return _run_compact_session(session_id=session_id or None, dry_run=dry_run)
+
+
+
 def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     if not isinstance(name, str) or not name:
@@ -901,6 +979,8 @@ def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         return _run_code_search(arguments)
     if name == "rate_entry":
         return _run_rate_entry(arguments)
+    if name == "compact_session":
+        return _handle_compact_session(arguments)
     raise JsonRpcError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
 
 

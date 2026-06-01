@@ -17078,7 +17078,7 @@ except Exception as _e894_02:
 try:
     test(
         "I894-03: diff_brief wired in _handle_tools_call",
-        '_run_diff_brief(' in _mcp894_src,
+        "_run_diff_brief(" in _mcp894_src,
         "_run_diff_brief not called in _handle_tools_call",
     )
 except Exception as _e894_03:
@@ -17163,10 +17163,12 @@ try:
     _mod894c = _ilu894c.module_from_spec(_spec894c)
     _spec894c.loader.exec_module(_mod894c)
 
-    _populated_diff_json = json.dumps({
-        "changed_files": ["src/auth.py", "src/db.py"],
-        "entries": [{"id": 1, "title": "auth pattern", "category": "pattern"}],
-    })
+    _populated_diff_json = json.dumps(
+        {
+            "changed_files": ["src/auth.py", "src/db.py"],
+            "entries": [{"id": 1, "title": "auth pattern", "category": "pattern"}],
+        }
+    )
 
     with _mock894c.patch.object(_mod894c, "_capture_module_main", return_value=(0, _populated_diff_json, "")):
         _res894_pop = _mod894c._run_diff_brief({})
@@ -17195,35 +17197,91 @@ try:
     _cls = _tent895._classify_quota_signal
 
     # Anthropic patterns
-    test("I895-1: overloaded_error → provider_overloaded", _cls("overloaded_error") == "provider_overloaded", _cls("overloaded_error"))
-    test("I895-2: 529 Overloaded → provider_overloaded", _cls("529 Overloaded") == "provider_overloaded", _cls("529 Overloaded"))
+    test(
+        "I895-1: overloaded_error → provider_overloaded",
+        _cls("overloaded_error") == "provider_overloaded",
+        _cls("overloaded_error"),
+    )
+    test(
+        "I895-2: 529 Overloaded → provider_overloaded",
+        _cls("529 Overloaded") == "provider_overloaded",
+        _cls("529 Overloaded"),
+    )
     test("I895-3: rate_limit_error → rate_limit", _cls("rate_limit_error") == "rate_limit", _cls("rate_limit_error"))
-    test("I895-4: Request too large → context_limit", _cls("Request too large") == "context_limit", _cls("Request too large"))
+    test(
+        "I895-4: Request too large → context_limit",
+        _cls("Request too large") == "context_limit",
+        _cls("Request too large"),
+    )
 
     # Azure OpenAI patterns
     test("I895-5: BillingIssue → billing_issue", _cls("BillingIssue") == "billing_issue", _cls("BillingIssue"))
-    test("I895-6: DeploymentNotFound → deployment_unavailable", _cls("DeploymentNotFound") == "deployment_unavailable", _cls("DeploymentNotFound"))
+    test(
+        "I895-6: DeploymentNotFound → deployment_unavailable",
+        _cls("DeploymentNotFound") == "deployment_unavailable",
+        _cls("DeploymentNotFound"),
+    )
     test("I895-7: content_filter → content_filter", _cls("content_filter") == "content_filter", _cls("content_filter"))
 
     # Google Gemini patterns
-    test("I895-8: RESOURCE_EXHAUSTED → quota_exceeded", _cls("RESOURCE_EXHAUSTED") == "quota_exceeded", _cls("RESOURCE_EXHAUSTED"))
+    test(
+        "I895-8: RESOURCE_EXHAUSTED → quota_exceeded",
+        _cls("RESOURCE_EXHAUSTED") == "quota_exceeded",
+        _cls("RESOURCE_EXHAUSTED"),
+    )
     test("I895-9: rateLimitExceeded → rate_limit", _cls("rateLimitExceeded") == "rate_limit", _cls("rateLimitExceeded"))
-    test("I895-10: User location is not supported → region_blocked", _cls("User location is not supported") == "region_blocked", _cls("User location is not supported"))
+    test(
+        "I895-10: User location is not supported → region_blocked",
+        _cls("User location is not supported") == "region_blocked",
+        _cls("User location is not supported"),
+    )
 
     # Mistral patterns
-    test("I895-11: insufficient_quota → quota_exceeded", _cls("insufficient_quota") == "quota_exceeded", _cls("insufficient_quota"))
-    test("I895-12: tokens_per_second exceeded → rate_limit", _cls("tokens_per_second exceeded") == "rate_limit", _cls("tokens_per_second exceeded"))
-    test("I895-13: capacity exceeded → provider_overloaded", _cls("capacity exceeded") == "provider_overloaded", _cls("capacity exceeded"))
+    test(
+        "I895-11: insufficient_quota → quota_exceeded",
+        _cls("insufficient_quota") == "quota_exceeded",
+        _cls("insufficient_quota"),
+    )
+    test(
+        "I895-12: tokens_per_second exceeded → rate_limit",
+        _cls("tokens_per_second exceeded") == "rate_limit",
+        _cls("tokens_per_second exceeded"),
+    )
+    test(
+        "I895-13: capacity exceeded → provider_overloaded",
+        _cls("capacity exceeded") == "provider_overloaded",
+        _cls("capacity exceeded"),
+    )
 
     # Ollama local patterns
-    test("I895-14: model is loading → model_loading", _cls("model is loading") == "model_loading", _cls("model is loading"))
-    test("I895-15: no available runners → provider_overloaded", _cls("no available runners") == "provider_overloaded", _cls("no available runners"))
+    test(
+        "I895-14: model is loading → model_loading",
+        _cls("model is loading") == "model_loading",
+        _cls("model is loading"),
+    )
+    test(
+        "I895-15: no available runners → provider_overloaded",
+        _cls("no available runners") == "provider_overloaded",
+        _cls("no available runners"),
+    )
     test("I895-16: out of memory → out_of_memory", _cls("out of memory") == "out_of_memory", _cls("out of memory"))
 
     # Regression: existing generic patterns still match
-    test("I895-17: regression rate-limit → rate_limit", _cls("rate-limit exceeded") == "rate_limit", _cls("rate-limit exceeded"))
-    test("I895-18: regression quota_exceeded", _cls("quota exceeded for this project") == "quota_exceeded", _cls("quota exceeded for this project"))
-    test("I895-19: regression context_window", _cls("context window exceeded") == "context_limit", _cls("context window exceeded"))
+    test(
+        "I895-17: regression rate-limit → rate_limit",
+        _cls("rate-limit exceeded") == "rate_limit",
+        _cls("rate-limit exceeded"),
+    )
+    test(
+        "I895-18: regression quota_exceeded",
+        _cls("quota exceeded for this project") == "quota_exceeded",
+        _cls("quota exceeded for this project"),
+    )
+    test(
+        "I895-19: regression context_window",
+        _cls("context window exceeded") == "context_limit",
+        _cls("context window exceeded"),
+    )
 
     # Non-matching text returns None
     test("I895-20: no match → None", _cls("everything is fine") is None, repr(_cls("everything is fine")))
