@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   MessageSquare,
+  GitBranch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useResolvedPathname } from "@/hooks/use-resolved-pathname";
@@ -25,6 +26,7 @@ const navItems = [
   { href: "/search", label: "Search", icon: Search },
   { href: "/insights", label: "Insights", icon: BarChart3 },
   { href: "/graph", label: "Graph", icon: Network },
+  { href: "/tentacles", label: "Tentacles", icon: GitBranch },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

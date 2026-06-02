@@ -1911,3 +1911,49 @@ export function useSessionMissionAtlas(
     },
   });
 }
+
+// ── #897: Inline entry editor ─────────────────────────────────────────────────
+
+interface UpdateKnowledgeEntryInput {
+  id: number;
+  title: string;
+  description: string;
+  tags: string;
+  confidence: number;
+}
+
+interface UpdateKnowledgeEntryResponse {
+  id: number;
+  updated: boolean;
+}
+
+export function useUpdateKnowledgeEntry(host: HostProfile = LOCAL_HOST) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: UpdateKnowledgeEntryInput): Promise<UpdateKnowledgeEntryResponse> => {
+      const data = await hostFetch<UpdateKnowledgeEntryResponse>(
+        withLeadingSlash(`/api/knowledge/${input.id}`),
+        host,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: input.title,
+            description: input.description,
+            tags: input.tags,
+            confidence: input.confidence,
+          }),
+        }
+      );
+      return data;
+    },
+    onSuccess: async () => {
+      // Invalidate queries that may contain entry data
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(host.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.health(host.id) }),
+      ]);
+    },
+  });
+}
