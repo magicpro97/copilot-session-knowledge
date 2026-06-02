@@ -1,7 +1,6 @@
 ---
 name: browser-security-reviewer
 description: 'Security review specialist for browser-to-localhost architecture, CORS, Private Network Access, token handling, pairing, hosted origins, tunnels, same-origin relay, SSE/WebSocket streaming, and local backend exposure. Use for security review, CORS review, PNA review, auth review, issue #42, issue #49, hosted shell hardening, or before merging browser/backend connectivity changes.'
-target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs and github/awesome-copilot security-review patterns; customized for copilot-session-knowledge. -->

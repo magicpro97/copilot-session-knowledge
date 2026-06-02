@@ -1,7 +1,6 @@
 ---
 name: research-planner
 description: 'Researches ambiguous architecture/product issues, compares implementation options, writes evidence-backed issue specs, prepares Copilot cloud agent handoff prompts, and maps whole-app synchronization across watch-sessions, auto-update, docs, tests, conventions, hooks, and skills. Use for research, spike, architecture decision, issue drafting, what/why/when/how, hosted shell strategy, cloud agent assignment, or unclear requirements before coding.'
-target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs, GitHub awesome-copilot research/planning examples, and local agent-creator templates; customized for copilot-session-knowledge. -->

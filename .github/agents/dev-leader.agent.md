@@ -2,7 +2,6 @@
 name: dev-leader
 description: 'Opus-class development coordinator for copilot-session-knowledge. Leads Python tool development, hook engineering, browse backend, and Rust binary work. Coordinates with test-leader and qa-leader. Uses research-planner when confidence < 1.0. Never marks BLOCKED without exhausting the infinite confidence loop. Use for Python scripts, hooks/rules, browse backend, CLI features, architecture decisions, or cross-module Python changes.'
 model: claude-opus-4.7
-target: github-copilot
 ---
 
 <!-- Opus Leader Agent — copilot-session-knowledge dev-leader. Quality-over-speed, multi-platform aware. -->

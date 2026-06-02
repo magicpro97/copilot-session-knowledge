@@ -1,7 +1,6 @@
 ---
 name: whole-app-impact-auditor
 description: 'Audits proposed or completed changes for synchronized impact across the entire copilot-session-knowledge app: watch-sessions, auto-update, install/startup, docs, tests, coding conventions, hooks, skills, agents, browse-ui, backend, CI, deploy, and operator workflows. Use before implementation planning, before merging PRs, after cloud-agent changes, or whenever a change could break another app surface.'
-target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs and github/awesome-copilot review/planning patterns; customized for copilot-session-knowledge. -->
