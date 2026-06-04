@@ -11,6 +11,7 @@ Usage:
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
+    python install.py --deploy-claude-agents # Deploy Claude Code orchestrator agents to ~/.claude/
     python install.py --install-git-hooks    # Install pre-commit/pre-push into current repo's .git/hooks/
     python install.py --lock-hooks           # Lock hooks with OS immutable flags (tamper protection)
     python install.py --repair-hooks         # Clear hooks-tampered marker (no sudo required)
@@ -2141,6 +2142,101 @@ def inject_global():
 
 
 # ===================================================================
+# 2b. Claude Code orchestrator agents
+# ===================================================================
+
+CLAUDE_AGENTS_DIR = CLAUDE_DIR / "agents"
+CLAUDE_MEMORY = CLAUDE_DIR / "CLAUDE.md"
+_CLAUDE_AGENTS_TEMPLATE_DIR = _TEMPLATES_DIR / "claude-agents"
+_CLAUDE_POLICY_TEMPLATE = _TEMPLATES_DIR / "claude-orchestrator-policy.md"
+_ORCH_POLICY_MARKER_START = "<!-- ORCHESTRATOR-POLICY-START -->"
+_ORCH_POLICY_MARKER_END = "<!-- ORCHESTRATOR-POLICY-END -->"
+
+
+def _extract_orchestrator_policy(template_text: str) -> str:
+    """Return the marker-delimited policy block (markers included) from the template.
+
+    The template keeps an editable preamble above the markers; only the span between
+    the markers is injected into the user's CLAUDE.md so the preamble never leaks.
+    """
+    start = template_text.find(_ORCH_POLICY_MARKER_START)
+    end = template_text.find(_ORCH_POLICY_MARKER_END)
+    if start == -1 or end == -1 or end < start:
+        return ""
+    return template_text[start : end + len(_ORCH_POLICY_MARKER_END)].strip()
+
+
+def deploy_claude_agents():
+    """Deploy Claude Code worker subagents and inject the orchestrator policy.
+
+    Copies the worker subagent definitions into ``~/.claude/agents/`` and injects the
+    main-session orchestration policy into ``~/.claude/CLAUDE.md`` between idempotent
+    markers.  This makes the "main session orchestrates, workers execute" pattern
+    shareable and reusable across every project on the machine.
+
+    Claude Code prevents subagents from spawning other subagents, so the conductor must
+    be the main session (governed by CLAUDE.md), not a subagent.  The workers stay as
+    ``~/.claude/agents/`` definitions the main session delegates to.
+    """
+    print("\nDeploy Claude Code Orchestrator Agents")
+
+    if not _CLAUDE_AGENTS_TEMPLATE_DIR.is_dir():
+        print(f"  {FAIL} Template dir not found: {_tilde(_CLAUDE_AGENTS_TEMPLATE_DIR)}")
+        return
+
+    CLAUDE_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    deployed = 0
+    manifest_paths: list[Path] = []
+
+    # 1. Worker subagent definitions
+    for src_file in sorted(_CLAUDE_AGENTS_TEMPLATE_DIR.glob("*.md")):
+        dst_file = CLAUDE_AGENTS_DIR / src_file.name
+        new = src_file.read_text(encoding="utf-8")
+        if dst_file.is_file() and dst_file.read_text(encoding="utf-8") == new:
+            print(f"  {INFO} {src_file.name} — already up to date")
+        else:
+            action = "updated" if dst_file.is_file() else "created"
+            _atomic_write_text(dst_file, new)
+            print(f"  {OK} {src_file.name} — {action}")
+            deployed += 1
+        manifest_paths.append(dst_file)
+
+    # 2. Orchestrator policy injected into ~/.claude/CLAUDE.md
+    if _CLAUDE_POLICY_TEMPLATE.is_file():
+        policy_block = _extract_orchestrator_policy(_CLAUDE_POLICY_TEMPLATE.read_text(encoding="utf-8"))
+        if not policy_block:
+            print(f"  {WARN} Policy markers missing in {_tilde(_CLAUDE_POLICY_TEMPLATE)}")
+        else:
+            CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
+            if CLAUDE_MEMORY.is_file():
+                content = CLAUDE_MEMORY.read_text(encoding="utf-8")
+            else:
+                content = ""
+            if _ORCH_POLICY_MARKER_START in content:
+                pattern = re.escape(_ORCH_POLICY_MARKER_START) + r".*?" + re.escape(_ORCH_POLICY_MARKER_END)
+                new_content = re.sub(pattern, policy_block, content, flags=re.DOTALL)
+                if new_content != content:
+                    _atomic_write_text(CLAUDE_MEMORY, new_content)
+                    print(f"  {OK} CLAUDE.md — orchestrator policy updated")
+                    deployed += 1
+                else:
+                    print(f"  {INFO} CLAUDE.md — orchestrator policy already up to date")
+            else:
+                sep = "" if content.endswith("\n") or not content else "\n"
+                new_content = (content + sep + "\n" + policy_block + "\n") if content else (policy_block + "\n")
+                _atomic_write_text(CLAUDE_MEMORY, new_content)
+                print(f"  {OK} CLAUDE.md — orchestrator policy injected")
+                deployed += 1
+            manifest_paths.append(CLAUDE_MEMORY)
+    else:
+        print(f"  {WARN} Policy template not found: {_tilde(_CLAUDE_POLICY_TEMPLATE)}")
+
+    _record_managed_paths(manifest_paths)
+    print(f"\n  Deployed {deployed} change(s) to {_tilde(CLAUDE_DIR)}")
+    print(f"  {INFO} Open Claude Code and run /agents to see the worker subagents")
+
+
+# ===================================================================
 # 3. Self-Test
 # ===================================================================
 
@@ -2481,6 +2577,7 @@ def _show_usage_hints():
     print(f"    python {inst} --deploy-hooks           # Deploy hooks")
     print(f"    python {inst} --deploy-instructions   # Deploy global instructions")
     print(f"    python {inst} --inject-global         # Add to global copilot-instructions")
+    print(f"    python {inst} --deploy-claude-agents  # Deploy Claude Code orchestrator agents")
     print(f"    python {inst} --install-git-hooks     # Install pre-commit/pre-push git hooks")
     print(f"    python {inst} --lock-hooks             # Lock hooks (tamper protection)")
     print(f"    python {inst} --unlock-hooks           # Unlock hooks for updates")
@@ -3541,6 +3638,10 @@ def main():
 
     if "--inject-global" in args:
         inject_global()
+        return
+
+    if "--deploy-claude-agents" in args:
+        deploy_claude_agents()
         return
 
     if "--test" in args:

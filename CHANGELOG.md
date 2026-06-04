@@ -12,7 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **ci(#459):** run pnpm lint:all (src + e2e + scripts) as advisory CI step in browse-ui job.
 
 ### Added
-- **CLI session adoption / two-ID model docs (#532):** `docs/ARCHITECTURE.md` documents the
+- **Claude Code orchestrator agents (`--deploy-claude-agents`):** ship a reusable
+  "main session orchestrates, workers execute" agent set for Claude Code. `install.py`
+  gains `deploy_claude_agents()` and the `--deploy-claude-agents` flag, which copies the
+  six worker subagent definitions (`researcher`, `proposer`, `challenger`, `judge`,
+  `implementer`, `code-reviewer`) into `~/.claude/agents/` and injects the orchestration
+  policy into `~/.claude/CLAUDE.md` between `<!-- ORCHESTRATOR-POLICY-START/END -->`
+  markers (idempotent; preserves existing CLAUDE.md content). Templates live under
+  `templates/claude-agents/` and `templates/claude-orchestrator-policy.md`. Because Claude
+  Code forbids subagents from spawning subagents, the conductor must be the main session
+  (governed by CLAUDE.md), not a subagent. See `docs/CLAUDE-AGENTS.md`. Covered by
+  `tests/test_claude_agents.py`.
   operator-session-ID vs CLI-UUID (`resume_target`) model, lifecycle (discover -> adopt ->
   confirm -> prompt/resume), and guardrails (UUID4 validation, confirmation gate, read-only CLI
   tree, env allowlist, stale/missing recovery, duplicate 409 handling).
