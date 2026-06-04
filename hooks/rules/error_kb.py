@@ -132,7 +132,18 @@ class ErrorFixNudgeRule(Rule):
 
     def evaluate(self, event, data):
         tool_name = data.get("toolName", "")
-        tool_args = data.get("toolArgs", {}) or {}
+        # toolArgs may arrive as a dict, a JSON string, or be absent depending on
+        # the runtime. Normalise to a dict so the later .get() calls never crash
+        # with "'str' object has no attribute 'get'".
+        tool_args = data.get("toolArgs", {})
+        if isinstance(tool_args, str):
+            try:
+                parsed = json.loads(tool_args)
+                tool_args = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                tool_args = {}
+        elif not isinstance(tool_args, dict):
+            tool_args = {}
 
         # Clear marker when learn.py is detected in bash command
         if tool_name == "bash":

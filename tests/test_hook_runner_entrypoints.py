@@ -1046,6 +1046,42 @@ test(
 
 shutil.rmtree(str(_dd_home), ignore_errors=True)
 
+# 14b. Regression: stale hook-dedup-* markers are pruned so the directory does
+# not leak one file per unique tool call (previously grew to 130k+ files).
+_ddp_home = Path(tempfile.mkdtemp(prefix="test-ep-ddp-"))
+_ddp_markers = _ddp_home / ".copilot" / "markers"
+_ddp_markers.mkdir(parents=True, exist_ok=True)
+_ddp_env = {**os.environ, "HOME": str(_ddp_home), "USERPROFILE": str(_ddp_home), "HOOK_DRY_RUN": "1"}
+
+# Plant a stale dedup marker (mtime 10 s ago → older than the 5 s TTL).
+_stale_marker = _ddp_markers / "hook-dedup-preToolUse-deadbeef"
+_stale_marker.write_text("0", encoding="utf-8")
+_stale_ts = time.time() - 10
+os.utime(str(_stale_marker), (_stale_ts, _stale_ts))
+
+# No sweep stamp yet → the first hook invocation must run the sweep.
+_ddp_r = subprocess.run(
+    [sys.executable, str(RUNNER), "preToolUse"],
+    input=json.dumps({"toolName": "read", "toolArgs": {"path": "bar.py"}}),
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    timeout=10,
+    env=_ddp_env,
+    cwd=str(REPO / "hooks"),
+)
+test(
+    "dedup-prune: stale hook-dedup marker removed by sweep",
+    not _stale_marker.exists(),
+    f"stale marker still present; markers={list(_ddp_markers.glob('hook-dedup-*'))}",
+)
+test(
+    "dedup-prune: fresh marker for current call survives sweep",
+    any(f.name.startswith("hook-dedup-preToolUse") for f in _ddp_markers.iterdir() if f.is_file()),
+    f"markers={list(_ddp_markers.glob('hook-dedup-*'))}",
+)
+shutil.rmtree(str(_ddp_home), ignore_errors=True)
+
 shutil.rmtree(_ISOLATED_HOME, ignore_errors=True)
 
 # ══════════════════════════════════════════════════════════════════════

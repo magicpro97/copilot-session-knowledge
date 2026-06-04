@@ -3809,6 +3809,32 @@ try:
     )
     test("17b2: all 3 legacy paths present", len(_loaded17b.get("legacy", [])) == 3, f"Got: {_loaded17b!r}")
 
+    # 17b3. Regression: legacy entries are stamped with the marker's mtime, NOT
+    # now(), so an old marker's entries expire via _prune_ttl instead of being
+    # perpetually refreshed (which previously caused permanent false-positive
+    # TENTACLE REQUIRED blocks).
+    _td17b3 = Path(tempfile.mkdtemp(prefix="test-17b3-"))
+    _marker17b3 = _td17b3 / "tentacle-edits"
+    _marker17b3.write_text("placeholder", encoding="utf-8")
+    _old_ts17b3 = _now17 - (86400 * 2)  # 2 days ago → outside the 24 h TTL
+    os.utime(str(_marker17b3), (_old_ts17b3, _old_ts17b3))
+    _orig_vlist17b3 = _rt17.verify_list_marker
+    _rt17.verify_list_marker = lambda p: {"src/old.py", "tests/old.py"}
+    _loaded17b3 = _read_edits(_marker17b3)
+    _rt17.verify_list_marker = _orig_vlist17b3
+    _legacy_ts17b3 = [e["t"] for e in _loaded17b3.get("legacy", [])]
+    test(
+        "17b3: legacy entries stamped with marker mtime (not now)",
+        bool(_legacy_ts17b3) and all(abs(t - _old_ts17b3) < 2 for t in _legacy_ts17b3),
+        f"Got timestamps: {_legacy_ts17b3!r} (expected ~{_old_ts17b3})",
+    )
+    test(
+        "17b3b: stale legacy entries expire via _prune_ttl",
+        _prune_ttl(_loaded17b3.get("legacy", []), _now17) == [],
+        f"Got: {_prune_ttl(_loaded17b3.get('legacy', []), _now17)!r}",
+    )
+    shutil.rmtree(str(_td17b3), ignore_errors=True)
+
     # 17c. Cross-repo isolation: repo-A entries invisible from repo-B
     _repo_a17c = "/fake/repo-a"
     _repo_b17c = "/fake/repo-b"

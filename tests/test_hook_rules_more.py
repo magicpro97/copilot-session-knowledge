@@ -265,6 +265,30 @@ finally:
 test("ErrorKBRule name", rule.name == "error-kb")
 test("ErrorKBRule events", "errorOccurred" in rule.events)
 
+# 2j. ErrorFixNudgeRule must not crash when toolArgs is a string (regression).
+# Previously `data.get("toolArgs", {}) or {}` kept a non-empty string and the
+# subsequent `.get()` raised "'str' object has no attribute 'get'" (367 logged
+# errors in the wild).
+from rules.error_kb import ErrorFixNudgeRule
+
+_nudge_rule = ErrorFixNudgeRule()
+try:
+    _r2j = _nudge_rule.evaluate("postToolUse", {"toolName": "bash", "toolArgs": "not-a-dict"})
+    test("ErrorFixNudgeRule: string toolArgs does not crash", _r2j is None or isinstance(_r2j, dict))
+except Exception as _e2j:
+    test("ErrorFixNudgeRule: string toolArgs does not crash", False, f"raised: {_e2j}")
+
+# 2k. ErrorFixNudgeRule still parses a JSON-string toolArgs so the learn.py
+# marker-clear path keeps working when the runtime passes args as a string.
+try:
+    _r2k = _nudge_rule.evaluate(
+        "postToolUse",
+        {"toolName": "bash", "toolArgs": '{"command": "python3 learn.py --mistake x y"}'},
+    )
+    test("ErrorFixNudgeRule: JSON-string toolArgs parsed (learn.py clears nudge)", _r2k is None)
+except Exception as _e2k:
+    test("ErrorFixNudgeRule: JSON-string toolArgs parsed (learn.py clears nudge)", False, f"raised: {_e2k}")
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  Section 3: SessionEndRule
