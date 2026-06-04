@@ -2181,7 +2181,12 @@ def _inject_orchestrator_policy(target: Path, policy_block: str, *, header: str)
     content = target.read_text(encoding="utf-8") if target.is_file() else ""
     label = _tilde(target)
 
-    if _ORCH_POLICY_MARKER_START in content:
+    has_start = _ORCH_POLICY_MARKER_START in content
+    has_end = _ORCH_POLICY_MARKER_END in content
+
+    # Well-formed existing block: replace it in place (non-greedy, so a stray earlier
+    # START is also absorbed and the file self-heals to a single clean block).
+    if has_start and has_end:
         pattern = re.escape(_ORCH_POLICY_MARKER_START) + r".*?" + re.escape(_ORCH_POLICY_MARKER_END)
         new_content = re.sub(pattern, policy_block, content, flags=re.DOTALL)
         if new_content != content:
@@ -2190,6 +2195,13 @@ def _inject_orchestrator_policy(target: Path, policy_block: str, *, header: str)
             return 1
         print(f"  {INFO} {label} — orchestrator policy already up to date")
         return 0
+
+    # Malformed: exactly one marker present (e.g. a hand-edited file). Don't silently
+    # claim success — warn, then append a clean block. The next run's non-greedy replace
+    # absorbs the stray marker, self-healing the file to a single block.
+    if has_start or has_end:
+        missing = _ORCH_POLICY_MARKER_END if has_start else _ORCH_POLICY_MARKER_START
+        print(f"  {WARN} {label} — found a stray marker but missing '{missing}'; appending a clean policy block")
 
     if content:
         sep = "" if content.endswith("\n") else "\n"
@@ -2210,6 +2222,10 @@ def _deploy_claude_workers() -> tuple[int, list[Path]]:
     """
     if not _CLAUDE_AGENTS_TEMPLATE_DIR.is_dir():
         print(f"  {FAIL} Template dir not found: {_tilde(_CLAUDE_AGENTS_TEMPLATE_DIR)}")
+        print(
+            f"  {INFO} The worker subagents require a full repo checkout (or an install that "
+            f"includes templates/). The orchestration policy is still deployed below."
+        )
         return 0, []
 
     CLAUDE_AGENTS_DIR.mkdir(parents=True, exist_ok=True)

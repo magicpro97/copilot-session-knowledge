@@ -195,6 +195,22 @@ test("footer preserved on replace", replaced.rstrip().endswith("# Footer"))
 test("single marker after replace", replaced.count(_START) == 1)
 
 
+# ── 5b. Malformed file: START present but END missing ────────────────────────
+
+print("\n\U0001f9ea deploy_orchestrator — malformed (START without END) self-heals")
+
+_install.CLAUDE_MEMORY.write_text("# Doc\n\n" + _START + "\nhand-edited, END deleted\n", encoding="utf-8")
+_install.deploy_orchestrator()
+healed1 = _install.CLAUDE_MEMORY.read_text(encoding="utf-8")
+test("malformed inject does not silently noop (END now present)", _END in healed1)
+# First pass appends a clean block, leaving the stray START → two STARTs.
+# A second pass must self-heal to exactly one well-formed block.
+_install.deploy_orchestrator()
+healed2 = _install.CLAUDE_MEMORY.read_text(encoding="utf-8")
+test("self-heals to single START after re-run", healed2.count(_START) == 1)
+test("self-heals to single END after re-run", healed2.count(_END) == 1)
+
+
 # ── 6. Deprecated alias still works ──────────────────────────────────────────
 
 print("\n\U0001f517 deploy_claude_agents — deprecated alias")

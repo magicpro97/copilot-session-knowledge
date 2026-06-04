@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   both hosts forbid subagents from spawning subagents, the conductor must be the main session.
   Templates live under `templates/claude-agents/` and `templates/orchestrator-policy.md`. See
   `docs/ORCHESTRATOR-AGENTS.md`. Covered by `tests/test_orchestrator.py`.
+- **CLI session adoption / two-ID model docs (#532):** `docs/ARCHITECTURE.md` documents the
   operator-session-ID vs CLI-UUID (`resume_target`) model, lifecycle (discover -> adopt ->
   confirm -> prompt/resume), and guardrails (UUID4 validation, confirmation gate, read-only CLI
   tree, env allowlist, stale/missing recovery, duplicate 409 handling).
