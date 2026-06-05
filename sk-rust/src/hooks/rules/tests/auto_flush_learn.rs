@@ -137,6 +137,96 @@ fn autoflush_fires_on_session_end_and_task_complete_only() {
 }
 
 #[test]
+fn autoflush_budget_defaults_are_capped_per_event() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    // Unset override → per-event cap (sessionEnd 5s hook → 3, preToolUse 10s → 8).
+    assert_eq!(autoflush_budget_for("sessionEnd", None), 3);
+    assert_eq!(autoflush_budget_for("preToolUse", None), 8);
+    // Any non-sessionEnd event uses the preToolUse cap.
+    assert_eq!(autoflush_budget_for("postToolUse", None), 8);
+}
+
+#[test]
+fn autoflush_budget_override_can_only_lower() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    assert_eq!(autoflush_budget_for("sessionEnd", Some(2)), 2);
+    assert_eq!(autoflush_budget_for("preToolUse", Some(2)), 2);
+}
+
+#[test]
+fn autoflush_budget_override_cannot_exceed_cap() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    assert_eq!(autoflush_budget_for("sessionEnd", Some(20)), 3);
+    assert_eq!(autoflush_budget_for("preToolUse", Some(20)), 8);
+}
+
+#[test]
+fn autoflush_budget_is_floored_at_one() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    assert_eq!(autoflush_budget_for("sessionEnd", Some(0)), 1);
+    assert_eq!(autoflush_budget_for("preToolUse", Some(0)), 1);
+}
+
+#[test]
+fn autoflush_defers_immediately_when_db_write_locked() {
+    let _g = env_lock();
+    let sandbox = make_sandbox("autoflush_defer_locked");
+    let inbox = sandbox.join("learn-inbox");
+    let db = sandbox.join("knowledge.db");
+    fs::create_dir_all(&inbox).unwrap();
+
+    // One valid queued entry so the rule reaches the writability probe.
+    write_valid_queued(&inbox, 0);
+
+    // Create a real SQLite DB and hold a write lock (RESERVED) on it for the
+    // duration of evaluate() — simulating a background writer (embed.py --build).
+    let lock_conn = rusqlite::Connection::open(&db).unwrap();
+    lock_conn
+        .execute_batch("CREATE TABLE IF NOT EXISTS t(x)")
+        .unwrap();
+    lock_conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let _env = EnvScope::set(&[
+        ("HOME", Some(&sandbox)),
+        ("USERPROFILE", Some(&sandbox)),
+        ("SK_LEARN_INBOX", Some(&inbox)),
+        ("SK_DB_PATH", Some(&db)),
+        ("SK_AUTOFLUSH", None),
+        ("SK_AUTOFLUSH_MAX_AGE_S", None),
+    ]);
+
+    let rule = AutoFlushLearnInboxRule;
+    let start = std::time::Instant::now();
+    let result = rule.evaluate("preToolUse", &json!({"toolName": "task_complete"}));
+    let elapsed = start.elapsed();
+
+    // Release the write lock.
+    let _ = lock_conn.execute_batch("ROLLBACK");
+
+    let msg = result
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        msg.contains("deferred"),
+        "expected a deferred message when the DB is write-locked, got: {msg:?}"
+    );
+    // Must NOT spin out the wall budget — deferral is near-instant.
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "deferral should be immediate, took {elapsed:?}"
+    );
+    // The queued entry must remain (deferred, not flushed or lost).
+    assert_eq!(
+        fs::read_dir(&inbox).unwrap().count(),
+        1,
+        "queued entry should be preserved when deferred"
+    );
+}
+
+#[test]
 fn autoflush_pre_tooluse_ignores_non_task_complete_tools() {
     let _g = env_lock();
     // No env touched, no inbox needed — fast path returns None.
@@ -275,7 +365,7 @@ fn autoflush_drains_50_entries_via_python_subprocess() {
 
     let rule = AutoFlushLearnInboxRule;
     let start = std::time::Instant::now();
-    let result = rule.evaluate("sessionEnd", &json!({"reason": "test"}));
+    let result = rule.evaluate("preToolUse", &json!({"toolName": "task_complete"}));
     let elapsed = start.elapsed();
 
     let msg = result
@@ -313,8 +403,8 @@ fn autoflush_drains_50_entries_via_python_subprocess() {
     assert_eq!(rejected.len(), 1, "poisoned entry must be quarantined");
 
     assert!(
-        elapsed.as_secs() < 5,
-        "50-entry drain p95 < 5s; was {}s",
+        elapsed.as_secs() < 8,
+        "50-entry drain within the task_complete budget (8s); was {}s",
         elapsed.as_secs()
     );
     let _ = fs::remove_dir_all(&sandbox);
