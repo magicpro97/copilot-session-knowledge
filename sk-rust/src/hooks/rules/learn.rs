@@ -1043,6 +1043,67 @@ fn count_inbox_json(inbox: &Path) -> usize {
     }
 }
 
+/// Pure cap policy for the flush wall budget (seconds), separated from env
+/// reading so it can be unit-tested without mutating process env.
+///
+/// The budget is capped strictly under each event's hooks.json `timeoutSec` so
+/// the auto-flush can never blow the hook budget (which the harness surfaces as
+/// "hook errored", blocking `task_complete`): sessionEnd's hook timeout is 5s
+/// (cap 3), preToolUse is 10s (cap 8). `base` (the operator override) can only
+/// *lower* the budget below the cap, never raise it above — and is floored at 1.
+pub(crate) fn autoflush_budget_for(event: &str, base: Option<u64>) -> u64 {
+    let cap = if event == "sessionEnd" { 3 } else { 8 };
+    base.unwrap_or(8).min(cap).max(1)
+}
+
+/// Wall-clock budget (seconds) for the `learn.py --flush-inbox` subprocess on
+/// `event`. Reads the `SK_AUTOFLUSH_BUDGET_S` override and applies the per-event
+/// cap (see [`autoflush_budget_for`]).
+fn autoflush_budget_s(event: &str) -> u64 {
+    let base = std::env::var("SK_AUTOFLUSH_BUDGET_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    autoflush_budget_for(event, base)
+}
+
+/// Resolve the knowledge.db path the same way `learn.py` does: `SK_DB_PATH` env,
+/// else `~/.copilot/session-state/knowledge.db`. NOTE: `learn.py` uses
+/// `SK_DB_PATH`, not the `SK_DB` var used by the Rust read path — they must
+/// agree here so the writability probe targets the DB the flush subprocess will
+/// actually open.
+fn autoflush_db_path() -> PathBuf {
+    if let Ok(p) = std::env::var("SK_DB_PATH") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    resolve_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".copilot")
+        .join("session-state")
+        .join("knowledge.db")
+}
+
+/// Best-effort ~50ms probe: can we acquire the DB write lock right now? Returns
+/// `false` when the DB is write-locked (e.g. a background `embed.py --build`
+/// holds it), letting the caller defer the flush instead of spinning out the
+/// whole wall budget — which on a closeout hook would otherwise exceed the
+/// hooks.json timeout and be reported as a hook error. Fail-open: any
+/// resolution/open error returns `true` so the budget cap remains the backstop.
+fn db_write_available() -> bool {
+    let path = autoflush_db_path();
+    if !path.is_file() {
+        return true; // no DB yet — nothing can be locking it
+    }
+    match rusqlite::Connection::open(&path) {
+        Ok(conn) => {
+            let _ = conn.busy_timeout(Duration::from_millis(50));
+            conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").is_ok()
+        }
+        Err(_) => true,
+    }
+}
+
 impl HookRule for AutoFlushLearnInboxRule {
     fn name(&self) -> &'static str {
         "auto-flush-learn-inbox"
@@ -1094,7 +1155,27 @@ impl HookRule for AutoFlushLearnInboxRule {
             return None;
         }
 
-        // Non-empty: invoke learn.py --flush-inbox under a 10s wall budget.
+        // Fast writability probe: if the DB is write-locked (e.g. a background
+        // `embed.py --build` holds it), defer immediately rather than spinning
+        // the full wall budget. On a closeout hook (task_complete / sessionEnd)
+        // a doomed spin would exceed the hooks.json timeout and be reported as a
+        // hook error — which blocks task_complete. The queued entries persist
+        // and flush on the next event/session.
+        if !db_write_available() {
+            crate::hooks::audit::audit_log(
+                event,
+                "task_complete",
+                self.name(),
+                "info",
+                &format!("deferred=locked queued={before}"),
+            );
+            return Some(info(&format!(
+                "[sk] learn-inbox auto-flush deferred (db busy): queued={before}"
+            )));
+        }
+
+        // Non-empty + DB writable: invoke learn.py --flush-inbox under a wall
+        // budget capped strictly under the hook timeout (see autoflush_budget_s).
         use crate::config::{python_exe, resolve_tools_dir};
         let learn_py = resolve_tools_dir().join("learn.py");
         if !learn_py.is_file() {
@@ -1119,8 +1200,8 @@ impl HookRule for AutoFlushLearnInboxRule {
         }
         // Recursion guard: prevent the spawned learn.py from re-triggering
         // hooks or producing user-facing learn reminders. Also skip embedding
-        // so a 50-entry drain stays within the 10s wall budget — embeddings
-        // are recomputed by the next scheduled embed run (issue #573 perf DoD).
+        // so a drain stays within the capped wall budget — embeddings are
+        // recomputed by the next scheduled embed run (issue #573 perf DoD).
         cmd.env("COPILOT_HOOKS_SUPPRESS", "1");
         cmd.env("SK_LEARN_SKIP_EMBED", "1");
         cmd.stdout(Stdio::piped()).stderr(Stdio::null());
@@ -1147,7 +1228,8 @@ impl HookRule for AutoFlushLearnInboxRule {
             })
         });
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let budget = autoflush_budget_s(event);
+        let deadline = Instant::now() + Duration::from_secs(budget);
         let mut timed_out = false;
         loop {
             match child.try_wait() {
@@ -1171,8 +1253,9 @@ impl HookRule for AutoFlushLearnInboxRule {
         if timed_out {
             let after = count_inbox_json(&inbox);
             let drained = before.saturating_sub(after);
-            let detail =
-                format!("timeout flushed={drained} queued={after} failed=? rejected=? wall=10s");
+            let detail = format!(
+                "timeout flushed={drained} queued={after} failed=? rejected=? wall={budget}s"
+            );
             crate::hooks::audit::audit_log(event, "task_complete", self.name(), "info", &detail);
             return Some(info(&format!(
                 "[sk] learn-inbox auto-flush timed out: {detail}"

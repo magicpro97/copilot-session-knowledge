@@ -137,6 +137,37 @@ fn autoflush_fires_on_session_end_and_task_complete_only() {
 }
 
 #[test]
+fn autoflush_budget_defaults_are_capped_per_event() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    // Unset override → per-event cap (sessionEnd 5s hook → 3, preToolUse 10s → 8).
+    assert_eq!(autoflush_budget_for("sessionEnd", None), 3);
+    assert_eq!(autoflush_budget_for("preToolUse", None), 8);
+    // Any non-sessionEnd event uses the preToolUse cap.
+    assert_eq!(autoflush_budget_for("postToolUse", None), 8);
+}
+
+#[test]
+fn autoflush_budget_override_can_only_lower() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    assert_eq!(autoflush_budget_for("sessionEnd", Some(2)), 2);
+    assert_eq!(autoflush_budget_for("preToolUse", Some(2)), 2);
+}
+
+#[test]
+fn autoflush_budget_override_cannot_exceed_cap() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    assert_eq!(autoflush_budget_for("sessionEnd", Some(20)), 3);
+    assert_eq!(autoflush_budget_for("preToolUse", Some(20)), 8);
+}
+
+#[test]
+fn autoflush_budget_is_floored_at_one() {
+    use crate::hooks::rules::learn::autoflush_budget_for;
+    assert_eq!(autoflush_budget_for("sessionEnd", Some(0)), 1);
+    assert_eq!(autoflush_budget_for("preToolUse", Some(0)), 1);
+}
+
+#[test]
 fn autoflush_pre_tooluse_ignores_non_task_complete_tools() {
     let _g = env_lock();
     // No env touched, no inbox needed — fast path returns None.
