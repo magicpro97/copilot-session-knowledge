@@ -11016,7 +11016,7 @@ try:
         _rc731 = _hi731.main(["--target", _d731e, "--yes", "--no-ci"])
         _hy731_path = os.path.join(_d731e, "harness.yaml")
         _hy731_exists = os.path.exists(_hy731_path)
-        _hy731_content = open(_hy731_path, encoding="utf-8").read() if _hy731_exists else ""
+        _hy731_content = Path(_hy731_path).read_text(encoding="utf-8") if _hy731_exists else ""
         test("I731-6a: harness init exits 0", _rc731 == 0, f"rc={_rc731}")
         test("I731-6b: harness.yaml created", _hy731_exists, "harness.yaml not found")
         test("I731-6c: harness.yaml has python-uv type", "python-uv" in _hy731_content, _hy731_content[:200])
@@ -16960,7 +16960,7 @@ try:
     test("I894-6: _run_diff_brief callable", callable(getattr(_mcp894, "_run_diff_brief", None)), dir(_mcp894))
 
     # I894-7: diff_brief wired in dispatch
-    _src894 = open(_mcp894.__file__, encoding="utf-8").read()
+    _src894 = Path(_mcp894.__file__).read_text(encoding="utf-8")
     test("I894-7: diff_brief in dispatch", 'name == "diff_brief"' in _src894, "dispatch check")
 
     # I894-8: no required params (budget and compact are optional)
@@ -17156,7 +17156,7 @@ try:
     )
     test("I907-6: _run_retro_summary callable", callable(getattr(_mcp907, "_run_retro_summary", None)))
 
-    _src907 = open(_mcp907.__file__, encoding="utf-8").read()
+    _src907 = Path(_mcp907.__file__).read_text(encoding="utf-8")
     test("I907-7: retro_summary wired in dispatch", 'name == "retro_summary"' in _src907, "dispatch check")
 
     # I907-8: invalid period returns structured error without invoking retro.py
@@ -17267,7 +17267,7 @@ try:
     )
     test("I909-6: _run_knowledge_health callable", callable(getattr(_mcp909, "_run_knowledge_health", None)))
 
-    _src909 = open(_mcp909.__file__, encoding="utf-8").read()
+    _src909 = Path(_mcp909.__file__).read_text(encoding="utf-8")
     test("I909-7: knowledge_health wired in dispatch", 'name == "knowledge_health"' in _src909, "dispatch check")
 
     # I909-8: invoking returns an MCP-shaped envelope with structuredContent (never raises)
@@ -17312,7 +17312,7 @@ try:
     )
     test("I922-8: _run_repo_map callable", callable(getattr(_mcp922, "_run_repo_map", None)))
 
-    _src922 = open(_mcp922.__file__, encoding="utf-8").read()
+    _src922 = Path(_mcp922.__file__).read_text(encoding="utf-8")
     test("I922-9: repo_map wired in dispatch", 'name == "repo_map"' in _src922, "dispatch check")
 
     # I922-10: invoking returns an MCP-shaped envelope with content + structuredContent
