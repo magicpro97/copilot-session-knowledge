@@ -168,6 +168,65 @@ fn autoflush_budget_is_floored_at_one() {
 }
 
 #[test]
+fn autoflush_defers_immediately_when_db_write_locked() {
+    let _g = env_lock();
+    let sandbox = make_sandbox("autoflush_defer_locked");
+    let inbox = sandbox.join("learn-inbox");
+    let db = sandbox.join("knowledge.db");
+    fs::create_dir_all(&inbox).unwrap();
+
+    // One valid queued entry so the rule reaches the writability probe.
+    write_valid_queued(&inbox, 0);
+
+    // Create a real SQLite DB and hold a write lock (RESERVED) on it for the
+    // duration of evaluate() — simulating a background writer (embed.py --build).
+    let lock_conn = rusqlite::Connection::open(&db).unwrap();
+    lock_conn
+        .execute_batch("CREATE TABLE IF NOT EXISTS t(x)")
+        .unwrap();
+    lock_conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let _env = EnvScope::set(&[
+        ("HOME", Some(&sandbox)),
+        ("USERPROFILE", Some(&sandbox)),
+        ("SK_LEARN_INBOX", Some(&inbox)),
+        ("SK_DB_PATH", Some(&db)),
+        ("SK_AUTOFLUSH", None),
+        ("SK_AUTOFLUSH_MAX_AGE_S", None),
+    ]);
+
+    let rule = AutoFlushLearnInboxRule;
+    let start = std::time::Instant::now();
+    let result = rule.evaluate("preToolUse", &json!({"toolName": "task_complete"}));
+    let elapsed = start.elapsed();
+
+    // Release the write lock.
+    let _ = lock_conn.execute_batch("ROLLBACK");
+
+    let msg = result
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        msg.contains("deferred"),
+        "expected a deferred message when the DB is write-locked, got: {msg:?}"
+    );
+    // Must NOT spin out the wall budget — deferral is near-instant.
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "deferral should be immediate, took {elapsed:?}"
+    );
+    // The queued entry must remain (deferred, not flushed or lost).
+    assert_eq!(
+        fs::read_dir(&inbox).unwrap().count(),
+        1,
+        "queued entry should be preserved when deferred"
+    );
+}
+
+#[test]
 fn autoflush_pre_tooluse_ignores_non_task_complete_tools() {
     let _g = env_lock();
     // No env touched, no inbox needed — fast path returns None.

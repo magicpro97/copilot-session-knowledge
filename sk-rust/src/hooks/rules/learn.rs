@@ -1066,16 +1066,15 @@ fn autoflush_budget_s(event: &str) -> u64 {
     autoflush_budget_for(event, base)
 }
 
-/// Resolve the knowledge.db path the same way `learn.py` does: `SK_DB_PATH` env,
-/// else `~/.copilot/session-state/knowledge.db`. NOTE: `learn.py` uses
-/// `SK_DB_PATH`, not the `SK_DB` var used by the Rust read path — they must
-/// agree here so the writability probe targets the DB the flush subprocess will
-/// actually open.
+/// Resolve the knowledge.db path the same way `learn.py` does:
+/// `os.environ.get("SK_DB_PATH", default)` — a *set* `SK_DB_PATH` (even empty) is
+/// used verbatim; only an unset var falls back to
+/// `~/.copilot/session-state/knowledge.db`. NOTE: `learn.py` uses `SK_DB_PATH`,
+/// not the `SK_DB` var used by the Rust read path — they must agree here so the
+/// writability probe targets the DB the flush subprocess will actually open.
 fn autoflush_db_path() -> PathBuf {
     if let Ok(p) = std::env::var("SK_DB_PATH") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
+        return PathBuf::from(p);
     }
     resolve_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1084,12 +1083,27 @@ fn autoflush_db_path() -> PathBuf {
         .join("knowledge.db")
 }
 
+/// Return `true` when `err` is a genuine SQLite lock-contention error
+/// (`SQLITE_BUSY` / `SQLITE_LOCKED`), as opposed to a structural error
+/// (read-only, permissions, malformed DB) which should NOT be treated as "locked".
+fn is_sqlite_busy(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(e, _)
+            if e.code == rusqlite::ErrorCode::DatabaseBusy
+                || e.code == rusqlite::ErrorCode::DatabaseLocked
+    )
+}
+
 /// Best-effort ~50ms probe: can we acquire the DB write lock right now? Returns
-/// `false` when the DB is write-locked (e.g. a background `embed.py --build`
-/// holds it), letting the caller defer the flush instead of spinning out the
-/// whole wall budget — which on a closeout hook would otherwise exceed the
-/// hooks.json timeout and be reported as a hook error. Fail-open: any
-/// resolution/open error returns `true` so the budget cap remains the backstop.
+/// `false` ONLY when the DB is genuinely write-locked (`SQLITE_BUSY`/`LOCKED`,
+/// e.g. a background `embed.py --build` holds it), letting the caller defer the
+/// flush instead of spinning out the whole wall budget — which on a closeout
+/// hook would otherwise exceed the hooks.json timeout and be reported as a hook
+/// error. Any other outcome (missing DB, open error, or a non-lock SQL error
+/// such as read-only/permissions/malformed) fails open with `true` so
+/// `learn.py --flush-inbox` can attempt the flush and surface the real error via
+/// the existing audit path; the budget cap remains the backstop.
 fn db_write_available() -> bool {
     let path = autoflush_db_path();
     if !path.is_file() {
@@ -1098,7 +1112,10 @@ fn db_write_available() -> bool {
     match rusqlite::Connection::open(&path) {
         Ok(conn) => {
             let _ = conn.busy_timeout(Duration::from_millis(50));
-            conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").is_ok()
+            match conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;") {
+                Ok(()) => true,
+                Err(e) => !is_sqlite_busy(&e), // defer only on real lock contention
+            }
         }
         Err(_) => true,
     }
