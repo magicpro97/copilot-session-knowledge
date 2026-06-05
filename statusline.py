@@ -55,7 +55,15 @@ AI_CREDIT_USD = 0.01  # 1 AI Credit = $0.01 USD (from June 2026)
 PREMIUM_REQUEST_USD = 0.04  # $0.04 per overage premium request (current billing)
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 QUOTA_CACHE_FILE = MARKERS_DIR / "quota-cache.json"
+QUOTA_CACHE_FILE = MARKERS_DIR / "quota-cache.json"
 QUOTA_CACHE_TTL = 300  # seconds between quota API refreshes
+# Optional per-model rate overrides, refreshed ~daily by auto-update-tools.py from
+# the github/docs pricing YAML.  Read-only here: the statusline never makes a
+# network call; it falls back to the hardcoded _MODEL_RATES when this is absent.
+PRICE_CACHE_FILE = MARKERS_DIR / "price-cache.json"
+# Ignore a price cache older than this (s).  Guards against a stalled updater
+# letting a months-old cache override a newer hardcoded _MODEL_RATES forever.
+PRICE_CACHE_MAX_AGE_S = 30 * 24 * 3600  # 30 days
 
 # Per-model rates in USD per 1M tokens (effective with AI Credit billing June 2026).
 # Source: github/docs:data/tables/copilot/models-and-pricing.yml (SHA 00152a3d)
@@ -208,15 +216,68 @@ def _normalize_model(raw: str) -> str:
     return raw.lower().strip()
 
 
+# Per-process cache of price-cache.json overrides (None = not yet loaded).
+_PRICE_OVERRIDES: dict[str, dict[str, float]] | None = None
+# Timestamp (_ts) of the loaded price cache, for staleness display.
+_PRICE_CACHE_TS: float | None = None
+
+
+def _load_price_overrides() -> dict[str, dict[str, float]]:
+    """Return per-model rate overrides from price-cache.json (cached per process).
+
+    Written daily by auto-update-tools.py.  A cache with a missing/invalid or
+    stale (> PRICE_CACHE_MAX_AGE_S) timestamp is ignored so it can never override
+    a newer hardcoded _MODEL_RATES indefinitely.  Fail-open: any error yields an
+    empty dict and the caller falls back to the hardcoded table.
+    """
+    global _PRICE_OVERRIDES, _PRICE_CACHE_TS
+    if _PRICE_OVERRIDES is not None:
+        return _PRICE_OVERRIDES
+    overrides: dict[str, dict[str, float]] = {}
+    try:
+        if PRICE_CACHE_FILE.exists():
+            obj = json.loads(PRICE_CACHE_FILE.read_text(encoding="utf-8"))
+            ts = obj.get("_ts") if isinstance(obj, dict) else None
+            rates = obj.get("rates") if isinstance(obj, dict) else None
+            if isinstance(ts, (int, float)):
+                _PRICE_CACHE_TS = float(ts)  # recorded even when stale, for the status line
+            fresh = isinstance(ts, (int, float)) and (time.time() - ts) <= PRICE_CACHE_MAX_AGE_S
+            if fresh and isinstance(rates, dict):
+                for key, val in rates.items():
+                    if isinstance(val, dict) and all(
+                        isinstance(val.get(k), (int, float)) for k in ("input", "cached_input", "output")
+                    ):
+                        rate = {
+                            "input": float(val["input"]),
+                            "cached_input": float(val["cached_input"]),
+                            "output": float(val["output"]),
+                        }
+                        if isinstance(val.get("cache_write"), (int, float)):
+                            rate["cache_write"] = float(val["cache_write"])
+                        overrides[_normalize_model(key)] = rate
+    except Exception:
+        overrides = {}
+    _PRICE_OVERRIDES = overrides
+    return overrides
+
+
 def _get_rate(model_id: str) -> dict[str, float]:
-    """Return per-token rates for *model_id*; fall back to claude-sonnet-4.6."""
+    """Return per-token rates for *model_id*.
+
+    Prefers daily-refreshed overrides from price-cache.json, then the hardcoded
+    _MODEL_RATES, then a claude-sonnet-4.6 fallback.
+    """
     mid = _normalize_model(model_id)
+    overrides = _load_price_overrides()
+    if mid in overrides:
+        return overrides[mid]
     if mid in _MODEL_RATES:
         return _MODEL_RATES[mid]
-    # Fuzzy: find a key that is a substring of mid or vice-versa
-    for key, rate in _MODEL_RATES.items():
-        if key in mid or mid in key:
-            return rate
+    # Fuzzy: find a key that is a substring of mid or vice-versa (overrides first)
+    for source in (overrides, _MODEL_RATES):
+        for key, rate in source.items():
+            if key in mid or mid in key:
+                return rate
     return _MODEL_RATES["claude-sonnet-4.6"]
 
 
@@ -531,7 +592,24 @@ def _print_status_table(force_quota: bool = False) -> None:
 
     print()
     print(f"  {_ansi(DIM)}Cost note: $* = estimated from token counts × model rates.{_ansi(RST)}")
-    print(f"  {_ansi(DIM)}Models from github/docs pricing YAML. Not exact GitHub billing.{_ansi(RST)}")
+    _ov = _load_price_overrides()
+    if _ov:
+        age = ""
+        if _PRICE_CACHE_TS:
+            days = int((time.time() - _PRICE_CACHE_TS) / 86400)
+            age = f", {days}d old"
+        print(
+            f"  {_ansi(DIM)}Prices: {len(_ov)} models from price-cache.json{age}. Not exact GitHub billing.{_ansi(RST)}"
+        )
+    elif _PRICE_CACHE_TS:
+        days = int((time.time() - _PRICE_CACHE_TS) / 86400)
+        print(
+            f"  {_ansi(DIM)}Prices: built-in table (cache {days}d old, stale — run 'sk update'). Not exact GitHub billing.{_ansi(RST)}"
+        )
+    else:
+        print(
+            f"  {_ansi(DIM)}Prices: built-in table (run 'sk update' to fetch latest). Not exact GitHub billing.{_ansi(RST)}"
+        )
     print()
 
 

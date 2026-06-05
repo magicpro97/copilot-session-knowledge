@@ -29,6 +29,7 @@ Usage:
     python auto-update-tools.py --skill-metrics-status  # Show skill outcome metrics
     python auto-update-tools.py --skill-metrics-audit   # Run skill metrics audit
     python auto-update-tools.py --list-coverage  # Print all tracked paths/patterns
+    python auto-update-tools.py --refresh-prices # Fetch model pricing → price-cache.json
     python auto-update-tools.py --skip-pull    # Run pipeline without pulling (used by self-exec)
 """
 
@@ -36,6 +37,7 @@ import contextlib
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -66,6 +68,13 @@ CLONE_URL = f"https://github.com/{SOURCE_REPO}.git"
 COOLDOWN = 86400  # 24 hours
 STATE_FILE = TOOLS_DIR / ".update-state.json"
 MANIFEST_FILE = TOOLS_DIR / ".update-manifest.json"
+
+# Model pricing: refreshed ~daily (gated by COOLDOWN) from the public github/docs
+# pricing YAML and written to price-cache.json, which statusline.py reads to
+# estimate session cost.  Fail-open: errors leave the previous cache in place.
+PRICING_REPO = "github/docs"
+PRICING_YAML_PATH = "data/tables/copilot/models-and-pricing.yml"
+PRICE_CACHE_FILE = HOME / ".copilot" / "markers" / "price-cache.json"
 
 # Registry written by setup-project.py and install.py --deploy-skill; records
 # every project that has received a skill deployment so that auto-update can
@@ -2344,6 +2353,132 @@ def check_cooldown() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Model pricing refresh (daily) — github/docs pricing YAML → price-cache.json
+# ---------------------------------------------------------------------------
+def _price_to_float(raw) -> float | None:
+    """Parse a '$1.75'-style price into a float; return None when not numeric."""
+    if raw is None:
+        return None
+    s = str(raw).strip().lstrip("$").replace(",", "")
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pricing_model_to_id(name: str) -> str:
+    """Map a YAML display name ('Claude Opus 4.8') to a model id ('claude-opus-4.8')."""
+    mid = str(name).strip().strip("'\"").lower()
+    mid = re.sub(r"\s+", "-", mid)
+    mid = re.sub(r"-+", "-", mid).strip("-")
+    return mid
+
+
+def parse_pricing_yaml(text: str) -> dict:
+    """Parse github/docs models-and-pricing.yml into {model_id: rate} dict.
+
+    Hand-rolled parser (the repo is pure-stdlib, no PyYAML).  The source is a flat
+    list of records, each starting with '- model:' followed by indented
+    'key: value' lines.  Several models appear twice (a Default tier and a
+    Long-context tier that collapse to the same id); we explicitly prefer the
+    Default tier rather than relying on source ordering, so an upstream reorder
+    can never silently select the higher long-context price.  A model that only
+    ever appears as long-context is still kept (better than dropping it).
+    """
+    rates: dict = {}
+    is_long_stored: dict = {}
+    cur: dict | None = None
+
+    def _is_long_context(rec) -> bool:
+        tier = str(rec.get("tier", "")).strip().lower()
+        thr = str(rec.get("threshold", "")).strip()
+        return ("long" in tier) or thr.startswith(">")
+
+    def _flush(rec) -> None:
+        if not rec:
+            return
+        mid = _pricing_model_to_id(rec.get("model", ""))
+        if not mid:
+            return
+        inp = _price_to_float(rec.get("input"))
+        cin = _price_to_float(rec.get("cached_input"))
+        out = _price_to_float(rec.get("output"))
+        if inp is None or cin is None or out is None:
+            return
+        long_ctx = _is_long_context(rec)
+        # Keep an existing entry unless it is a long-context tier being superseded
+        # by a Default one (Default always wins, regardless of source order).
+        if mid in rates and not (is_long_stored.get(mid) and not long_ctx):
+            return
+        rate = {"input": inp, "cached_input": cin, "output": out}
+        cw = _price_to_float(rec.get("cache_write"))
+        if cw is not None:
+            rate["cache_write"] = cw
+        rates[mid] = rate
+        is_long_stored[mid] = long_ctx
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("- model:"):
+            _flush(cur)
+            cur = {"model": stripped[len("- model:") :].strip().strip("'\"")}
+        elif cur is not None and ":" in stripped:
+            key, _, val = stripped.partition(":")
+            cur[key.strip()] = val.strip().strip("'\"")
+    _flush(cur)
+    return rates
+
+
+def refresh_model_prices() -> bool:
+    """Fetch the latest model pricing YAML and write price-cache.json.
+
+    Runs ~daily (gated by the update cooldown) and is read by statusline.py to
+    estimate session cost.  Fail-open: on any error the previous cache (or the
+    statusline's hardcoded table) remains in effect.
+    """
+    try:
+        if shutil.which("gh") is None:
+            log("Price refresh: gh CLI not found; keeping existing price cache.")
+            return False
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{PRICING_REPO}/contents/{PRICING_YAML_PATH}",
+                "-H",
+                "Accept: application/vnd.github.raw",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            warn("Price refresh: gh fetch failed; keeping existing price cache.")
+            return False
+        rates = parse_pricing_yaml(result.stdout)
+        if not rates:
+            warn("Price refresh: parsed 0 rates; keeping existing price cache.")
+            return False
+        payload = {
+            "_ts": int(time.time()),
+            "source": f"{PRICING_REPO}/{PRICING_YAML_PATH}",
+            "model_count": len(rates),
+            "rates": rates,
+        }
+        PRICE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(PRICE_CACHE_FILE, json.dumps(payload, indent=2))
+        ok(f"Price cache refreshed: {len(rates)} models → {PRICE_CACHE_FILE.name}")
+        return True
+    except Exception as exc:
+        warn(f"Price refresh error (non-fatal): {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -2409,6 +2544,8 @@ def main():
         elif arg == "--list-coverage":
             list_coverage()
             return
+        elif arg == "--refresh-prices":
+            raise SystemExit(0 if refresh_model_prices() else 1)
         elif arg == "--heal-copilot-cli":
             _issues = _try_healer_check()
             if _issues is None:
@@ -2490,6 +2627,10 @@ def main():
         else:
             # Even if no update, ensure post-merge hook exists
             ensure_post_merge_hook()
+
+        # Refresh model pricing table (daily; independent of repo changes so it
+        # tracks GitHub price updates even when the tools repo itself is unchanged).
+        refresh_model_prices()
 
 
 if __name__ == "__main__":
