@@ -5082,17 +5082,19 @@ def _run_watch(db_path: str, interval: int = 30, broadcast_check: bool = False) 
     conn = _wal_connect(db_path)
     last_max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM knowledge_entries").fetchone()[0]
 
-    print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop")
-    print(f"[watch] Starting from entry id>{last_max_id}")
+    print(f"[watch] Monitoring {db_path} every {interval}s — Ctrl-C to stop", flush=True)
+    print(f"[watch] Starting from entry id>{last_max_id}", flush=True)
 
     def _handle_signal(sig, frame):
-        print("\n[watch] Stopped.")
+        print("\n[watch] Stopped.", flush=True)
         conn.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _handle_signal)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _handle_signal)
+    if hasattr(signal, "SIGBREAK"):  # Windows Ctrl-Break → graceful shutdown
+        signal.signal(signal.SIGBREAK, _handle_signal)
 
     broadcast_path = Path.home() / ".copilot" / "markers" / "knowledge-broadcast.jsonl"
 

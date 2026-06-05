@@ -1876,7 +1876,7 @@ test("Gs1: goal init exits 0", _gs1_res.returncode == 0, _gs1_res.stderr[:200])
 test("Gs1: goal.json created", _gs1_goal_path.exists(), "goal.json not found")
 
 if _gs1_goal_path.exists():
-    _gs1_state = json.loads(_gs1_goal_path.read_text())
+    _gs1_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test("Gs1: goal.json has goal_id", bool(_gs1_state.get("goal_id")), "no goal_id")
     test("Gs1: goal.json title correct", _gs1_state.get("title") == "Test Goal", f"got {_gs1_state.get('title')}")
     test("Gs1: goal.json status=active", _gs1_state.get("status") == "active", f"got {_gs1_state.get('status')}")
@@ -1958,7 +1958,7 @@ _gs4_link = _run_utf8_text(
 test("Gs4: goal link exits 0", _gs4_link.returncode == 0, _gs4_link.stderr[:200])
 
 if _gs1_goal_path.exists():
-    _gs4_state = json.loads(_gs1_goal_path.read_text())
+    _gs4_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test(
         "Gs4: tentacle appears in goal.tentacles",
         _gs4_tname in _gs4_state.get("tentacles", []),
@@ -1969,7 +1969,7 @@ else:
 
 _gs4_meta_path = _goal_tentacles / _gs4_tname / "meta.json"
 if _gs4_meta_path.exists():
-    _gs4_meta = json.loads(_gs4_meta_path.read_text())
+    _gs4_meta = json.loads(_gs4_meta_path.read_text(encoding="utf-8"))
     test("Gs4: meta.json has goal_id after link", bool(_gs4_meta.get("goal_id")), str(_gs4_meta.get("goal_id")))
     test(
         "Gs4: meta.json has goal_name after link",
@@ -2016,7 +2016,7 @@ test(
 )
 
 if _gs4_meta_path.exists():
-    _gs5_meta = json.loads(_gs4_meta_path.read_text())
+    _gs5_meta = json.loads(_gs4_meta_path.read_text(encoding="utf-8"))
     _gs5_meta["status"] = "completed"
     _gs5_meta["terminal_status"] = "DONE"
     _gs5_meta["goal_iteration"] = 1
@@ -2045,7 +2045,7 @@ _gs5_res = _run_utf8_text(
 test("Gs5b: goal eval exits 0 after terminal handoff", _gs5_res.returncode == 0, _gs5_res.stderr[:200])
 
 if _gs1_goal_path.exists():
-    _gs5_state = json.loads(_gs1_goal_path.read_text())
+    _gs5_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test("Gs5b: iteration advanced to 2", _gs5_state.get("iteration") == 2, f"got {_gs5_state.get('iteration')}")
     test(
         "Gs5b: eval_history has one entry",
@@ -2077,7 +2077,7 @@ _gs6_res = _run_utf8_text(
 )
 test("Gs6: goal eval pause exits 0", _gs6_res.returncode == 0, _gs6_res.stderr[:200])
 if _gs1_goal_path.exists():
-    _gs6_state = json.loads(_gs1_goal_path.read_text())
+    _gs6_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test("Gs6: status=paused after eval pause", _gs6_state.get("status") == "paused", f"got {_gs6_state.get('status')}")
 else:
     test("Gs6: status=paused after eval pause", False, "goal.json missing")
@@ -2091,7 +2091,7 @@ _gs7_res = _run_utf8_text(
 )
 test("Gs7: goal resume exits 0", _gs7_res.returncode == 0, _gs7_res.stderr[:200])
 if _gs1_goal_path.exists():
-    _gs7_state = json.loads(_gs1_goal_path.read_text())
+    _gs7_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test("Gs7: status=active after resume", _gs7_state.get("status") == "active", f"got {_gs7_state.get('status')}")
 else:
     test("Gs7: status=active after resume", False, "goal.json missing")
@@ -2121,7 +2121,7 @@ _gs8_create = _run_utf8_text(
 test("Gs8: create --goal-id exits 0", _gs8_create.returncode == 0, _gs8_create.stderr[:200])
 _gs8_meta_path = _goal_tentacles / _gs8_tname / "meta.json"
 if _gs8_meta_path.exists():
-    _gs8_meta = json.loads(_gs8_meta_path.read_text())
+    _gs8_meta = json.loads(_gs8_meta_path.read_text(encoding="utf-8"))
     test("Gs8: meta.json goal_id matches", _gs8_meta.get("goal_id") == _gs8_gid, f"got {_gs8_meta.get('goal_id')}")
     test("Gs8: meta.json iteration=3", _gs8_meta.get("iteration") == 3, f"got {_gs8_meta.get('iteration')}")
     test(
@@ -2222,7 +2222,7 @@ _gs10_res = _run_utf8_text(
 )
 test("Gs10: goal eval complete exits 0", _gs10_res.returncode == 0, _gs10_res.stderr[:200])
 if _gs1_goal_path.exists():
-    _gs10_state = json.loads(_gs1_goal_path.read_text())
+    _gs10_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test(
         "Gs10: status=completed after eval complete",
         _gs10_state.get("status") == "completed",
@@ -2246,7 +2246,7 @@ test(
     f"stdout={_gs10b_res.stdout[:120]} stderr={_gs10b_res.stderr[:120]}",
 )
 if _gs1_goal_path.exists():
-    _gs10b_state = json.loads(_gs1_goal_path.read_text())
+    _gs10b_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test(
         "Gs10b: completed goal stays completed after rejected continue",
         _gs10b_state.get("status") == "completed",
@@ -2274,7 +2274,7 @@ _gs11_res = _run_utf8_text(
 )
 test("Gs11: goal init --force exits 0", _gs11_res.returncode == 0, _gs11_res.stderr[:200])
 if _gs1_goal_path.exists():
-    _gs11_state = json.loads(_gs1_goal_path.read_text())
+    _gs11_state = json.loads(_gs1_goal_path.read_text(encoding="utf-8"))
     test(
         "Gs11: title updated after --force reinit",
         _gs11_state.get("title") == "Reinit Goal",
@@ -4950,7 +4950,7 @@ try:
     import importlib.util as _ilu
     import types as _types
 
-    _pc_src = (REPO / "hooks" / "pre-commit").read_text()
+    _pc_src = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
     _pc_mod = _types.ModuleType("pre_commit_mod")
     _pc_mod.__file__ = str(REPO / "hooks" / "pre-commit")
     exec(compile(_pc_src, str(REPO / "hooks" / "pre-commit"), "exec"), _pc_mod.__dict__)
@@ -4981,7 +4981,7 @@ try:
     import importlib.util as _ilu691
     import types as _types691
 
-    _learn_src691 = (REPO / "learn.py").read_text()
+    _learn_src691 = (REPO / "learn.py").read_text(encoding="utf-8")
     _learn_mod691 = _types691.ModuleType("learn_mod_691")
     _learn_mod691.__file__ = str(REPO / "learn.py")
     exec(compile(_learn_src691, str(REPO / "learn.py"), "exec"), _learn_mod691.__dict__)
@@ -5133,7 +5133,7 @@ try:
     import importlib.util as _ilu692
     import types as _types692
 
-    _sl_src692 = (REPO / "statusline.py").read_text()
+    _sl_src692 = (REPO / "statusline.py").read_text(encoding="utf-8")
     _sl_mod692 = _types692.ModuleType("statusline_692")
     _sl_mod692.__file__ = str(REPO / "statusline.py")
     exec(compile(_sl_src692, str(REPO / "statusline.py"), "exec"), _sl_mod692.__dict__)
@@ -5220,7 +5220,7 @@ try:
     import importlib.util as _ilu692b
     import types as _types692b
 
-    _sl_src692b = (REPO / "statusline.py").read_text()
+    _sl_src692b = (REPO / "statusline.py").read_text(encoding="utf-8")
     _sl_mod692b = _types692b.ModuleType("statusline_692b")
     _sl_mod692b.__file__ = str(REPO / "statusline.py")
     exec(compile(_sl_src692b, str(REPO / "statusline.py"), "exec"), _sl_mod692b.__dict__)
@@ -5260,7 +5260,7 @@ try:
     import importlib.util as _ilu693
     import types as _types693
 
-    _ct_src = (REPO / "cron-tasks.py").read_text()
+    _ct_src = (REPO / "cron-tasks.py").read_text(encoding="utf-8")
     _ct_mod = _types693.ModuleType("cron_tasks_mod_693")
     _ct_mod.__file__ = str(REPO / "cron-tasks.py")
     exec(compile(_ct_src, str(REPO / "cron-tasks.py"), "exec"), _ct_mod.__dict__)
@@ -5346,7 +5346,7 @@ try:
                     f"expected={_expected_json} log={_log.get('artifact_path')}",
                 )
                 if _expected_json.exists():
-                    _json_data = json.loads(_expected_json.read_text())
+                    _json_data = json.loads(_expected_json.read_text(encoding="utf-8"))
                     test(
                         "I693-2f: freshness JSON artifact contains 'entries' key",
                         "entries" in _json_data,
@@ -5374,7 +5374,7 @@ try:
     import importlib.util as _ilu693b
     import types as _types693b
 
-    _br_src = (REPO / "briefing.py").read_text()
+    _br_src = (REPO / "briefing.py").read_text(encoding="utf-8")
     _br_mod = _types693b.ModuleType("briefing_mod_693b")
     _br_mod.__file__ = str(REPO / "briefing.py")
     exec(compile(_br_src, str(REPO / "briefing.py"), "exec"), _br_mod.__dict__)
@@ -5455,7 +5455,7 @@ try:
     import io as _io694
     import types as _types694
 
-    _inst_src = (REPO / "install.py").read_text()
+    _inst_src = (REPO / "install.py").read_text(encoding="utf-8")
     _inst_mod = _types694.ModuleType("install_mod_694")
     _inst_mod.__file__ = str(REPO / "install.py")
     exec(compile(_inst_src, str(REPO / "install.py"), "exec"), _inst_mod.__dict__)
@@ -5932,7 +5932,7 @@ try:
     import types as _types699
     import unittest.mock as _mock699
 
-    _inst699_src = (REPO / "install.py").read_text()
+    _inst699_src = (REPO / "install.py").read_text(encoding="utf-8")
     _inst699 = _types699.ModuleType("install_mod_699")
     _inst699.__file__ = str(REPO / "install.py")
     exec(compile(_inst699_src, str(REPO / "install.py"), "exec"), _inst699.__dict__)
@@ -9362,7 +9362,7 @@ try:
     if _db721.exists():
         _r721_3 = _sp721.run(
             [
-                _sp721.sys.executable if hasattr(_sp721, "sys") else "python3",
+                sys.executable,
                 str(REPO / "knowledge-health.py"),
                 "--list",
                 "--json",
@@ -9408,7 +9408,7 @@ try:
     _db721b = _pl721b.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721b.exists():
         _r721_4 = _sp721b.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--priority", "P2", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--priority", "P2", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9442,7 +9442,7 @@ try:
     _db721c = _pl721c.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721c.exists():
         _r721_5 = _sp721c.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--limit", "5", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--limit", "5", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9468,7 +9468,7 @@ try:
     _db721d = _pl721d.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721d.exists():
         _r721_6 = _sp721d.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--wing", "backend", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--wing", "backend", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9502,7 +9502,7 @@ try:
     _db721e = _pl721e.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721e.exists():
         _r721_7 = _sp721e.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--tag", "sqlite", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--tag", "sqlite", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9532,7 +9532,7 @@ try:
     _db721f = _pl721f.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721f.exists():
         _r721_8 = _sp721f.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--since", "7", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--since", "7", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9562,7 +9562,16 @@ try:
     _db721g = _pl721g.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721g.exists():
         _r721_9 = _sp721g.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--wing", "backend", "--priority", "P1", "--json"],
+            [
+                sys.executable,
+                str(REPO / "knowledge-health.py"),
+                "--list",
+                "--wing",
+                "backend",
+                "--priority",
+                "P1",
+                "--json",
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9597,7 +9606,14 @@ try:
     _db721h = _pl721h.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721h.exists():
         _r721_10 = _sp721h.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--wing", "zzz_nonexistent_wing_xyz", "--json"],
+            [
+                sys.executable,
+                str(REPO / "knowledge-health.py"),
+                "--list",
+                "--wing",
+                "zzz_nonexistent_wing_xyz",
+                "--json",
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9627,7 +9643,7 @@ try:
     _db721i = _pl721i.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721i.exists():
         _r721_11 = _sp721i.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--limit", "3", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--limit", "3", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9656,7 +9672,7 @@ try:
     _db721j = _pl721j.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721j.exists():
         _r721_12 = _sp721j.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--limit", "3"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--limit", "3"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9684,7 +9700,7 @@ try:
     _db721k = _pl721k.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721k.exists():
         _r721_13 = _sp721k.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--category", "pattern", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--category", "pattern", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9718,7 +9734,7 @@ try:
     _db721l = _pl721l.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db721l.exists():
         _r721_14 = _sp721l.run(
-            ["python3", str(REPO / "knowledge-health.py"), "--list", "--room", "database", "--json"],
+            [sys.executable, str(REPO / "knowledge-health.py"), "--list", "--room", "database", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -9859,7 +9875,7 @@ try:
     import subprocess as _sp724a
 
     _r724_nm = _sp724a.run(
-        ["python3", str(REPO / "query-session.py"), "digest", "zzznotexist999abc"],
+        [sys.executable, str(REPO / "query-session.py"), "digest", "zzznotexist999abc"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -9888,7 +9904,7 @@ try:
         if _sid724:
             _prefix724 = _sid724[0][:8]
             _r724_ok = _sp724b.run(
-                ["python3", str(REPO / "query-session.py"), "digest", _prefix724],
+                [sys.executable, str(REPO / "query-session.py"), "digest", _prefix724],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -9942,7 +9958,7 @@ try:
         if _sid724c:
             _prefix724c = _sid724c[0][:8]
             _r724_json = _sp724c.run(
-                ["python3", str(REPO / "query-session.py"), "digest", _prefix724c, "--json"],
+                [sys.executable, str(REPO / "query-session.py"), "digest", _prefix724c, "--json"],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -9974,7 +9990,7 @@ try:
     import subprocess as _sp724d
 
     _r724_day = _sp724d.run(
-        ["python3", str(REPO / "query-session.py"), "stats", "--by", "day", "--since", "365", "--json"],
+        [sys.executable, str(REPO / "query-session.py"), "stats", "--by", "day", "--since", "365", "--json"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -10016,7 +10032,7 @@ try:
     _db724e = _pl724e.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724e.exists():
         _r724_lbl = _sp724e.run(
-            ["python3", str(REPO / "query-session.py"), "stats", "--by", "label", "--since", "365", "--json"],
+            [sys.executable, str(REPO / "query-session.py"), "stats", "--by", "label", "--since", "365", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -10046,7 +10062,7 @@ try:
     _db724f = _pl724f.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724f.exists():
         _r724_7 = _sp724f.run(
-            ["python3", str(REPO / "query-session.py"), "stats", "--by", "day", "--since", "7", "--json"],
+            [sys.executable, str(REPO / "query-session.py"), "stats", "--by", "day", "--since", "7", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -10076,7 +10092,7 @@ try:
     _db724g = _pl724g.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724g.exists():
         _r724_wk = _sp724g.run(
-            ["python3", str(REPO / "query-session.py"), "stats", "--by", "week", "--since", "365", "--json"],
+            [sys.executable, str(REPO / "query-session.py"), "stats", "--by", "week", "--since", "365", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -10109,7 +10125,7 @@ try:
     import subprocess as _sp724h
 
     _r724_inv = _sp724h.run(
-        ["python3", str(REPO / "query-session.py"), "stats", "--by", "invalidoption"],
+        [sys.executable, str(REPO / "query-session.py"), "stats", "--by", "invalidoption"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -10136,7 +10152,7 @@ try:
 
     _db724i = _pl724i.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     _r724_skdig = _sp724i.run(
-        ["python3", str(REPO / "sk.py"), "session", "digest", "zzznotexist999"],
+        [sys.executable, str(REPO / "sk.py"), "session", "digest", "zzznotexist999"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -10166,7 +10182,7 @@ try:
     _db724k = _pl724k.Path.home() / ".copilot" / "session-state" / "knowledge.db"
     if _db724k.exists():
         _r724_skst = _sp724k.run(
-            ["python3", str(REPO / "sk.py"), "session", "stats", "--by", "day", "--since", "7", "--json"],
+            [sys.executable, str(REPO / "sk.py"), "session", "stats", "--by", "day", "--since", "7", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -11000,7 +11016,7 @@ try:
         _rc731 = _hi731.main(["--target", _d731e, "--yes", "--no-ci"])
         _hy731_path = os.path.join(_d731e, "harness.yaml")
         _hy731_exists = os.path.exists(_hy731_path)
-        _hy731_content = open(_hy731_path).read() if _hy731_exists else ""
+        _hy731_content = Path(_hy731_path).read_text(encoding="utf-8") if _hy731_exists else ""
         test("I731-6a: harness init exits 0", _rc731 == 0, f"rc={_rc731}")
         test("I731-6b: harness.yaml created", _hy731_exists, "harness.yaml not found")
         test("I731-6c: harness.yaml has python-uv type", "python-uv" in _hy731_content, _hy731_content[:200])
@@ -12082,7 +12098,7 @@ try:
         # Simulate expired cache
         import json as _json818
 
-        _payload818 = _json818.loads(_cache_file818.read_text())
+        _payload818 = _json818.loads(_cache_file818.read_text(encoding="utf-8"))
         _payload818["generated_at"] = _time818.time() - (_bmod818._PREFETCH_TTL_SECONDS + 10)
         _cache_file818.write_text(_json818.dumps(_payload818))
         _expired818 = _bmod818._read_prefetch_cache("abc12345", args_hash=_args_hash818)
@@ -13498,17 +13514,28 @@ try:
 
     _briefing_path839 = Path(__file__).parent / "briefing.py"
     _env839 = {**os.environ, "SK_DB_PATH": str(_db839c_path)}
+    # Use a short interval so the child's time.sleep() returns frequently. On
+    # Windows a pending SIGBREAK handler only runs after sleep() returns (sleep is
+    # not woken by SIGBREAK, unlike SIGINT on POSIX), so a long interval would
+    # outlast wait(timeout=5). CREATE_NEW_PROCESS_GROUP lets us deliver
+    # CTRL_BREAK_EVENT to ONLY the child group, never the test runner.
+    _creationflags839 = _sp839.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     _proc839 = _sp839.Popen(
-        [sys.executable, str(_briefing_path839), "--watch", "--interval", "60"],
+        [sys.executable, str(_briefing_path839), "--watch", "--interval", "1"],
         stdout=_sp839.PIPE,
         stderr=_sp839.PIPE,
         env=_env839,
         text=True,
+        creationflags=_creationflags839,
     )
     # Give it 2s to start
     _ti839.sleep(2)
-    # Send SIGINT (Ctrl-C)
-    _proc839.send_signal(_sig839.SIGINT)
+    # Send the platform's graceful-stop signal: Ctrl-Break to the child's process
+    # group on Windows (SIGINT cannot be delivered cross-process there), SIGINT on POSIX.
+    if os.name == "nt":
+        _proc839.send_signal(_sig839.CTRL_BREAK_EVENT)
+    else:
+        _proc839.send_signal(_sig839.SIGINT)
     try:
         _proc839.wait(timeout=5)
     except Exception:
@@ -15777,7 +15804,7 @@ try:
     _db866 = REPO / "test_i866_compact.db"
     try:
         # --- I866-01: --incremental flag is defined in argparse ---
-        _sc866_src = (REPO / "session-compact.py").read_text()
+        _sc866_src = (REPO / "session-compact.py").read_text(encoding="utf-8")
         test(
             "I866-01: --incremental flag present in session-compact.py argparse",
             "--incremental" in _sc866_src,
@@ -16027,7 +16054,7 @@ try:
     )
 
     # I873-5: migration 45 is declared in migrate.py with correct name
-    _mig873_content = (REPO / "migrate.py").read_text()
+    _mig873_content = (REPO / "migrate.py").read_text(encoding="utf-8")
     test(
         "I873-5a: migration 45 declared in migrate.py",
         "45," in _mig873_content and "ke_fts_trigram" in _mig873_content,
@@ -16042,7 +16069,7 @@ try:
     )
 
     # I873-6: mcp-server.py contains trigram fallback path
-    _mcp873_content = (REPO / "mcp-server.py").read_text()
+    _mcp873_content = (REPO / "mcp-server.py").read_text(encoding="utf-8")
     test(
         "I873-6: mcp-server.py has ke_fts_trigram fallback when FTS5 returns < 3 results",
         "ke_fts_trigram" in _mcp873_content and "len(rows) < 3" in _mcp873_content,
@@ -16933,7 +16960,7 @@ try:
     test("I894-6: _run_diff_brief callable", callable(getattr(_mcp894, "_run_diff_brief", None)), dir(_mcp894))
 
     # I894-7: diff_brief wired in dispatch
-    _src894 = open(_mcp894.__file__).read()
+    _src894 = Path(_mcp894.__file__).read_text(encoding="utf-8")
     test("I894-7: diff_brief in dispatch", 'name == "diff_brief"' in _src894, "dispatch check")
 
     # I894-8: no required params (budget and compact are optional)
@@ -17129,7 +17156,7 @@ try:
     )
     test("I907-6: _run_retro_summary callable", callable(getattr(_mcp907, "_run_retro_summary", None)))
 
-    _src907 = open(_mcp907.__file__).read()
+    _src907 = Path(_mcp907.__file__).read_text(encoding="utf-8")
     test("I907-7: retro_summary wired in dispatch", 'name == "retro_summary"' in _src907, "dispatch check")
 
     # I907-8: invalid period returns structured error without invoking retro.py
@@ -17240,7 +17267,7 @@ try:
     )
     test("I909-6: _run_knowledge_health callable", callable(getattr(_mcp909, "_run_knowledge_health", None)))
 
-    _src909 = open(_mcp909.__file__).read()
+    _src909 = Path(_mcp909.__file__).read_text(encoding="utf-8")
     test("I909-7: knowledge_health wired in dispatch", 'name == "knowledge_health"' in _src909, "dispatch check")
 
     # I909-8: invoking returns an MCP-shaped envelope with structuredContent (never raises)
@@ -17285,7 +17312,7 @@ try:
     )
     test("I922-8: _run_repo_map callable", callable(getattr(_mcp922, "_run_repo_map", None)))
 
-    _src922 = open(_mcp922.__file__).read()
+    _src922 = Path(_mcp922.__file__).read_text(encoding="utf-8")
     test("I922-9: repo_map wired in dispatch", 'name == "repo_map"' in _src922, "dispatch check")
 
     # I922-10: invoking returns an MCP-shaped envelope with content + structuredContent
