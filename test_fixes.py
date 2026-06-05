@@ -1375,6 +1375,107 @@ with tempfile.TemporaryDirectory(prefix="global-skills-test-") as _gs_tmp:
         sys.path[:] = _orig_gs_sys_path
 
 
+# ─── Model Pricing Refresh (Pp1–Pp7) ─────────────────────────────────────────
+# Offline tests for parse_pricing_yaml + --refresh-prices CLI wiring (PR #968 review).
+# No network: the parser is pure, and the CLI test stubs refresh_model_prices().
+print("\n💲 Model Pricing Refresh Tests (Pp)")
+
+_PRICING_YAML_SAMPLE = """\
+# OpenAI
+- model: 'GPT-5 mini'
+  provider: openai
+  threshold: Not applicable
+  tier: Default
+  input: $0.25
+  cached_input: $0.025
+  output: $2.00
+
+- model: GPT-5.4
+  provider: openai
+  threshold: '> 272K'
+  tier: Long context
+  input: $5.00
+  cached_input: $0.50
+  output: $22.50
+
+- model: GPT-5.4
+  provider: openai
+  tier: Default
+  input: $2.50
+  cached_input: $0.25
+  output: $15.00
+
+# Anthropic
+- model: Claude Opus 4.8
+  provider: anthropic
+  input: $5.00
+  cached_input: $0.50
+  output: $25.00
+  cache_write: $6.25
+"""
+
+_pp_rates = _autoupdate_mod.parse_pricing_yaml(_PRICING_YAML_SAMPLE)
+
+test(
+    "Pp1: parses all distinct model ids",
+    set(_pp_rates) == {"gpt-5-mini", "gpt-5.4", "claude-opus-4.8"},
+    f"ids: {sorted(_pp_rates)}",
+)
+test(
+    "Pp2: display name -> id mapping (spaces/quotes lower-cased, spaces -> hyphens)",
+    "gpt-5-mini" in _pp_rates and "claude-opus-4.8" in _pp_rates,
+    f"ids: {sorted(_pp_rates)}",
+)
+test(
+    "Pp3: $-prefixed prices parsed to floats",
+    _pp_rates["gpt-5-mini"] == {"input": 0.25, "cached_input": 0.025, "output": 2.0},
+    f"gpt-5-mini: {_pp_rates.get('gpt-5-mini')}",
+)
+test(
+    "Pp4: Default tier preferred over Long-context regardless of source order",
+    _pp_rates["gpt-5.4"]["input"] == 2.5 and _pp_rates["gpt-5.4"]["output"] == 15.0,
+    f"gpt-5.4 (want input 2.5/output 15.0): {_pp_rates.get('gpt-5.4')}",
+)
+test(
+    "Pp5: Anthropic cache_write captured",
+    _pp_rates["claude-opus-4.8"].get("cache_write") == 6.25,
+    f"opus-4.8: {_pp_rates.get('claude-opus-4.8')}",
+)
+test(
+    "Pp6: garbage / empty input fails open to empty dict",
+    _autoupdate_mod.parse_pricing_yaml("not a record\njust: text\n") == {}
+    and _autoupdate_mod.parse_pricing_yaml("") == {},
+    "non-record input did not yield empty dict",
+)
+
+# Pp7: --refresh-prices CLI flag stays wired (stub refresh_model_prices, no network).
+_pp_called = {"n": 0}
+_pp_orig_refresh = _autoupdate_mod.refresh_model_prices
+_pp_orig_argv = sys.argv[:]
+_pp_exit = None
+try:
+
+    def _pp_stub_refresh():
+        _pp_called["n"] += 1
+        return True
+
+    _autoupdate_mod.refresh_model_prices = _pp_stub_refresh
+    sys.argv = ["auto-update-tools.py", "--refresh-prices"]
+    try:
+        _autoupdate_mod.main()
+    except SystemExit as _pp_e:
+        _pp_exit = _pp_e.code
+finally:
+    _autoupdate_mod.refresh_model_prices = _pp_orig_refresh
+    sys.argv = _pp_orig_argv
+
+test(
+    "Pp7: --refresh-prices invokes refresh_model_prices and exits 0",
+    _pp_called["n"] == 1 and _pp_exit == 0,
+    f"called={_pp_called['n']} exit={_pp_exit}",
+)
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 # ─── launchd Restart / Doctor Semantics (Ld1–Ld4) ────────────────────────────

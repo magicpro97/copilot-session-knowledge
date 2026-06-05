@@ -595,14 +595,14 @@ def _print_status_table(force_quota: bool = False) -> None:
     _ov = _load_price_overrides()
     if _ov:
         age = ""
-        if _PRICE_CACHE_TS:
-            days = int((time.time() - _PRICE_CACHE_TS) / 86400)
+        if _PRICE_CACHE_TS is not None:
+            days = max(0, int((time.time() - _PRICE_CACHE_TS) / 86400))
             age = f", {days}d old"
         print(
             f"  {_ansi(DIM)}Prices: {len(_ov)} models from price-cache.json{age}. Not exact GitHub billing.{_ansi(RST)}"
         )
-    elif _PRICE_CACHE_TS:
-        days = int((time.time() - _PRICE_CACHE_TS) / 86400)
+    elif _PRICE_CACHE_TS is not None:
+        days = max(0, int((time.time() - _PRICE_CACHE_TS) / 86400))
         print(
             f"  {_ansi(DIM)}Prices: built-in table (cache {days}d old, stale — run 'sk update'). Not exact GitHub billing.{_ansi(RST)}"
         )

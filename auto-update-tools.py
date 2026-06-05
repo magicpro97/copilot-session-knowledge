@@ -2622,15 +2622,17 @@ def main():
 
         # Pull
         updated, old_sha, new_sha = pull_latest()
+
+        # Refresh model pricing table (daily; independent of repo changes).  Done
+        # BEFORE post_pull_pipeline() because that may self-exec (os.execl/Popen)
+        # when auto-update-tools.py itself changed and never return here.
+        refresh_model_prices()
+
         if updated:
             post_pull_pipeline(old_sha, new_sha)
         else:
             # Even if no update, ensure post-merge hook exists
             ensure_post_merge_hook()
-
-        # Refresh model pricing table (daily; independent of repo changes so it
-        # tracks GitHub price updates even when the tools repo itself is unchanged).
-        refresh_model_prices()
 
 
 if __name__ == "__main__":
