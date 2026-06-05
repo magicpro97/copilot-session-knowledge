@@ -365,7 +365,7 @@ fn autoflush_drains_50_entries_via_python_subprocess() {
 
     let rule = AutoFlushLearnInboxRule;
     let start = std::time::Instant::now();
-    let result = rule.evaluate("sessionEnd", &json!({"reason": "test"}));
+    let result = rule.evaluate("preToolUse", &json!({"toolName": "task_complete"}));
     let elapsed = start.elapsed();
 
     let msg = result
@@ -403,8 +403,8 @@ fn autoflush_drains_50_entries_via_python_subprocess() {
     assert_eq!(rejected.len(), 1, "poisoned entry must be quarantined");
 
     assert!(
-        elapsed.as_secs() < 5,
-        "50-entry drain p95 < 5s; was {}s",
+        elapsed.as_secs() < 8,
+        "50-entry drain within the task_complete budget (8s); was {}s",
         elapsed.as_secs()
     );
     let _ = fs::remove_dir_all(&sandbox);
