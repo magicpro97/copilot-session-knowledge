@@ -10,9 +10,14 @@ Usage:
 
 import json
 import os
+import re
 import sys
-import shutil
 from pathlib import Path
+
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 PLUGIN_SRC = TOOLS_DIR / "opencode-plugin" / "copilot-tools-bridge.ts"
@@ -59,16 +64,7 @@ def install_plugin() -> bool:
 
 
 MCP_ENTRY = "copilot-tools"
-
-
-def make_mcp_entry():
-    return {
-        MCP_ENTRY: {
-            "type": "local",
-            "command": ["python3", str(TOOLS_DIR / "mcp-server.py")],
-            "enabled": True,
-        }
-    }
+_PYTHON = sys.executable if sys.executable else "python3"
 
 
 def install_mcp(cfg: dict) -> bool:
@@ -78,7 +74,7 @@ def install_mcp(cfg: dict) -> bool:
         return True
     mcp[MCP_ENTRY] = {
         "type": "local",
-        "command": ["python3", str(TOOLS_DIR / "mcp-server.py")],
+        "command": [_PYTHON, str(TOOLS_DIR / "mcp-server.py")],
         "enabled": True,
     }
     ok(f"Added MCP server '{MCP_ENTRY}'")
@@ -95,13 +91,51 @@ def write_config(cfg: dict) -> bool:
         return False
 
 
+def _strip_jsonc(text: str) -> str:
+    """Strip JSONC comments and trailing commas for safe json.loads()."""
+    stripped = []
+    i = 0
+    in_str = False
+    str_char = None
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            stripped.append(ch)
+            if ch == "\\":
+                i += 1
+                if i < len(text):
+                    stripped.append(text[i])
+            elif ch == str_char:
+                in_str = False
+                str_char = None
+        elif ch in "\"'":
+            in_str = True
+            str_char = ch
+            stripped.append(ch)
+        elif ch == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            while i < len(text) and text[i] != "\n":
+                i += 1
+        elif ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+            i += 2
+            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2 if i + 1 < len(text) else 1
+            continue
+        else:
+            stripped.append(ch)
+        i += 1
+    result = "".join(stripped)
+    result = re.sub(r",\s*([}\]])", r"\1", result)
+    return result
+
+
 def load_config() -> dict:
     if CONFIG_FILE.is_file():
         try:
             text = CONFIG_FILE.read_text(encoding="utf-8")
-            return json.loads(text)
-        except json.JSONDecodeError:
-            warn(f"Invalid JSON in {CONFIG_FILE}, starting fresh")
+            return json.loads(_strip_jsonc(text))
+        except json.JSONDecodeError as e:
+            warn(f"Invalid config in {CONFIG_FILE}: {e}")
     return {"$schema": "https://opencode.ai/config.json"}
 
 
@@ -177,7 +211,7 @@ def main():
     write_config(cfg)
 
     print(f"\n{GREEN}Done.{RESET}")
-    print(f"  Restart opencode or run: opencode plugin reload")
+    print("  Restart opencode or run: opencode plugin reload")
     print(f"  To verify: python3 {__file__} --status\n")
 
 

@@ -52,13 +52,16 @@ def _run_hook(event: str, data: dict) -> subprocess.CompletedProcess:
     )
 
 
-def _run_install(*args: str) -> subprocess.CompletedProcess:
-    """Run install.py with optional args."""
+def _run_install(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run install.py with optional args and env overrides."""
+    cmd = [sys.executable, str(INSTALL_SCRIPT), *args]
+    merge_env = {**os.environ, **(env or {})}
     return subprocess.run(
-        [sys.executable, str(INSTALL_SCRIPT), *args],
+        cmd,
         capture_output=True,
         text=True,
         timeout=30,
+        env=merge_env,
     )
 
 
@@ -90,6 +93,80 @@ class TestPluginSource(unittest.TestCase):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("mapToolName", text)
         self.assertIn("create", text)
+
+
+class TestInstallSandboxed(unittest.TestCase):
+    """Install tests run against a temp XDG_CONFIG_HOME sandbox."""
+
+    sandbox: Path
+    plugin_dst: Path
+    config_file: Path
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sandbox = Path(tempfile.mkdtemp(prefix="opencode-bridge-test-"))
+        cls._sandbox_env = {"XDG_CONFIG_HOME": str(cls.sandbox)}
+        cls.plugin_dst = cls.sandbox / "opencode" / "plugins" / "copilot-tools-bridge.ts"
+        cls.config_file = cls.sandbox / "opencode" / "opencode.jsonc"
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+
+        shutil.rmtree(cls.sandbox, ignore_errors=True)
+
+    def _install(self, *args: str) -> subprocess.CompletedProcess:
+        return _run_install(*args, env=self._sandbox_env)
+
+    def test_first_install_succeeds(self):
+        """First install should succeed and create plugin + MCP config."""
+        proc = self._install()
+        self.assertEqual(proc.returncode, 0, f"Install failed:\n{proc.stderr}")
+        self.assertIn("Installed plugin", proc.stdout)
+        self.assertIn("Added MCP server", proc.stdout)
+
+    def test_plugin_file_created(self):
+        """Plugin file should exist in sandboxed opencode config after install."""
+        self._install()
+        self.assertTrue(
+            self.plugin_dst.is_file(),
+            f"Plugin not found at {self.plugin_dst}",
+        )
+
+    def test_plugin_matches_source(self):
+        """Installed plugin should match source."""
+        self._install()
+        if not self.plugin_dst.is_file():
+            self.skipTest("Plugin not installed")
+        src_text = PLUGIN_SRC.read_text(encoding="utf-8")
+        dst_text = self.plugin_dst.read_text(encoding="utf-8")
+        self.assertEqual(
+            src_text.strip().split("\n")[0],
+            dst_text.strip().split("\n")[0],
+            "Installed plugin differs from source — run install.py to update",
+        )
+
+    def test_mcp_in_config(self):
+        """MCP server should be configured in sandboxed opencode config."""
+        self._install()
+        if not self.config_file.is_file():
+            self.skipTest(f"Config not found: {self.config_file}")
+        text = self.config_file.read_text(encoding="utf-8")
+        self.assertIn("copilot-tools", text)
+        self.assertIn("mcp-server.py", text)
+
+    def test_install_status(self):
+        """install.py --status should not crash."""
+        self._install()
+        proc = self._install("--status")
+        self.assertEqual(proc.returncode, 0, f"install --status failed:\n{proc.stderr}")
+
+    def test_reinstall_is_idempotent(self):
+        """Running install.py twice should detect existing config."""
+        self._install()  # first install
+        proc = self._install()  # reinstall
+        self.assertEqual(proc.returncode, 0, f"Reinstall failed:\n{proc.stderr}")
+        self.assertIn("already configured", proc.stdout)
 
 
 class TestHookRunnerCompat(unittest.TestCase):
@@ -154,14 +231,12 @@ class TestHookRunnerCompat(unittest.TestCase):
             },
         )
         self.assertEqual(proc.returncode, 0, f"sessionStart failed:\n{proc.stderr}")
-        # sessionStart may return context or nothing (no-briefing mode).
-        # Just verify it doesn't crash.
         if proc.stdout.strip():
             try:
                 parsed = json.loads(proc.stdout.strip())
                 self.assertIsInstance(parsed, dict)
             except json.JSONDecodeError:
-                pass  # Plain text info output is also valid
+                pass
 
     def test_session_end_cleanup(self):
         """sessionEnd should complete without error."""
@@ -215,63 +290,11 @@ class TestHookRunnerCompat(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"userPromptSubmitted failed:\n{proc.stderr}")
 
 
-class TestInstallScript(unittest.TestCase):
-    """Verify install.py works correctly."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._opencode_config = Path.home() / ".config" / "opencode"
-        cls._plugin_dst = cls._opencode_config / "plugins" / "copilot-tools-bridge.ts"
-
-    def test_install_status(self):
-        """install.py --status should not crash."""
-        proc = _run_install("--status")
-        self.assertEqual(proc.returncode, 0, f"install --status failed:\n{proc.stderr}")
-
-    def test_plugin_file_installed(self):
-        """Plugin file should exist in opencode config after install."""
-        self.assertTrue(
-            self._plugin_dst.is_file(),
-            f"Plugin not found at {self._plugin_dst}. Run install.py first.",
-        )
-
-    def test_plugin_copy_equals_source(self):
-        """Installed plugin should match source (or be newer)."""
-        if not self._plugin_dst.is_file():
-            self.skipTest("Plugin not installed")
-        src_text = PLUGIN_SRC.read_text(encoding="utf-8")
-        dst_text = self._plugin_dst.read_text(encoding="utf-8")
-        self.assertEqual(
-            src_text.strip().split("\n")[0],
-            dst_text.strip().split("\n")[0],
-            "Installed plugin differs from source — run install.py to update",
-        )
-
-
 class TestMCPConfig(unittest.TestCase):
-    """Verify MCP server is configured in opencode.jsonc."""
-
-    def test_mcp_in_config(self):
-        config_path = Path.home() / ".config" / "opencode" / "opencode.jsonc"
-        if not config_path.is_file():
-            self.skipTest(f"Config not found: {config_path}")
-        text = config_path.read_text(encoding="utf-8")
-        self.assertIn("copilot-tools", text)
-        self.assertIn("mcp-server.py", text)
+    """Verify MCP server file exists in repo."""
 
     def test_mcp_server_exists(self):
         self.assertTrue(MCP_SERVER.is_file(), f"MCP server not found: {MCP_SERVER}")
-
-
-class TestIdempotency(unittest.TestCase):
-    """install.py should be idempotent."""
-
-    def test_reinstall_does_not_error(self):
-        """Running install.py twice should not error."""
-        _run_install()  # first install
-        proc = _run_install()  # reinstall
-        self.assertEqual(proc.returncode, 0, f"Second install failed:\n{proc.stderr}")
-        self.assertIn("already configured", proc.stdout)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────

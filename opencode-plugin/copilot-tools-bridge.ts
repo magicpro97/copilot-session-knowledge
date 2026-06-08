@@ -1,6 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { homedir } from "os"
 
-const TOOLS_DIR = process.env.HOME + "/.copilot/tools"
+const HOME = process.env.HOME || homedir()
+const TOOLS_DIR = HOME + "/.copilot/tools"
 const HOOK_RUNNER = TOOLS_DIR + "/hooks/hook_runner.py"
 
 const log = (client: any, level: string, message: string) => {
@@ -70,6 +72,14 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
   }
 
   return {
+    "session.start": async (input) => {
+      await fireSessionStart(input.sessionID)
+    },
+
+    "session.stop": async (input) => {
+      await fireSessionEnd(input.sessionID)
+    },
+
     "tool.execute.before": async (input, output) => {
       const toolName = mapToolName(input.tool)
 
@@ -128,14 +138,44 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       }
     },
 
+    "tool.use": async (input, output) => {
+      const toolName = mapToolName(input.tool)
+
+      const result = await callHookRunner($, client, "preToolUse", {
+        toolName,
+        toolArgs: output.args,
+        toolInput: output.args,
+        sessionId: input.sessionID,
+        callId: input.callID,
+      })
+
+      if (!result) return
+
+      try {
+        const parsed = JSON.parse(result)
+        if (parsed.permissionDecision === "deny") {
+          throw new Error(parsed.permissionDecisionReason || `Blocked by ${toolName} rule`)
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) {
+          if (result) process.stderr.write("[copilot-tools] " + result + "\n")
+          return
+        }
+        throw e
+      }
+    },
+
     "chat.message": async (input, output) => {
       if (!state.sessionStartFired) {
         await fireSessionStart(input.sessionID)
       }
 
+      const parts = output.parts || []
+      const prompt = parts.map((p: any) => p.text || "").filter(Boolean).join("\n")
+
       const result = await callHookRunner($, client, "userPromptSubmitted", {
         sessionId: input.sessionID,
-        prompt: (output.parts || []).map((p: any) => p.text || "").filter(Boolean).join("\n"),
+        prompt,
         additionalContext: [],
       })
 
@@ -143,15 +183,17 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       try {
         const parsed = JSON.parse(result)
         if (parsed.additionalContext && Array.isArray(parsed.additionalContext)) {
+          const targetParts = output.parts || []
           for (const ctx of parsed.additionalContext) {
             if (typeof ctx === "string") {
-              output.parts.push({
+              targetParts.push({
                 type: "text",
                 text: ctx,
                 synthetic: true,
               } as any)
             }
           }
+          output.parts = targetParts
         }
       } catch {
       }
