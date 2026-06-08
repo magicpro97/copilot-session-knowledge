@@ -1,9 +1,11 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { homedir } from "os"
+import { join } from "path"
 
 const HOME = process.env.HOME || homedir()
-const TOOLS_DIR = HOME + "/.copilot/tools"
-const HOOK_RUNNER = TOOLS_DIR + "/hooks/hook_runner.py"
+const TOOLS_DIR = join(HOME, ".copilot", "tools")
+const HOOK_RUNNER = join(TOOLS_DIR, "hooks", "hook_runner.py")
+const PYTHON = "python3"
 
 const log = (client: any, level: string, message: string) => {
   try { client.app.log({ body: { service: "copilot-tools-bridge", level, message } }) } catch {}
@@ -17,7 +19,7 @@ async function callHookRunner(
 ): Promise<string | null> {
   const json = JSON.stringify(data)
   try {
-    const proc = Bun.spawn(["python3", HOOK_RUNNER, event], {
+    const proc = Bun.spawn([PYTHON, HOOK_RUNNER, event], {
       stdin: new Blob([json]).stream(),
       stdout: "pipe",
       stderr: "pipe",

@@ -3,20 +3,20 @@
 test_opencode_bridge.py — Tests for the opencode bridge integration.
 
 Covers:
-  1. Plugin file compiles (TypeScript -> AST check)
+  1. Plugin source references required hooks (string-level checks)
   2. Hook runner event compatibility with bridge JSON format
-  3. Install script idempotency
-  4. MCP server availability via opencode config
+  3. Install script idempotency in sandboxed XDG_CONFIG_HOME
+  4. MCP server source file exists
 
 Run: python3 tests/test_opencode_bridge.py
 """
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -26,19 +26,26 @@ INSTALL_SCRIPT = REPO / "opencode-plugin" / "install.py"
 HOOK_RUNNER = REPO / "hooks" / "hook_runner.py"
 MCP_SERVER = REPO / "mcp-server.py"
 
-# ── Helpers ──────────────────────────────────────────────────────────────
+# ── Isolated HOME for all subprocess tests ─────────────────────────────
 
-_MARKERS_DIR = Path.home() / ".copilot" / "markers"
+_ISOLATED_HOME = Path(tempfile.mkdtemp(prefix="opencode-bridge-test-home-"))
+_ISOLATED_ENV = {
+    **os.environ,
+    "HOME": str(_ISOLATED_HOME),
+    "USERPROFILE": str(_ISOLATED_HOME),
+}
+_SANDBOX_ENV = {
+    **_ISOLATED_ENV,
+    "XDG_CONFIG_HOME": str(_ISOLATED_HOME / ".config"),
+}
 
 
-def _cleanup_session_state():
-    """Remove any bridge-test session state so doom-loop counters don't persist."""
-    if _MARKERS_DIR.is_dir():
-        for f in _MARKERS_DIR.glob("session-state-bridge-test-*"):
-            f.unlink(missing_ok=True)
+def _cleanup_isolated_home():
+    shutil.rmtree(_ISOLATED_HOME, ignore_errors=True)
 
 
-_cleanup_session_state()
+_cleanup_isolated_home()
+_ISOLATED_HOME.mkdir(parents=True, exist_ok=True)
 
 
 def _run_hook(event: str, data: dict) -> subprocess.CompletedProcess:
@@ -49,15 +56,15 @@ def _run_hook(event: str, data: dict) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=15,
+        env=_ISOLATED_ENV,
     )
 
 
 def _run_install(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     """Run install.py with optional args and env overrides."""
-    cmd = [sys.executable, str(INSTALL_SCRIPT), *args]
     merge_env = {**os.environ, **(env or {})}
     return subprocess.run(
-        cmd,
+        [sys.executable, str(INSTALL_SCRIPT), *args],
         capture_output=True,
         text=True,
         timeout=30,
@@ -69,13 +76,12 @@ def _run_install(*args: str, env: dict | None = None) -> subprocess.CompletedPro
 
 
 class TestPluginSource(unittest.TestCase):
-    """Verify the bridge plugin source exists and is syntactically plausible."""
+    """Verify the bridge plugin source contains expected hook references."""
 
     def test_plugin_file_exists(self):
         self.assertTrue(PLUGIN_SRC.is_file(), f"Plugin source not found: {PLUGIN_SRC}")
 
     def test_plugin_has_required_exports(self):
-        """Check plugin source contains required hooks (string-level check)."""
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("tool.execute.before", text)
         self.assertIn("tool.execute.after", text)
@@ -84,19 +90,17 @@ class TestPluginSource(unittest.TestCase):
         self.assertIn("export const CopilotToolsBridge", text)
 
     def test_plugin_invokes_hook_runner(self):
-        """Plugin must invoke hook_runner.py for pre/post tool events."""
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("hook_runner.py", text)
 
     def test_plugin_maps_write_to_create(self):
-        """Plugin must map 'write' tool name to 'create' for rule compatibility."""
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("mapToolName", text)
         self.assertIn("create", text)
 
 
 class TestInstallSandboxed(unittest.TestCase):
-    """Install tests run against a temp XDG_CONFIG_HOME sandbox."""
+    """Install tests run against a temp XDG_CONFIG_HOME sandbox with isolated HOME."""
 
     sandbox: Path
     plugin_dst: Path
@@ -104,37 +108,32 @@ class TestInstallSandboxed(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.sandbox = Path(tempfile.mkdtemp(prefix="opencode-bridge-test-"))
-        cls._sandbox_env = {"XDG_CONFIG_HOME": str(cls.sandbox)}
+        cls.sandbox = Path(tempfile.mkdtemp(prefix="opencode-bridge-sandbox-"))
+        cls._sb_env = {
+            **_ISOLATED_ENV,
+            "XDG_CONFIG_HOME": str(cls.sandbox),
+        }
         cls.plugin_dst = cls.sandbox / "opencode" / "plugins" / "copilot-tools-bridge.ts"
         cls.config_file = cls.sandbox / "opencode" / "opencode.jsonc"
 
     @classmethod
     def tearDownClass(cls):
-        import shutil
-
         shutil.rmtree(cls.sandbox, ignore_errors=True)
 
     def _install(self, *args: str) -> subprocess.CompletedProcess:
-        return _run_install(*args, env=self._sandbox_env)
+        return _run_install(*args, env=self._sb_env)
 
     def test_first_install_succeeds(self):
-        """First install should succeed and create plugin + MCP config."""
         proc = self._install()
         self.assertEqual(proc.returncode, 0, f"Install failed:\n{proc.stderr}")
         self.assertIn("Installed plugin", proc.stdout)
         self.assertIn("Added MCP server", proc.stdout)
 
     def test_plugin_file_created(self):
-        """Plugin file should exist in sandboxed opencode config after install."""
         self._install()
-        self.assertTrue(
-            self.plugin_dst.is_file(),
-            f"Plugin not found at {self.plugin_dst}",
-        )
+        self.assertTrue(self.plugin_dst.is_file(), f"Plugin not found at {self.plugin_dst}")
 
     def test_plugin_matches_source(self):
-        """Installed plugin should match source."""
         self._install()
         if not self.plugin_dst.is_file():
             self.skipTest("Plugin not installed")
@@ -147,7 +146,6 @@ class TestInstallSandboxed(unittest.TestCase):
         )
 
     def test_mcp_in_config(self):
-        """MCP server should be configured in sandboxed opencode config."""
         self._install()
         if not self.config_file.is_file():
             self.skipTest(f"Config not found: {self.config_file}")
@@ -156,24 +154,38 @@ class TestInstallSandboxed(unittest.TestCase):
         self.assertIn("mcp-server.py", text)
 
     def test_install_status(self):
-        """install.py --status should not crash."""
         self._install()
         proc = self._install("--status")
         self.assertEqual(proc.returncode, 0, f"install --status failed:\n{proc.stderr}")
 
     def test_reinstall_is_idempotent(self):
-        """Running install.py twice should detect existing config."""
-        self._install()  # first install
-        proc = self._install()  # reinstall
+        self._install()
+        proc = self._install()
         self.assertEqual(proc.returncode, 0, f"Reinstall failed:\n{proc.stderr}")
         self.assertIn("already configured", proc.stdout)
+
+    def test_invalid_config_fails_safely(self):
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        original = self.config_file.read_text(encoding="utf-8") if self.config_file.is_file() else ""
+        self.config_file.write_text("{invalid jsonc content!!!", encoding="utf-8")
+        try:
+            proc = self._install("--status")
+            self.assertEqual(proc.returncode, 0, f"--status should not crash on invalid config:\n{proc.stderr}")
+            proc = self._install()
+            self.assertEqual(proc.returncode, 0, f"Install should not crash on invalid config:\n{proc.stderr}")
+            saved = self.config_file.read_text(encoding="utf-8")
+            self.assertIn("{invalid", saved, "Should NOT overwrite invalid config")
+        finally:
+            if original:
+                self.config_file.write_text(original, encoding="utf-8")
+            else:
+                self.config_file.unlink(missing_ok=True)
 
 
 class TestHookRunnerCompat(unittest.TestCase):
     """Verify hook_runner.py handles the JSON format the bridge sends."""
 
     def test_pre_tool_use_bash_passthrough(self):
-        """preToolUse with simple bash command should not block."""
         proc = _run_hook(
             "preToolUse",
             {
@@ -187,29 +199,29 @@ class TestHookRunnerCompat(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"preToolUse bash failed:\n{proc.stderr}")
         self.assertEqual(proc.stdout.strip(), "", "bash command should not be denied")
 
-    def test_pre_tool_use_edit_session_path_allowed(self):
-        """Edits to session-state paths should not crash hook_runner."""
+    def test_pre_tool_use_edit_in_isolated_home(self):
+        isolated_markers = _ISOLATED_HOME / ".copilot" / "markers"
+        isolated_markers.mkdir(parents=True, exist_ok=True)
         proc = _run_hook(
             "preToolUse",
             {
                 "toolName": "edit",
                 "toolArgs": {
-                    "filePath": str(Path.home() / ".copilot" / "session-state" / "test" / "research" / "notes.md"),
+                    "filePath": str(_ISOLATED_HOME / ".copilot" / "session-state" / "test" / "notes.md"),
                     "oldString": "foo",
                     "newString": "bar",
                 },
                 "toolInput": {
-                    "filePath": str(Path.home() / ".copilot" / "session-state" / "test" / "research" / "notes.md"),
+                    "filePath": str(_ISOLATED_HOME / ".copilot" / "session-state" / "test" / "notes.md"),
                     "oldString": "foo",
                     "newString": "bar",
                 },
                 "sessionId": "bridge-test-002",
             },
         )
-        self.assertEqual(proc.returncode, 0, f"hook_runner crashed on edit:\n{proc.stderr}")
+        self.assertEqual(proc.returncode, 0, f"hook_runner crashed:\n{proc.stderr}")
 
     def test_pre_tool_use_write_creates_allowed(self):
-        """write tool (mapped to 'create') with normal paths should pass."""
         proc = _run_hook(
             "preToolUse",
             {
@@ -222,7 +234,6 @@ class TestHookRunnerCompat(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"write/create blocked:\n{proc.stdout}")
 
     def test_session_start_returns_context(self):
-        """sessionStart should return briefing/context (or pass silently)."""
         proc = _run_hook(
             "sessionStart",
             {
@@ -239,7 +250,6 @@ class TestHookRunnerCompat(unittest.TestCase):
                 pass
 
     def test_session_end_cleanup(self):
-        """sessionEnd should complete without error."""
         proc = _run_hook(
             "sessionEnd",
             {
@@ -249,7 +259,6 @@ class TestHookRunnerCompat(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"sessionEnd failed:\n{proc.stderr}")
 
     def test_post_tool_use_tracking(self):
-        """postToolUse should accept toolResult with filePath."""
         proc = _run_hook(
             "postToolUse",
             {
@@ -267,7 +276,6 @@ class TestHookRunnerCompat(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"postToolUse failed:\n{proc.stderr}")
 
     def test_error_occurred(self):
-        """errorOccurred should not crash."""
         proc = _run_hook(
             "errorOccurred",
             {
@@ -278,7 +286,6 @@ class TestHookRunnerCompat(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"errorOccurred failed:\n{proc.stderr}")
 
     def test_user_prompt_submitted(self):
-        """userPromptSubmitted should parse prompt text without error."""
         proc = _run_hook(
             "userPromptSubmitted",
             {
@@ -296,8 +303,6 @@ class TestMCPConfig(unittest.TestCase):
     def test_mcp_server_exists(self):
         self.assertTrue(MCP_SERVER.is_file(), f"MCP server not found: {MCP_SERVER}")
 
-
-# ── Main ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     unittest.main()

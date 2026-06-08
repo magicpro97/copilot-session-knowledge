@@ -129,14 +129,30 @@ def _strip_jsonc(text: str) -> str:
     return result
 
 
-def load_config() -> dict:
-    if CONFIG_FILE.is_file():
-        try:
-            text = CONFIG_FILE.read_text(encoding="utf-8")
-            return json.loads(_strip_jsonc(text))
-        except json.JSONDecodeError as e:
-            warn(f"Invalid config in {CONFIG_FILE}: {e}")
-    return {"$schema": "https://opencode.ai/config.json"}
+def _try_parse(text: str) -> dict | None:
+    """Try JSON, fall back to JSONC-aware parsing. Returns None if both fail."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(_strip_jsonc(text))
+    except json.JSONDecodeError:
+        return None
+
+
+def load_config() -> dict | None:
+    """Load opencode config. Returns None when the file exists but is unparseable."""
+    if not CONFIG_FILE.is_file():
+        return {"$schema": "https://opencode.ai/config.json"}
+    try:
+        text = CONFIG_FILE.read_text(encoding="utf-8")
+        cfg = _try_parse(text)
+        if cfg is None:
+            warn(f"Invalid config in {CONFIG_FILE} — skipping write to preserve existing content")
+        return cfg
+    except OSError:
+        return {"$schema": "https://opencode.ai/config.json"}
 
 
 def show_status():
@@ -153,12 +169,15 @@ def show_status():
 
     total += 1
     cfg = load_config()
-    mcp = cfg.get("mcp", {})
-    if MCP_ENTRY in mcp:
-        ok(f"MCP server '{MCP_ENTRY}': enabled={mcp[MCP_ENTRY].get('enabled', False)}")
-        ok_count += 1
+    if cfg is None:
+        fail("Config file — unparseable")
     else:
-        fail(f"MCP server '{MCP_ENTRY}' — not configured")
+        mcp = cfg.get("mcp", {})
+        if MCP_ENTRY in mcp:
+            ok(f"MCP server '{MCP_ENTRY}': enabled={mcp[MCP_ENTRY].get('enabled', False)}")
+            ok_count += 1
+        else:
+            fail(f"MCP server '{MCP_ENTRY}' — not configured")
 
     print(f"\n{ok_count}/{total} checks passed\n")
 
@@ -169,6 +188,9 @@ def remove_all():
         ok(f"Removed plugin: {PLUGIN_DST}")
     if CONFIG_FILE.is_file():
         cfg = load_config()
+        if cfg is None:
+            warn("Config unparseable — cannot remove MCP entry")
+            return
         mcp = cfg.get("mcp", {})
         if MCP_ENTRY in mcp:
             del mcp[MCP_ENTRY]
@@ -207,8 +229,14 @@ def main():
         sys.exit(1)
 
     cfg = load_config()
-    install_mcp(cfg)
-    write_config(cfg)
+    if cfg is None:
+        warn("Unparseable opencode.jsonc — plugin installed but MCP config skipped")
+        print(f"\n{GREEN}Done (partial).{RESET}")
+        return
+
+    added = install_mcp(cfg)
+    if added:
+        write_config(cfg)
 
     print(f"\n{GREEN}Done.{RESET}")
     print("  Restart opencode or run: opencode plugin reload")
