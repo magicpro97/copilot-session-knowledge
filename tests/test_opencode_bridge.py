@@ -27,6 +27,18 @@ MCP_SERVER = REPO / "mcp-server.py"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+_MARKERS_DIR = Path.home() / ".copilot" / "markers"
+
+
+def _cleanup_session_state():
+    """Remove any bridge-test session state so doom-loop counters don't persist."""
+    if _MARKERS_DIR.is_dir():
+        for f in _MARKERS_DIR.glob("session-state-bridge-test-*"):
+            f.unlink(missing_ok=True)
+
+
+_cleanup_session_state()
+
 
 def _run_hook(event: str, data: dict) -> subprocess.CompletedProcess:
     """Run hook_runner.py with the given event and JSON data (stdin)."""
