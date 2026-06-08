@@ -204,8 +204,13 @@ class TentacleEnforceRule(Rule):
 
         # FP-1: session-state files (e.g. /research outputs) are not project source;
         # skip threshold check so create/edit to these paths is never blocked.
+        # Note: Create tool sends path as filePath in toolInput/input, not "path" in toolArgs.
         if tool_name in ("edit", "create"):
-            file_path = tool_args.get("path", "")
+            file_path = (
+                tool_args.get("path", "")
+                or tool_args.get("filePath", "")
+                or (data.get("input") or {}).get("filePath", "")
+            )
             if file_path and is_session_path(file_path):
                 return None
 
