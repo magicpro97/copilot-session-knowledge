@@ -3420,7 +3420,7 @@ try:
         f"Expected None, got: {_r19_create!r}",
     )
 
-    # FP-1: edit to session-state path must be allowed
+    # FP-1: edit to session-state path (toolArgs.path) must be allowed
     _r19_edit = _ter19.evaluate(
         "preToolUse",
         {
@@ -3432,6 +3432,34 @@ try:
         "FP-1: TentacleEnforceRule edit to session-state → None (allowed)",
         _r19_edit is None,
         f"Expected None, got: {_r19_edit!r}",
+    )
+
+    # FP-1: create to session-state via toolInput.filePath must be allowed
+    _r19_create_input = _ter19.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "toolInput": {"filePath": _ss_create_path19},
+        },
+    )
+    test(
+        "FP-1: TentacleEnforceRule create to session-state via toolInput.filePath → None",
+        _r19_create_input is None,
+        f"Expected None, got: {_r19_create_input!r}",
+    )
+
+    # FP-1: create to session-state via input.filePath must be allowed
+    _r19_create_input2 = _ter19.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "input": {"filePath": _ss_create_path19},
+        },
+    )
+    test(
+        "FP-1: TentacleEnforceRule create to session-state via input.filePath → None",
+        _r19_create_input2 is None,
+        f"Expected None, got: {_r19_create_input2!r}",
     )
 
     # Non-session edit at threshold must still deny
@@ -3584,6 +3612,46 @@ try:
         "FP-1 parity: standalone edit to project file at threshold → deny",
         '"permissionDecision": "deny"' in _out19e_deny or (_out19e_deny != "" and "deny" in _out19e_deny.lower()),
         f"Expected deny output, got: {_out19e_deny!r}",
+    )
+
+    # FP-1 parity: standalone create to session-state via toolInput.filePath
+    def _run_standalone19e_raw(payload):
+        import sys as _sys
+
+        _old_in, _old_out = _sys.stdin, _sys.stdout
+        _sys.stdin = _io19e.StringIO(payload)
+        _sys.stdout = _io19e.StringIO()
+        try:
+            _mod19e.main()
+            return _sys.stdout.getvalue().strip()
+        finally:
+            _sys.stdin, _sys.stdout = _old_in, _old_out
+
+    _out19e_toolInput = _run_standalone19e_raw(
+        json.dumps({"toolName": "create", "toolInput": {"filePath": _ss_create19e}})
+    )
+    test(
+        "FP-1 parity: standalone create to session-state via toolInput.filePath → no output",
+        _out19e_toolInput == "",
+        f"Expected no output (allow), got: {_out19e_toolInput!r}",
+    )
+
+    _out19e_input = _run_standalone19e_raw(
+        json.dumps({"toolName": "create", "input": {"filePath": _ss_create19e}})
+    )
+    test(
+        "FP-1 parity: standalone create to session-state via input.filePath → no output",
+        _out19e_input == "",
+        f"Expected no output (allow), got: {_out19e_input!r}",
+    )
+
+    _out19e_toolArgs_filePath = _run_standalone19e_raw(
+        json.dumps({"toolName": "create", "toolArgs": {"filePath": _ss_create19e}})
+    )
+    test(
+        "FP-1 parity: standalone create to session-state via toolArgs.filePath → no output",
+        _out19e_toolArgs_filePath == "",
+        f"Expected no output (allow), got: {_out19e_toolArgs_filePath!r}",
     )
 
     test("Section 19e standalone parity tests ran without exception", True)

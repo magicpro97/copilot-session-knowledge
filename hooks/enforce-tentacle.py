@@ -219,8 +219,14 @@ def main():
 
     # FP-1: session-state files (e.g. /research outputs) are not project source;
     # skip threshold check so create/edit to these paths is never blocked.
+    # Note: Create tool sends path as filePath in toolInput/input, not "path" in toolArgs.
     if tool_name in ("edit", "create"):
-        file_path = (data.get("toolArgs") or {}).get("path", "")
+        file_path = (
+            (data.get("toolArgs") or {}).get("path", "")
+            or (data.get("toolArgs") or {}).get("filePath", "")
+            or (data.get("toolInput") or {}).get("filePath", "")
+            or (data.get("input") or {}).get("filePath", "")
+        )
         _ss_abs = str(Path.home() / ".copilot" / "session-state")
         if file_path and (file_path.startswith(_ss_abs) or ".copilot/session-state" in file_path):
             return
