@@ -84,51 +84,63 @@ class TestHookRunnerCompat(unittest.TestCase):
 
     def test_pre_tool_use_bash_passthrough(self):
         """preToolUse with simple bash command should not block."""
-        proc = _run_hook("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "echo hello"},
-            "toolInput": {"command": "echo hello"},
-            "sessionId": "bridge-test-001",
-            "callId": "call-001",
-        })
+        proc = _run_hook(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "echo hello"},
+                "toolInput": {"command": "echo hello"},
+                "sessionId": "bridge-test-001",
+                "callId": "call-001",
+            },
+        )
         self.assertEqual(proc.returncode, 0, f"preToolUse bash failed:\n{proc.stderr}")
         self.assertEqual(proc.stdout.strip(), "", "bash command should not be denied")
 
     def test_pre_tool_use_edit_session_path_allowed(self):
         """Edits to session-state paths should be exempt from enforcement."""
-        proc = _run_hook("preToolUse", {
-            "toolName": "edit",
-            "toolArgs": {
-                "filePath": str(Path.home() / ".copilot" / "session-state" / "test" / "research" / "notes.md"),
-                "oldString": "foo",
-                "newString": "bar",
+        proc = _run_hook(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {
+                    "filePath": str(Path.home() / ".copilot" / "session-state" / "test" / "research" / "notes.md"),
+                    "oldString": "foo",
+                    "newString": "bar",
+                },
+                "toolInput": {
+                    "filePath": str(Path.home() / ".copilot" / "session-state" / "test" / "research" / "notes.md"),
+                    "oldString": "foo",
+                    "newString": "bar",
+                },
+                "sessionId": "bridge-test-002",
             },
-            "toolInput": {
-                "filePath": str(Path.home() / ".copilot" / "session-state" / "test" / "research" / "notes.md"),
-                "oldString": "foo",
-                "newString": "bar",
-            },
-            "sessionId": "bridge-test-002",
-        })
+        )
         self.assertEqual(proc.returncode, 0, f"Session-path edit blocked:\n{proc.stdout}")
         self.assertNotIn("deny", proc.stdout.lower(), "Session paths should not be denied")
 
     def test_pre_tool_use_write_creates_allowed(self):
         """write tool (mapped to 'create') with normal paths should pass."""
-        proc = _run_hook("preToolUse", {
-            "toolName": "create",
-            "toolArgs": {"filePath": "/tmp/bridge-test-file.txt"},
-            "toolInput": {"filePath": "/tmp/bridge-test-file.txt"},
-            "sessionId": "bridge-test-003",
-        })
+        proc = _run_hook(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {"filePath": "/tmp/bridge-test-file.txt"},
+                "toolInput": {"filePath": "/tmp/bridge-test-file.txt"},
+                "sessionId": "bridge-test-003",
+            },
+        )
         self.assertEqual(proc.returncode, 0, f"write/create blocked:\n{proc.stdout}")
 
     def test_session_start_returns_context(self):
         """sessionStart should return briefing/context (or pass silently)."""
-        proc = _run_hook("sessionStart", {
-            "sessionId": "bridge-test-004",
-            "additionalContext": [],
-        })
+        proc = _run_hook(
+            "sessionStart",
+            {
+                "sessionId": "bridge-test-004",
+                "additionalContext": [],
+            },
+        )
         self.assertEqual(proc.returncode, 0, f"sessionStart failed:\n{proc.stderr}")
         # sessionStart may return context or nothing (no-briefing mode).
         # Just verify it doesn't crash.
@@ -141,41 +153,53 @@ class TestHookRunnerCompat(unittest.TestCase):
 
     def test_session_end_cleanup(self):
         """sessionEnd should complete without error."""
-        proc = _run_hook("sessionEnd", {
-            "sessionId": "bridge-test-005",
-        })
+        proc = _run_hook(
+            "sessionEnd",
+            {
+                "sessionId": "bridge-test-005",
+            },
+        )
         self.assertEqual(proc.returncode, 0, f"sessionEnd failed:\n{proc.stderr}")
 
     def test_post_tool_use_tracking(self):
         """postToolUse should accept toolResult with filePath."""
-        proc = _run_hook("postToolUse", {
-            "toolName": "edit",
-            "toolArgs": {"filePath": "/tmp/bridge-test-track.txt"},
-            "toolInput": {"filePath": "/tmp/bridge-test-track.txt"},
-            "toolResult": {
-                "title": "Edit test file",
-                "output": "Done",
-                "filePath": "/tmp/bridge-test-track.txt",
+        proc = _run_hook(
+            "postToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {"filePath": "/tmp/bridge-test-track.txt"},
+                "toolInput": {"filePath": "/tmp/bridge-test-track.txt"},
+                "toolResult": {
+                    "title": "Edit test file",
+                    "output": "Done",
+                    "filePath": "/tmp/bridge-test-track.txt",
+                },
+                "sessionId": "bridge-test-006",
             },
-            "sessionId": "bridge-test-006",
-        })
+        )
         self.assertEqual(proc.returncode, 0, f"postToolUse failed:\n{proc.stderr}")
 
     def test_error_occurred(self):
         """errorOccurred should not crash."""
-        proc = _run_hook("errorOccurred", {
-            "sessionId": "bridge-test-007",
-            "error": "Test error from bridge",
-        })
+        proc = _run_hook(
+            "errorOccurred",
+            {
+                "sessionId": "bridge-test-007",
+                "error": "Test error from bridge",
+            },
+        )
         self.assertEqual(proc.returncode, 0, f"errorOccurred failed:\n{proc.stderr}")
 
     def test_user_prompt_submitted(self):
         """userPromptSubmitted should parse prompt text without error."""
-        proc = _run_hook("userPromptSubmitted", {
-            "sessionId": "bridge-test-008",
-            "prompt": "Write a function that calculates fibonacci numbers",
-            "additionalContext": [],
-        })
+        proc = _run_hook(
+            "userPromptSubmitted",
+            {
+                "sessionId": "bridge-test-008",
+                "prompt": "Write a function that calculates fibonacci numbers",
+                "additionalContext": [],
+            },
+        )
         self.assertEqual(proc.returncode, 0, f"userPromptSubmitted failed:\n{proc.stderr}")
 
 
