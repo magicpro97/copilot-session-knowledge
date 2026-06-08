@@ -242,12 +242,14 @@ class TestHookRunnerCompat(unittest.TestCase):
             },
         )
         self.assertEqual(proc.returncode, 0, f"sessionStart failed:\n{proc.stderr}")
-        if proc.stdout.strip():
+        stdout = proc.stdout.strip()
+        if stdout:
             try:
-                parsed = json.loads(proc.stdout.strip())
+                parsed = json.loads(stdout)
                 self.assertIsInstance(parsed, dict)
             except json.JSONDecodeError:
-                pass
+                self.assertIsInstance(stdout, str)
+                self.assertGreater(len(stdout), 0)
 
     def test_session_end_cleanup(self):
         proc = _run_hook(

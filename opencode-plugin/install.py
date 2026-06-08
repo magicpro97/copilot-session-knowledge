@@ -21,7 +21,8 @@ if os.name == "nt":
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 PLUGIN_SRC = TOOLS_DIR / "opencode-plugin" / "copilot-tools-bridge.ts"
 
-XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+_xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+XDG_CONFIG = Path(_xdg_config_home if _xdg_config_home else Path.home() / ".config")
 OPENCODE_CONFIG_DIR = XDG_CONFIG / "opencode"
 PLUGIN_DIR = OPENCODE_CONFIG_DIR / "plugins"
 PLUGIN_DST = PLUGIN_DIR / "copilot-tools-bridge.ts"
@@ -64,6 +65,15 @@ def install_plugin() -> bool:
 
 MCP_ENTRY = "copilot-tools"
 _PYTHON = sys.executable if sys.executable else "python3"
+
+
+def _get_mcp(cfg: dict) -> dict:
+    """Return the mcp dict if it exists and is a dict, else warn and return empty."""
+    mcp = cfg.get("mcp", {})
+    if not isinstance(mcp, dict):
+        warn(f"Config 'mcp' is {type(mcp).__name__}, treating as empty")
+        return {}
+    return mcp
 
 
 def install_mcp(cfg: dict) -> bool:
@@ -160,7 +170,8 @@ def load_config() -> dict | None:
         if cfg is None:
             warn(f"Invalid config in {CONFIG_FILE} — skipping write to preserve existing content")
         return cfg
-    except OSError:
+    except OSError as e:
+        warn(f"Cannot read {CONFIG_FILE}: {e} — starting fresh")
         return {"$schema": "https://opencode.ai/config.json"}
 
 
@@ -181,9 +192,11 @@ def show_status():
     if cfg is None:
         fail("Config file — unparseable")
     else:
-        mcp = cfg.get("mcp", {})
+        mcp = _get_mcp(cfg)
         if MCP_ENTRY in mcp:
-            ok(f"MCP server '{MCP_ENTRY}': enabled={mcp[MCP_ENTRY].get('enabled', False)}")
+            entry = mcp.get(MCP_ENTRY, {})
+            enabled = entry.get("enabled", False) if isinstance(entry, dict) else False
+            ok(f"MCP server '{MCP_ENTRY}': enabled={enabled}")
             ok_count += 1
         else:
             fail(f"MCP server '{MCP_ENTRY}' — not configured")
@@ -200,7 +213,7 @@ def remove_all():
         if cfg is None:
             warn("Config unparseable — cannot remove MCP entry")
             return
-        mcp = cfg.get("mcp", {})
+        mcp = _get_mcp(cfg)
         if MCP_ENTRY in mcp:
             del mcp[MCP_ENTRY]
             write_config(cfg)
