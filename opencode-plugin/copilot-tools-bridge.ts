@@ -227,7 +227,9 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       } catch (e) {
         if (e instanceof SyntaxError) {
           if (result) process.stderr.write("[copilot-tools] " + result + "\n")
+          return
         }
+        throw e
       }
     },
 

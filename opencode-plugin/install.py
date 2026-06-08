@@ -71,7 +71,7 @@ def install_mcp(cfg: dict) -> bool:
     mcp = cfg.setdefault("mcp", {})
     if MCP_ENTRY in mcp:
         ok(f"MCP server '{MCP_ENTRY}' already configured")
-        return True
+        return False
     mcp[MCP_ENTRY] = {
         "type": "local",
         "command": [_PYTHON, str(TOOLS_DIR / "mcp-server.py")],
@@ -196,9 +196,6 @@ def remove_all():
             del mcp[MCP_ENTRY]
             write_config(cfg)
             ok(f"Removed MCP server '{MCP_ENTRY}' from config")
-        elif not mcp:
-            cfg.pop("mcp", None)
-            write_config(cfg)
     warn("Restart opencode for changes to take effect")
 
 
