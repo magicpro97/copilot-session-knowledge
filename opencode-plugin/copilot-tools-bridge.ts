@@ -6,6 +6,7 @@ const HOME = process.env.HOME || homedir()
 const TOOLS_DIR = join(HOME, ".copilot", "tools")
 const HOOK_RUNNER = join(TOOLS_DIR, "hooks", "hook_runner.py")
 const PYTHON = "python3"
+const HOOK_TIMEOUT = 15_000
 
 const log = (client: any, level: string, message: string) => {
   try { client.app.log({ body: { service: "copilot-tools-bridge", level, message } }) } catch {}
@@ -18,11 +19,13 @@ async function callHookRunner(
   data: Record<string, unknown>,
 ): Promise<string | null> {
   const json = JSON.stringify(data)
+  const signal = AbortSignal.timeout(HOOK_TIMEOUT)
   try {
     const proc = Bun.spawn([PYTHON, HOOK_RUNNER, event], {
       stdin: new Blob([json]).stream(),
       stdout: "pipe",
       stderr: "pipe",
+      signal,
     })
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -39,7 +42,11 @@ async function callHookRunner(
     }
     return text || null
   } catch (e) {
-    log(client, "warn", `hook_runner ${event} error: ${e}`)
+    if ((e as any)?.name === "TimeoutError") {
+      log(client, "warn", `hook_runner ${event} timed out after ${HOOK_TIMEOUT}ms`)
+    } else {
+      log(client, "warn", `hook_runner ${event} error: ${e}`)
+    }
     return null
   }
 }
@@ -198,6 +205,29 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
           output.parts = targetParts
         }
       } catch {
+      }
+    },
+
+    task: async (input, output) => {
+      const result = await callHookRunner($, client, "preToolUse", {
+        toolName: "task",
+        toolArgs: { description: input.description, subtask: input.subtask },
+        toolInput: { description: input.description, subtask: input.subtask },
+        sessionId: input.sessionID,
+        callId: input.callID,
+      })
+
+      if (!result) return
+
+      try {
+        const parsed = JSON.parse(result)
+        if (parsed.permissionDecision === "deny") {
+          throw new Error(parsed.permissionDecisionReason || "Blocked by task rule")
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) {
+          if (result) process.stderr.write("[copilot-tools] " + result + "\n")
+        }
       }
     },
 

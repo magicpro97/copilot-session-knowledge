@@ -11,6 +11,7 @@ Covers:
 Run: python3 tests/test_opencode_bridge.py
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -44,7 +45,7 @@ def _cleanup_isolated_home():
     shutil.rmtree(_ISOLATED_HOME, ignore_errors=True)
 
 
-_cleanup_isolated_home()
+atexit.register(_cleanup_isolated_home)
 _ISOLATED_HOME.mkdir(parents=True, exist_ok=True)
 
 
@@ -85,6 +86,8 @@ class TestPluginSource(unittest.TestCase):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("tool.execute.before", text)
         self.assertIn("tool.execute.after", text)
+        self.assertIn("tool.use", text)
+        self.assertIn("task", text)
         self.assertIn("chat.message", text)
         self.assertIn("CopilotToolsBridge", text)
         self.assertIn("export const CopilotToolsBridge", text)
@@ -226,8 +229,8 @@ class TestHookRunnerCompat(unittest.TestCase):
             "preToolUse",
             {
                 "toolName": "create",
-                "toolArgs": {"filePath": "/tmp/bridge-test-file.txt"},
-                "toolInput": {"filePath": "/tmp/bridge-test-file.txt"},
+                "toolArgs": {"filePath": os.path.join(tempfile.gettempdir(), "bridge-test-file.txt")},
+                "toolInput": {"filePath": os.path.join(tempfile.gettempdir(), "bridge-test-file.txt")},
                 "sessionId": "bridge-test-003",
             },
         )
@@ -263,12 +266,12 @@ class TestHookRunnerCompat(unittest.TestCase):
             "postToolUse",
             {
                 "toolName": "edit",
-                "toolArgs": {"filePath": "/tmp/bridge-test-track.txt"},
-                "toolInput": {"filePath": "/tmp/bridge-test-track.txt"},
+                "toolArgs": {"filePath": os.path.join(tempfile.gettempdir(), "bridge-test-track.txt")},
+                "toolInput": {"filePath": os.path.join(tempfile.gettempdir(), "bridge-test-track.txt")},
                 "toolResult": {
                     "title": "Edit test file",
                     "output": "Done",
-                    "filePath": "/tmp/bridge-test-track.txt",
+                    "filePath": os.path.join(tempfile.gettempdir(), "bridge-test-track.txt"),
                 },
                 "sessionId": "bridge-test-006",
             },
