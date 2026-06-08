@@ -3614,6 +3614,46 @@ try:
         f"Expected deny output, got: {_out19e_deny!r}",
     )
 
+    # FP-1 parity: standalone create to session-state via toolInput.filePath
+    def _run_standalone19e_raw(payload):
+        import sys as _sys
+
+        _old_in, _old_out = _sys.stdin, _sys.stdout
+        _sys.stdin = _io19e.StringIO(payload)
+        _sys.stdout = _io19e.StringIO()
+        try:
+            _mod19e.main()
+            return _sys.stdout.getvalue().strip()
+        finally:
+            _sys.stdin, _sys.stdout = _old_in, _old_out
+
+    _out19e_toolInput = _run_standalone19e_raw(
+        json.dumps({"toolName": "create", "toolInput": {"filePath": _ss_create19e}})
+    )
+    test(
+        "FP-1 parity: standalone create to session-state via toolInput.filePath → no output",
+        _out19e_toolInput == "",
+        f"Expected no output (allow), got: {_out19e_toolInput!r}",
+    )
+
+    _out19e_input = _run_standalone19e_raw(
+        json.dumps({"toolName": "create", "input": {"filePath": _ss_create19e}})
+    )
+    test(
+        "FP-1 parity: standalone create to session-state via input.filePath → no output",
+        _out19e_input == "",
+        f"Expected no output (allow), got: {_out19e_input!r}",
+    )
+
+    _out19e_toolArgs_filePath = _run_standalone19e_raw(
+        json.dumps({"toolName": "create", "toolArgs": {"filePath": _ss_create19e}})
+    )
+    test(
+        "FP-1 parity: standalone create to session-state via toolArgs.filePath → no output",
+        _out19e_toolArgs_filePath == "",
+        f"Expected no output (allow), got: {_out19e_toolArgs_filePath!r}",
+    )
+
     test("Section 19e standalone parity tests ran without exception", True)
 except Exception as _e19e:
     test("Section 19e standalone parity tests ran without exception", False, str(_e19e))
