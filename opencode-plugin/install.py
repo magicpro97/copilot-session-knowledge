@@ -10,7 +10,6 @@ Usage:
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -69,6 +68,10 @@ _PYTHON = sys.executable if sys.executable else "python3"
 
 def install_mcp(cfg: dict) -> bool:
     mcp = cfg.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        warn(f"Existing 'mcp' value is {type(mcp).__name__}, replacing with dict")
+        mcp = {}
+        cfg["mcp"] = mcp
     if MCP_ENTRY in mcp:
         ok(f"MCP server '{MCP_ENTRY}' already configured")
         return False
@@ -121,12 +124,18 @@ def _strip_jsonc(text: str) -> str:
                 i += 1
             i += 2 if i + 1 < len(text) else 1
             continue
+        elif ch == ",":
+            j = i + 1
+            while j < len(text) and text[j] in " \t\n\r":
+                j += 1
+            if j < len(text) and text[j] in "}]":
+                i = j
+                continue
+            stripped.append(ch)
         else:
             stripped.append(ch)
         i += 1
-    result = "".join(stripped)
-    result = re.sub(r",\s*([}\]])", r"\1", result)
-    return result
+    return "".join(stripped)
 
 
 def _try_parse(text: str) -> dict | None:

@@ -12,6 +12,7 @@ Run: python3 tests/test_opencode_bridge.py
 """
 
 import atexit
+import hashlib
 import json
 import os
 import shutil
@@ -34,10 +35,6 @@ _ISOLATED_ENV = {
     **os.environ,
     "HOME": str(_ISOLATED_HOME),
     "USERPROFILE": str(_ISOLATED_HOME),
-}
-_SANDBOX_ENV = {
-    **_ISOLATED_ENV,
-    "XDG_CONFIG_HOME": str(_ISOLATED_HOME / ".config"),
 }
 
 
@@ -140,11 +137,11 @@ class TestInstallSandboxed(unittest.TestCase):
         self._install()
         if not self.plugin_dst.is_file():
             self.skipTest("Plugin not installed")
-        src_text = PLUGIN_SRC.read_text(encoding="utf-8")
-        dst_text = self.plugin_dst.read_text(encoding="utf-8")
+        src_hash = hashlib.sha256(PLUGIN_SRC.read_bytes()).hexdigest()
+        dst_hash = hashlib.sha256(self.plugin_dst.read_bytes()).hexdigest()
         self.assertEqual(
-            src_text.strip().split("\n")[0],
-            dst_text.strip().split("\n")[0],
+            src_hash,
+            dst_hash,
             "Installed plugin differs from source — run install.py to update",
         )
 
