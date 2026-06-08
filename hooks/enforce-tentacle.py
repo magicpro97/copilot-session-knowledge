@@ -223,6 +223,7 @@ def main():
     if tool_name in ("edit", "create"):
         file_path = (
             (data.get("toolArgs") or {}).get("path", "")
+            or (data.get("toolArgs") or {}).get("filePath", "")
             or (data.get("toolInput") or {}).get("filePath", "")
             or (data.get("input") or {}).get("filePath", "")
         )

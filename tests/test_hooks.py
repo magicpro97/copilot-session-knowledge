@@ -3420,7 +3420,7 @@ try:
         f"Expected None, got: {_r19_create!r}",
     )
 
-    # FP-1: edit to session-state path must be allowed
+    # FP-1: edit to session-state path (toolArgs.path) must be allowed
     _r19_edit = _ter19.evaluate(
         "preToolUse",
         {
@@ -3432,6 +3432,34 @@ try:
         "FP-1: TentacleEnforceRule edit to session-state → None (allowed)",
         _r19_edit is None,
         f"Expected None, got: {_r19_edit!r}",
+    )
+
+    # FP-1: create to session-state via toolInput.filePath must be allowed
+    _r19_create_input = _ter19.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "toolInput": {"filePath": _ss_create_path19},
+        },
+    )
+    test(
+        "FP-1: TentacleEnforceRule create to session-state via toolInput.filePath → None",
+        _r19_create_input is None,
+        f"Expected None, got: {_r19_create_input!r}",
+    )
+
+    # FP-1: create to session-state via input.filePath must be allowed
+    _r19_create_input2 = _ter19.evaluate(
+        "preToolUse",
+        {
+            "toolName": "create",
+            "input": {"filePath": _ss_create_path19},
+        },
+    )
+    test(
+        "FP-1: TentacleEnforceRule create to session-state via input.filePath → None",
+        _r19_create_input2 is None,
+        f"Expected None, got: {_r19_create_input2!r}",
     )
 
     # Non-session edit at threshold must still deny
