@@ -112,9 +112,10 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
     })
   }
 
-  const fireSessionEnd = async (sessionId?: string) => {
+  const fireSessionEnd = async (sessionId?: string, reason?: string) => {
     await callHookRunner($, client, "sessionEnd", {
       sessionId: sessionId || state.sessionId || "",
+      reason: reason || "unknown",
     })
   }
 
@@ -153,10 +154,17 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       const toolName = mapToolName(input.tool)
       const toolArgs = normalizeToolArgs(toolName, (input.args ?? {}) as Record<string, unknown>)
 
+      const isError = !!(output as any).isError
+      const metadata = (output as any).metadata || {}
+      const exitCode = metadata.exitCode ?? metadata.exit_code ?? (isError ? 1 : 0)
+
       const toolResult: Record<string, unknown> = {
         title: output.title,
         output: output.output,
-        resultType: output.isError ? "error" : "success",
+        stdout: output.output,
+        resultType: isError ? "error" : "success",
+        exitCode,
+        exit_code: exitCode,
       }
       if (typeof toolArgs.filePath === "string") {
         toolResult.filePath = toolArgs.filePath
@@ -193,6 +201,7 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
         sessionId: input.sessionID,
         prompt,
         additionalContext: [],
+        cwd: process.cwd(),
       })
 
       if (!results) return
@@ -289,7 +298,7 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
           break
         }
         case "session.idle":
-          await fireSessionEnd(props.sessionID || "")
+          await fireSessionEnd(props.sessionID || "", "idle")
           break
         case "session.error":
           await callHookRunner($, client, "errorOccurred", {
