@@ -28,6 +28,7 @@ ALLOWED_TMP_LITERAL_TESTS = {
     "test_hooks.py": "hook payload and source-path classification fixtures",
     "test_indexing.py": "SQLite fixture rows only; no filesystem dependency",
     "test_install_helpers.py": "mock PowerShell shortcut target fixture",
+    "test_opencode_bridge.py": "bridge hook payload fixtures; hook_runner subprocess may touch markers under isolated HOME",
     "test_providers.py": "provider payload serialization fixtures",
     "test_retro.py": "mock config path fixture",
     "test_session_surface.py": "SQLite fixture row only; no filesystem dependency",
