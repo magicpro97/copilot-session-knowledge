@@ -17,7 +17,7 @@ async function callHookRunner(
   client: any,
   event: string,
   data: Record<string, unknown>,
-): Promise<string | null> {
+): Promise<Record<string, unknown>[] | null> {
   const json = JSON.stringify(data)
   const signal = AbortSignal.timeout(HOOK_TIMEOUT)
   try {
@@ -40,7 +40,17 @@ async function callHookRunner(
     if (text && stderr.trim()) {
       log(client, "debug", `[${event}] ${stderr.trim()}`)
     }
-    return text || null
+    if (!text) return null
+    const lines = text.split("\n").filter(l => l.trim())
+    const results: Record<string, unknown>[] = []
+    for (const line of lines) {
+      try {
+        results.push(JSON.parse(line))
+      } catch {
+        log(client, "debug", `[${event}] non-JSON output: ${line}`)
+      }
+    }
+    return results.length > 0 ? results : null
   } catch (e) {
     if ((e as any)?.name === "TimeoutError") {
       log(client, "warn", `hook_runner ${event} timed out after ${HOOK_TIMEOUT}ms`)
@@ -53,6 +63,8 @@ async function callHookRunner(
 
 function mapToolName(tool: string): string {
   if (tool === "write") return "create"
+  if (tool === "read") return "view"
+  if (tool === "apply_patch") return "edit"
   return tool
 }
 
@@ -92,27 +104,21 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
     "tool.execute.before": async (input, output) => {
       const toolName = mapToolName(input.tool)
 
-      const result = await callHookRunner($, client, "preToolUse", {
+      const results = await callHookRunner($, client, "preToolUse", {
         toolName,
         toolArgs: output.args,
         toolInput: output.args,
         sessionId: input.sessionID,
         callId: input.callID,
+        cwd: process.cwd(),
       })
 
-      if (!result) return
+      if (!results) return
 
-      try {
-        const parsed = JSON.parse(result)
+      for (const parsed of results) {
         if (parsed.permissionDecision === "deny") {
           throw new Error(parsed.permissionDecisionReason || `Blocked by ${toolName} rule`)
         }
-      } catch (e) {
-        if (e instanceof SyntaxError) {
-          if (result) process.stderr.write("[copilot-tools] " + result + "\n")
-          return
-        }
-        throw e
       }
     },
 
@@ -122,55 +128,46 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       const toolResult: Record<string, unknown> = {
         title: output.title,
         output: output.output,
+        resultType: output.isError ? "error" : "success",
       }
       if (typeof input.args === "object" && input.args && (input.args as any).filePath) {
         toolResult.filePath = (input.args as any).filePath
       }
 
-      const result = await callHookRunner($, client, "postToolUse", {
+      const results = await callHookRunner($, client, "postToolUse", {
         toolName,
         toolArgs: input.args,
         toolInput: input.args,
         toolResult,
         sessionId: input.sessionID,
+        cwd: process.cwd(),
       })
 
-      if (!result) return
+      if (!results) return
 
-      try {
-        const parsed = JSON.parse(result)
+      for (const parsed of results) {
         if (parsed.title) output.title = parsed.title
-      } catch {
-        if (result) {
-          output.output = (output.output || "") + "\n" + result
-        }
       }
     },
 
     "tool.use": async (input, output) => {
       const toolName = mapToolName(input.tool)
 
-      const result = await callHookRunner($, client, "preToolUse", {
+      const results = await callHookRunner($, client, "preToolUse", {
         toolName,
         toolArgs: output.args,
         toolInput: output.args,
         sessionId: input.sessionID,
         callId: input.callID,
+        cwd: process.cwd(),
       })
 
-      if (!result) return
+      if (!results) return
 
-      try {
-        const parsed = JSON.parse(result)
+      for (const parsed of results) {
         if (parsed.permissionDecision === "deny") {
           throw new Error(parsed.permissionDecisionReason || `Blocked by ${toolName} rule`)
         }
-      } catch (e) {
-        if (e instanceof SyntaxError) {
-          if (result) process.stderr.write("[copilot-tools] " + result + "\n")
-          return
-        }
-        throw e
       }
     },
 
@@ -182,54 +179,53 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       const parts = output.parts || []
       const prompt = parts.map((p: any) => p.text || "").filter(Boolean).join("\n")
 
-      const result = await callHookRunner($, client, "userPromptSubmitted", {
+      const results = await callHookRunner($, client, "userPromptSubmitted", {
         sessionId: input.sessionID,
         prompt,
         additionalContext: [],
       })
 
-      if (!result) return
-      try {
-        const parsed = JSON.parse(result)
-        if (parsed.additionalContext && Array.isArray(parsed.additionalContext)) {
-          const targetParts = output.parts || []
-          for (const ctx of parsed.additionalContext) {
-            if (typeof ctx === "string") {
-              targetParts.push({
-                type: "text",
-                text: ctx,
-                synthetic: true,
-              } as any)
+      if (!results) return
+
+      const targetParts = output.parts || []
+      for (const parsed of results) {
+        if (parsed.additionalContext) {
+          const ctx = parsed.additionalContext
+          const texts = Array.isArray(ctx) ? ctx : [ctx]
+          for (const text of texts) {
+            if (typeof text === "string") {
+              targetParts.push({ type: "text", text, synthetic: true } as any)
             }
           }
-          output.parts = targetParts
         }
-      } catch {
+        if (parsed.modifiedPrompt && typeof parsed.modifiedPrompt === "string") {
+          for (let i = targetParts.length - 1; i >= 0; i--) {
+            if (!(targetParts[i] as any).synthetic) {
+              ;(targetParts[i] as any).text = parsed.modifiedPrompt
+              break
+            }
+          }
+        }
       }
+      output.parts = targetParts
     },
 
     task: async (input, output) => {
-      const result = await callHookRunner($, client, "preToolUse", {
+      const results = await callHookRunner($, client, "preToolUse", {
         toolName: "task",
         toolArgs: { description: input.description, subtask: input.subtask },
         toolInput: { description: input.description, subtask: input.subtask },
         sessionId: input.sessionID,
         callId: input.callID,
+        cwd: process.cwd(),
       })
 
-      if (!result) return
+      if (!results) return
 
-      try {
-        const parsed = JSON.parse(result)
+      for (const parsed of results) {
         if (parsed.permissionDecision === "deny") {
           throw new Error(parsed.permissionDecisionReason || "Blocked by task rule")
         }
-      } catch (e) {
-        if (e instanceof SyntaxError) {
-          if (result) process.stderr.write("[copilot-tools] " + result + "\n")
-          return
-        }
-        throw e
       }
     },
 
