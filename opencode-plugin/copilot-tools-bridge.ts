@@ -70,6 +70,24 @@ function mapToolName(tool: string): string {
   return tool
 }
 
+function normalizeToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...args }
+  if (toolName === "skill" && typeof normalized.name === "string" && typeof normalized.skill !== "string") {
+    normalized.skill = normalized.name
+  }
+  if (toolName === "edit") {
+    if (typeof normalized.oldString === "string" && typeof normalized.old_str !== "string") normalized.old_str = normalized.oldString
+    if (typeof normalized.newString === "string" && typeof normalized.new_str !== "string") normalized.new_str = normalized.newString
+  }
+  if (toolName === "create") {
+    if (typeof normalized.content === "string" && typeof normalized.file_text !== "string") normalized.file_text = normalized.content
+  }
+  if (typeof normalized.path === "string" && typeof normalized.filePath !== "string") {
+    normalized.filePath = normalized.path
+  }
+  return normalized
+}
+
 type HookState = {
   sessionStartFired: boolean
   sessionId: string
@@ -105,11 +123,12 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
 
     "tool.execute.before": async (input, output) => {
       const toolName = mapToolName(input.tool)
+      const toolArgs = normalizeToolArgs(toolName, output.args ?? {})
 
       const results = await callHookRunner($, client, "preToolUse", {
         toolName,
-        toolArgs: output.args,
-        toolInput: output.args,
+        toolArgs,
+        toolInput: toolArgs,
         sessionId: input.sessionID,
         callId: input.callID,
         cwd: process.cwd(),
@@ -126,20 +145,21 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
 
     "tool.execute.after": async (input, output) => {
       const toolName = mapToolName(input.tool)
+      const toolArgs = normalizeToolArgs(toolName, (input.args ?? {}) as Record<string, unknown>)
 
       const toolResult: Record<string, unknown> = {
         title: output.title,
         output: output.output,
         resultType: output.isError ? "error" : "success",
       }
-      if (typeof input.args === "object" && input.args && (input.args as any).filePath) {
-        toolResult.filePath = (input.args as any).filePath
+      if (typeof toolArgs.filePath === "string") {
+        toolResult.filePath = toolArgs.filePath
       }
 
       const results = await callHookRunner($, client, "postToolUse", {
         toolName,
-        toolArgs: input.args,
-        toolInput: input.args,
+        toolArgs,
+        toolInput: toolArgs,
         toolResult,
         sessionId: input.sessionID,
         cwd: process.cwd(),
@@ -151,27 +171,6 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
         if (parsed.title) output.title = parsed.title
         if (parsed.message) {
           output.output = (output.output || "") + "\n" + parsed.message
-        }
-      }
-    },
-
-    "tool.use": async (input, output) => {
-      const toolName = mapToolName(input.tool)
-
-      const results = await callHookRunner($, client, "preToolUse", {
-        toolName,
-        toolArgs: output.args,
-        toolInput: output.args,
-        sessionId: input.sessionID,
-        callId: input.callID,
-        cwd: process.cwd(),
-      })
-
-      if (!results) return
-
-      for (const parsed of results) {
-        if (parsed.permissionDecision === "deny") {
-          throw new Error(parsed.permissionDecisionReason || `Blocked by ${toolName} rule`)
         }
       }
     },
