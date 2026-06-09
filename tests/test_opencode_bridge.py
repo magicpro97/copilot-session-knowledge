@@ -116,6 +116,27 @@ class TestPluginSource(unittest.TestCase):
         self.assertIn("subagentName", text)
         self.assertIn("parentSessionId", text)
 
+    def test_plugin_includes_exit_code_in_tool_result(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("exitCode", text)
+        self.assertIn("exit_code", text)
+        self.assertIn("stdout", text)
+
+    def test_plugin_includes_reason_in_session_end(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn('reason: reason || "unknown"', text)
+        self.assertIn(', "idle")', text)
+
+    def test_plugin_includes_cwd_in_user_prompt(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("cwd: process.cwd()", text)
+        self.assertIn("userPromptSubmitted", text)
+
+    def test_plugin_has_shell_env(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("shell.env", text)
+        self.assertIn("COPILOT_AGENT_SESSION_ID", text)
+
     def test_plugin_normalizes_tool_args(self):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("normalizeToolArgs", text)
@@ -300,6 +321,53 @@ class TestHookRunnerCompat(unittest.TestCase):
             },
         )
         self.assertEqual(proc.returncode, 0, f"sessionEnd failed:\n{proc.stderr}")
+
+    def test_session_end_with_reason(self):
+        proc = _run_hook(
+            "sessionEnd",
+            {
+                "sessionId": "bridge-test-reason",
+                "reason": "idle",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"sessionEnd with reason failed:\n{proc.stderr}")
+        stdout = proc.stdout.strip()
+        if stdout:
+            parsed = json.loads(stdout)
+            self.assertIsInstance(parsed, dict)
+            self.assertIn("message", parsed)
+
+    def test_post_tool_use_with_exit_code(self):
+        proc = _run_hook(
+            "postToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "echo hello"},
+                "toolInput": {"command": "echo hello"},
+                "toolResult": {
+                    "title": "Run command",
+                    "output": "hello",
+                    "stdout": "hello",
+                    "resultType": "success",
+                    "exitCode": 0,
+                    "exit_code": 0,
+                },
+                "sessionId": "bridge-test-exit",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"postToolUse with exitCode failed:\n{proc.stderr}")
+
+    def test_user_prompt_submitted_with_cwd(self):
+        proc = _run_hook(
+            "userPromptSubmitted",
+            {
+                "sessionId": "bridge-test-cwd",
+                "prompt": "test prompt with cwd",
+                "additionalContext": [],
+                "cwd": "/tmp",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"userPromptSubmitted with cwd failed:\n{proc.stderr}")
 
     def test_post_tool_use_includes_result_type(self):
         proc = _run_hook(
