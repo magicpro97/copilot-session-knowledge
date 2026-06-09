@@ -104,7 +104,7 @@ Need to verify opencode's actual parameter names and add mapping.
 | Tier | Count | Confidence | Criteria |
 |------|-------|-----------|----------|
 | Works now | 3 rules | High | Generic logic, no CLI-specific shapes |
-| P1 fixes unlocks | 9 rules | Med-High | Need `additionalContext`, cwd, resultType, read→view |
+| P1 fixes unlocks | 11 rules | Med-High | Need `additionalContext`, cwd, resultType, read→view |
 | P3+ events unlocks | 11 rules | Medium | Need lifecycle events + agentStop |
 | P5 arg mapping | 5 rules | Low | Need CLI field name mapping |
 | Deeply tied to CLI | 10 rules | Low | Major refactor needed |
