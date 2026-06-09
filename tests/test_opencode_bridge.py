@@ -83,7 +83,7 @@ class TestPluginSource(unittest.TestCase):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("tool.execute.before", text)
         self.assertIn("tool.execute.after", text)
-        self.assertIn("tool.use", text)
+        self.assertNotIn("tool.use", text)  # removed in P2 (undocumented, dead code)
         self.assertIn("task", text)
         self.assertIn("chat.message", text)
         self.assertIn("CopilotToolsBridge", text)
@@ -99,6 +99,15 @@ class TestPluginSource(unittest.TestCase):
         self.assertIn('return "create"', text)
         self.assertIn('return "view"', text)
         self.assertIn('return "edit"', text)
+
+    def test_plugin_normalizes_tool_args(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("normalizeToolArgs", text)
+        self.assertIn("normalized.skill = normalized.name", text)
+        self.assertIn("normalized.old_str = normalized.oldString", text)
+        self.assertIn("normalized.new_str = normalized.newString", text)
+        self.assertIn("normalized.file_text = normalized.content", text)
+        self.assertIn("normalized.filePath = normalized.path", text)
 
 
 class TestInstallSandboxed(unittest.TestCase):
@@ -331,6 +340,78 @@ class TestHookRunnerCompat(unittest.TestCase):
             },
         )
         self.assertEqual(proc.returncode, 0, f"userPromptSubmitted failed:\n{proc.stderr}")
+
+    def test_skill_normalized_args(self):
+        proc = _run_hook(
+            "postToolUse",
+            {
+                "toolName": "skill",
+                "toolArgs": {"name": "frontend-dev", "skill": "frontend-dev"},
+                "toolInput": {"name": "frontend-dev", "skill": "frontend-dev"},
+                "sessionId": "bridge-test-skill-001",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"skill postToolUse failed:\n{proc.stderr}")
+
+    def test_skill_normalized_args_original_field_preserved(self):
+        proc = _run_hook(
+            "postToolUse",
+            {
+                "toolName": "skill",
+                "toolArgs": {"name": "test-skill"},
+                "toolInput": {"name": "test-skill"},
+                "sessionId": "bridge-test-skill-002",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"skill without normalized 'skill' field:\n{proc.stderr}")
+
+    def test_edit_normalized_args(self):
+        proc = _run_hook(
+            "preToolUse",
+            {
+                "toolName": "edit",
+                "toolArgs": {
+                    "path": os.path.join(tempfile.gettempdir(), "bridge-test-edit.py"),
+                    "filePath": os.path.join(tempfile.gettempdir(), "bridge-test-edit.py"),
+                    "oldString": "foo",
+                    "newString": "bar",
+                    "old_str": "foo",
+                    "new_str": "bar",
+                },
+                "toolInput": {
+                    "path": os.path.join(tempfile.gettempdir(), "bridge-test-edit.py"),
+                    "filePath": os.path.join(tempfile.gettempdir(), "bridge-test-edit.py"),
+                    "oldString": "foo",
+                    "newString": "bar",
+                    "old_str": "foo",
+                    "new_str": "bar",
+                },
+                "sessionId": "bridge-test-edit-001",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"edit preToolUse failed:\n{proc.stderr}")
+
+    def test_write_normalized_args(self):
+        proc = _run_hook(
+            "preToolUse",
+            {
+                "toolName": "create",
+                "toolArgs": {
+                    "path": os.path.join(tempfile.gettempdir(), "bridge-test-write.py"),
+                    "filePath": os.path.join(tempfile.gettempdir(), "bridge-test-write.py"),
+                    "content": "print('hello')",
+                    "file_text": "print('hello')",
+                },
+                "toolInput": {
+                    "path": os.path.join(tempfile.gettempdir(), "bridge-test-write.py"),
+                    "filePath": os.path.join(tempfile.gettempdir(), "bridge-test-write.py"),
+                    "content": "print('hello')",
+                    "file_text": "print('hello')",
+                },
+                "sessionId": "bridge-test-write-001",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"create preToolUse failed:\n{proc.stderr}")
 
 
 class TestMCPConfig(unittest.TestCase):
