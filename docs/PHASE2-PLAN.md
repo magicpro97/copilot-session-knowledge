@@ -43,7 +43,7 @@ Bridge does `JSON.parse(result)` on the entire blob — fails on multi-line outp
 
 ### G2: `additionalContext` format mismatch (P1)
 
-`common.py`'s `context()` returns `{"additionalContext": "string"}`. Bridge checks `Array.isArray(parsed.additionalContext)` which is always false for a string. Briefing/AutoBriefing context injection is silently broken.
+`hooks/rules/common.py`'s `context()` returns `{"additionalContext": "string"}`. Bridge checks `Array.isArray(parsed.additionalContext)` which is always false for a string. Briefing/AutoBriefing context injection is silently broken.
 
 ### G3: `mapToolName` incomplete (P1)
 
@@ -86,7 +86,7 @@ Bridge doesn't pass it.
 Rules expect Copilot CLI field names in `toolArgs`:
 - `old_str` / `new_str` (edit tool changes)
 - `file_text` (create tool full content)
-- `path` (file path, already covered via `filePath` fallback)
+- `path` (file path — `hook_runner.py` reads both `path` and `filePath`, but many rules read `toolArgs.path` directly; the bridge must pass `filePath` from opencode args under both keys for full coverage)
 
 Need to verify opencode's actual parameter names and add mapping.
 
@@ -124,7 +124,7 @@ Need to verify opencode's actual parameter names and add mapping.
 | P1.5 | Add `cwd` to tool events | High | `copilot-tools-bridge.ts` |
 | P1.6 | Update tests | High | `tests/test_opencode_bridge.py` |
 
-Unlocks 9 rules: IntegrityRule, SkillNudgeRule, SkillImprovementAdvisorRule,
+Unlocks 11 rules: IntegrityRule, SkillNudgeRule, SkillImprovementAdvisorRule,
 AutoBriefingRule, NewFileAdvisoryRule, BlockEditDistRule, SubagentGitGuardRule,
 PostCommitBriefingRule, TrackEditsRule, WorkflowStateRule, EnforceBriefingRule.
 
