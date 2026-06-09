@@ -93,10 +93,12 @@ class TestPluginSource(unittest.TestCase):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("hook_runner.py", text)
 
-    def test_plugin_maps_write_to_create(self):
+    def test_plugin_maps_tool_names(self):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("mapToolName", text)
-        self.assertIn("create", text)
+        self.assertIn('return "create"', text)
+        self.assertIn('return "view"', text)
+        self.assertIn('return "edit"', text)
 
 
 class TestInstallSandboxed(unittest.TestCase):
@@ -185,6 +187,20 @@ class TestInstallSandboxed(unittest.TestCase):
 class TestHookRunnerCompat(unittest.TestCase):
     """Verify hook_runner.py handles the JSON format the bridge sends."""
 
+    def test_pre_tool_use_includes_cwd(self):
+        proc = _run_hook(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "echo hello"},
+                "toolInput": {"command": "echo hello"},
+                "sessionId": "bridge-test-cwd",
+                "callId": "call-cwd",
+                "cwd": "/tmp",
+            },
+        )
+        self.assertEqual(proc.returncode, 0)
+
     def test_pre_tool_use_bash_passthrough(self):
         proc = _run_hook(
             "preToolUse",
@@ -260,6 +276,23 @@ class TestHookRunnerCompat(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, f"sessionEnd failed:\n{proc.stderr}")
 
+    def test_post_tool_use_includes_result_type(self):
+        proc = _run_hook(
+            "postToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "echo hello"},
+                "toolInput": {"command": "echo hello"},
+                "toolResult": {
+                    "title": "Run command",
+                    "output": "hello",
+                    "resultType": "success",
+                },
+                "sessionId": "bridge-test-rt",
+            },
+        )
+        self.assertEqual(proc.returncode, 0)
+
     def test_post_tool_use_tracking(self):
         proc = _run_hook(
             "postToolUse",
@@ -271,6 +304,7 @@ class TestHookRunnerCompat(unittest.TestCase):
                     "title": "Edit test file",
                     "output": "Done",
                     "filePath": os.path.join(tempfile.gettempdir(), "bridge-test-track.txt"),
+                    "resultType": "success",
                 },
                 "sessionId": "bridge-test-006",
             },
