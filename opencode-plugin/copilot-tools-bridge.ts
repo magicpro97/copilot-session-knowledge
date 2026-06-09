@@ -36,18 +36,20 @@ async function callHookRunner(
       log(client, "warn", `hook_runner ${event} exited ${exitCode}: ${stderr.trim()}`)
       return null
     }
-    const text = stdout.trim()
-    if (text && stderr.trim()) {
-      log(client, "debug", `[${event}] ${stderr.trim()}`)
+    const stderrText = stderr.trim()
+    if (stderrText) {
+      log(client, "debug", `[${event}] ${stderrText}`)
     }
+    const text = stdout.trim()
     if (!text) return null
-    const lines = text.split("\n").filter(l => l.trim())
+    const lines = text.split("\n").map(l => l.replace(/\r$/, ""))
     const results: Record<string, unknown>[] = []
     for (const line of lines) {
+      if (!line) continue
       try {
         results.push(JSON.parse(line))
       } catch {
-        log(client, "debug", `[${event}] non-JSON output: ${line}`)
+        results.push({ message: line })
       }
     }
     return results.length > 0 ? results : null
@@ -147,6 +149,9 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
 
       for (const parsed of results) {
         if (parsed.title) output.title = parsed.title
+        if (parsed.message) {
+          output.output = (output.output || "") + "\n" + parsed.message
+        }
       }
     },
 
