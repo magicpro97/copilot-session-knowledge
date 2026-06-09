@@ -88,13 +88,19 @@ function normalizeToolArgs(toolName: string, args: Record<string, unknown>): Rec
   return normalized
 }
 
+type SubagentInfo = {
+  parentSessionId: string
+  title: string
+}
+
 type HookState = {
   sessionStartFired: boolean
   sessionId: string
+  subagentSessions: Map<string, SubagentInfo>
 }
 
 export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory, worktree }) => {
-  const state: HookState = { sessionStartFired: false, sessionId: "" }
+  const state: HookState = { sessionStartFired: false, sessionId: "", subagentSessions: new Map() }
 
   const fireSessionStart = async (sessionId?: string) => {
     if (state.sessionStartFired) return
@@ -214,6 +220,25 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       output.parts = targetParts
     },
 
+    "experimental.session.compacting": async (input, output) => {
+      const results = await callHookRunner($, client, "preCompact", {
+        sessionId: input.sessionID,
+      })
+      if (!results) return
+      for (const parsed of results) {
+        if (parsed.additionalContext) {
+          const ctx = parsed.additionalContext
+          if (Array.isArray(ctx)) {
+            for (const c of ctx) {
+              if (typeof c === "string") output.context.push(c)
+            }
+          } else if (typeof ctx === "string") {
+            output.context.push(ctx)
+          }
+        }
+      }
+    },
+
     task: async (input, output) => {
       const results = await callHookRunner($, client, "preToolUse", {
         toolName: "task",
@@ -237,9 +262,32 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       const props = (event as any).properties || {}
 
       switch (event.type) {
-        case "session.created":
-          await fireSessionStart(props.sessionID || props.id || "")
+        case "session.created": {
+          const info = props.info || {}
+          if (info.parentID) {
+            state.subagentSessions.set(info.id, {
+              parentSessionId: info.parentID,
+              title: info.title || "",
+            })
+          } else {
+            await fireSessionStart(info.id || props.sessionID || "")
+          }
           break
+        }
+        case "session.status": {
+          const { sessionID, status } = props
+          if (status?.type === "idle" && state.subagentSessions.has(sessionID)) {
+            const sub = state.subagentSessions.get(sessionID)!
+            state.subagentSessions.delete(sessionID)
+            await callHookRunner($, client, "subagentStop", {
+              sessionId: sessionID,
+              subagentId: sessionID,
+              subagentName: sub.title,
+              parentSessionId: sub.parentSessionId,
+            })
+          }
+          break
+        }
         case "session.idle":
           await fireSessionEnd(props.sessionID || "")
           break
@@ -247,6 +295,11 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
           await callHookRunner($, client, "errorOccurred", {
             sessionId: props.sessionID || "",
             error: props.error || props.message || "",
+          })
+          break
+        case "session.compacted":
+          await callHookRunner($, client, "postCompact", {
+            sessionId: props.sessionID || "",
           })
           break
       }
