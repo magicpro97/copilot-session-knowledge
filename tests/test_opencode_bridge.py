@@ -100,6 +100,22 @@ class TestPluginSource(unittest.TestCase):
         self.assertIn('return "view"', text)
         self.assertIn('return "edit"', text)
 
+    def test_plugin_has_lifecycle_hooks(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("experimental.session.compacting", text)
+        self.assertIn("preCompact", text)
+        self.assertIn("session.compacted", text)
+        self.assertIn("postCompact", text)
+
+    def test_plugin_has_subagent_tracking(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("subagentSessions", text)
+        self.assertIn("subagentStop", text)
+        self.assertIn("session.status", text)
+        self.assertIn("subagentId", text)
+        self.assertIn("subagentName", text)
+        self.assertIn("parentSessionId", text)
+
     def test_plugin_normalizes_tool_args(self):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("normalizeToolArgs", text)
@@ -352,6 +368,36 @@ class TestHookRunnerCompat(unittest.TestCase):
             },
         )
         self.assertEqual(proc.returncode, 0, f"skill postToolUse failed:\n{proc.stderr}")
+
+    def test_pre_compact_event(self):
+        proc = _run_hook(
+            "preCompact",
+            {
+                "sessionId": "bridge-test-compact-001",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"preCompact failed:\n{proc.stderr}")
+
+    def test_post_compact_event(self):
+        proc = _run_hook(
+            "postCompact",
+            {
+                "sessionId": "bridge-test-compact-002",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"postCompact failed:\n{proc.stderr}")
+
+    def test_subagent_stop_event(self):
+        proc = _run_hook(
+            "subagentStop",
+            {
+                "sessionId": "bridge-test-sub-001",
+                "subagentId": "bridge-test-sub-001",
+                "subagentName": "test-subagent",
+                "parentSessionId": "bridge-test-main-001",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, f"subagentStop failed:\n{proc.stderr}")
 
     def test_skill_without_normalized_skill_field(self):
         proc = _run_hook(
