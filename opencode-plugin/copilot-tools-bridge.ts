@@ -72,17 +72,17 @@ function mapToolName(tool: string): string {
 
 function normalizeToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args }
-  if (toolName === "skill" && typeof normalized.name === "string") {
+  if (toolName === "skill" && typeof normalized.name === "string" && typeof normalized.skill !== "string") {
     normalized.skill = normalized.name
   }
   if (toolName === "edit") {
-    if (typeof normalized.oldString === "string") normalized.old_str = normalized.oldString
-    if (typeof normalized.newString === "string") normalized.new_str = normalized.newString
+    if (typeof normalized.oldString === "string" && typeof normalized.old_str !== "string") normalized.old_str = normalized.oldString
+    if (typeof normalized.newString === "string" && typeof normalized.new_str !== "string") normalized.new_str = normalized.newString
   }
   if (toolName === "create") {
-    if (typeof normalized.content === "string") normalized.file_text = normalized.content
+    if (typeof normalized.content === "string" && typeof normalized.file_text !== "string") normalized.file_text = normalized.content
   }
-  if (typeof normalized.path === "string" && !normalized.filePath) {
+  if (typeof normalized.path === "string" && typeof normalized.filePath !== "string") {
     normalized.filePath = normalized.path
   }
   return normalized

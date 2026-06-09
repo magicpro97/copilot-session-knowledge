@@ -353,7 +353,7 @@ class TestHookRunnerCompat(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, f"skill postToolUse failed:\n{proc.stderr}")
 
-    def test_skill_normalized_args_original_field_preserved(self):
+    def test_skill_without_normalized_skill_field(self):
         proc = _run_hook(
             "postToolUse",
             {
@@ -363,7 +363,7 @@ class TestHookRunnerCompat(unittest.TestCase):
                 "sessionId": "bridge-test-skill-002",
             },
         )
-        self.assertEqual(proc.returncode, 0, f"skill without normalized 'skill' field:\n{proc.stderr}")
+        self.assertEqual(proc.returncode, 0, f"skill postToolUse without 'skill' field:\n{proc.stderr}")
 
     def test_edit_normalized_args(self):
         proc = _run_hook(
