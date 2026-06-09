@@ -132,6 +132,11 @@ class TestPluginSource(unittest.TestCase):
         self.assertIn("cwd: process.cwd()", text)
         self.assertIn("userPromptSubmitted", text)
 
+    def test_plugin_has_shell_env(self):
+        text = PLUGIN_SRC.read_text(encoding="utf-8")
+        self.assertIn("shell.env", text)
+        self.assertIn("COPILOT_AGENT_SESSION_ID", text)
+
     def test_plugin_normalizes_tool_args(self):
         text = PLUGIN_SRC.read_text(encoding="utf-8")
         self.assertIn("normalizeToolArgs", text)

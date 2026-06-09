@@ -128,6 +128,12 @@ export const CopilotToolsBridge: Plugin = async ({ project, client, $, directory
       await fireSessionEnd(input.sessionID)
     },
 
+    "shell.env": async (input, output) => {
+      if (!process.env.COPILOT_AGENT_SESSION_ID && input.sessionID) {
+        output.env.COPILOT_AGENT_SESSION_ID = input.sessionID
+      }
+    },
+
     "tool.execute.before": async (input, output) => {
       const toolName = mapToolName(input.tool)
       const toolArgs = normalizeToolArgs(toolName, output.args ?? {})
