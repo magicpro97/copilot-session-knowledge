@@ -54,6 +54,32 @@ POINTER_DISPATCH_MODE_NAME = "pointer_bundle"
 FULL_CONTEXT_DISPATCH_MODE_NAME = "full_context_inline"
 POINTER_PROMPT_REDUCTION_TARGET_PERCENT = 30.0
 
+# Built-in agent types supported by the task() tool in background mode.
+# Custom project agents (e.g. lambda-developer, frontend-developer) are NOT in this set —
+# they cause 401 "Invalid auto-mode selector" when dispatched via task() background mode.
+# Swarm/parallel dispatch must map custom agents to "general-purpose".
+_TASK_BUILTIN_AGENT_TYPES: frozenset[str] = frozenset(
+    {
+        "explore",
+        "task",
+        "general-purpose",
+        "rubber-duck",
+        "code-review",
+        "research",
+        "security-review",
+    }
+)
+
+
+def _resolve_dispatch_agent_type(agent_type: str) -> str:
+    """Return the agent type safe for task() background dispatch.
+
+    Custom project agents are not supported in background mode — map them to
+    general-purpose so the dispatch call always succeeds.
+    """
+    return agent_type if agent_type in _TASK_BUILTIN_AGENT_TYPES else "general-purpose"
+
+
 _runtime_BRIEFING_PY = _DEFAULT_BRIEFING_PY
 _runtime_CHECKPOINT_RESTORE_PY = _DEFAULT_CHECKPOINT_RESTORE_PY
 _runtime_HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset()
@@ -1544,11 +1570,19 @@ def cmd_swarm(args):
         print(prompt)
 
         # Also output the task() call
+        # Custom agents → general-purpose for background dispatch (avoids 401 "Invalid auto-mode selector").
+        dispatch_agent_type = _resolve_dispatch_agent_type(agent_type)
+        dispatch_note = (
+            f"  # custom agent '{agent_type}' → mapped to general-purpose for background dispatch"
+            if dispatch_agent_type != agent_type
+            else ""
+        )
+
         print("\n─── COPILOT CLI DISPATCH ───\n")
         escaped_prompt = prompt.replace('"', '\\"').replace("\n", "\\n")
         print("task(")
         print(f'    name="swarm-{args.name}",')
-        print(f'    agent_type="{agent_type}",')
+        print(f'    agent_type="{dispatch_agent_type}",{dispatch_note}')
         print(f'    model="{model}",')
         print('    mode="background",')
         print(f'    description="Swarm: {args.name}",')
@@ -1559,6 +1593,9 @@ def cmd_swarm(args):
 
     elif args.output == "parallel":
         # Output one dispatch per todo (max parallelism)
+        # Custom agents → general-purpose for background dispatch (avoids 401 "Invalid auto-mode selector").
+        dispatch_agent_type = _resolve_dispatch_agent_type(agent_type)
+
         print("─── PARALLEL DISPATCH (one agent per todo) ───\n")
         print(f"Dispatch Mode: {dispatch_context_mode['summary']}")
         if prompt_size.get("comparison_available"):
@@ -1574,7 +1611,7 @@ def cmd_swarm(args):
             print(f"# Todo [{t['index']}]: {t['text']}")
             print("task(")
             print(f'    name="worker-{args.name}-{t["index"]}",')
-            print(f'    agent_type="{agent_type}",')
+            print(f'    agent_type="{dispatch_agent_type}",')
             print(f'    model="{model}",')
             print('    mode="background",')
             print(f'    description="{t["text"][:50]}",')
