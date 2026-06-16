@@ -109,9 +109,16 @@ def _read_edits(path):
                     return data
             except (json.JSONDecodeError, ValueError):
                 pass
-    # Legacy: flat set of file paths → migrate with current timestamp
-    now = time.time()
-    legacy_entries = [{"p": fp, "t": now} for fp in raw_set if fp]
+    # Legacy: flat set of file paths → migrate with the marker's last-modified
+    # time (NOT the current time). Stamping with now() on every read would
+    # perpetually refresh the entries so they never satisfy the 24 h TTL,
+    # permanently poisoning the "legacy" bucket. Using the file mtime lets
+    # migrated entries expire ~24 h after the marker was last written.
+    try:
+        base_ts = path.stat().st_mtime
+    except Exception:
+        base_ts = time.time()
+    legacy_entries = [{"p": fp, "t": base_ts} for fp in raw_set if fp]
     return {"legacy": legacy_entries}
 
 

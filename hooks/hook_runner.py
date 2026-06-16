@@ -121,6 +121,50 @@ def _record_sync_signal(event: str, data: dict) -> None:
         pass
 
 
+# Dedup markers are only meaningful for the 500 ms double-fire window, but each
+# distinct (event, payload) writes its own file. Without pruning, the markers
+# directory leaks one file per unique tool call indefinitely. Sweep stale markers
+# on a coarse time-gate so the cost stays amortized-cheap.
+_DEDUP_TTL_SEC = 5  # markers older than this are stale (>> 500 ms dedup window)
+_DEDUP_SWEEP_INTERVAL_SEC = 60  # sweep at most once per minute
+_DEDUP_SWEEP_STAMP = MARKERS_DIR / "dedup-sweep.stamp"
+
+
+def _prune_stale_dedup_markers() -> None:
+    """Remove leaked ``hook-dedup-*`` markers older than the dedup window.
+
+    Time-gated to run at most once per ``_DEDUP_SWEEP_INTERVAL_SEC`` so a busy
+    session does not pay an O(N) directory scan on every hook invocation.
+
+    Fail-open: any I/O error is swallowed.
+    """
+    try:
+        now = time.time()
+        try:
+            if (
+                _DEDUP_SWEEP_STAMP.is_file()
+                and now - _DEDUP_SWEEP_STAMP.stat().st_mtime < _DEDUP_SWEEP_INTERVAL_SEC
+            ):
+                return
+        except Exception:
+            pass
+        # Claim the sweep slot before scanning so concurrent hooks do not all sweep.
+        try:
+            MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+            _DEDUP_SWEEP_STAMP.write_text(str(int(now)), encoding="utf-8")
+        except Exception:
+            pass
+        cutoff = now - _DEDUP_TTL_SEC
+        for p in MARKERS_DIR.glob("hook-dedup-*"):
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 def _check_and_set_dedup(event: str, payload_hash: str = "") -> bool:
     """Return True if this event+payload should be skipped as a double-fire duplicate.
 
@@ -131,6 +175,7 @@ def _check_and_set_dedup(event: str, payload_hash: str = "") -> bool:
     Fail-open: any I/O error → returns False (process normally).
     """
     try:
+        _prune_stale_dedup_markers()
         key = f"{event}-{payload_hash}" if payload_hash else event
         # Sanitise key to a safe filename: keep only alphanumeric + dash + dot
         safe_key = "".join(c if c.isalnum() or c in "-." else "_" for c in key)
