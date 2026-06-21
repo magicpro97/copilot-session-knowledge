@@ -88,7 +88,7 @@ jobs:
       # Baseline is cached via actions/cache; first run creates it (rc=0),
       # subsequent runs compare against it and fail on >20% regression.
       - name: Restore startup baseline (sk.py --version)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .benchmarks/sk-python-startup-baseline.json
           key: ubuntu-latest-py3.11-sk-python-startup-baseline-v2

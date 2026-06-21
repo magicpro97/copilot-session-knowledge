@@ -50,7 +50,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -78,7 +78,7 @@ jobs:
           key: ubuntu-latest-cargo-startup-${{ hashFiles('sk-rust/Cargo.lock') }}
           restore-keys: ubuntu-latest-cargo-startup-
       - name: Restore startup benchmark baseline
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .benchmarks/sk-startup-baseline.json
           key: ubuntu-latest-sk-startup-baseline-v2
@@ -104,7 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -132,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -166,7 +166,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
