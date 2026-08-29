@@ -76,7 +76,7 @@ rusqlite  = { version = "0.31", features = ["bundled"] }
 serde     = { version = "1",    features = ["derive"] }
 serde_json = "1"
 sha2      = "0.10"
-hmac      = "0.12"
+hmac      = "0.13"
 
 # Always-on — low overhead, used across all native command implementations.
 anyhow  = "1"
