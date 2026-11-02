@@ -629,6 +629,41 @@ with _mock.patch.object(_aut, "DB_PATH", REPO / "nonexistent-db-for-test.db"), \
          f"subprocess.run called even though backup failed: {_mock_sub.call_args_list!r}")
 
 
+# ─── 11b. WBS-056b: backup retention + migration timeout ────────────────────
+
+print("\n🧹 WBS-056b: backup retention (keep 2) + migrate timeout")
+
+_ret_tmpdir = REPO / ".test-backup-retention"
+_ret_tmpdir.mkdir(exist_ok=True)
+try:
+    _ret_db = _ret_tmpdir / "knowledge.db"
+    _ret_db.write_bytes(b"SQLite fake db")
+    for _ts in ("20250101_000000", "20250102_000000", "20250103_000000"):
+        (_ret_tmpdir / f"knowledge.backup_{_ts}.db").write_bytes(b"old")
+    _ret_new = _aut._backup_db(_ret_db)
+    _ret_left = sorted(p.name for p in _ret_tmpdir.glob("knowledge.backup_*.db"))
+    test("WBS-056b: prune keeps only 2 newest backups",
+         len(_ret_left) == 2, f"left: {_ret_left}")
+    test("WBS-056b: newest backup survives prune",
+         _ret_new is not None and _ret_new.name in _ret_left, f"left: {_ret_left}")
+finally:
+    _shutil2.rmtree(str(_ret_tmpdir), ignore_errors=True)
+
+test("WBS-056b: migrate timeout raised to 600s (a 71s migration timed out at 30s)",
+     "timeout=600" in _mig_body,
+     "run_migrations must allow a migration to run longer than 30s")
+
+with _mock.patch.object(_aut, "DB_PATH", REPO / ".test-timeout.db"), \
+     _mock.patch.object(_aut, "_backup_db", return_value=REPO / ".test-timeout.backup.db"), \
+     _mock.patch("subprocess.run",
+                 return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")) as _mock_to, \
+     _mock.patch.object(type(REPO / ".test-timeout.db"), "exists", return_value=True):
+    _aut.run_migrations()
+    _to_kwargs = _mock_to.call_args.kwargs if _mock_to.called else {}
+    test("WBS-056b: run_migrations passes timeout>=600 to migrate subprocess",
+         _to_kwargs.get("timeout", 0) >= 600, f"timeout={_to_kwargs.get('timeout')}")
+
+
 # ─── 12. WBS-059: retry on database locked ──────────────────────────────────
 
 print("\n🔁 WBS-059: retry on 'database is locked'")
