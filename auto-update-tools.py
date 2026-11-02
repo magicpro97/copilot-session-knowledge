@@ -1489,10 +1489,18 @@ def _backup_db(db_path: Path) -> "Path | None":
     backup_path = db_path.with_suffix(f".backup_{ts}.db")
     try:
         shutil.copy2(str(db_path), str(backup_path))
-        return backup_path
     except Exception as e:
         warn(f"[migrate] DB backup failed: {e}")
         return None
+    # Retention: keep only the 2 newest backups. Unconditional backups before every
+    # migration run leaked 213 GB (39 x 5.6 GB) when the migration kept timing out.
+    try:
+        stale = sorted(db_path.parent.glob(f"{db_path.stem}.backup_*.db"), reverse=True)[2:]
+        for old in stale:
+            old.unlink(missing_ok=True)
+    except OSError as e:
+        warn(f"[migrate] backup prune failed: {e}")
+    return backup_path
 
 
 # ---------------------------------------------------------------------------
@@ -1524,7 +1532,7 @@ def run_migrations():
                 [sys.executable, str(migrate_script), str(DB_PATH)],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=600,
             )
             if r.returncode == 0:
                 return
