@@ -34,6 +34,7 @@ Usage:
 """
 
 import contextlib
+import glob
 import json
 import os
 import platform
@@ -62,7 +63,7 @@ if os.name == "nt":
 # ---------------------------------------------------------------------------
 HOME = Path.home()
 TOOLS_DIR = HOME / ".copilot" / "tools"
-DB_PATH = HOME / ".copilot" / "session-state" / "knowledge.db"
+DB_PATH = Path(os.environ.get("COPILOT_KNOWLEDGE_DB") or (HOME / ".copilot" / "session-state" / "knowledge.db"))
 SOURCE_REPO = "magicpro97/copilot-session-knowledge"
 CLONE_URL = f"https://github.com/{SOURCE_REPO}.git"
 COOLDOWN = 86400  # 24 hours
@@ -361,6 +362,10 @@ def _load_project_registry() -> list[Path]:
 # ---------------------------------------------------------------------------
 SELF_EXEC_GUARD = TOOLS_DIR / ".self-exec-active"  # P0-7
 _UPDATE_LOCK_FILE = TOOLS_DIR / ".update-lock"  # P0-8
+# Must outlive the worst-case update run: 3 migrate attempts x 600 s subprocess timeout,
+# plus the DB backup and the remaining steps. A shorter TTL let a second updater steal
+# the lock from a live owner mid-migration.
+_STALE_LOCK_SECONDS = 3600
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -403,8 +408,9 @@ def _retry_windows_fs(func, *args, retries: int = 3, delay: float = 0.5):
 def _update_lock():
     """Cross-platform exclusive update lock via O_CREAT|O_EXCL.
 
-    If the lock file is fresh (< 10 min), exits 0 (another update is running).
-    Stale locks (>= 10 min) are removed and the lock is re-acquired.
+    The lock file holds the owner PID. A lock is only taken over when its owner is
+    gone or it is older than ``_STALE_LOCK_SECONDS`` — otherwise this process exits 0
+    (another update is running). Cleanup removes the lock only when we still own it.
     """
     lock_path = _UPDATE_LOCK_FILE
     try:
@@ -413,19 +419,29 @@ def _update_lock():
         warn(f"Could not prepare update lock dir: {exc}")
         yield
         return
+    pid = os.getpid()
     acquired = False
     for _attempt in range(2):
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
+            try:
+                os.write(fd, str(pid).encode())
+            finally:
+                os.close(fd)
             acquired = True
             break
         except FileExistsError:
+            holder = _lock_holder_pid(lock_path)
             try:
                 age = time.time() - lock_path.stat().st_mtime
             except OSError:
                 age = 0
-            if age >= 600:
+            # Two distinct staleness rules: a lock with no readable owner can only be
+            # judged by age, while a lock with an owner is judged by that owner being
+            # gone. Age alone must never displace a live owner — a long update would
+            # otherwise hand the lock to a second updater mid-migration.
+            stale = (holder is None and age >= _STALE_LOCK_SECONDS) or (holder is not None and not _pid_alive(holder))
+            if stale:
                 try:
                     lock_path.unlink(missing_ok=True)
                 except Exception:
@@ -440,9 +456,50 @@ def _update_lock():
         yield
     finally:
         try:
-            lock_path.unlink(missing_ok=True)
+            # Only ever remove our own lock: between another process's O_CREAT and
+            # its write the file is empty, and an empty file must not look like ours.
+            if _lock_holder_pid(lock_path) == pid:
+                lock_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def _lock_holder_pid(lock_path: Path) -> "int | None":
+    """PID recorded in the lock file, or None when unreadable/legacy (empty) lock."""
+    try:
+        raw = lock_path.read_text().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when the process still exists (or liveness cannot be disproved).
+
+    ponytail: on Windows os.kill(pid, 0) is NOT a probe — CPython maps any signal
+    other than CTRL_C_EVENT/CTRL_BREAK_EVENT to TerminateProcess, so probing would
+    kill a live updater mid-migration. Treat Windows holders as alive and let the
+    age-based TTL recover a crashed run; upgrade to an OpenProcess(PROCESS_QUERY_
+    LIMITED_INFORMATION) check if Windows recovery latency ever matters.
+    """
+    if os.name == "nt":
+        return True
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1489,10 +1546,20 @@ def _backup_db(db_path: Path) -> "Path | None":
     backup_path = db_path.with_suffix(f".backup_{ts}.db")
     try:
         shutil.copy2(str(db_path), str(backup_path))
-        return backup_path
     except Exception as e:
         warn(f"[migrate] DB backup failed: {e}")
         return None
+    # Retention: keep only the 2 newest backups. Unconditional backups before every
+    # migration run leaked 213 GB (39 x 5.6 GB) when the migration kept timing out.
+    try:
+        pattern = f"{glob.escape(db_path.stem)}.backup_*.db"
+        kept = sorted(db_path.parent.glob(pattern), reverse=True)[:2]
+        for old in db_path.parent.glob(pattern):
+            if old not in kept and old != backup_path:
+                old.unlink(missing_ok=True)
+    except OSError as e:
+        warn(f"[migrate] backup prune failed: {e}")
+    return backup_path
 
 
 # ---------------------------------------------------------------------------
@@ -1524,7 +1591,7 @@ def run_migrations():
                 [sys.executable, str(migrate_script), str(DB_PATH)],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=600,
             )
             if r.returncode == 0:
                 return

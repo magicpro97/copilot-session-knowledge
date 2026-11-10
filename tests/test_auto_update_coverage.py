@@ -44,6 +44,11 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 # ---------------------------------------------------------------------------
 import importlib.util as _ilu
 
+# The suite must never touch the developer's live knowledge DB: point every
+# in-process import and every spawned child at a path that does not exist.
+_SANDBOX_DB = REPO / ".test-sandbox" / "absent.db"
+os.environ["COPILOT_KNOWLEDGE_DB"] = str(_SANDBOX_DB)
+
 _script = REPO / "auto-update-tools.py"
 _spec = _ilu.spec_from_file_location("_aut", _script)
 _aut = _ilu.module_from_spec(_spec)
@@ -491,6 +496,7 @@ _r_skippull = subprocess.run(
     [sys.executable, str(_script), "--skip-pull",
      f"--old-sha={_head_sha}", f"--new-sha={_head_sha}"],
     capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
+    env={**os.environ, "COPILOT_KNOWLEDGE_DB": str(REPO / ".test-skip-pull" / "absent.db")},
 )
 test("--skip-pull exits 0",
      _r_skippull.returncode == 0,
@@ -575,6 +581,7 @@ with _mock.patch.object(_aut, "_has_tracked_local_changes", return_value=True), 
 print("\n🗄  WBS-056: auto-backup before migration")
 
 import re as _re2
+import time as _time
 import tempfile as _tempfile
 import shutil as _shutil2
 
@@ -627,6 +634,162 @@ with _mock.patch.object(_aut, "DB_PATH", REPO / "nonexistent-db-for-test.db"), \
     test("WBS-056: run_migrations() aborts when backup fails (no subprocess call)",
          not _mock_sub.called,
          f"subprocess.run called even though backup failed: {_mock_sub.call_args_list!r}")
+
+
+# ─── 11b. WBS-056b: backup retention + migration timeout ────────────────────
+
+print("\n🧹 WBS-056b: backup retention (keep 2) + migrate timeout")
+
+_ret_tmpdir = REPO / ".test-backup-retention"
+_ret_tmpdir.mkdir(exist_ok=True)
+try:
+    _ret_db = _ret_tmpdir / "knowledge.db"
+    _ret_db.write_bytes(b"SQLite fake db")
+    for _ts in ("20250101_000000", "20250102_000000", "20250103_000000"):
+        (_ret_tmpdir / f"knowledge.backup_{_ts}.db").write_bytes(b"old")
+    # Decoys dated in the future (clock skew / restored files) must not push the
+    # backup this call just created out of the retained window.
+    for _ts in ("29990101_000000", "29990102_000000"):
+        (_ret_tmpdir / f"knowledge.backup_{_ts}.db").write_bytes(b"future")
+    _ret_new = _aut._backup_db(_ret_db)
+    _ret_left = {p.name for p in _ret_tmpdir.glob("knowledge.backup_*.db")}
+    _ret_expected = {
+        "knowledge.backup_29990101_000000.db",
+        "knowledge.backup_29990102_000000.db",
+    } | ({_ret_new.name} if _ret_new else set())
+    test("WBS-056b: prune keeps only the 2 newest plus the fresh backup",
+         _ret_left == _ret_expected, f"left: {sorted(_ret_left)}")
+    test("WBS-056b: the backup just created always survives prune",
+         _ret_new is not None and _ret_new.name in _ret_left, f"left: {sorted(_ret_left)}")
+    test("WBS-056b: prune leaves the live DB alone",
+         _ret_db.exists(), "prune deleted the live database")
+    test("WBS-056b: old backups are pruned even when future-dated decoys exist",
+         "knowledge.backup_20250103_000000.db" not in _ret_left,
+         f"stale backup survived: {sorted(_ret_left)}")
+finally:
+    _shutil2.rmtree(str(_ret_tmpdir), ignore_errors=True)
+
+# A stem that looks like a glob pattern must not widen the prune match.
+_esc_tmpdir = REPO / ".test-backup-escape"
+_esc_tmpdir.mkdir(exist_ok=True)
+try:
+    _esc_db = _esc_tmpdir / "know[ledge].db"
+    _esc_db.write_bytes(b"SQLite fake db")
+    _esc_decoy = _esc_tmpdir / "knowledge.backup_20250101_000000.db"
+    _esc_decoy.write_bytes(b"decoy")
+    _aut._backup_db(_esc_db)
+    test("WBS-056b: glob metacharacters in the stem do not widen the prune",
+         _esc_decoy.exists(), "prune matched a sibling file through the unescaped stem")
+finally:
+    _shutil2.rmtree(str(_esc_tmpdir), ignore_errors=True)
+
+test("WBS-056b: migrate timeout constant is 600s (a 71s migration timed out at 30s)",
+     600 in _aut.run_migrations.__code__.co_consts,
+     "run_migrations must allow a migration to run longer than 30s")
+
+with _mock.patch.object(_aut, "DB_PATH", REPO / ".test-timeout.db"), \
+     _mock.patch.object(_aut, "_backup_db", return_value=REPO / ".test-timeout.backup.db"), \
+     _mock.patch("subprocess.run",
+                 return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")) as _mock_to, \
+     _mock.patch.object(type(REPO / ".test-timeout.db"), "exists", return_value=True):
+    _aut.run_migrations()
+    _to_kwargs = _mock_to.call_args.kwargs if _mock_to.called else {}
+    test("WBS-056b: run_migrations passes timeout>=600 to migrate subprocess",
+         _to_kwargs.get("timeout", 0) >= 600, f"timeout={_to_kwargs.get('timeout')}")
+
+
+# ─── 11c. WBS-056c: update lock outlives the migrate timeout ────────────────
+
+print("\n🔒 WBS-056c: update lock owner + stale TTL")
+
+test("WBS-056c: _STALE_LOCK_SECONDS outlives 3 x 600 s migrate attempts",
+     hasattr(_aut, "_STALE_LOCK_SECONDS") and _aut._STALE_LOCK_SECONDS > 3 * 600,
+     f"got {getattr(_aut, '_STALE_LOCK_SECONDS', None)!r}")
+
+test("WBS-056c: liveness probe treats the current process as alive",
+     _aut._pid_alive(os.getpid()), "self probe should be alive")
+
+_lock_tmpdir = REPO / ".test-update-lock"
+_lock_tmpdir.mkdir(exist_ok=True)
+_lock_path = _lock_tmpdir / ".update-lock"
+_live_proc = None
+try:
+    with _mock.patch.object(_aut, "_UPDATE_LOCK_FILE", _lock_path):
+        with _aut._update_lock():
+            test("WBS-056c: lock file records owner pid",
+                 _lock_path.read_text().strip() == str(os.getpid()),
+                 f"content: {_lock_path.read_text()!r}")
+        test("WBS-056c: owner removes its own lock on exit",
+             not _lock_path.exists(),
+             "lock file survived normal exit")
+
+        # Real second process: a live foreign holder must block this updater.
+        _live_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        _lock_path.write_text(str(_live_proc.pid))
+        try:
+            with _aut._update_lock():
+                _blocked = False
+        except SystemExit:
+            _blocked = True
+        test("WBS-056c: live owner's lock is not stolen", _blocked,
+             "second updater acquired a lock held by a live process")
+        test("WBS-056c: blocked updater leaves the lock in place",
+             _lock_path.exists(), "lock file was deleted by the blocked updater")
+
+        # Age alone must never displace a live owner, even past the TTL.
+        _old = _time.time() - (_aut._STALE_LOCK_SECONDS + 60)
+        os.utime(_lock_path, (_old, _old))
+        try:
+            with _aut._update_lock():
+                _aged_stolen = True
+        except SystemExit:
+            _aged_stolen = False
+        test("WBS-056c: an aged lock held by a live owner is still not stolen",
+             not _aged_stolen, "TTL alone handed a live owner's lock to a second updater")
+
+        # Legacy lock with no owner: age decides, so a crashed old lock self-heals.
+        _lock_path.unlink(missing_ok=True)
+        _lock_path.write_text("")
+        try:
+            with _aut._update_lock():
+                _empty_fresh_stolen = True
+        except SystemExit:
+            _empty_fresh_stolen = False
+        test("WBS-056c: fresh owner-less lock blocks", not _empty_fresh_stolen,
+             "a fresh lock without a pid was stolen")
+        os.utime(_lock_path, (_old, _old))
+        _empty_old_taken = False
+        try:
+            with _aut._update_lock():
+                _empty_old_taken = _lock_path.read_text().strip() == str(os.getpid())
+        except SystemExit:
+            _empty_old_taken = False
+        test("WBS-056c: aged owner-less lock self-heals", _empty_old_taken,
+             "an ancient pid-less lock blocked the updater forever")
+
+        # Cleanup must not delete a lock that a different process now owns; the
+        # window between another process's O_CREAT and its write leaves it empty.
+        with _aut._update_lock():
+            _lock_path.write_text("")
+        test("WBS-056c: cleanup keeps a foreign (empty) lock",
+             _lock_path.exists(), "cleanup deleted a lock it did not own")
+        _lock_path.unlink(missing_ok=True)
+
+        # Dead owner → takeover allowed.
+        _lock_path.write_text("999999999")
+        _took_over = False
+        try:
+            with _aut._update_lock():
+                _took_over = _lock_path.read_text().strip() == str(os.getpid())
+        except SystemExit:
+            _took_over = False
+        test("WBS-056c: dead owner's lock is reclaimed", _took_over,
+             "stale lock from a dead pid was not reclaimed")
+finally:
+    if _live_proc is not None:
+        _live_proc.kill()
+        _live_proc.wait(timeout=10)
+    _shutil2.rmtree(str(_lock_tmpdir), ignore_errors=True)
 
 
 # ─── 12. WBS-059: retry on database locked ──────────────────────────────────
