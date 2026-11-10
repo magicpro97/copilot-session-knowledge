@@ -199,6 +199,9 @@ def _normalize_html(html: str) -> str:
     html = re.sub(r'\sid="[^"]*"', "", html)
     html = re.sub(r'\sdata-dgst="[^"]*"', "", html)
     html = re.sub(r"\?favicon\.[^\"']+", "?favicon.HASH", html)
+    # Framework-emitted viewport hints differ per build platform (present in the
+    # macOS build, absent in the Linux one) and carry no route content.
+    html = re.sub(r'<meta name="next-size-adjust"[^>]*>', "", html)
     html = re.sub(r"\s+", " ", html)
     return html
 
