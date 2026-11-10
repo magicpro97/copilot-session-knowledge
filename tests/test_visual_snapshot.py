@@ -191,6 +191,15 @@ def _normalize_html(html: str) -> str:
         r"\1HASH\2",
         html,
     )
+    # Styling and generated identifiers are not route content: utility-class
+    # ordering, CSS-module hashing schemes, framework-generated ids and the RSC
+    # bailout marker all vary by dependency version and build platform, while the
+    # route copy, structure and hierarchy do not.
+    html = re.sub(r'\sclass="[^"]*"', "", html)
+    html = re.sub(r'\sid="[^"]*"', "", html)
+    html = re.sub(r'\sdata-dgst="[^"]*"', "", html)
+    html = re.sub(r"\?favicon\.[^\"']+", "?favicon.HASH", html)
+    html = re.sub(r"\s+", " ", html)
     return html
 
 
