@@ -159,8 +159,7 @@ export function ClustersTab({ active, host = LOCAL_HOST, enabled = true }: Clust
   );
   const neighbors = selectedSimilarity?.neighbors ?? [];
   const similarityMeta = (similarityQuery.data?.meta ?? undefined) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const degraded = extractMetaBoolean(similarityMeta, "degraded");
   const skippedEntryIds = extractMetaEntryIds(similarityMeta, "skipped_entry_ids");
   const selectedSkipped =

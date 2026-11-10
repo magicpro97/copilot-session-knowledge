@@ -18,12 +18,7 @@ import { ResearchPackSection } from "./research-pack-section";
 import { useInsightsTab } from "./insights-tab-context";
 
 export type InsightsTabKey =
-  | "overview"
-  | "knowledge"
-  | "retro"
-  | "search-quality"
-  | "live"
-  | "workflow";
+  "overview" | "knowledge" | "retro" | "search-quality" | "live" | "workflow";
 
 type OverviewTabProps = {
   /** Called when the user clicks a "Go to tab" CTA inside the overview. */
