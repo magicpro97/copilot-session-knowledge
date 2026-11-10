@@ -287,7 +287,7 @@ jobs:
   # diagnostics, and broker-mode specs run under the Playwright behavioral
   # project and are stable enough for always-on use.
   e2e-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
@@ -355,7 +355,7 @@ jobs:
   # To run visual E2E: trigger this workflow manually via the GitHub Actions UI or
   #   gh workflow run ci.yml
   e2e-visual:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: github.event_name == 'workflow_dispatch'
     defaults:
@@ -423,7 +423,7 @@ jobs:
   # Then inspect the "pairing-e2e" job → "Upload Playwright report" artifact
   # for trace files and screenshot SHA-256 evidence.
   pairing-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     if: github.event_name == 'workflow_dispatch'
     defaults:

@@ -25,10 +25,7 @@ export type AssistantSkillsChunk = {
 };
 
 export type AssistantChunk =
-  | AssistantTextChunk
-  | AssistantToolChunk
-  | AssistantRawChunk
-  | AssistantSkillsChunk;
+  AssistantTextChunk | AssistantToolChunk | AssistantRawChunk | AssistantSkillsChunk;
 
 /** Parse raw tool arguments into a key/value record.
  *  - If already an object, return as-is.

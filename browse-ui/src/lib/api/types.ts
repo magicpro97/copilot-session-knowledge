@@ -966,11 +966,7 @@ export interface CopilotHealthFrame {
 
 /** Discriminated union of all SSE frame shapes from `/api/operator/sessions/{id}/stream`. */
 export type CopilotStreamFrame =
-  | CopilotEventFrame
-  | CopilotRawFrame
-  | CopilotStatusFrame
-  | CopilotQueueFrame
-  | CopilotHealthFrame;
+  CopilotEventFrame | CopilotRawFrame | CopilotStatusFrame | CopilotQueueFrame | CopilotHealthFrame;
 
 /**
  * Safe metadata envelope for an adopted CLI session (issue #555).
@@ -1763,12 +1759,7 @@ export type SubagentStatus = "running" | "completed" | "failed";
 
 /** Error category enum — only categorised values, never raw error text. */
 export type SubagentErrorCategory =
-  | "rate_limited"
-  | "api_error"
-  | "timeout"
-  | "internal_error"
-  | "cancelled"
-  | "unknown";
+  "rate_limited" | "api_error" | "timeout" | "internal_error" | "cancelled" | "unknown";
 
 /**
  * A single aggregated subagent activity row returned by

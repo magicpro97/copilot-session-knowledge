@@ -191,6 +191,18 @@ def _normalize_html(html: str) -> str:
         r"\1HASH\2",
         html,
     )
+    # Styling and generated identifiers are not route content: utility-class
+    # ordering, CSS-module hashing schemes, framework-generated ids and the RSC
+    # bailout marker all vary by dependency version and build platform, while the
+    # route copy, structure and hierarchy do not.
+    html = re.sub(r'\sclass="[^"]*"', "", html)
+    html = re.sub(r'\sid="[^"]*"', "", html)
+    html = re.sub(r'\sdata-dgst="[^"]*"', "", html)
+    html = re.sub(r"\?favicon\.[^\"']+", "?favicon.HASH", html)
+    # Framework-emitted viewport hints differ per build platform (present in the
+    # macOS build, absent in the Linux one) and carry no route content.
+    html = re.sub(r'<meta name="next-size-adjust"[^>]*>', "", html)
+    html = re.sub(r"\s+", " ", html)
     return html
 
 
@@ -200,6 +212,20 @@ def _hash(html: str) -> str:
 
 def _snapshot_path(slug: str) -> Path:
     return SNAPSHOTS_DIR / f"{slug}.sha256"
+
+
+def _snapshot_html_path(slug: str) -> Path:
+    return SNAPSHOTS_DIR / f"{slug}.html"
+
+
+def _report_diff(slug: str, current: str, baseline: str) -> None:
+    """Print the first differing region so a mismatch is actionable from CI logs."""
+    limit = min(len(current), len(baseline))
+    idx = next((i for i in range(limit) if current[i] != baseline[i]), limit)
+    start = max(0, idx - 120)
+    print(f"    first diff at char {idx}")
+    print(f"    baseline: …{baseline[start:idx + 160]!r}")
+    print(f"    current : …{current[start:idx + 160]!r}")
 
 
 def run_all_tests() -> int:
@@ -233,8 +259,10 @@ def run_all_tests() -> int:
             current_hash = _hash(normalized)
 
             snap_file = _snapshot_path(slug)
+            html_file = _snapshot_html_path(slug)
             if UPDATE_MODE or not snap_file.exists():
                 snap_file.write_text(current_hash, encoding="utf-8")
+                html_file.write_text(normalized, encoding="utf-8")
                 print(f"  WROTE baseline for {slug}: {current_hash[:16]}…")
                 test(f"snapshot/{slug}: baseline written", True)
             else:
@@ -247,6 +275,8 @@ def run_all_tests() -> int:
                         f"    current: {current_hash[:16]}…\n"
                         f"    Run UPDATE_SNAPSHOTS=1 python3 tests/test_visual_snapshot.py to refresh."
                     )
+                    if html_file.exists():
+                        _report_diff(slug, normalized, html_file.read_text(encoding="utf-8"))
                 test(f"snapshot/{slug}: hash matches baseline", match)
 
     finally:
