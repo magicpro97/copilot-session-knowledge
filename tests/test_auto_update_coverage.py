@@ -14,6 +14,7 @@ Run: python3 test_auto_update_coverage.py
 
 import io
 import os
+import sqlite3 as _sqlite3
 import subprocess
 import sys
 from contextlib import redirect_stdout
@@ -609,7 +610,11 @@ _bk_tmpdir = REPO / ".test-backup-wbs056"
 _bk_tmpdir.mkdir(exist_ok=True)
 try:
     _fake_db = _bk_tmpdir / "test.db"
-    _fake_db.write_bytes(b"SQLite fake db")
+    _real_conn = _sqlite3.connect(str(_fake_db))
+    _real_conn.execute("CREATE TABLE t(x INTEGER)")
+    _real_conn.execute("INSERT INTO t VALUES (1)")
+    _real_conn.commit()
+    _real_conn.close()
     _backup = _aut._backup_db(_fake_db)
     test("WBS-056: _backup_db returns a Path on success",
          _backup is not None and isinstance(_backup, type(REPO)),
@@ -640,17 +645,35 @@ with _mock.patch.object(_aut, "DB_PATH", REPO / "nonexistent-db-for-test.db"), \
 
 print("\n🧹 WBS-056b: backup retention (keep 2) + migrate timeout")
 
+
+def _make_wal_db(path, rows=("alpha",), keep_open=True):
+    """A WAL-mode DB whose rows are still in the -wal file (no checkpoint)."""
+    conn = _sqlite3.connect(str(path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.execute("CREATE TABLE IF NOT EXISTS t(x TEXT)")
+    conn.executemany("INSERT INTO t(x) VALUES (?)", [(r,) for r in rows])
+    conn.commit()
+    if not keep_open:
+        conn.close()
+    return conn
+
+
 _ret_tmpdir = REPO / ".test-backup-retention"
 _ret_tmpdir.mkdir(exist_ok=True)
+_ret_live = None
 try:
     _ret_db = _ret_tmpdir / "knowledge.db"
-    _ret_db.write_bytes(b"SQLite fake db")
+    _ret_live = _make_wal_db(_ret_db, rows=("only-in-wal",))
+    test("WBS-056b: fixture really is WAL (row not yet checkpointed)",
+         (_ret_tmpdir / "knowledge.db-wal").exists(),
+         "no -wal file beside the fixture DB")
     for _ts in ("20250101_000000", "20250102_000000", "20250103_000000"):
-        (_ret_tmpdir / f"knowledge.backup_{_ts}.db").write_bytes(b"old")
+        _make_wal_db(_ret_tmpdir / f"knowledge.backup_{_ts}.db", keep_open=False)
     # Decoys dated in the future (clock skew / restored files) must not push the
     # backup this call just created out of the retained window.
     for _ts in ("29990101_000000", "29990102_000000"):
-        (_ret_tmpdir / f"knowledge.backup_{_ts}.db").write_bytes(b"future")
+        _make_wal_db(_ret_tmpdir / f"knowledge.backup_{_ts}.db", keep_open=False)
     _ret_new = _aut._backup_db(_ret_db)
     _ret_left = {p.name for p in _ret_tmpdir.glob("knowledge.backup_*.db")}
     _ret_expected = {
@@ -666,17 +689,76 @@ try:
     test("WBS-056b: old backups are pruned even when future-dated decoys exist",
          "knowledge.backup_20250103_000000.db" not in _ret_left,
          f"stale backup survived: {sorted(_ret_left)}")
+    test("WBS-056b: no .tmp file is left behind after a successful backup",
+         not list(_ret_tmpdir.glob("*.tmp")), f"leftovers: {list(_ret_tmpdir.glob('*.tmp'))}")
+    if os.name == "posix":
+        _ret_mode = _ret_new.stat().st_mode & 0o777 if _ret_new else 0
+        test("WBS-056b: backup is owner-only (no group/other bits)",
+             _ret_mode & 0o077 == 0, f"mode: {oct(_ret_mode)}")
+
+    _ret_rows = []
+    _chk_ok = "missing backup"
+    if _ret_new is not None:
+        try:
+            _chk = _sqlite3.connect(str(_ret_new))
+            try:
+                _ret_rows = [r[0] for r in _chk.execute("SELECT x FROM t").fetchall()]
+                _chk_ok = _chk.execute("PRAGMA quick_check").fetchone()[0]
+            finally:
+                _chk.close()
+        except Exception as _e:  # noqa: BLE001 - a broken backup must fail the test, not the run
+            _chk_ok = f"{type(_e).__name__}: {_e}"
+    test("WBS-056b: backup contains rows still sitting in the WAL",
+         _ret_rows == ["only-in-wal"], f"rows in backup: {_ret_rows}")
+    test("WBS-056b: backup passes quick_check", _chk_ok == "ok", f"quick_check: {_chk_ok}")
 finally:
+    if _ret_live is not None:
+        _ret_live.close()
     _shutil2.rmtree(str(_ret_tmpdir), ignore_errors=True)
+
+# A failed backup must not leave a partial file in a retention slot.
+_fail_tmpdir = REPO / ".test-backup-failure"
+_fail_tmpdir.mkdir(exist_ok=True)
+try:
+    _fail_db = _fail_tmpdir / "knowledge.db"
+    _fail_live = _make_wal_db(_fail_db, keep_open=False)
+    _fail_good = _make_wal_db(_fail_tmpdir / "knowledge.backup_20240101_000000.db", keep_open=False)
+    # A crashed multi-GB temp from an earlier run must be swept even though this
+    # backup fails: otherwise ENOSPC keeps blocking every later attempt.
+    _stale_tmp = _fail_tmpdir / "knowledge.backup_20990101_000000.db.tmp"
+    _stale_tmp.write_bytes(b"x" * 1024)
+    _stale_age = _time.time() - 7200
+    os.utime(_stale_tmp, (_stale_age, _stale_age))
+    _fresh_tmp = _fail_tmpdir / "knowledge.backup_20260101_000000.db.tmp"
+    _fresh_tmp.write_bytes(b"in progress")
+    with _mock.patch.object(_aut.sqlite3, "connect", side_effect=_sqlite3.OperationalError("disk I/O error")):
+        _fail_result = _aut._backup_db(_fail_db)
+    test("WBS-056b: failed backup returns None", _fail_result is None, f"got {_fail_result!r}")
+    test("WBS-056b: failed backup leaves no temp or partial file",
+         not list(_fail_tmpdir.glob("knowledge.backup_*.db.tmp")) or
+         {p.name for p in _fail_tmpdir.glob("*.tmp")} == {_fresh_tmp.name},
+         f"leftovers: {[p.name for p in _fail_tmpdir.glob('*.tmp')]}")
+    test("WBS-056b: a stale crashed temp is swept even when the backup fails",
+         not _stale_tmp.exists(), "stale temp survived a failed backup")
+    test("WBS-056b: an in-flight temp from another run is left alone",
+         _fresh_tmp.exists(), "sweep deleted a fresh in-progress temp")
+    # Only the pre-existing good backup remains — nothing partial took its slot.
+    test(
+        "WBS-056b: failed backup does not evict the last good backup",
+        (_fail_tmpdir / "knowledge.backup_20240101_000000.db").exists(),
+        f"files: {sorted(p.name for p in _fail_tmpdir.iterdir())}",
+    )
+finally:
+    _shutil2.rmtree(str(_fail_tmpdir), ignore_errors=True)
 
 # A stem that looks like a glob pattern must not widen the prune match.
 _esc_tmpdir = REPO / ".test-backup-escape"
 _esc_tmpdir.mkdir(exist_ok=True)
 try:
     _esc_db = _esc_tmpdir / "know[ledge].db"
-    _esc_db.write_bytes(b"SQLite fake db")
+    _make_wal_db(_esc_db, keep_open=False)
     _esc_decoy = _esc_tmpdir / "knowledge.backup_20250101_000000.db"
-    _esc_decoy.write_bytes(b"decoy")
+    _make_wal_db(_esc_decoy, keep_open=False)
     _aut._backup_db(_esc_db)
     test("WBS-056b: glob metacharacters in the stem do not widen the prune",
          _esc_decoy.exists(), "prune matched a sibling file through the unescaped stem")
@@ -766,6 +848,23 @@ try:
             _empty_old_taken = False
         test("WBS-056c: aged owner-less lock self-heals", _empty_old_taken,
              "an ancient pid-less lock blocked the updater forever")
+
+        # Grace window: a lock older than the write window but far younger than the
+        # TTL must already self-heal, or an upgrade from the old empty-lock code
+        # silently skips a whole day of updates.
+        _lock_path.unlink(missing_ok=True)
+        _lock_path.write_text("")
+        _grace_age = _time.time() - (_aut._OWNERLESS_LOCK_GRACE_SECONDS + 10)
+        os.utime(_lock_path, (_grace_age, _grace_age))
+        _grace_taken = False
+        try:
+            with _aut._update_lock():
+                _grace_taken = _lock_path.read_text().strip() == str(os.getpid())
+        except SystemExit:
+            _grace_taken = False
+        test("WBS-056c: owner-less lock past the write grace self-heals",
+             _grace_taken,
+             "an owner-less lock had to wait for the full TTL before recovery")
 
         # Cleanup must not delete a lock that a different process now owns; the
         # window between another process's O_CREAT and its write leaves it empty.

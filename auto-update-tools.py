@@ -41,6 +41,7 @@ import platform
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -366,6 +367,11 @@ _UPDATE_LOCK_FILE = TOOLS_DIR / ".update-lock"  # P0-8
 # plus the DB backup and the remaining steps. A shorter TTL let a second updater steal
 # the lock from a live owner mid-migration.
 _STALE_LOCK_SECONDS = 3600
+# A lock file exists for a moment before its owner writes the PID (O_CREAT then
+# write). An owner-less lock younger than this grace is treated as "being written",
+# older than it as "crashed before writing" — so an upgrade from the old code, which
+# wrote empty locks, does not skip a whole day of updates.
+_OWNERLESS_LOCK_GRACE_SECONDS = 60
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -440,7 +446,9 @@ def _update_lock():
             # judged by age, while a lock with an owner is judged by that owner being
             # gone. Age alone must never displace a live owner — a long update would
             # otherwise hand the lock to a second updater mid-migration.
-            stale = (holder is None and age >= _STALE_LOCK_SECONDS) or (holder is not None and not _pid_alive(holder))
+            stale = (holder is None and age >= _OWNERLESS_LOCK_GRACE_SECONDS) or (
+                holder is not None and not _pid_alive(holder)
+            )
             if stale:
                 try:
                     lock_path.unlink(missing_ok=True)
@@ -1537,20 +1545,79 @@ def write_manifest(sha: str, changes: dict):
 # ---------------------------------------------------------------------------
 # DB backup helper (WBS-056)
 # ---------------------------------------------------------------------------
+# A 5.9 GB online backup completes in ~10 s; Connection.backup() retries BUSY
+# without the connection timeout, so bound it while the update lock is held.
+_BACKUP_DEADLINE_SECONDS = 600
+
+
+def _prune_stale_backup_temps(db_path: Path) -> None:
+    """Drop crashed ``.db.tmp`` leftovers — they can be multi-GB and block the next backup."""
+    tmp_pattern = f"{glob.escape(db_path.stem)}.backup_*.db.tmp"
+    for leftover in db_path.parent.glob(tmp_pattern):
+        try:
+            if time.time() - leftover.stat().st_mtime > 3600:
+                leftover.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _backup_deadline_callback(deadline: float):
+    """Progress callback for Connection.backup(): abort instead of retrying BUSY forever."""
+
+    def _progress(_status, _remaining, _total):
+        if time.time() > deadline:
+            raise TimeoutError("DB backup exceeded its deadline (database busy?)")
+
+    return _progress
+
+
 def _backup_db(db_path: Path) -> "Path | None":
-    """Create a timestamped backup of the database before migrations.
+    """Create a WAL-safe timestamped backup of the database before migrations.
+
+    Uses the sqlite3 online backup API instead of a file copy: the live DB runs in
+    WAL mode, so copying ``knowledge.db`` alone can miss every page written since
+    the last checkpoint (and can tear while pages are rewritten). The backup is
+    written to a ``.tmp`` file created 0600 and atomically renamed, so private
+    session data stays owner-only and a failed or partial copy can never occupy a
+    retention slot and push out the last good backup.
 
     Returns the backup Path on success, None on failure.
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_suffix(f".backup_{ts}.db")
+    tmp_path = backup_path.with_suffix(".db.tmp")
+    # Sweep crashed temps first: a stale multi-GB temp would otherwise make every
+    # later backup fail with ENOSPC before the success-only prune could run.
+    _prune_stale_backup_temps(db_path)
     try:
-        shutil.copy2(str(db_path), str(backup_path))
+        # Create the temp file ourselves so it is never world-readable: sqlite3
+        # would create it 0644 under a 022 umask, while the live DB is 0600.
+        fd = os.open(str(tmp_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        src_conn = sqlite3.connect(str(db_path))
+        dst_conn = sqlite3.connect(str(tmp_path))
+        try:
+            src_conn.backup(
+                dst_conn,
+                pages=1024,
+                progress=_backup_deadline_callback(time.time() + _BACKUP_DEADLINE_SECONDS),
+            )
+            check = dst_conn.execute("PRAGMA quick_check").fetchone()
+            if not check or str(check[0]).lower() != "ok":
+                raise RuntimeError(f"quick_check returned {check!r}")
+        finally:
+            dst_conn.close()
+            src_conn.close()
+        os.replace(tmp_path, backup_path)
     except Exception as e:
         warn(f"[migrate] DB backup failed: {e}")
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None
     # Retention: keep only the 2 newest backups. Unconditional backups before every
-    # migration run leaked 213 GB (39 x 5.6 GB) when the migration kept timing out.
+    # run leaked 213 GB (39 x 5.6 GB) when the migration kept timing out.
     try:
         pattern = f"{glob.escape(db_path.stem)}.backup_*.db"
         kept = sorted(db_path.parent.glob(pattern), reverse=True)[:2]
