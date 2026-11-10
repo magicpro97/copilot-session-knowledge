@@ -664,6 +664,54 @@ with _mock.patch.object(_aut, "DB_PATH", REPO / ".test-timeout.db"), \
          _to_kwargs.get("timeout", 0) >= 600, f"timeout={_to_kwargs.get('timeout')}")
 
 
+# ─── 11c. WBS-056c: update lock outlives the migrate timeout ────────────────
+
+print("\n🔒 WBS-056c: update lock owner + stale TTL")
+
+test("WBS-056c: _STALE_LOCK_SECONDS outlives 3 x 600 s migrate attempts",
+     hasattr(_aut, "_STALE_LOCK_SECONDS") and _aut._STALE_LOCK_SECONDS >= 3 * 600,
+     f"got {getattr(_aut, '_STALE_LOCK_SECONDS', None)!r}")
+
+_lock_tmpdir = REPO / ".test-update-lock"
+_lock_tmpdir.mkdir(exist_ok=True)
+_lock_path = _lock_tmpdir / ".update-lock"
+try:
+    with _mock.patch.object(_aut, "_UPDATE_LOCK_FILE", _lock_path):
+        with _aut._update_lock():
+            test("WBS-056c: lock file records owner pid",
+                 _lock_path.read_text().strip() == str(os.getpid()),
+                 f"content: {_lock_path.read_text()!r}")
+        test("WBS-056c: owner removes its own lock on exit",
+             not _lock_path.exists(),
+             "lock file survived normal exit")
+
+        # A live foreign holder must block the second updater (SystemExit(0) = skip).
+        _lock_path.write_text(str(os.getpid()))
+        try:
+            with _aut._update_lock():
+                _blocked = False
+        except SystemExit:
+            _blocked = True
+        test("WBS-056c: live owner's lock is not stolen", _blocked,
+             "second updater acquired a lock held by a live process")
+        test("WBS-056c: blocked updater leaves the lock in place",
+             _lock_path.exists(), "lock file was deleted by the blocked updater")
+        _lock_path.unlink(missing_ok=True)
+
+        # Dead owner → takeover allowed.
+        _lock_path.write_text("999999999")
+        _took_over = False
+        try:
+            with _aut._update_lock():
+                _took_over = _lock_path.read_text().strip() == str(os.getpid())
+        except SystemExit:
+            _took_over = False
+        test("WBS-056c: dead owner's lock is reclaimed", _took_over,
+             "stale lock from a dead pid was not reclaimed")
+finally:
+    _shutil2.rmtree(str(_lock_tmpdir), ignore_errors=True)
+
+
 # ─── 12. WBS-059: retry on database locked ──────────────────────────────────
 
 print("\n🔁 WBS-059: retry on 'database is locked'")

@@ -361,6 +361,10 @@ def _load_project_registry() -> list[Path]:
 # ---------------------------------------------------------------------------
 SELF_EXEC_GUARD = TOOLS_DIR / ".self-exec-active"  # P0-7
 _UPDATE_LOCK_FILE = TOOLS_DIR / ".update-lock"  # P0-8
+# Must outlive the worst-case update run: 3 migrate attempts x 600 s subprocess timeout,
+# plus the DB backup and the remaining steps. A shorter TTL let a second updater steal
+# the lock from a live owner mid-migration.
+_STALE_LOCK_SECONDS = 3600
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -403,8 +407,9 @@ def _retry_windows_fs(func, *args, retries: int = 3, delay: float = 0.5):
 def _update_lock():
     """Cross-platform exclusive update lock via O_CREAT|O_EXCL.
 
-    If the lock file is fresh (< 10 min), exits 0 (another update is running).
-    Stale locks (>= 10 min) are removed and the lock is re-acquired.
+    The lock file holds the owner PID. A lock is only taken over when its owner is
+    gone or it is older than ``_STALE_LOCK_SECONDS`` — otherwise this process exits 0
+    (another update is running). Cleanup removes the lock only when we still own it.
     """
     lock_path = _UPDATE_LOCK_FILE
     try:
@@ -413,19 +418,24 @@ def _update_lock():
         warn(f"Could not prepare update lock dir: {exc}")
         yield
         return
+    pid = os.getpid()
     acquired = False
     for _attempt in range(2):
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
+            try:
+                os.write(fd, str(pid).encode())
+            finally:
+                os.close(fd)
             acquired = True
             break
         except FileExistsError:
+            holder = _lock_holder_pid(lock_path)
             try:
                 age = time.time() - lock_path.stat().st_mtime
             except OSError:
                 age = 0
-            if age >= 600:
+            if age >= _STALE_LOCK_SECONDS or (holder is not None and not _pid_alive(holder)):
                 try:
                     lock_path.unlink(missing_ok=True)
                 except Exception:
@@ -440,9 +450,40 @@ def _update_lock():
         yield
     finally:
         try:
-            lock_path.unlink(missing_ok=True)
+            holder = _lock_holder_pid(lock_path)
+            if holder is None or holder == pid:
+                lock_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def _lock_holder_pid(lock_path: Path) -> "int | None":
+    """PID recorded in the lock file, or None when unreadable/legacy (empty) lock."""
+    try:
+        raw = lock_path.read_text().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when the process still exists (or liveness cannot be disproved)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 # ---------------------------------------------------------------------------
